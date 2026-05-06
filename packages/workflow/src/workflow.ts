@@ -79,6 +79,32 @@ export const cursorRunStatusSchema = z.enum(["running", "succeeded", "failed", "
 export type CursorRunStatus = z.infer<typeof cursorRunStatusSchema>;
 
 /**
+ * Terminal subset of `WorkflowStatus` — `succeeded`, `failed`, `cancelled`.
+ *
+ * Used at boundaries that produce only finished runs (e.g. `ship`'s output
+ * after blocking until completion, `cancel_workflow_run`'s post-cancel
+ * response). Lets the schema enforce the contract that those endpoints
+ * never surface `pending` / `running`.
+ *
+ * The set is duplicated (rather than derived via `.extract()`) so the type
+ * inference stays a tight literal union — `z.infer` produces
+ * `"succeeded" | "failed" | "cancelled"`, not `WorkflowStatus`.
+ */
+export const terminalWorkflowStatusSchema = z.enum(["succeeded", "failed", "cancelled"]);
+export type TerminalWorkflowStatus = z.infer<typeof terminalWorkflowStatusSchema>;
+
+/**
+ * Terminal subset of `CursorRunStatus` — `succeeded`, `failed`, `cancelled`.
+ *
+ * Same idea as `terminalWorkflowStatusSchema`: when a Cursor run is being
+ * surfaced as a finished thing (e.g. inside `ShipOutput.cursorRun` after
+ * `ship` has blocked until the agent finished), the status must not be
+ * `running`.
+ */
+export const terminalCursorRunStatusSchema = z.enum(["succeeded", "failed", "cancelled"]);
+export type TerminalCursorRunStatus = z.infer<typeof terminalCursorRunStatusSchema>;
+
+/**
  * Where the underlying Cursor agent ran.
  *
  * V1 ships only `"local"` — the agent runs inline in the Ship process,
@@ -189,6 +215,25 @@ export const cursorRunRefSchema = z
   })
   .strict();
 export type CursorRunRef = z.infer<typeof cursorRunRefSchema>;
+
+/**
+ * `CursorRunRef` narrowed to runs that have already finished — `status` must
+ * be one of the terminal values.
+ *
+ * Used at boundaries that surface only completed runs (`ShipOutput.cursorRun`
+ * after `ship` blocks until the agent finishes). Schema-level enforcement
+ * means a producer that accidentally returns a still-running ref fails
+ * validation at the boundary instead of the downstream consumer.
+ *
+ * `endedAt` and `durationMs` remain optional even here, because they're
+ * populated by the runner after the terminal transition and the transition
+ * itself is the load-bearing invariant. If we ever need "fully populated
+ * terminal ref" semantics, that's a further refinement.
+ */
+export const terminalCursorRunRefSchema = cursorRunRefSchema.extend({
+  status: terminalCursorRunStatusSchema,
+});
+export type TerminalCursorRunRef = z.infer<typeof terminalCursorRunRefSchema>;
 
 /**
  * Per-run policy knobs.

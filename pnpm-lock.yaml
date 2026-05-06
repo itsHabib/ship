@@ -55,7 +55,7 @@ importers:
         version: 3.25.76
     devDependencies:
       '@cursor/sdk':
-        specifier: latest
+        specifier: ^1.0.12
         version: 1.0.12
 
 packages:

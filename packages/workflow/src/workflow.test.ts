@@ -37,6 +37,9 @@ import {
   phaseKindSchema,
   phaseSchema,
   phaseStatusSchema,
+  terminalCursorRunRefSchema,
+  terminalCursorRunStatusSchema,
+  terminalWorkflowStatusSchema,
   workflowPolicySchema,
   workflowRunSchema,
   workflowStatusSchema,
@@ -137,6 +140,39 @@ describe("cursorRunRuntimeSchema", () => {
 
   test("rejects V2-only runtimes", () => {
     expect(cursorRunRuntimeSchema.safeParse("cloud").success).toBe(false);
+  });
+});
+
+describe("terminalWorkflowStatusSchema", () => {
+  test("accepts every terminal status", () => {
+    for (const s of ["succeeded", "failed", "cancelled"] as const) {
+      expect(terminalWorkflowStatusSchema.parse(s)).toBe(s);
+    }
+  });
+
+  test("rejects non-terminal statuses (the whole point)", () => {
+    expect(terminalWorkflowStatusSchema.safeParse("pending").success).toBe(false);
+    expect(terminalWorkflowStatusSchema.safeParse("running").success).toBe(false);
+  });
+
+  test("rejects values outside the workflow status enum entirely", () => {
+    expect(terminalWorkflowStatusSchema.safeParse("done").success).toBe(false);
+  });
+});
+
+describe("terminalCursorRunStatusSchema", () => {
+  test("accepts every terminal cursor-run status", () => {
+    for (const s of ["succeeded", "failed", "cancelled"] as const) {
+      expect(terminalCursorRunStatusSchema.parse(s)).toBe(s);
+    }
+  });
+
+  test("rejects running (the only non-terminal cursor-run status)", () => {
+    expect(terminalCursorRunStatusSchema.safeParse("running").success).toBe(false);
+  });
+
+  test("rejects pending (which isn't a valid cursor-run status at all)", () => {
+    expect(terminalCursorRunStatusSchema.safeParse("pending").success).toBe(false);
   });
 });
 
@@ -251,6 +287,43 @@ describe("cursorRunRefSchema", () => {
   test("accepts durationMs of 0", () => {
     expect(cursorRunRefSchema.safeParse({ ...validCursorRunRef, durationMs: 0 }).success).toBe(
       true,
+    );
+  });
+});
+
+describe("terminalCursorRunRefSchema", () => {
+  const terminalRef: CursorRunRef = { ...validCursorRunRef, status: "succeeded" };
+
+  test("accepts a ref with terminal status", () => {
+    expect(terminalCursorRunRefSchema.parse(terminalRef)).toEqual(terminalRef);
+  });
+
+  test("accepts each terminal status", () => {
+    for (const s of ["succeeded", "failed", "cancelled"] as const) {
+      expect(
+        terminalCursorRunRefSchema.safeParse({ ...validCursorRunRef, status: s }).success,
+      ).toBe(true);
+    }
+  });
+
+  test("rejects a still-running ref", () => {
+    expect(
+      terminalCursorRunRefSchema.safeParse({ ...validCursorRunRef, status: "running" }).success,
+    ).toBe(false);
+  });
+
+  test("preserves the parent schema's .strict() (rejects unknown keys)", () => {
+    expect(terminalCursorRunRefSchema.safeParse({ ...terminalRef, extra: "x" }).success).toBe(
+      false,
+    );
+  });
+
+  test("preserves the parent schema's other field validations", () => {
+    expect(
+      terminalCursorRunRefSchema.safeParse({ ...terminalRef, startedAt: "not-a-date" }).success,
+    ).toBe(false);
+    expect(terminalCursorRunRefSchema.safeParse({ ...terminalRef, durationMs: -1 }).success).toBe(
+      false,
     );
   });
 });

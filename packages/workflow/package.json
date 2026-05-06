@@ -19,6 +19,6 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@cursor/sdk": "latest"
+    "@cursor/sdk": "^1.0.12"
   }
 }

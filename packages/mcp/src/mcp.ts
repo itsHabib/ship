@@ -20,7 +20,8 @@
  */
 
 import {
-  cursorRunRefSchema,
+  terminalCursorRunRefSchema,
+  terminalWorkflowStatusSchema,
   workflowRunSchema,
   workflowStatusSchema,
   worktreeRefSchema,
@@ -98,18 +99,22 @@ export type ShipArtifacts = z.infer<typeof shipArtifactsSchema>;
  * Output of the `ship` tool — the result of a single, completed run.
  *
  * Returned once the run reaches a terminal state. (Streaming responses are
- * a V2 concern; in V1 the tool blocks until the run finishes.)
+ * a V2 concern; in V1 the tool blocks until the run finishes.) Both
+ * `status` and `cursorRun.status` are restricted to terminal values so the
+ * schema enforces this contract instead of just documenting it.
  *
  * Fields:
  * - `workflowRunId` — the `wf_<ulid>` id of this run.
  * - `status`        — terminal status: `succeeded`, `failed`, or `cancelled`.
- *                     `pending` / `running` would be a contract violation.
+ *                     `pending` / `running` are rejected at the boundary.
  * - `worktree`      — the Tower worktree the run executed in. Caller can
  *                     `cd` here to inspect / push / open a PR manually.
- * - `cursorRun`     — the `CursorRunRef` for the underlying SDK run. Note:
- *                     spec.md calls this `CursorRunSummary`, but the V1 type
- *                     system only ships `CursorRunRef`, which carries the
- *                     same information. We use `CursorRunRef` here.
+ * - `cursorRun`     — the `TerminalCursorRunRef` for the underlying SDK run.
+ *                     The cursor run's own `status` must also be terminal —
+ *                     a still-running ref here would mean `ship` returned
+ *                     before the agent finished. Note: spec.md calls this
+ *                     field `CursorRunSummary`, but the V1 type system only
+ *                     ships `CursorRunRef`, which carries the same info.
  * - `artifacts`     — paths to the on-disk artifacts (see `ShipArtifacts`).
  * - `summary`       — final assistant text from the run, when present.
  *                     Contents of `summary.md`. Optional because a run that
@@ -118,9 +123,9 @@ export type ShipArtifacts = z.infer<typeof shipArtifactsSchema>;
 export const shipOutputSchema = z
   .object({
     workflowRunId: workflowRunIdSchema,
-    status: workflowStatusSchema,
+    status: terminalWorkflowStatusSchema,
     worktree: worktreeRefSchema,
-    cursorRun: cursorRunRefSchema,
+    cursorRun: terminalCursorRunRefSchema,
     artifacts: shipArtifactsSchema,
     summary: z.string().min(1).optional(),
   })
@@ -215,16 +220,20 @@ export type CancelWorkflowRunInput = z.infer<typeof cancelWorkflowRunInputSchema
 /**
  * Output of `cancel_workflow_run` — the id and the post-cancel status.
  *
- * Status is the *current* status after cancellation:
+ * Status is the *current* status after cancellation, and is always terminal:
  * - `cancelled` if the call moved a `pending` / `running` run into a
  *   terminal state.
  * - `succeeded` / `failed` / `cancelled` if the run was already terminal —
  *   the call was a no-op and we return what we found.
+ *
+ * `pending` / `running` are rejected at the boundary; if `core` ever
+ * surfaces one of those here, that's a contract violation worth failing
+ * loud instead of letting it propagate to clients.
  */
 export const cancelWorkflowRunOutputSchema = z
   .object({
     workflowRunId: workflowRunIdSchema,
-    status: workflowStatusSchema,
+    status: terminalWorkflowStatusSchema,
   })
   .strict();
 export type CancelWorkflowRunOutput = z.infer<typeof cancelWorkflowRunOutputSchema>;

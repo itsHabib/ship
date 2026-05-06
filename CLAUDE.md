@@ -27,7 +27,7 @@ CI on `.github/workflows/ci.yml` runs the same `make check` matrix on ubuntu + w
 - inspired by lessons learned from ../orchestra ../cortex
 
 ## Shipping Features
-Follow this general workflow is implementing a feature
+Follow this general workflow for implementing a feature
 - implement said feature
 - create a branch if you haven't already
 - create a PR
@@ -35,7 +35,7 @@ Follow this general workflow is implementing a feature
 - comment "@codex review"
 - comment "@claude review"
 - ensure CI is green
-- ensure review comments are addressed 
-  - it's ok to be opinionated, dont have to take all comments blindly
-- repeat the review cycle 3 times before reachig out
+- ensure review comments are addressed
+  - it's ok to be opinionated, don't have to take all comments blindly
+- repeat the review cycle 3 times before reaching out
 - when ready to merge reach out

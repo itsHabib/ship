@@ -8,7 +8,7 @@
  * boundary and integer enforcement.
  */
 
-import type { CursorRunRef, WorkflowRun, WorktreeRef } from "@ship/workflow";
+import type { TerminalCursorRunRef, WorkflowRun, WorktreeRef } from "@ship/workflow";
 
 import { DEFAULT_WORKFLOW_POLICY } from "@ship/workflow";
 import { describe, expect, test } from "vitest";
@@ -37,7 +37,7 @@ const validWorktree: WorktreeRef = {
   baseRef: "main",
 };
 
-const validCursorRunRef: CursorRunRef = {
+const validCursorRunRef: TerminalCursorRunRef = {
   id: "cr_01ARZ3NDEKTSV4RRFFQ69G5FAV",
   agentId: "agent_abc",
   runtime: "local",
@@ -157,6 +157,32 @@ describe("shipOutputSchema", () => {
   test("rejects empty summary if present", () => {
     expect(shipOutputSchema.safeParse({ ...validOutput, summary: "" }).success).toBe(false);
   });
+
+  test("rejects non-terminal status (pending / running)", () => {
+    expect(shipOutputSchema.safeParse({ ...validOutput, status: "pending" }).success).toBe(false);
+    expect(shipOutputSchema.safeParse({ ...validOutput, status: "running" }).success).toBe(false);
+  });
+
+  test("rejects a still-running cursorRun", () => {
+    expect(
+      shipOutputSchema.safeParse({
+        ...validOutput,
+        cursorRun: { ...validCursorRunRef, status: "running" },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("accepts each terminal status / cursor-run status combination", () => {
+    for (const s of ["succeeded", "failed", "cancelled"] as const) {
+      expect(
+        shipOutputSchema.safeParse({
+          ...validOutput,
+          status: s,
+          cursorRun: { ...validCursorRunRef, status: s },
+        }).success,
+      ).toBe(true);
+    }
+  });
 });
 
 describe("getWorkflowRunInputSchema", () => {
@@ -265,6 +291,23 @@ describe("cancelWorkflowRunOutputSchema", () => {
   test("accepts a valid output", () => {
     const v = { workflowRunId: WF_ID, status: "cancelled" as const };
     expect(cancelWorkflowRunOutputSchema.parse(v)).toEqual(v);
+  });
+
+  test("accepts each terminal status (already-terminal runs return what we found)", () => {
+    for (const s of ["succeeded", "failed", "cancelled"] as const) {
+      expect(
+        cancelWorkflowRunOutputSchema.safeParse({ workflowRunId: WF_ID, status: s }).success,
+      ).toBe(true);
+    }
+  });
+
+  test("rejects non-terminal status (pending / running) — cancel always returns terminal", () => {
+    expect(
+      cancelWorkflowRunOutputSchema.safeParse({ workflowRunId: WF_ID, status: "pending" }).success,
+    ).toBe(false);
+    expect(
+      cancelWorkflowRunOutputSchema.safeParse({ workflowRunId: WF_ID, status: "running" }).success,
+    ).toBe(false);
   });
 
   test("rejects unknown keys", () => {
