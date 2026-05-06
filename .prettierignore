@@ -1,0 +1,12 @@
+node_modules
+.pnpm-store
+dist
+build
+coverage
+spike
+pnpm-lock.yaml
+*.tsbuildinfo
+
+# Design docs — keep author's markdown style
+*.md
+docs/**/*.md

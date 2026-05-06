@@ -1,0 +1,39 @@
+{
+  "name": "ship",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Repo-native dev-workflow MCP toolkit. Pre-implementation.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@10.13.1",
+  "scripts": {
+    "lint": "eslint . --no-error-on-unmatched-pattern",
+    "lint:fix": "eslint . --fix --no-error-on-unmatched-pattern",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-perfectionist": "^4.6.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.19.0",
+    "vitest": "^2.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "sqlite3"
+    ]
+  }
+}

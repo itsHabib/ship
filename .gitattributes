@@ -1,0 +1,14 @@
+# Force LF for all text files. Windows checkouts will have LF in working tree,
+# matching prettier's `endOfLine: "lf"` and avoiding cross-platform CI fights.
+* text=auto eol=lf
+
+# Binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# Generated
+pnpm-lock.yaml linguist-generated=true
