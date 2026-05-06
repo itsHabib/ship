@@ -2,7 +2,7 @@
 
 Repo-native dev-workflow MCP toolkit. Given a task doc and a registered Tower repo, Ship creates a worktree, launches a Cursor SDK agent against it, and persists what happened. V2 phases (PR opening, agent reviews, CI repair) compose on top of V1 — they are not part of V1.
 
-**Status:** pre-implementation; Phase 1 (monorepo scaffold) only. See [docs/plan.md](docs/plan.md) for the execution plan and [docs/features/ship-v1.md](docs/features/ship-v1.md) for the V1 spec.
+**Status:** pre-implementation; Phase 1 (monorepo scaffold) only. See [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) for the execution plan and [docs/features/ship-v1/spec.md](docs/features/ship-v1/spec.md) for the V1 spec.
 
 ## Stack
 
@@ -31,4 +31,4 @@ pnpm run test:watch
 
 ## Layout
 
-See [docs/features/ship-v1.md § Architecture](docs/features/ship-v1.md#architecture) for package boundaries and dependency direction.
+See [docs/features/ship-v1/spec.md § Architecture](docs/features/ship-v1/spec.md#architecture) for package boundaries and dependency direction.

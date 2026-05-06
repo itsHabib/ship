@@ -1,6 +1,6 @@
 # Plan
 
-Execution plan for getting Ship V1 shipped. Companion to [features/ship-v1.md](features/ship-v1.md), which is the design spec — this file is "in what order, with what acceptance criteria, with what's needed from you at each step."
+Execution plan for getting Ship V1 shipped. Companion to [spec.md](spec.md), which is the design spec — this file is "in what order, with what acceptance criteria, with what's needed from you at each step."
 
 Mark phases done by checking boxes. Don't start a phase before its predecessor is done.
 
@@ -8,14 +8,14 @@ Mark phases done by checking boxes. Don't start a phase before its predecessor i
 
 ## Phase 0 — SDK spike ✅ (done 2026-05-06)
 
-**Goal:** Verify `@cursor/sdk` behaves the way [cursor-sdk-typescript.md](cursor-sdk-typescript.md) claims, before we scaffold around assumptions.
+**Goal:** Verify `@cursor/sdk` behaves the way [../../cursor-sdk-typescript.md](../../cursor-sdk-typescript.md) claims, before we scaffold around assumptions.
 
 - [x] Write `spike/{package.json, tsconfig.json, local-run.ts, README.md}`.
 - [x] Write root `.gitignore`.
 - [x] `cd spike && pnpm install`.
 - [x] `$env:CURSOR_API_KEY = "..."`.
 - [x] `pnpm start` from `spike/`. First run: 119 events, 67s, `composer-2`, completed cleanly.
-- [x] Append findings to [cursor-sdk-typescript.md § Spike findings](cursor-sdk-typescript.md#spike-findings-run-1-2026-05-06).
+- [x] Append findings to [../../cursor-sdk-typescript.md § Spike findings](../../cursor-sdk-typescript.md#spike-findings-run-1-2026-05-06).
 - [ ] (Followup, not blocking) Test cancellation via SIGINT — the first run completed naturally so the abort path is unexercised.
 
 **Resolved decisions:**
@@ -67,7 +67,7 @@ Mark phases done by checking boxes. Don't start a phase before its predecessor i
 **Goal:** SQLite persistence with typed queries.
 
 - [ ] `better-sqlite3` + Drizzle.
-- [ ] Schema matching ship-v1.md § "SQL schema".
+- [ ] Schema matching spec.md § "SQL schema".
 - [ ] Migrations runner.
 - [ ] `Store` interface + impl: `createWorkflowRun`, `updateStatus`, `appendPhase`, `updatePhase`, `getRun`, `listRuns`, `cancelRun`.
 - [ ] Vitest: round-trip every entity, idempotent cancel, `listRuns` filtering, fresh-DB migration.
@@ -113,7 +113,7 @@ Mark phases done by checking boxes. Don't start a phase before its predecessor i
 
 - [ ] `createShipService({ store, tower, cursor, fs, clock, config })`.
 - [ ] Methods: `ship(input)`, `getRun(id)`, `listRuns(filter)`, `cancelRun(id)`.
-- [ ] State transitions enforce the rules in ship-v1.md § "State transitions".
+- [ ] State transitions enforce the rules in spec.md § "State transitions".
 - [ ] Artifact write logic (prompt.md, task-doc.md, events.ndjson, result.json, summary.md).
 - [ ] Vitest: state transitions, artifact paths, error paths, all using fakes from #4 and #5.
 
@@ -161,7 +161,7 @@ Mark phases done by checking boxes. Don't start a phase before its predecessor i
 
 ## What's not in V1
 
-(See ship-v1.md § "Non-goals" for the full list.) Worth restating because scope creep is the #1 risk:
+(See spec.md § "Non-goals" for the full list.) Worth restating because scope creep is the #1 risk:
 
 - No PR opening (that's the first V2 phase, ~30 lines of `gh` invocation).
 - No reviews, no CI repair, no comment management.

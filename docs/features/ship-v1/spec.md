@@ -176,7 +176,9 @@ ship/
   docs/
     cursor-sdk-typescript.md
     features/
-      ship-v1.md             # this file
+      ship-v1/
+        spec.md              # this file
+        plan.md              # execution plan (companion)
   packages/
     shared/                  # Zod schemas + types — no dependencies
     store/                   # Drizzle + better-sqlite3 + migrations
@@ -553,7 +555,7 @@ V1 is "done" when:
 - `pnpm check` passes (typecheck + lint + format).
 - The four MCP tools work from at least one MCP client (Cursor or Claude Code).
 - Cancellation works.
-- `docs/features/ship-v1.md` open questions are resolved.
+- `docs/features/ship-v1/spec.md` open questions are resolved.
 
 ## Risks
 

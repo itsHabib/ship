@@ -5,7 +5,7 @@
 
 ## Why this doc exists
 
-We're designing Ship around the Cursor SDK as the implementation backend. This file is the ground truth for SDK behavior; the V1 spec ([docs/features/ship-v1.md](features/ship-v1.md)) cites it for runner-shape decisions.
+We're designing Ship around the Cursor SDK as the implementation backend. This file is the ground truth for SDK behavior; the V1 spec ([docs/features/ship-v1/spec.md](features/ship-v1/spec.md)) cites it for runner-shape decisions.
 
 ## Install + auth
 
@@ -440,7 +440,7 @@ SDK runs follow IDE/Cloud-Agents pricing, request pools, and Privacy Mode rules.
 
 ## What this means for Ship's design
 
-A short list of corrections / refinements to apply when we write `docs/features/ship-v1.md`:
+A short list of corrections / refinements to apply when we write `docs/features/ship-v1/spec.md`:
 
 1. **`CursorRunner` shape.** The provisional interface in the original design doc has `startRun / getRun / streamRun / waitRun / cancelRun / followUp`. Map onto SDK: `Agent.create + agent.send` (start), `Agent.getRun` (get), `run.stream()` (stream), `run.wait()` (wait), `run.cancel()` (cancel), `agent.send` again on the same agent (follow-up). The `followUp` primitive is just "another `send` on the same agent" — don't model it separately.
 
@@ -508,7 +508,7 @@ First end-to-end spike. Local runtime, `composer-2`, prompt: "List the top-level
 
 ### Implications for Ship V1
 
-Updating these in `docs/features/ship-v1.md`:
+Updating these in `docs/features/ship-v1/spec.md`:
 
 - **Open Q1 (default model):** lean toward `composer-2` for determinism in V1. `default` (Auto) is fine for users who don't care.
 - **Open Q5 (structured summary parsing):** dropped from the critical path. Use `RunResult.result` directly as `summary.md`. The implementation prompt template can still ask for structured fields, but Ship doesn't need to parse them — they live inside `result` for humans.

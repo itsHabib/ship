@@ -1,13 +1,13 @@
 # Ship
 
-A repo-native dev-workflow MCP toolkit. **Pre-implementation** as of 2026-05-06 — Phase 0 (Cursor SDK spike) and Phase 1 (monorepo scaffold) done; no package code yet. See [docs/plan.md](docs/plan.md) for what's next.
+A repo-native dev-workflow MCP toolkit. **Pre-implementation** as of 2026-05-06 — Phase 0 (Cursor SDK spike) and Phase 1 (monorepo scaffold) done; no package code yet. See [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) for what's next.
 
 ## Read first
 
 In order:
 
-1. [docs/features/ship-v1.md](docs/features/ship-v1.md) — V1 task doc, authoritative scope.
-2. [docs/plan.md](docs/plan.md) — execution plan, in order, with checkboxes per phase.
+1. [docs/features/ship-v1/spec.md](docs/features/ship-v1/spec.md) — V1 spec, authoritative scope.
+2. [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) — execution plan, in order, with checkboxes per phase.
 3. [docs/cursor-sdk-typescript.md](docs/cursor-sdk-typescript.md) — locally cached `@cursor/sdk` reference; source of truth for the runner shape.
 
 ## Develop
