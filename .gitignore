@@ -10,7 +10,7 @@ build/
 # State / runtime
 .ship/
 
-# Spike (throwaway — see PLAN.md Phase 0)
+# Spike (throwaway — see docs/plan.md Phase 0)
 spike/
 
 # Personal background design notes — kept on disk, not in the repo

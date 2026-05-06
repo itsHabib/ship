@@ -1,6 +1,6 @@
 # Plan
 
-Execution plan for getting Ship V1 shipped. Companion to [docs/features/ship-v1.md](docs/features/ship-v1.md), which is the design spec — this file is "in what order, with what acceptance criteria, with what's needed from you at each step."
+Execution plan for getting Ship V1 shipped. Companion to [features/ship-v1.md](features/ship-v1.md), which is the design spec — this file is "in what order, with what acceptance criteria, with what's needed from you at each step."
 
 Mark phases done by checking boxes. Don't start a phase before its predecessor is done.
 
@@ -8,14 +8,14 @@ Mark phases done by checking boxes. Don't start a phase before its predecessor i
 
 ## Phase 0 — SDK spike ✅ (done 2026-05-06)
 
-**Goal:** Verify `@cursor/sdk` behaves the way [docs/cursor-sdk-typescript.md](docs/cursor-sdk-typescript.md) claims, before we scaffold around assumptions.
+**Goal:** Verify `@cursor/sdk` behaves the way [cursor-sdk-typescript.md](cursor-sdk-typescript.md) claims, before we scaffold around assumptions.
 
 - [x] Write `spike/{package.json, tsconfig.json, local-run.ts, README.md}`.
 - [x] Write root `.gitignore`.
 - [x] `cd spike && pnpm install`.
 - [x] `$env:CURSOR_API_KEY = "..."`.
 - [x] `pnpm start` from `spike/`. First run: 119 events, 67s, `composer-2`, completed cleanly.
-- [x] Append findings to [docs/cursor-sdk-typescript.md § Spike findings](docs/cursor-sdk-typescript.md#spike-findings-run-1-2026-05-06).
+- [x] Append findings to [cursor-sdk-typescript.md § Spike findings](cursor-sdk-typescript.md#spike-findings-run-1-2026-05-06).
 - [ ] (Followup, not blocking) Test cancellation via SIGINT — the first run completed naturally so the abort path is unexercised.
 
 **Resolved decisions:**
