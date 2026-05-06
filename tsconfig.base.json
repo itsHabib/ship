@@ -20,10 +20,6 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
 
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "composite": true,
-    "incremental": true
+    "noEmit": true
   }
 }
