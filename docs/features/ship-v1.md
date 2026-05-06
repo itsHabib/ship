@@ -27,7 +27,7 @@ V1 explicitly does not include any of:
 - PR opening, comment management, review cycles, CI repair, merge readiness — V2.
 - Cloud Cursor runtime — V2 at earliest. Local-only.
 - Recipes, the recipe runner, recipe MCP tools — V2 at earliest.
-- The communication-layer primitives from `docs/ship-agent-communication-layer.pdf` (claims, decisions, handoffs, capability registry, observe/publish/route) — V2/V3.
+- Communication-layer primitives (claims, decisions, handoffs, capability registry, observe/publish/route) — V2/V3.
 - Dashboard or any web UI — out of scope, possibly never.
 - Cross-repo coordination, multi-tenant features, hosted service — out of scope.
 - Doc generation (`create_task_doc`) and doc review (`review_task_doc`) — V2.
@@ -174,8 +174,6 @@ ship/
   Taskfile.yml                # task lint / task test / task check, like tower
   CLAUDE.md
   docs/
-    cursor-dev-workflow-mcp-design (1).md
-    ship-agent-communication-layer.pdf
     cursor-sdk-typescript.md
     features/
       ship-v1.md             # this file

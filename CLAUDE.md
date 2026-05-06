@@ -9,8 +9,6 @@ In order:
 1. [docs/features/ship-v1.md](docs/features/ship-v1.md) — V1 task doc, authoritative scope.
 2. [PLAN.md](PLAN.md) — execution plan, in order, with checkboxes per phase.
 3. [docs/cursor-sdk-typescript.md](docs/cursor-sdk-typescript.md) — locally cached `@cursor/sdk` reference; source of truth for the runner shape.
-4. [docs/cursor-dev-workflow-mcp-design (1).md](<docs/cursor-dev-workflow-mcp-design (1).md>) — original (broader) design doc; some sections superseded by ship-v1.md.
-5. [docs/ship-agent-communication-layer.pdf](docs/ship-agent-communication-layer.pdf) — longer-term comm-layer thesis (V2/V3).
 
 ## Develop
 

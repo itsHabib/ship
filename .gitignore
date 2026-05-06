@@ -13,6 +13,10 @@ build/
 # Spike (throwaway — see PLAN.md Phase 0)
 spike/
 
+# Personal background design notes — kept on disk, not in the repo
+docs/cursor-dev-workflow-mcp-design (1).md
+docs/ship-agent-communication-layer.pdf
+
 # Editor / OS
 .DS_Store
 Thumbs.db

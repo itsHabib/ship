@@ -5,7 +5,7 @@
 
 ## Why this doc exists
 
-We're designing Ship around the Cursor SDK as the implementation backend. The original Shipyard design doc was written without firsthand SDK experience, so the `CursorRunner` interface in §11 of `cursor-dev-workflow-mcp-design (1).md` is **provisional**. This file is the ground truth; any conflict between the two is resolved in favor of this file.
+We're designing Ship around the Cursor SDK as the implementation backend. This file is the ground truth for SDK behavior; the V1 spec ([docs/features/ship-v1.md](features/ship-v1.md)) cites it for runner-shape decisions.
 
 ## Install + auth
 
