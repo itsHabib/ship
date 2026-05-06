@@ -200,6 +200,26 @@ describe("getWorkflowRunInputSchema", () => {
     ).toBe(false);
   });
 
+  test("rejects ULID body whose first char is outside 0-7 (non-canonical ULID)", () => {
+    // 8 onward is impossible for a real ULID — the first base32 char only
+    // encodes 3 bits of the 48-bit timestamp.
+    expect(
+      getWorkflowRunInputSchema.safeParse({ workflowRunId: "wf_8ARZ3NDEKTSV4RRFFQ69G5FAV" })
+        .success,
+    ).toBe(false);
+    expect(
+      getWorkflowRunInputSchema.safeParse({ workflowRunId: "wf_ZARZ3NDEKTSV4RRFFQ69G5FAV" })
+        .success,
+    ).toBe(false);
+  });
+
+  test("accepts ULID body whose first char is each of 0-7", () => {
+    for (const first of ["0", "1", "2", "3", "4", "5", "6", "7"]) {
+      const id = `wf_${first}1ARZ3NDEKTSV4RRFFQ69G5FAV`;
+      expect(getWorkflowRunInputSchema.safeParse({ workflowRunId: id }).success).toBe(true);
+    }
+  });
+
   test("rejects unknown keys", () => {
     expect(getWorkflowRunInputSchema.safeParse({ workflowRunId: WF_ID, extra: 1 }).success).toBe(
       false,

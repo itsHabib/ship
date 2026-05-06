@@ -29,12 +29,19 @@ import {
 import { z } from "zod";
 
 /**
- * Format check for `wf_<ulid>` IDs at the MCP boundary. The ULID body is
- * 26 chars of Crockford base32 (`[0-9A-HJKMNP-TV-Z]`). `core` and `store`
- * trust their own IDs and do not re-check this — the boundary catches
- * malformed external input.
+ * Format check for `wf_<ulid>` IDs at the MCP boundary.
+ *
+ * A canonical ULID is 26 chars of Crockford base32 (`[0-9A-HJKMNP-TV-Z]`),
+ * but the first char only encodes the top 3 bits of the 48-bit timestamp,
+ * so it must be `0-7` — a leading `8-Z` is impossible for a real ULID.
+ * Tightening the pattern means malformed inputs like `wf_Z...` fail the
+ * boundary check instead of being passed through to `core` / `store`,
+ * which would have to translate them into a "not found" later anyway.
+ *
+ * `core` and `store` trust the IDs they themselves generate and do not
+ * re-check this; the boundary catches malformed external input.
  */
-const WORKFLOW_RUN_ID_PATTERN = /^wf_[0-9A-HJKMNP-TV-Z]{26}$/;
+const WORKFLOW_RUN_ID_PATTERN = /^wf_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const workflowRunIdSchema = z.string().regex(WORKFLOW_RUN_ID_PATTERN);
 
 // =====================================================================
