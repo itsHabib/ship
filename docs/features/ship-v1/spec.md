@@ -17,7 +17,7 @@ The user-facing verb is one tool: `ship` a task doc.
 
 - Take an approved task doc in a registered Tower repo and produce real, reviewable changes in a Tower worktree.
 - Persist enough state that Ship can answer "what happened?" durably, after a restart, without the agent's stream still being held in memory.
-- Establish the package boundaries (`shared`, `store`, `tower-adapter`, `cursor-runner`, `core`, `mcp-server`, `cli`) so V2 phases attach without restructuring.
+- Establish the package boundaries (`workflow`, `mcp`, `store`, `tower-adapter`, `cursor-runner`, `core`, `mcp-server`, `cli`) so V2 phases attach without restructuring.
 - Validate the Cursor SDK assumptions captured in `docs/cursor-sdk-typescript.md` against real behavior.
 
 ## Non-goals
@@ -180,7 +180,8 @@ ship/
         spec.md              # this file
         plan.md              # execution plan (companion)
   packages/
-    shared/                  # Zod schemas + types — no dependencies
+    workflow/                # Workflow entities + state machine + ID factories. No @ship/* deps.
+    mcp/                     # MCP tool I/O schemas. Depends on @ship/workflow.
     store/                   # Drizzle + better-sqlite3 + migrations
     tower-adapter/           # MCP client to Tower
     cursor-runner/           # CursorRunner interface + @cursor/sdk impl
@@ -192,9 +193,12 @@ ship/
 Dependency direction (strict, no cycles):
 
 ```
-shared → store
-shared → tower-adapter
-shared → cursor-runner
+workflow → mcp
+workflow → store
+workflow → tower-adapter
+workflow → cursor-runner
+workflow, mcp → core
+workflow, mcp → mcp-server
 store, tower-adapter, cursor-runner → core
 core → mcp-server
 core → cli
@@ -204,17 +208,19 @@ core → cli
 
 ### Component responsibilities
 
-**`shared`.** Zod schemas + inferred types for `WorkflowRun`, `Phase`, `CursorRunRef`, `WorkflowStatus`, `PhaseStatus`, `WorkflowPolicy`, MCP tool inputs/outputs. Pure types and validators; zero side effects. This package never imports anything except `zod`.
+**`workflow`.** Zod schemas + inferred types for `WorkflowRun`, `Phase`, `CursorRunRef`, `WorktreeRef`, `WorkflowStatus`, `PhaseStatus`, `WorkflowPolicy`, `ModelSelection`. Plus state-machine helpers (`canTransition`, `isTerminal`), `DEFAULT_WORKFLOW_POLICY`, and the three ULID-prefixed ID factories. Pure types and validators; zero side effects. No `@ship/*` deps. Runtime deps: `zod`, `ulid`. See [phases/02-type-system.md](phases/02-type-system.md).
+
+**`mcp`.** Zod schemas + inferred types for the four V1 MCP tool inputs and outputs (`shipInputSchema`, `shipOutputSchema`, `getWorkflowRunInput/OutputSchema`, etc.) plus the supporting `shipArtifactsSchema`. Embeds workflow entities by depending on `@ship/workflow` (workspace) for `WorkflowRun`, `WorktreeRef`, `CursorRunRef`, status enums, etc. Pure types; zero side effects. Runtime deps: `zod`, `@ship/workflow`. See [phases/02-type-system.md](phases/02-type-system.md).
 
 **`store`.** SQLite persistence. Exports `createStore({ dbPath })` returning a `Store` interface with typed methods (`createWorkflowRun`, `updateStatus`, `appendPhase`, `getRun`, `listRuns`, `cancelRun`). Owns migrations. Does not own filesystem artifact paths — those are core's concern.
 
-**`tower-adapter`.** Wraps an MCP stdio connection to Tower. Exports `TowerAdapter` interface: `getRepo(repo)`, `addWorktree({ repo, name, baseRef })`, `getWorktree({ repo, name })`, `removeWorktree({ repo, name })`. The two we actually use in V1 are `getRepo` and `addWorktree`. Wraps Tower's MCP types into Ship's domain types — Ship code never sees raw Tower MCP responses.
+**`tower-adapter`.** Wraps an MCP stdio connection to Tower. Exports `TowerAdapter` interface: `getRepo(repo)`, `addWorktree({ repo, name, baseRef })`, `getWorktree({ repo, name })`, `removeWorktree({ repo, name })`. The two we actually use in V1 are `getRepo` and `addWorktree`. Wraps Tower's MCP types into `@ship/workflow` types (`WorktreeRef`, etc.) — Ship code never sees raw Tower MCP responses.
 
 **`cursor-runner`.** Wraps `@cursor/sdk`, local runtime only. Exports the `CursorRunner` interface and a default implementation. A `FakeCursorRunner` is exported under `cursor-runner/test/fake.ts` for use by `core` tests. The package is the sole importer of `@cursor/sdk` in the monorepo.
 
 **`core`.** Workflow service. Exports `createShipService({ store, tower, cursor, fs, clock, config })` returning a `ShipService` with methods `ship(input)`, `getRun(id)`, `listRuns(filter)`, `cancelRun(id)`. Holds the state machine and the artifact-write logic. Depends on the `CursorRunner` interface, not on its implementation. Does not import the MCP server or CLI; both depend on it.
 
-**`mcp-server`.** Registers MCP tools (`ship`, `get_workflow_run`, `list_workflow_runs`, `cancel_workflow_run`) and an MCP resource (`ship://runs/{id}`). Tool handlers are thin: validate input with `shared` schema, call `ShipService` method, format output. Stdio only.
+**`mcp-server`.** Registers MCP tools (`ship`, `get_workflow_run`, `list_workflow_runs`, `cancel_workflow_run`) and an MCP resource (`ship://runs/{id}`). Tool handlers are thin: validate input with a `@ship/mcp` schema, call `ShipService` method, format output. Stdio only.
 
 **`cli`.** Commander-based binary. Subcommands `ship`, `status`, `list`, `cancel`. Same `ShipService` instance. The CLI's `ship` subcommand is what we use during the spike before the MCP server even works.
 
@@ -513,7 +519,7 @@ The summary at the end is what `summary.md` is extracted from. Ship looks for th
 
 ### Unit tests (Vitest)
 
-- `shared`: every Zod schema parses valid input and rejects invalid input. ULID format, status enum coverage, slug validation for worktree names.
+- `workflow` / `mcp`: every Zod schema parses valid input and rejects invalid input. ULID format, status enum coverage, slug validation for worktree names. Each package has its own test suite.
 - `store`: round-trip every entity. Migration runs cleanly on an empty DB. `cancelRun` is idempotent. `listRuns` filters and orders correctly.
 - `core` with fakes: state transitions, artifact path generation, prompt rendering with a sample task doc, error handling when Tower / Cursor / FS fails. The fake `CursorRunner` emits a scripted sequence of events including success and failure paths.
 - `mcp-server` with a fake `ShipService`: each tool handler validates input, calls the right method, formats output.
@@ -591,7 +597,7 @@ Once this doc is approved, work proceeds in order:
 
 1. **Spike.** `spike/local-run.ts` — verify SDK behavior. Output a short addendum to `docs/cursor-sdk-typescript.md`.
 2. **Scaffold.** Monorepo + tooling: `package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`, `.eslintrc.cjs`, `.prettierrc`, `.gitignore`, `Taskfile.yml`, CI workflow. No package code yet.
-3. **`packages/shared`.** Zod schemas + types. Tests.
+3. **`packages/workflow` + `packages/mcp`.** Zod schemas + types, split per the import-pattern analysis. Tests. See [phases/02-type-system.md](phases/02-type-system.md).
 4. **`packages/store`.** Drizzle schema, migrations, `Store` interface. Tests.
 5. **`packages/tower-adapter`.** MCP client. Tests against recorded transcript.
 6. **`packages/cursor-runner`.** `CursorRunner` interface + `@cursor/sdk` impl. `FakeCursorRunner` exported for downstream tests.

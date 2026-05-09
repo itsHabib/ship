@@ -2,13 +2,13 @@
 
 A repo-native dev-workflow MCP toolkit. **Pre-implementation** as of 2026-05-06 — Phase 0 (Cursor SDK spike) and Phase 1 (monorepo scaffold) done; no package code yet. See [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) for what's next.
 
-## Read first
+## Docs layout
 
-In order:
+- `docs/<topic>.md` — locally cached reference docs (external SDKs, protocols, specs).
+- `docs/features/<feature>/spec.md` — design spec for that feature.
+- `docs/features/<feature>/plan.md` — execution plan with phase checkboxes for that feature.
 
-1. [docs/features/ship-v1/spec.md](docs/features/ship-v1/spec.md) — V1 spec, authoritative scope.
-2. [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) — execution plan, in order, with checkboxes per phase.
-3. [docs/cursor-sdk-typescript.md](docs/cursor-sdk-typescript.md) — locally cached `@cursor/sdk` reference; source of truth for the runner shape.
+Start with the active feature's `spec.md`, then its `plan.md`. The plan tracks what's done and what's next.
 
 ## Develop
 
@@ -25,3 +25,17 @@ CI on `.github/workflows/ci.yml` runs the same `make check` matrix on ubuntu + w
 - `@cursor/sdk` owns coding-agent execution.
 - Ship owns workflow state, persistence, and the MCP surface above the other two.
 - inspired by lessons learned from ../orchestra ../cortex
+
+## Shipping Features
+Follow this general workflow for implementing a feature
+- implement said feature
+- create a branch if you haven't already
+- create a PR
+- request copilot as reviewer
+- comment "@codex review"
+- comment "@claude review"
+- ensure CI is green
+- ensure review comments are addressed
+  - it's ok to be opinionated, don't have to take all comments blindly
+- repeat the review cycle 3 times before reaching out
+- when ready to merge reach out

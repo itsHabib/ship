@@ -4,6 +4,8 @@ Execution plan for getting Ship V1 shipped. Companion to [spec.md](spec.md), whi
 
 Mark phases done by checking boxes. Don't start a phase before its predecessor is done.
 
+Phases that introduce real surface area get their own task doc under `phases/` (functional/non-functional req, tradeoffs, engineering decisions, API contracts, data model, validation plan, risks, open questions). The doc is reviewed before any implementation lands. Phase 0 and Phase 1 predate this convention; from Phase 2 forward each gets one.
+
 ---
 
 ## Phase 0 — SDK spike ✅ (done 2026-05-06)
@@ -49,16 +51,16 @@ Mark phases done by checking boxes. Don't start a phase before its predecessor i
 
 ---
 
-## Phase 2 — `packages/shared`
+## Phase 2 — V1 type system: `packages/workflow` + `packages/mcp` ✅ (done 2026-05-06)
 
-**Goal:** all V1 types + Zod schemas, no side effects, no other package deps.
+📄 [phases/02-type-system.md](phases/02-type-system.md) — task doc (functional/non-functional req, tradeoffs, decisions, API contract, validation plan, risks, open questions). Naming history: revisions 0–1 shipped under `packages/domain`; revision 2 renamed to `packages/contracts`; revision 3 split into `packages/workflow` (workflow entities, state machine, IDs) and `packages/mcp` (MCP tool I/O, depends on `@ship/workflow`).
 
-- [ ] `WorkflowStatus`, `PhaseStatus`, `PhaseKind`, `WorkflowRun`, `Phase`, `WorktreeRef`, `CursorRunRef`, `WorkflowPolicy`, MCP tool inputs/outputs.
-- [ ] Zod schemas + `z.infer` types.
-- [ ] ULID helpers (or a small adapter around `ulid`).
-- [ ] Vitest: every schema accepts valid input, rejects invalid input.
+**Goal:** all V1 types + Zod schemas, no side effects.
 
-**Done when:** `pnpm --filter shared test` is green and exports compile clean for downstream packages.
+- [x] Review and approve `phases/02-type-system.md`.
+- [x] Implement per the doc's "Implementation plan" section.
+
+**Validated:** `make check` passes from repo root (typecheck + lint + format:check + test). All tests pass; per-package `pnpm --filter @ship/workflow test` and `pnpm --filter @ship/mcp test` both exit 0 with their tests run (per-package `vitest.config.ts` in each).
 
 ---
 
