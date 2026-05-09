@@ -3,11 +3,13 @@
 Status: design draft. Not yet implemented.
 Owner: itsHabib
 Date: 2026-05-05
-Last updated: 2026-05-05
+Last updated: 2026-05-09
+
+> **Architectural framing.** Ship is one layer of the [north-star pipeline](../../north-star.md): driver agent → ship → tower (or other workspace provider) → gh → ... Ship's job is "drive an agent against a workspace + persist what happened." It does NOT manage worktrees, resolve repos, or assume any specific environment provider. The caller hands over a workspace ref Ship runs in.
 
 ## Summary
 
-Ship V1 is the smallest end-to-end Ship that proves the core thesis: a task doc plus a repo plus the Cursor SDK can produce real changes in a real Tower worktree, with persistent state Ship owns. Nothing more. No PR opening. No review cycles. No CI repair. Those are V2+ phases that compose onto V1 without retroactively redesigning it.
+Ship V1 is the smallest end-to-end Ship that proves the core thesis: a task doc plus a workspace plus the Cursor SDK can produce real, reviewable changes, with persistent state Ship owns. Nothing more. No PR opening. No review cycles. No CI repair. Those are V2+ phases that compose onto V1 without retroactively redesigning it.
 
 The riskiest assumption in the entire Ship project is "the `@cursor/sdk` local runtime works the way the docs claim, and we can drive a useful end-to-end implementation run from a TypeScript host." V1 is the smallest experiment that answers that. Once V1 ships, the next phases are mechanical compositions on top: open a PR (`gh` shell-out), launch a review run (another `Agent.create + send`), fix CI (same shape, different prompt). They are not part of V1.
 
@@ -15,10 +17,12 @@ The user-facing verb is one tool: `ship` a task doc.
 
 ## Goals
 
-- Take an approved task doc in a registered Tower repo and produce real, reviewable changes in a Tower worktree.
+- Take an approved task doc plus a caller-provided workspace and produce real, reviewable changes inside that workspace.
 - Persist enough state that Ship can answer "what happened?" durably, after a restart, without the agent's stream still being held in memory.
-- Establish the package boundaries (`workflow`, `mcp`, `store`, `tower-adapter`, `cursor-runner`, `core`, `mcp-server`, `cli`) so V2 phases attach without restructuring.
+- Establish the package boundaries (`workflow`, `mcp`, `store`, `cursor-runner`, `core`, `mcp-server`, `cli`, `test-harness`) so V2 phases attach without restructuring.
 - Validate the Cursor SDK assumptions captured in `docs/cursor-sdk-typescript.md` against real behavior.
+
+**Workspace agnosticism.** Ship does not create, resolve, or destroy workspaces. The caller (a human running the CLI, a driver agent calling the MCP tool, a future cloud orchestrator) hands over a workspace ref — for V1 a local directory + optional metadata; for V2+ a cloud Cursor agent ref. Tower is one of N possible workspace providers; Ship has no hard dependency on it.
 
 ## Non-goals
 
@@ -27,7 +31,7 @@ V1 explicitly does not include any of:
 - PR opening, comment management, review cycles, CI repair, merge readiness — V2.
 - Cloud Cursor runtime — V2 at earliest. Local-only.
 - Recipes, the recipe runner, recipe MCP tools — V2 at earliest.
-- Communication-layer primitives (claims, decisions, handoffs, capability registry, observe/publish/route) — V2/V3.
+- Communication-layer primitives (claims, decisions, handoffs, capability registry, observe/publish/route) — out of scope. Lives in a separate sibling project, not on Ship's roadmap. Ship is one layer of the broader pipeline; the comm layer is its own.
 - Dashboard or any web UI — out of scope, possibly never.
 - Cross-repo coordination, multi-tenant features, hosted service — out of scope.
 - Doc generation (`create_task_doc`) and doc review (`review_task_doc`) — V2.
@@ -40,31 +44,32 @@ V1 must support these flows.
 ### F1 — Ship a task doc
 
 Given:
-- A repo registered with Tower.
-- A task doc at a path inside that repo.
+- A workspace the caller has already created (for V1: a local directory; typically a git worktree, but Ship doesn't enforce that).
+- A task doc at a path resolvable from inside that workspace.
 
-The user invokes (via MCP or CLI) `ship` with `repo` and `docPath`. Ship:
+The user invokes (via MCP or CLI) `ship` with `workdir`, `docPath`, and optional metadata (`repo`, `branch`, `baseRef` — pure labels, not actionable). Ship:
 
-1. Validates that the repo is known to Tower and that `docPath` resolves to a file inside the repo's root.
-2. Creates a new `WorkflowRun` row with status `pending`.
-3. Asks Tower to create a worktree off `main` (worktree name derived from the doc slug; configurable via input).
-4. Reads the task doc content from the worktree path (worktrees see the same docs once created).
-5. Renders the implementation prompt (template below) and persists it as `prompt.md`.
-6. Calls `Agent.create({ local: { cwd: worktree.path }, model, mcpServers? })`, then `agent.send(prompt)`.
-7. Streams `SDKMessage` events to `events.ndjson` as they arrive.
-8. On run completion, persists the structured `RunResult` as `result.json`.
-9. Updates the `WorkflowRun` status to `succeeded`, `failed`, or `cancelled` based on the SDK result.
-10. Returns the workflow run summary (id, status, worktree info, summary of changes, paths to artifacts).
+1. Validates that `workdir` exists and `docPath` resolves to a readable file inside it. (Symlink escape rejection still applies.)
+2. Creates a new `WorkflowRun` row with status `pending`, recording the workspace metadata the caller provided.
+3. Reads the task doc content from `workdir/docPath`.
+4. Renders the implementation prompt (template below) and persists it as `prompt.md`.
+5. Calls `Agent.create({ local: { cwd: workdir }, model, mcpServers? })`, then `agent.send(prompt)`.
+6. Streams `SDKMessage` events to `events.ndjson` as they arrive.
+7. On run completion, persists the structured `RunResult` as `result.json`.
+8. Updates the `WorkflowRun` status to `succeeded`, `failed`, or `cancelled` based on the SDK result.
+9. Returns the workflow run summary (id, status, workspace metadata, summary of changes, paths to artifacts).
 
 The MCP tool returns once the run is complete. (Streaming responses are V2.)
 
+**Ship does not create the workspace.** The caller is expected to set up the workdir however they want — `git worktree add`, Tower, `git clone`, an existing checkout, a Cursor cloud agent (V2+). Ship just runs against it.
+
 ### F2 — Inspect a workflow run
 
-Given a workflow run ID, return durable state: status, repo, doc path, worktree info, started/ended times, the Cursor run summary, and paths to `prompt.md`, `events.ndjson`, `result.json`.
+Given a workflow run ID, return durable state: status, workspace metadata, doc path, started/ended times, the Cursor run summary, and paths to `prompt.md`, `events.ndjson`, `result.json`.
 
 ### F3 — List workflow runs
 
-Filter by repo and status. Default: most-recent-first, limit 50.
+Filter by repo (the caller-supplied label) and status. Default: most-recent-first, limit 50.
 
 ### F4 — Cancel a running workflow
 
@@ -72,13 +77,14 @@ Given a workflow run ID for an in-flight run, cancel the Cursor run via `run.can
 
 ### F5 — Cleanup is explicit, not automatic
 
-V1 does NOT delete the worktree on completion. The worktree, the branch, and the changes remain for the user to inspect, push, and PR manually. (V2 will add `gh pr create` as its own composable phase; until then this is the user's job.)
+V1 does NOT touch the workspace on completion. The caller owns workspace lifecycle — they created it; they decide when (and whether) to remove it.
 
 ## Non-functional requirements
 
 - **Persistence is durable.** Restarting Ship between steps must not lose state. Every status transition is committed before returning.
-- **Local-only.** No network calls except to the Cursor API and (transitively, via Tower) to git remotes.
-- **No autonomous destructive actions.** Ship never deletes worktrees, force-pushes, or merges in V1.
+- **Local-only.** No network calls except to the Cursor API. (V1 does not reach out to git remotes; whatever workspace the caller hands over is what Ship runs against.)
+- **No autonomous destructive actions.** Ship never deletes workspaces, force-pushes, or merges in V1. Workspace lifecycle is the caller's concern.
+- **Workspace-agnostic.** Ship has no hard dependency on Tower, git, or any specific workspace provider. The workdir is an opaque path from Ship's perspective; metadata fields (`repo`, `branch`, `baseRef`) are caller-supplied labels Ship records but does not act on.
 - **Strict typing.** TypeScript strict + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`. Zero `any`.
 - **Strict lint.** ESLint + `@typescript-eslint/strict-type-checked` + `stylistic-type-checked`, complexity / max-lines / max-depth bounded to mirror the Go bar in `../tower/.golangci.yml`. CI fails on any lint or format issue.
 - **Deterministic state transitions.** The state machine is in code, not in a prompt. The LLM is allowed to produce code; it is not allowed to decide whether the workflow is "done."
@@ -90,11 +96,11 @@ V1 does NOT delete the worktree on completion. The worktree, the branch, and the
 | Decision | Chose | Alternative | Why |
 |---|---|---|---|
 | Data model | `WorkflowRun` row + auxiliary event NDJSON | Event-sourced ledger as the spine | Row is simpler to ship, easier to debug, and matches V1's single-actor reality. Migration to event-sourced is a V2 problem if we hit the multi-agent-publishing case. Documented in `CLAUDE.md`. |
-| Runtime | Local Cursor only | Local + cloud from day one | Cloud adds repo-auth, polling, reconnect, and lifecycle complexity. Local-first matches the Tower worktree substrate exactly, and we have zero firsthand SDK experience to draw on for cloud. |
+| Runtime | Local Cursor only | Local + cloud from day one | Cloud adds repo-auth, polling, reconnect, and lifecycle complexity. Local-first lets us validate one substrate end-to-end with zero firsthand SDK experience. The `CursorRunner` interface is substrate-agnostic from day one — cloud slots in as a second implementation in V2 without reshaping the seam. |
 | PR opening | Out of scope for V1 | Wire `gh pr create` as the final V1 step | Keeps the scope honest. PR opening is a 30-line addition once V1 is real. Including it here makes V1 a multi-phase workflow before we've validated even one phase. |
 | State location | Global SQLite + per-run filesystem dir | Per-repo `.ship/` mirroring `.git/` | One DB to query is simpler. Per-run files (prompt, events, result) live under a global runs dir keyed by run ID. We revisit if cross-repo coordination becomes a thing. |
 | MCP tool surface | Three tools (`ship`, `get_workflow_run`, `list_workflow_runs`) | Six per markdown design §16.2 | Three matches V1's actual surface. The other three (`fix_ci`, `run_review_cycle`, `next_action`) require phases that don't exist yet. |
-| Worktree cleanup | Never automatic | Auto-remove on success | The user wants to inspect changes and push manually. Auto-cleanup would also conflict with later PR/review phases that depend on the worktree still existing. |
+| Workspace cleanup | Caller-owned (Ship never touches) | Ship-managed lifecycle | Ship doesn't create the workspace; symmetrically it shouldn't destroy it. Auto-cleanup would also conflict with later PR/review phases that depend on the workspace still existing, and presupposes a workspace shape Ship doesn't actually understand. |
 | Implementation prompt | Template + task-doc body | Have Cursor draft its own implementation strategy | The prompt is the contract between Ship and the agent. Keep it explicit and version-controlled. |
 | Configuration | YAML at `~/.config/ship/config.yaml` + env override | TOML / JSON / code | YAML matches the existing design doc and Habib's other projects. |
 
@@ -118,14 +124,16 @@ Why an interface at all (vs. a concrete class only):
 
 The interface is designed against `docs/cursor-sdk-typescript.md`, not the Shipyard design doc's provisional shape.
 
-### ED-3 — Tower adapter calls the Tower MCP server, not the CLI
+### ED-3 — Workspace agnosticism (no Tower coupling)
 
-Tower already exposes an MCP server. Ship's `tower-adapter` connects to it as an MCP client (over stdio). Reasons:
-- Single source of truth for worktree state — no parallel parsing.
-- Tower's MCP types are the contract; Ship subscribes to them.
-- If Tower changes CLI flags, Ship doesn't break.
+Ship has no hard dependency on Tower, git, or any specific workspace provider. The caller hands over a workdir; Ship runs the agent in it. Tower is one of N possible providers (the user's preferred one, or a driver agent's choice), reachable via Tower's own MCP server when the caller — not Ship — wants to use it.
 
-Fallback: if connecting to Tower MCP fails at startup, Ship surfaces a configuration error and exits. V1 does not implement a CLI fallback.
+Why no `tower-adapter` in Ship:
+- Coupling Ship to Tower forecloses cloud, hand-rolled, or third-party workspace setups.
+- Ship's value is "agent orchestrator + persistent state," not "workspace manager." Keeping it sharp keeps Phase 5+ small.
+- The driver agent in [the north-star architecture](../../north-star.md) composes Ship's MCP and Tower's MCP separately; Ship never calls Tower.
+
+What Ship records about the workspace: an absolute `workdir` path plus optional metadata (`repo`, `branch`, `baseRef`) the caller may provide for its own `listRuns` filtering. Ship treats the metadata as opaque labels.
 
 ### ED-4 — Persistence layout
 
@@ -187,8 +195,8 @@ ship/
   packages/
     workflow/                # Workflow entities + state machine + ID factories. No @ship/* deps.
     mcp/                     # MCP tool I/O schemas. Depends on @ship/workflow.
-    store/                   # Drizzle + better-sqlite3 + migrations
-    tower-adapter/           # MCP client to Tower
+    store/                   # better-sqlite3 + hand-written SQL + migrations
+    test-harness/            # Dev-only: Harness + scenarios + fixtures for cross-package tests.
     cursor-runner/           # CursorRunner interface + @cursor/sdk impl
     core/                    # workflow service: ship(), getRun(), listRuns(), cancel()
     mcp-server/              # exposes core via MCP tools
@@ -200,13 +208,13 @@ Dependency direction (strict, no cycles):
 ```
 workflow → mcp
 workflow → store
-workflow → tower-adapter
 workflow → cursor-runner
 workflow, mcp → core
 workflow, mcp → mcp-server
-store, tower-adapter, cursor-runner → core
+store, cursor-runner → core
 core → mcp-server
 core → cli
+test-harness → store, workflow (devDependencies of consumers only)
 ```
 
 `mcp-server` and `cli` never import each other. `core` never imports them.
@@ -219,11 +227,11 @@ core → cli
 
 **`store`.** SQLite persistence. Exports `createStore({ dbPath })` returning a `Store` interface with typed methods (`createWorkflowRun`, `updateStatus`, `appendPhase`, `getRun`, `listRuns`, `cancelRun`). Owns migrations. Does not own filesystem artifact paths — those are core's concern.
 
-**`tower-adapter`.** Wraps an MCP stdio connection to Tower. Exports `TowerAdapter` interface: `getRepo(repo)`, `addWorktree({ repo, name, baseRef })`, `getWorktree({ repo, name })`, `removeWorktree({ repo, name })`. The two we actually use in V1 are `getRepo` and `addWorktree`. Wraps Tower's MCP types into `@ship/workflow` types (`WorktreeRef`, etc.) — Ship code never sees raw Tower MCP responses.
+**`test-harness`.** Dev-only. Exports `createHarness({ dbPath?, clockStart?, clockStepMs? })`, a deterministic `TestClock`, and reusable fixtures + per-input builders. Hosts the cross-package scenario suite under `scenarios/`. Consumed via `devDependencies` from packages that exercise multi-component flows; never a runtime dep. See [phases/04-qe-sdet.md](phases/04-qe-sdet.md).
 
-**`cursor-runner`.** Wraps `@cursor/sdk`, local runtime only. Exports the `CursorRunner` interface and a default implementation. A `FakeCursorRunner` is exported under `cursor-runner/test/fake.ts` for use by `core` tests. The package is the sole importer of `@cursor/sdk` in the monorepo.
+**`cursor-runner`.** Wraps `@cursor/sdk`. Exports a substrate-agnostic `CursorRunner` interface; V1 ships a local-runtime implementation, V2 adds a cloud implementation behind the same interface. A `FakeCursorRunner` is exported for use by `core` and `test-harness` tests. The package is the sole importer of `@cursor/sdk` in the monorepo.
 
-**`core`.** Workflow service. Exports `createShipService({ store, tower, cursor, fs, clock, config })` returning a `ShipService` with methods `ship(input)`, `getRun(id)`, `listRuns(filter)`, `cancelRun(id)`. Holds the state machine and the artifact-write logic. Depends on the `CursorRunner` interface, not on its implementation. Does not import the MCP server or CLI; both depend on it.
+**`core`.** Workflow service. Exports `createShipService({ store, cursor, fs, clock, config })` returning a `ShipService` with methods `ship(input)`, `getRun(id)`, `listRuns(filter)`, `cancelRun(id)`. Holds the state machine and the artifact-write logic. Depends on the `CursorRunner` interface, not on its implementation. Does not import the MCP server or CLI; both depend on it. Has no Tower / workspace-manager dependency — `ship(input)` accepts a workdir path the caller supplies.
 
 **`mcp-server`.** Registers MCP tools (`ship`, `get_workflow_run`, `list_workflow_runs`, `cancel_workflow_run`) and an MCP resource (`ship://runs/{id}`). Tool handlers are thin: validate input with a `@ship/mcp` schema, call `ShipService` method, format output. Stdio only.
 
@@ -236,20 +244,22 @@ core → cli
 ```typescript
 // ship
 type ShipInput = {
-  repo: string;            // Tower-registered repo name
-  docPath: string;         // path relative to repo root
-  worktreeName?: string;   // default: derived from doc slug
-  baseRef?: string;        // default: main
+  workdir: string;         // absolute path to the workspace the caller created
+  docPath: string;         // path to task doc, resolved relative to workdir
+  // Optional metadata; pure labels Ship records but does not act on.
+  repo?: string;           // free-form label for listRuns filtering
+  branch?: string;         // git branch the workdir is on, if known
+  baseRef?: string;        // git ref the workdir was branched from, if known
   model?: string;          // default: from config
 };
 
 type ShipOutput = {
   workflowRunId: string;
   status: WorkflowStatus;
-  worktree: WorktreeRef;
+  worktree: WorktreeRef;   // mirrors ShipInput's workspace metadata as recorded
   cursorRun: CursorRunSummary;
   artifacts: { promptPath: string; eventsPath: string; resultPath: string };
-  summary?: string;       // structured summary extracted from result
+  summary?: string;        // structured summary extracted from result
 };
 
 // get_workflow_run
@@ -272,11 +282,13 @@ type CancelWorkflowRunOutput = { workflowRunId: string; status: WorkflowStatus }
 ### CLI
 
 ```bash
-ship ship <docPath> [--repo <name>] [--worktree <name>] [--base <ref>] [--model <id>]
+ship ship <docPath> --workdir <path> [--repo <label>] [--branch <name>] [--base <ref>] [--model <id>]
 ship status <run_id>
-ship list [--repo <name>] [--status <s,...>] [--limit <n>]
+ship list [--repo <label>] [--status <s,...>] [--limit <n>]
 ship cancel <run_id>
 ```
+
+`--workdir` defaults to the current working directory when omitted (so `cd <worktree> && ship ship docs/foo.md` works).
 
 Exit codes: 0 success, 1 user error, 2 internal error.
 
@@ -291,7 +303,7 @@ export interface CursorRunner {
 }
 
 export interface CursorRunInput {
-  cwd: string;                                 // worktree path
+  cwd: string;                                 // workdir path the caller supplied
   prompt: string;
   model: ModelSelection;
   mcpServers?: Record<string, McpServerConfig>;
@@ -314,16 +326,6 @@ export interface CursorRunResult {
   model?: ModelSelection;
   branches?: Array<{ repoUrl: string; branch?: string; prUrl?: string }>;  // empty for local; populated for cloud (V2)
   errorMessage?: string;
-}
-```
-
-```typescript
-// tower-adapter/src/index.ts
-export interface TowerAdapter {
-  getRepo(name: string): Promise<TowerRepo | null>;
-  addWorktree(input: AddWorktreeInput): Promise<TowerWorktree>;
-  getWorktree(input: { repo: string; name: string }): Promise<TowerWorktree | null>;
-  removeWorktree(input: { repo: string; name: string }): Promise<void>;
 }
 ```
 
@@ -394,11 +396,14 @@ interface WorkflowRun {
 
 ```typescript
 interface WorktreeRef {
-  repo: string;
-  name: string;
-  branch: string;
+  // Required: the path Ship runs the agent inside.
   path: string;
-  baseRef: string;
+  // Optional caller-supplied metadata. Ship records but does not act on
+  // these. `repo` doubles as the listRuns filter key.
+  repo?: string;
+  name?: string;
+  branch?: string;
+  baseRef?: string;
 }
 
 interface CursorRunRef {
@@ -526,17 +531,17 @@ The summary at the end is what `summary.md` is extracted from. Ship looks for th
 
 - `workflow` / `mcp`: every Zod schema parses valid input and rejects invalid input. ULID format, status enum coverage, slug validation for worktree names. Each package has its own test suite.
 - `store`: round-trip every entity. Migration runs cleanly on an empty DB. `cancelRun` is idempotent. `listRuns` filters and orders correctly.
-- `core` with fakes: state transitions, artifact path generation, prompt rendering with a sample task doc, error handling when Tower / Cursor / FS fails. The fake `CursorRunner` emits a scripted sequence of events including success and failure paths.
+- `core` with fakes: state transitions, artifact path generation, prompt rendering with a sample task doc, error handling when Cursor / FS fails. The fake `CursorRunner` emits a scripted sequence of events including success and failure paths.
 - `mcp-server` with a fake `ShipService`: each tool handler validates input, calls the right method, formats output.
-- `tower-adapter` with a recorded MCP transcript: response parsing.
 - `cursor-runner`: prompt assembly, options mapping. The actual SDK is mocked.
+- `test-harness`: scenario suite covering cross-package lifecycles. See [phases/04-qe-sdet.md](phases/04-qe-sdet.md).
 
 ### Integration tests (gated, opt-in)
 
 Behind `SHIP_LIVE=1`:
 
-- A throwaway test repo with one tiny task doc ("add a `hello` function and a test for it"). Run the actual Ship `ship` flow end-to-end against a real Cursor SDK and a real Tower instance. Assert: worktree created, files changed, tests pass in the worktree, `result.json` populated, `summary.md` non-empty.
-- Cancellation: launch a long-running implementation, cancel via the API, assert the run terminates within 5 seconds and the worktree state matches the partial output.
+- A throwaway test repo with one tiny task doc ("add a `hello` function and a test for it"). The fixture lives at `e2e/fixtures/test-repo/`; the test creates a workdir for it (the user's choice — `git worktree`, plain `cp`, Tower if installed) and runs Ship against it with a real Cursor SDK. Assert: files changed in the workdir, tests pass there, `result.json` populated, `summary.md` non-empty.
+- Cancellation: launch a long-running implementation, cancel via the API, assert the run terminates within 5 seconds and the workdir state matches the partial output.
 
 ### Spike work (precedes coding)
 
@@ -561,7 +566,7 @@ The spike answers feed back into the `CursorRunner` implementation. The spike co
 
 V1 is "done" when:
 
-- `ship ship docs/features/hello.md --repo ship` (with a trivial hello-world task doc on Ship's own repo) produces a Tower worktree with the implementation, runs visible in `ship list`, and `ship status <id>` shows succeeded.
+- `ship ship docs/features/hello.md --workdir <some-worktree>` (with a trivial hello-world task doc) produces the implementation in that workdir, runs visible in `ship list`, and `ship status <id>` shows succeeded.
 - All unit tests pass on Linux + Windows CI.
 - `pnpm check` passes (typecheck + lint + format).
 - The four MCP tools work from at least one MCP client (Cursor or Claude Code).
@@ -573,8 +578,7 @@ V1 is "done" when:
 | Risk | Impact | Mitigation |
 |---|---|---|
 | `@cursor/sdk` doesn't behave as documented | Whole project blocked | Half-day spike before scaffolding `cursor-runner`; runner is behind an interface so we can swap implementations. |
-| Tower MCP integration is rougher than expected | Adapter rewrite | Tower is local and the MCP surface is documented; if needed, fall back to spawning `tower` CLI in V2. |
-| Local Cursor runtime can't see env vars / `.cursorrules` correctly inside a Tower worktree | Agent runs blind | Document `settingSources` precedence in `cursor-runner` README. The spike checks this. |
+| Local Cursor runtime can't see env vars / `.cursorrules` correctly inside the workdir | Agent runs blind | Document `settingSources` precedence in `cursor-runner` README. The spike checks this. |
 | Long-running runs without disconnection support | A Ship restart loses an in-flight run | V1 accepts this. Cloud runtime (V2) is what fixes durable runs. We document the limitation; the user re-`ship`s. |
 | Tool-call payloads churn between SDK versions | NDJSON archive becomes unparseable | We treat `args`/`result` as opaque; views are built from the agent's structured summary, not from tool call introspection. Documented in `docs/cursor-sdk-typescript.md`. |
 | Strict lint blocks the team | Slowdown if rules are wrong-shaped | Bake the config from day one and refactor when it bites. Tower's pattern: split big functions rather than adding suppressions. |
@@ -586,30 +590,29 @@ V1 is "done" when:
 These need answers before implementation begins. Default proposals are listed; the user can override.
 
 1. ~~**Default model.**~~ **Resolved (2026-05-06):** `composer-2`. Verified against `Cursor.models.list()` in spike #1 — alive, deterministic, behaves well on the trivial probe. `default` (Auto) is also available for "I don't care" users; expose as a config option but don't make it the V1 default.
-2. **Worktree base location.** Tower defaults to `<repo>/.worktrees/<name>`. Confirm we adopt the same.
+2. ~~**Worktree base location.**~~ **Removed (2026-05-09):** Ship is workspace-agnostic per ED-3; the caller picks the path.
 3. **Implementation timeout.** Proposed: 30 minutes default, configurable per-call. Aligns with what one feature-sized task doc tends to take.
 4. **MCP elicitation.** Cursor MCP supports elicitation. Should `ship` ask the user for confirmation before launching a run, or fire-and-forget? Proposed: fire-and-forget; the user already chose to call `ship`.
 5. ~~**Failure of the structured summary parser.**~~ **Resolved (2026-05-06):** dropped from the critical path. Spike #1 confirmed `RunResult.result` is the final assistant text directly — Ship reads it as `summary.md` with no parsing required. The implementation prompt template can still request structured fields for human readability inside the summary, but Ship doesn't extract them.
 6. **Resume support.** SDK has `Agent.resume`. Do we let the user attach a new `send()` to a previous workflow run? Proposed: not in V1. Each `ship` is a fresh agent. Resume is V2.
-7. **Concurrent runs on the same worktree.** What if two `ship` invocations target the same worktree name? Proposed: reject the second with a clear error. Concurrent runs require unique worktree names.
+7. **Concurrent runs on the same workdir.** What if two `ship` invocations target the same `workdir`? Proposed: allow (Ship doesn't own the workdir, can't enforce exclusivity), but document that the caller is responsible for not stepping on themselves. The `workflow_runs` table records every run regardless.
 8. **Where does the snapshot of the task doc live?** `runs/<id>/task-doc.md` — we copy the doc content at run start so historical runs are self-contained even if the doc later changes.
-9. **Cleanup CLI.** Should there be a `ship cleanup <run_id>` that removes the worktree and the `runs/<id>/` directory? Proposed: yes, but explicit only — no auto-cleanup. The user can also manually `rm` and let `ship list` show stale entries.
+9. **Cleanup CLI.** Should there be a `ship cleanup <run_id>` that removes the `runs/<id>/` artifacts directory? Proposed: yes, but explicit only — no auto-cleanup. Ship never touches the workdir itself (caller-owned). The user can also manually `rm` and let `ship list` show stale entries.
 10. **MCP server lifetime.** Long-running daemon vs spawned-per-call by the MCP client? Proposed: stdio per call (Cursor and Claude Code spawn the server), but `ShipService` is reentrant so a daemon mode is a future option.
 
 ## Implementation plan
 
-Once this doc is approved, work proceeds in order:
+See [plan.md](plan.md) for the canonical phase list (with checkboxes and per-phase task docs). Summary at this level:
 
-1. **Spike.** `spike/local-run.ts` — verify SDK behavior. Output a short addendum to `docs/cursor-sdk-typescript.md`.
-2. **Scaffold.** Monorepo + tooling: `package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`, `.eslintrc.cjs`, `.prettierrc`, `.gitignore`, `Taskfile.yml`, CI workflow. No package code yet.
-3. **`packages/workflow` + `packages/mcp`.** Zod schemas + types, split per the import-pattern analysis. Tests. See [phases/02-type-system.md](phases/02-type-system.md).
-4. **`packages/store`.** Drizzle schema, migrations, `Store` interface. Tests.
-5. **`packages/tower-adapter`.** MCP client. Tests against recorded transcript.
-6. **`packages/cursor-runner`.** `CursorRunner` interface + `@cursor/sdk` impl. `FakeCursorRunner` exported for downstream tests.
-7. **`packages/core`.** `ShipService`. Tests using fakes from #5 and #6.
-8. **`packages/cli`.** Commander binary. Smoke tests via the fake-runner-backed service.
-9. **`packages/mcp-server`.** MCP tools. Smoke tests via the fake-runner-backed service.
-10. **Integration test.** Trivial task doc, real SDK, real Tower. Gated behind `SHIP_LIVE=1`.
-11. **README + dogfood.** First real task doc shipped through Ship is a Ship feature.
+1. **Spike** (Phase 0, done) — verify SDK behavior; addendum at `docs/cursor-sdk-typescript.md`.
+2. **Scaffold** (Phase 1, done) — monorepo + tooling.
+3. **`packages/workflow` + `packages/mcp`** (Phase 2, done) — Zod schemas + types. See [phases/02-type-system.md](phases/02-type-system.md).
+4. **`packages/store`** (Phase 3, done) — `better-sqlite3` + hand-written SQL + migrations + `Store` interface. See [phases/03-store.md](phases/03-store.md).
+5. **`packages/test-harness`** (Phase 4, done) — Harness + scenario suite + per-package coverage gates + e2e skeleton. See [phases/04-qe-sdet.md](phases/04-qe-sdet.md).
+6. **`packages/cursor-runner`** (Phase 5) — substrate-agnostic `CursorRunner` interface + local `@cursor/sdk` impl. `FakeCursorRunner` exported.
+7. **`packages/core`** (Phase 6) — `ShipService` against fakes from #5.
+8. **`packages/cli`** (Phase 7) — Commander binary.
+9. **`packages/mcp-server`** (Phase 8) — MCP tools.
+10. **Live integration test + dogfood** (Phase 9) — real Cursor SDK against a real workdir.
 
-Each step lands as its own PR (or `ship` workflow run, once we can dogfood) with passing CI.
+No `tower-adapter` phase. The driver agent (or human) calls Tower's MCP separately when they want a Tower-managed workspace. See [north-star.md](../../north-star.md).

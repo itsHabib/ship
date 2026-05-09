@@ -90,27 +90,9 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 5 — `packages/tower-adapter`
+## Phase 5 — `packages/cursor-runner`
 
-**Goal:** Tower MCP client via stdio.
-
-- [ ] MCP TS SDK v1.x as client.
-- [ ] `TowerAdapter` interface: `getRepo`, `addWorktree`, `getWorktree`, `removeWorktree`.
-- [ ] Map Tower MCP responses into Ship's domain types (no leaks).
-- [ ] Vitest: against a recorded transcript or a local fake Tower MCP server.
-- [ ] `FakeTowerAdapter` exported for downstream tests; harness extended in `@ship/test-harness`.
-
-**Decisions you'll need to weigh in on:**
-- Does Tower MCP currently expose JSON output for what we need? (Open question #1 in the original design doc.)
-- Worktree base path — adopt Tower's default (`<repo>/.worktrees/<name>`)?
-
-**Done when:** `pnpm --filter tower-adapter test` green; integration test against your real local Tower passes manually.
-
----
-
-## Phase 6 — `packages/cursor-runner`
-
-**Goal:** the only `@cursor/sdk` importer. `CursorRunner` interface + impl + `FakeCursorRunner` for downstream tests.
+**Goal:** the only `@cursor/sdk` importer. Substrate-agnostic `CursorRunner` interface + local impl + `FakeCursorRunner` for downstream tests. Cloud impl is V2+ behind the same interface.
 
 - [ ] Implement against the spike findings, not the SDK reference doc alone.
 - [ ] NDJSON event writer (with whatever batching the spike showed we need).
@@ -122,34 +104,35 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 7 — `packages/core`
+## Phase 6 — `packages/core`
 
-**Goal:** `ShipService` — the workflow brain. Holds the state machine.
+**Goal:** `ShipService` — the workflow brain. Holds the state machine. Workspace-agnostic: `ship(input)` accepts a workdir path the caller supplies; Ship doesn't create or destroy workspaces.
 
-- [ ] `createShipService({ store, tower, cursor, fs, clock, config })`.
+- [ ] `createShipService({ store, cursor, fs, clock, config })`. (No Tower dependency.)
 - [ ] Methods: `ship(input)`, `getRun(id)`, `listRuns(filter)`, `cancelRun(id)`.
 - [ ] State transitions enforce the rules in spec.md § "State transitions".
 - [ ] Artifact write logic (prompt.md, task-doc.md, events.ndjson, result.json, summary.md).
-- [ ] Vitest: state transitions, artifact paths, error paths, all using fakes from #5 and #6.
+- [ ] Vitest: state transitions, artifact paths, error paths, all using fakes from #5.
 - [ ] Extend `@ship/test-harness` scenarios to cover full-stack flows through `ShipService`.
 
 **Done when:** `pnpm --filter core test` green; an end-to-end test using fakes goes from `pending` → `succeeded`.
 
 ---
 
-## Phase 8 — `packages/cli`
+## Phase 7 — `packages/cli`
 
 **Goal:** the binary you can invoke locally. Same `ShipService` instance the MCP server uses.
 
 - [ ] Commander setup.
 - [ ] Subcommands: `ship`, `status`, `list`, `cancel`.
+- [ ] `ship ship <docPath> --workdir <path>` (default `--workdir .`).
 - [ ] Smoke tests via fake-runner-backed service.
 
 **Done when:** `pnpm --filter cli test` green; `node packages/cli/dist/cli.js list` runs end-to-end against a real local store.
 
 ---
 
-## Phase 9 — `packages/mcp-server`
+## Phase 8 — `packages/mcp-server`
 
 **Goal:** stdio MCP server exposing the four V1 tools.
 
@@ -162,13 +145,13 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 10 — Live integration test + dogfood
+## Phase 9 — Live integration test + dogfood
 
-**Goal:** the first real `ship` invocation against your real Cursor SDK and real Tower, on a trivial test repo. Swaps the fakes in `@ship/test-harness`'s e2e harness for the real adapters built in phases 5–6.
+**Goal:** the first real `ship` invocation against a real Cursor SDK on a workdir the test sets up. Swaps the `FakeCursorRunner` in `@ship/test-harness`'s e2e harness for the real one built in Phase 5. The workdir comes from whatever the test prefers — `git worktree`, plain `cp`, Tower if installed; Ship doesn't care.
 
-- [ ] Test repo: throwaway dir registered in Tower with a one-line task doc ("add a `hello` function and a test for it").
-- [ ] Run `ship ship docs/features/hello.md --repo <testrepo>` behind `SHIP_LIVE=1`.
-- [ ] Assert: worktree created, files changed, tests pass in the worktree, `result.json` populated, `summary.md` non-empty.
+- [ ] Test repo: the existing `e2e/fixtures/test-repo/` fixture, copied into a tmp workdir at test setup.
+- [ ] Run `ship ship docs/features/hello.md --workdir <tmp>` behind `SHIP_LIVE=1`.
+- [ ] Assert: files changed in the workdir, tests pass there, `result.json` populated, `summary.md` non-empty.
 - [ ] Then dogfood: write the next Ship feature as a task doc and ship it through Ship.
 
 **Done when:** V1 is real, dogfooded, and green.
