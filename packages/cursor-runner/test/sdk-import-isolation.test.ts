@@ -28,7 +28,18 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-const SDK_IMPORT_PATTERN = /from\s+["']@cursor\/sdk["']/;
+// Catches every form of pulling `@cursor/sdk` into a TS file:
+//   `import { X } from "@cursor/sdk"`         — static named (also `import type`)
+//   `import "@cursor/sdk"`                    — side-effect
+//   `import("@cursor/sdk")`                   — dynamic
+//   `require("@cursor/sdk")`                  — CJS (defensive; unlikely in TS source)
+//   `export { X } from "@cursor/sdk"`         — re-export covered by the `from` arm
+// The `\b` anchor keeps unrelated identifiers (e.g. `mport`) from matching;
+// the alternation ensures one regex covers all forms in a single pass over
+// each line. JSDoc / comment mentions of `@cursor/sdk` (e.g. ``@cursor/sdk``
+// in backticks) don't match because they aren't preceded by `from|import|require`.
+const SDK_IMPORT_PATTERN =
+  /\b(?:from\s+|import\s*\(\s*|import\s+|require\s*\(\s*)["']@cursor\/sdk["']/;
 
 // Repo root (this file is at <root>/packages/cursor-runner/test/...)
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -123,5 +134,36 @@ describe("ED-2 — @cursor/sdk is imported in @ship/cursor-runner only", () => {
     const cursorRunnerDir = join(PACKAGES_DIR, ALLOWED_PACKAGE);
     const ownHits = walkTsFiles(cursorRunnerDir).flatMap(findHits);
     expect(ownHits.length).toBeGreaterThan(0);
+  });
+
+  test("regex catches every import form (static / type-only / side-effect / dynamic / require / export-from)", () => {
+    // Cycle-2 review caught that the original `from\s+["']...["']` regex
+    // missed side-effect and dynamic imports. This test pins the broader
+    // pattern by running it directly against handcrafted lines, so a
+    // future regex tightening that drops a form fails loud here.
+    const samples: { line: string; shouldMatch: boolean }[] = [
+      { line: `import { Agent } from "@cursor/sdk";`, shouldMatch: true },
+      { line: `import type { SDKMessage } from "@cursor/sdk";`, shouldMatch: true },
+      { line: `import * as sdk from "@cursor/sdk";`, shouldMatch: true },
+      { line: `import "@cursor/sdk";`, shouldMatch: true },
+      { line: `const m = import("@cursor/sdk");`, shouldMatch: true },
+      { line: `const m = await import( "@cursor/sdk" );`, shouldMatch: true },
+      { line: `const m = require("@cursor/sdk");`, shouldMatch: true },
+      { line: `export { Agent } from "@cursor/sdk";`, shouldMatch: true },
+      { line: `export type { SDKMessage } from "@cursor/sdk";`, shouldMatch: true },
+      { line: `import { Agent } from '@cursor/sdk';`, shouldMatch: true },
+      // False-positive guards: comments / docstring mentions / unrelated
+      // strings must NOT match.
+      { line: ` * Structurally mirrors \`@cursor/sdk\`'s exported type.`, shouldMatch: false },
+      { line: `// see @cursor/sdk for details`, shouldMatch: false },
+      { line: `const label = "@cursor/sdk";`, shouldMatch: false },
+      { line: `import { foo } from "@ship/cursor-runner";`, shouldMatch: false },
+    ];
+    for (const s of samples) {
+      expect({ line: s.line, matched: SDK_IMPORT_PATTERN.test(s.line) }).toEqual({
+        line: s.line,
+        matched: s.shouldMatch,
+      });
+    }
   });
 });

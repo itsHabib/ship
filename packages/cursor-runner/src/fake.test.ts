@@ -248,12 +248,16 @@ describe("FakeCursorRunner — AbortSignal cancellation", () => {
     expect(result.status).toBe("cancelled");
   });
 
-  test("a pre-aborted signal cancels the run before any event emits", async () => {
+  test("a pre-aborted signal cancels the run before any event emits (default delay = 0)", async () => {
     const runner = new FakeCursorRunner();
+    // Default `delayMsBetweenEvents: 0` means `#emit` runs synchronously
+    // to completion if not gated. Cycle-2 review flagged this: the
+    // pre-abort signal check MUST run before `#emit` starts, otherwise
+    // events fully emit and the result resolves "succeeded" before the
+    // signal is observed. This test pins the bug fix.
     runner.enqueue({
       events: [evA, evB],
       result: baseResult({ status: "succeeded" }),
-      delayMsBetweenEvents: 50,
     });
 
     const controller = new AbortController();
@@ -263,7 +267,8 @@ describe("FakeCursorRunner — AbortSignal cancellation", () => {
     const handle = await runner.run(baseInput({ onEvent, signal: controller.signal }));
     const result = await handle.result;
     expect(result.status).toBe("cancelled");
-    // The pre-aborted path should beat the first event emission.
+    // The pre-abort gate must fire before #emit's loop starts; no events
+    // should reach onEvent.
     expect(onEvent).not.toHaveBeenCalled();
   });
 

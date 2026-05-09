@@ -188,8 +188,6 @@ export class FakeCursorRunner implements CursorRunner {
       resolveResult(terminal);
     };
 
-    void this.#emit(script, input, () => terminated, finalize);
-
     // Both cancellation paths funnel through here so idempotency holds
     // across any combination of signal-abort and handle.cancel(). The
     // first call drives the script's `cancelBehavior`; every subsequent
@@ -218,8 +216,11 @@ export class FakeCursorRunner implements CursorRunner {
 
     // Wire input.signal — `core` will pass an AbortSignal for SIGINT
     // and per-run timeouts. The fake honors it the same way the real
-    // runner will (forwards to the same internal pipeline). Pre-aborted
-    // signals fire synchronously below; otherwise we listen via `once`.
+    // runner will (forwards to the same internal pipeline). A
+    // pre-aborted signal MUST be processed before #emit starts —
+    // otherwise with the default `delayMsBetweenEvents: 0`, #emit
+    // runs synchronously to completion and resolves the result before
+    // the signal check ever fires (real bug caught in cycle-2 review).
     if (input.signal !== undefined) {
       if (input.signal.aborted) {
         void cancelInternal().catch(() => {
@@ -238,6 +239,12 @@ export class FakeCursorRunner implements CursorRunner {
         input.signal.addEventListener("abort", onAbort, { once: true });
       }
     }
+
+    // Start emission AFTER the pre-abort check. If the signal was
+    // pre-aborted, `terminated` is now true and `#emit` exits its
+    // loop on the first iteration. Otherwise emission proceeds as
+    // normal and `signal.abort()` interleaves via the listener above.
+    void this.#emit(script, input, () => terminated, finalize);
 
     return Promise.resolve({ agentId, runId, result, cancel: cancelInternal });
   }
