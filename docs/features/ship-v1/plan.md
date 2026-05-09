@@ -66,15 +66,14 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ## Phase 3 — `packages/store`
 
-**Goal:** SQLite persistence with typed queries.
+📄 [phases/03-store.md](phases/03-store.md) — task doc (functional/non-functional req, tradeoffs, decisions, API contract, validation plan, risks, open questions).
 
-- [ ] `better-sqlite3` + Drizzle.
-- [ ] Schema matching spec.md § "SQL schema".
-- [ ] Migrations runner.
-- [ ] `Store` interface + impl: `createWorkflowRun`, `updateStatus`, `appendPhase`, `updatePhase`, `getRun`, `listRuns`, `cancelRun`.
-- [ ] Vitest: round-trip every entity, idempotent cancel, `listRuns` filtering, fresh-DB migration.
+**Goal:** SQLite persistence with hand-written SQL + Zod parse on hydration. No ORM.
 
-**Done when:** `pnpm --filter store test` green.
+- [ ] Review and approve `phases/03-store.md`.
+- [ ] Implement per the doc's "Implementation plan" section.
+
+**Done when:** `pnpm --filter @ship/store test` is green, `make check` is green from repo root, and the doc's acceptance criteria are met.
 
 ---
 

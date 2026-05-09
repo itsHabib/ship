@@ -144,11 +144,16 @@ Fallback: if connecting to Tower MCP fails at startup, Ship surfaces a configura
 
 `<UserConfigDir>` resolves via the same logic Tower uses (APPDATA on Windows, XDG_CONFIG_HOME / HOME on Unix).
 
-### ED-5 — Storage stack: Drizzle + better-sqlite3
+### ED-5 — Storage stack: raw `better-sqlite3` + hand-rolled migrations + Zod parse on hydration
 
-Drizzle gives us TypeScript-first migrations and inferred row types from schema. `better-sqlite3` is synchronous, fast, and the standard pick for local-first Node apps.
+The store package writes hand-written SQL through `better-sqlite3` (synchronous, fast, the standard pick for local-first Node apps) and uses the existing `@ship/workflow` Zod schemas as the row → domain validation seam. Migrations are numbered SQL files under `packages/store/migrations/` plus a small applier that tracks state in a `_migrations` table.
 
-Rejected: Prisma (heavier, codegen-driven), raw `node:sqlite` (too low-level for migrations).
+Why no ORM:
+- Habib's prior Go code uses `sqlc`/raw drivers; a query builder hides SQL the team would need to read anyway.
+- The Zod schemas in `@ship/workflow` are already the source of truth for domain shape; running `workflowRunSchema.parse(row)` at the row → domain seam means schema drift fails loud immediately, with no second source of truth (a Drizzle schema file) to keep in sync.
+- One fewer dependency, one less migration tool, one less mental model.
+
+Rejected: Drizzle (TypeScript-first migrations and a typed query builder, but adds a second schema declaration and a second migration tool that'd race with the SQL files for source-of-truth status), Kysely (typed query builder without ORM-like entity hydration — closer fit, but the autocomplete payoff is small for the ~10 queries V1 needs and we'd still need a migrations story), Prisma (heavier, codegen-driven), raw `node:sqlite` (too new, no native binding for older Node versions, no test-suite traction yet).
 
 ### ED-6 — MCP transport: stdio
 
