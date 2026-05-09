@@ -130,8 +130,11 @@ export function createPhaseOps(db: Db, clock: () => string): PhaseOps {
   const bumpRunUpdatedAtStmt = db.prepare(`UPDATE workflow_runs SET updated_at = ? WHERE id = ?`);
 
   function append(input: AppendPhaseInput): Phase {
-    const now = clock();
-    const txn = db.transaction(() => {
+    // Insert + parent bump + hydrate, all in one transaction. A Zod
+    // failure on the hydrated row rolls back the insert rather than
+    // committing a row that future reads will reject.
+    const txn = db.transaction((): Phase => {
+      const now = clock();
       try {
         insertStmt.run(input.id, input.workflowRunId, input.kind, "pending", input.inputJson, now);
       } catch (err: unknown) {
@@ -141,17 +144,20 @@ export function createPhaseOps(db: Db, clock: () => string): PhaseOps {
         throw err;
       }
       bumpRunUpdatedAtStmt.run(now, input.workflowRunId);
+      const row = selectByIdStmt.get(input.id);
+      if (!row) {
+        throw new Error(`internal: just-inserted phase ${input.id} not found`);
+      }
+      return parsePhase(row);
     });
-    txn();
-    const row = selectByIdStmt.get(input.id);
-    if (!row) {
-      throw new Error(`internal: just-inserted phase ${input.id} not found`);
-    }
-    return parsePhase(row);
+    return txn();
   }
 
   function update(id: string, patch: UpdatePhaseInput): Phase {
-    const txn = db.transaction((): PhaseRow => {
+    // Patch + parent bump + hydrate, all in one transaction. A Zod
+    // failure on the hydrated row (e.g. caller passed a non-datetime
+    // `endedAt`) rolls back the patch.
+    const txn = db.transaction((): Phase => {
       const existing = selectByIdStmt.get(id);
       if (!existing) {
         throw new PhaseNotFoundError(id);
@@ -162,9 +168,9 @@ export function createPhaseOps(db: Db, clock: () => string): PhaseOps {
       if (!updated) {
         throw new Error(`internal: phase ${id} vanished after update`);
       }
-      return updated;
+      return parsePhase(updated);
     });
-    return parsePhase(txn());
+    return txn();
   }
 
   function listByRunId(runId: string): Phase[] {

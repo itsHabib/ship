@@ -132,6 +132,20 @@ interface WorkflowRunStmts {
 }
 
 /**
+ * Bundle of dependencies the per-method helpers need. Built once by
+ * `createWorkflowRunOps` and threaded into each helper as a single
+ * argument, so we stay under the 5-param eslint cap even with
+ * `db` (for `db.transaction(...)`) and `phases` (for hydration +
+ * cancel-coordination) both required.
+ */
+interface WorkflowRunDeps {
+  db: Db;
+  stmts: WorkflowRunStmts;
+  phases: PhaseOps;
+  clock: () => string;
+}
+
+/**
  * Constructs the `workflow_runs` ops bound to a given DB connection,
  * clock, and `PhaseOps` instance. The `PhaseOps` dependency exists
  * because hydration needs to fetch phases per run, and `cancel` needs to
@@ -161,13 +175,14 @@ export function createWorkflowRunOps(
     ),
     updateStatus: db.prepare(`UPDATE workflow_runs SET status = ?, updated_at = ? WHERE id = ?`),
   };
+  const deps: WorkflowRunDeps = { clock, db, phases, stmts };
 
   return {
-    cancel: (id) => cancelRun(db, stmts, phases, clock, id),
-    create: (input) => createRun(stmts, clock, input),
-    get: (id) => getRun(stmts, phases, id),
-    list: (filter) => listRunsImpl(db, phases, filter),
-    updateStatus: (id, status) => updateRunStatus(stmts, phases, clock, id, status),
+    cancel: (id) => cancelRun(deps, id),
+    create: (input) => createRun(deps, input),
+    get: (id) => getRun(deps, id),
+    list: (filter) => listRunsImpl(deps, filter),
+    updateStatus: (id, status) => updateRunStatus(deps, id, status),
   };
 }
 
@@ -181,59 +196,64 @@ function hydrateOne(phases: PhaseOps, row: WorkflowRunRow): WorkflowRun {
   return parseRun(row, phases.listByRunId(row.id));
 }
 
-function createRun(
-  stmts: WorkflowRunStmts,
-  clock: () => string,
-  input: CreateWorkflowRunInput,
-): WorkflowRun {
-  const now = clock();
-  stmts.insert.run(
-    input.id,
-    input.repo,
-    input.docPath,
-    "pending",
-    input.baseRef,
-    JSON.stringify(input.worktree),
-    JSON.stringify(input.policy),
-    now,
-    now,
-  );
-  const row = stmts.selectById.get(input.id);
-  if (!row) {
-    throw new Error(`internal: just-inserted workflow run ${input.id} not found`);
-  }
-  return parseRun(row, []);
+/**
+ * INSERT + hydrate inside one transaction so a Zod-rejecting
+ * post-state (caller passed an unparseable `worktree` shape, etc.)
+ * rolls back the write. Atomic-fail rather than fail-after-corruption.
+ */
+function createRun(deps: WorkflowRunDeps, input: CreateWorkflowRunInput): WorkflowRun {
+  const txn = deps.db.transaction((): WorkflowRun => {
+    const now = deps.clock();
+    deps.stmts.insert.run(
+      input.id,
+      input.repo,
+      input.docPath,
+      "pending",
+      input.baseRef,
+      JSON.stringify(input.worktree),
+      JSON.stringify(input.policy),
+      now,
+      now,
+    );
+    const row = deps.stmts.selectById.get(input.id);
+    if (!row) {
+      throw new Error(`internal: just-inserted workflow run ${input.id} not found`);
+    }
+    return parseRun(row, []);
+  });
+  return txn();
 }
 
-function updateRunStatus(
-  stmts: WorkflowRunStmts,
-  phases: PhaseOps,
-  clock: () => string,
-  id: string,
-  status: WorkflowStatus,
-): WorkflowRun {
-  const result = stmts.updateStatus.run(status, clock(), id);
-  if (result.changes === 0) {
-    throw new WorkflowRunNotFoundError(id);
-  }
-  const row = stmts.selectById.get(id);
-  if (!row) {
-    throw new Error(`internal: workflow run ${id} vanished after status update`);
-  }
-  return hydrateOne(phases, row);
+/**
+ * UPDATE + hydrate inside one transaction; same atomicity guarantee
+ * as `createRun`.
+ */
+function updateRunStatus(deps: WorkflowRunDeps, id: string, status: WorkflowStatus): WorkflowRun {
+  const txn = deps.db.transaction((): WorkflowRun => {
+    const result = deps.stmts.updateStatus.run(status, deps.clock(), id);
+    if (result.changes === 0) {
+      throw new WorkflowRunNotFoundError(id);
+    }
+    const row = deps.stmts.selectById.get(id);
+    if (!row) {
+      throw new Error(`internal: workflow run ${id} vanished after status update`);
+    }
+    return hydrateOne(deps.phases, row);
+  });
+  return txn();
 }
 
-function getRun(stmts: WorkflowRunStmts, phases: PhaseOps, id: string): WorkflowRun | null {
-  const row = stmts.selectById.get(id);
-  return row ? hydrateOne(phases, row) : null;
+function getRun(deps: WorkflowRunDeps, id: string): WorkflowRun | null {
+  const row = deps.stmts.selectById.get(id);
+  return row ? hydrateOne(deps.phases, row) : null;
 }
 
-function listRunsImpl(db: Db, phases: PhaseOps, filter: ListRunsFilter): WorkflowRun[] {
+function listRunsImpl(deps: WorkflowRunDeps, filter: ListRunsFilter): WorkflowRun[] {
   const limit = clampLimit(filter.limit);
   const { sql, params } = buildListSql(filter, limit);
-  const rows = db.prepare<unknown[], WorkflowRunRow>(sql).all(...params);
+  const rows = deps.db.prepare<unknown[], WorkflowRunRow>(sql).all(...params);
   if (rows.length === 0) return [];
-  const grouped = phases.listByRunIds(rows.map((r) => r.id));
+  const grouped = deps.phases.listByRunIds(rows.map((r) => r.id));
   return rows.map((row) => parseRun(row, grouped.get(row.id) ?? []));
 }
 
@@ -260,26 +280,24 @@ function listRunsImpl(db: Db, phases: PhaseOps, filter: ListRunsFilter): Workflo
  *         `null` → throw `WorkflowRunNotFoundError`; otherwise return
  *         the current row unchanged.
  */
-function cancelRun(
-  db: Db,
-  stmts: WorkflowRunStmts,
-  phases: PhaseOps,
-  clock: () => string,
-  id: string,
-): WorkflowRun {
-  const txn = db.transaction((): void => {
-    const now = clock();
-    const result = stmts.conditionalCancel.run(now, id);
+function cancelRun(deps: WorkflowRunDeps, id: string): WorkflowRun {
+  // Whole transaction: conditional UPDATE + (if cancelled) phase flip
+  // + post-state lookup + hydrate. A Zod failure on the hydrated row
+  // (e.g. column drift) rolls back the cancel rather than committing
+  // a bad row that future reads will reject.
+  const txn = deps.db.transaction((): WorkflowRun => {
+    const now = deps.clock();
+    const result = deps.stmts.conditionalCancel.run(now, id);
     if (result.changes > 0) {
-      phases.cancelInFlightForRun(id, now);
+      deps.phases.cancelInFlightForRun(id, now);
     }
+    const row = deps.stmts.selectById.get(id);
+    if (!row) {
+      throw new WorkflowRunNotFoundError(id);
+    }
+    return hydrateOne(deps.phases, row);
   });
-  txn();
-  const row = stmts.selectById.get(id);
-  if (!row) {
-    throw new WorkflowRunNotFoundError(id);
-  }
-  return hydrateOne(phases, row);
+  return txn();
 }
 
 /**

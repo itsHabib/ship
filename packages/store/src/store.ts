@@ -185,14 +185,20 @@ export function createStore(opts: CreateStoreOptions): Store {
       close: () => {
         // wal_checkpoint(TRUNCATE) cleans up the -wal / -shm sidecars on
         // a happy shutdown. It can throw SQLITE_BUSY when another
-        // connection is mid-write — in that case we still need
-        // db.close() to run, otherwise the SQLite handle and any file
-        // locks leak. The checkpoint failure is non-fatal for shutdown.
+        // connection is mid-write — that's non-fatal for shutdown
+        // (SQLite reclaims the sidecars on the next clean run), so we
+        // log a warning and still close. Otherwise a normal shutdown
+        // under contention would surface as an exception to the caller.
         try {
           db.pragma("wal_checkpoint(TRUNCATE)");
-        } finally {
-          db.close();
+        } catch (err: unknown) {
+          console.warn(
+            `[@ship/store] wal_checkpoint(TRUNCATE) failed during close(); ` +
+              `the -wal/-shm sidecars may persist until the next clean shutdown: ` +
+              (err instanceof Error ? err.message : String(err)),
+          );
         }
+        db.close();
       },
       createWorkflowRun: workflowRunOps.create,
       getCursorRun: cursorRunOps.get,

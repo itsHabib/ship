@@ -116,28 +116,35 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
   );
 
   function record(input: RecordCursorRunInput): CursorRunRef {
-    try {
-      insertStmt.run(
-        input.id,
-        input.workflowRunId,
-        input.agentId,
-        input.runtime,
-        input.model !== undefined ? JSON.stringify(input.model) : null,
-        "running",
-        clock(),
-        input.artifactsDir,
-      );
-    } catch (err: unknown) {
-      if (isForeignKeyViolation(err)) {
-        throw new WorkflowRunNotFoundError(input.workflowRunId);
+    // Wrap insert + hydration in one transaction so a `parseCursorRun`
+    // failure (e.g. caller passed an unparseable `endedAt`, or the row
+    // shape drifted) rolls back the write. Atomic-fail beats
+    // fail-after-corruption.
+    const txn = db.transaction((): CursorRunRef => {
+      try {
+        insertStmt.run(
+          input.id,
+          input.workflowRunId,
+          input.agentId,
+          input.runtime,
+          input.model !== undefined ? JSON.stringify(input.model) : null,
+          "running",
+          clock(),
+          input.artifactsDir,
+        );
+      } catch (err: unknown) {
+        if (isForeignKeyViolation(err)) {
+          throw new WorkflowRunNotFoundError(input.workflowRunId);
+        }
+        throw err;
       }
-      throw err;
-    }
-    const row = selectByIdStmt.get(input.id);
-    if (!row) {
-      throw new Error(`internal: just-inserted cursor run ${input.id} not found`);
-    }
-    return parseCursorRun(row);
+      const row = selectByIdStmt.get(input.id);
+      if (!row) {
+        throw new Error(`internal: just-inserted cursor run ${input.id} not found`);
+      }
+      return parseCursorRun(row);
+    });
+    return txn();
   }
 
   function updateStatus(id: string, patch: UpdateCursorRunInput): CursorRunRef {
@@ -163,17 +170,24 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
       params.push(patch.durationMs);
     }
     params.push(id);
-    const result = db
-      .prepare(`UPDATE cursor_runs SET ${sets.join(", ")} WHERE id = ?`)
-      .run(...params);
-    if (result.changes === 0) {
-      throw new CursorRunNotFoundError(id);
-    }
-    const updated = selectByIdStmt.get(id);
-    if (!updated) {
-      throw new Error(`internal: cursor run ${id} vanished after update`);
-    }
-    return parseCursorRun(updated);
+    // Wrap update + hydration in one transaction so a post-state that
+    // fails Zod validation (e.g. negative `durationMs` from a buggy
+    // caller) rolls back the write rather than leaving the row in a
+    // shape future reads will reject as `StoreSchemaError`.
+    const txn = db.transaction((): CursorRunRef => {
+      const result = db
+        .prepare(`UPDATE cursor_runs SET ${sets.join(", ")} WHERE id = ?`)
+        .run(...params);
+      if (result.changes === 0) {
+        throw new CursorRunNotFoundError(id);
+      }
+      const updated = selectByIdStmt.get(id);
+      if (!updated) {
+        throw new Error(`internal: cursor run ${id} vanished after update`);
+      }
+      return parseCursorRun(updated);
+    });
+    return txn();
   }
 
   function get(id: string): CursorRunRef | null {

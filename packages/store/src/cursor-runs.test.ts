@@ -175,4 +175,28 @@ describe("cursor runs (via createStore)", () => {
   test("updateCursorRunStatus: unknown id throws CursorRunNotFoundError (empty patch path)", () => {
     expect(() => store.updateCursorRunStatus(newCursorRunId(), {})).toThrow(CursorRunNotFoundError);
   });
+
+  test("updateCursorRunStatus: invalid post-state rolls back (durationMs negative)", () => {
+    // TS allows `number` for durationMs, but the schema demands
+    // `nonnegative()`. Without txn-wrapping, the bad row would commit
+    // and future reads would all fail with StoreSchemaError. The fix
+    // wraps the update + hydration in a transaction; a Zod failure on
+    // the hydrated row rolls back the write.
+    const runId = seedRun();
+    const id = newCursorRunId();
+    store.recordCursorRun({
+      agentId: "agent_xyz",
+      artifactsDir: "/runs/wf_x",
+      id,
+      runtime: "local",
+      workflowRunId: runId,
+    });
+
+    expect(() => store.updateCursorRunStatus(id, { durationMs: -1 })).toThrow();
+
+    // Row must still match its pre-call shape.
+    const fetched = store.getCursorRun(id);
+    expect(fetched?.durationMs).toBeUndefined();
+    expect(fetched?.status).toBe("running");
+  });
 });
