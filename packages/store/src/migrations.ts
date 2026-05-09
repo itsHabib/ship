@@ -4,20 +4,28 @@
  * Migrations live as numbered SQL files under `packages/store/migrations/`.
  * The runner:
  *   1. Creates the `_migrations` bookkeeping table if it doesn't exist.
- *   2. Reads the migrations directory in lexicographic order.
- *   3. For each file not already recorded in `_migrations.name`, opens a
- *      transaction, executes the file's SQL, inserts the bookkeeping row,
- *      commits.
- *   4. Returns silently once caught up.
+ *   2. Opens a single `BEGIN IMMEDIATE` transaction, then within it reads
+ *      `_migrations` for the applied set, walks the migrations directory
+ *      in lexicographic order, and for each pending file executes the
+ *      SQL and inserts the bookkeeping row.
+ *   3. Commits (or rolls back on any failure).
  *
- * Atomicity (per phases/03-store.md § ED-2): each migration's SQL and its
- * `_migrations` INSERT happen in the SAME transaction. A failure anywhere
- * inside the migration rolls both back; a power loss between the two is
- * impossible because they're not two separate operations.
+ * Atomicity (per phases/03-store.md § ED-2): all SQL and bookkeeping
+ * INSERTs run inside the same transaction. A failure anywhere — bad SQL,
+ * filesystem error, conflict — rolls everything back. Half-applied state
+ * is impossible.
+ *
+ * Concurrency: `BEGIN IMMEDIATE` acquires the write lock up front. Two
+ * processes booting against the same fresh DB serialize through SQLite's
+ * lock; the loser's `busy_timeout` waits for the winner to commit, then
+ * its own SELECT sees the winner's `_migrations` rows and `pending` is
+ * empty. Under the previous deferred design the loser snapshotted
+ * `applied = {}` outside any txn, then attempted to re-apply migrations
+ * the winner had already committed and threw `table already exists`.
  *
  * Idempotency: re-running on an already-migrated DB is a no-op. A crashed
- * mid-migration is recovered by re-running on next boot — the `_migrations`
- * row never landed, so the file is retried from the top.
+ * mid-migration is recovered by re-running on next boot — no bookkeeping
+ * row landed, so the file is retried from the top.
  *
  * The runner does not look at `down.sql` files (V1 has none). Rolling back
  * during dev is `rm <UserConfigDir>/ship/state.db*` per the task doc.
@@ -82,21 +90,36 @@ export function runMigrations(db: Db, opts: RunMigrationsOptions = {}): void {
 
   ensureBookkeepingTable(db);
 
-  const applied = new Set(
-    db
-      .prepare<[], MigrationRow>("SELECT name FROM _migrations")
-      .all()
-      .map((r) => r.name),
-  );
-
-  const pending = readdirSync(dir)
+  const files = readdirSync(dir)
     .filter((f) => f.endsWith(MIGRATION_FILE_SUFFIX))
-    .sort()
-    .filter((f) => !applied.has(f));
+    .sort();
+  const insertStmt = db.prepare("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)");
+  const selectAppliedStmt = db.prepare<[], MigrationRow>("SELECT name FROM _migrations");
 
-  for (const filename of pending) {
-    applyMigration(db, filename, readFileSync(join(dir, filename), "utf8"), clock());
-  }
+  // Wrap discovery + apply in a BEGIN IMMEDIATE transaction so two
+  // processes booting against the same fresh DB don't race. With the
+  // pre-IMMEDIATE design the loser snapshotted `applied = {}`, then
+  // re-ran a migration the winner had already committed and threw
+  // `table already exists`. Under IMMEDIATE the loser blocks on the
+  // write lock via `busy_timeout`; when it acquires the lock its own
+  // SELECT sees the winner's bookkeeping rows and `pending` is empty.
+  const txn = db.transaction(() => {
+    const applied = new Set(selectAppliedStmt.all().map((r) => r.name));
+    const pending = files.filter((f) => !applied.has(f));
+    for (const filename of pending) {
+      try {
+        db.exec(readFileSync(join(dir, filename), "utf8"));
+        insertStmt.run(filename, clock());
+      } catch (err: unknown) {
+        throw new MigrationError(
+          filename,
+          err instanceof Error ? err.message : String(err),
+          err instanceof Error ? { cause: err } : undefined,
+        );
+      }
+    }
+  });
+  txn.immediate();
 }
 
 /**
@@ -119,28 +142,4 @@ function ensureBookkeepingTable(db: Db): void {
   db.exec(
     "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
   );
-}
-
-/**
- * Applies one migration inside a single transaction.
- *
- * The transaction wraps both `db.exec(sql)` and the `_migrations` INSERT, so
- * either both commit or neither does. SQLite errors are caught and re-thrown
- * as `MigrationError` with the underlying error attached as `cause`.
- */
-function applyMigration(db: Db, filename: string, sql: string, appliedAt: string): void {
-  const insert = db.prepare("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)");
-  const txn = db.transaction(() => {
-    db.exec(sql);
-    insert.run(filename, appliedAt);
-  });
-  try {
-    txn();
-  } catch (err: unknown) {
-    throw new MigrationError(
-      filename,
-      err instanceof Error ? err.message : String(err),
-      err instanceof Error ? { cause: err } : undefined,
-    );
-  }
 }

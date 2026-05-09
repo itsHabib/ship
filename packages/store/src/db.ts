@@ -48,6 +48,11 @@ const BUSY_TIMEOUT_MS = 5000;
  *    warning to `console.warn` but returns the handle — the store remains
  *    usable on a rollback journal.
  *
+ * If the PRAGMA setup itself throws (e.g. read-only path, unwritable DB),
+ * the just-opened handle is closed before re-throwing — otherwise a long-
+ * lived caller (daemon path, retry loops) accumulates open file handles
+ * and SQLite locks.
+ *
  * Returns the connection handle. The caller (`createStore`) is responsible
  * for running migrations and closing on shutdown.
  *
@@ -55,7 +60,12 @@ const BUSY_TIMEOUT_MS = 5000;
  */
 export function openDatabase(dbPath: string): Db {
   const db = new Database(dbPath);
-  configureConnection(db);
+  try {
+    configureConnection(db);
+  } catch (err: unknown) {
+    db.close();
+    throw err;
+  }
   return db;
 }
 
