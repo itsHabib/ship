@@ -3,9 +3,11 @@
  *
  * The whole point of `@ship/cursor-runner` is that the SDK is invisible
  * to the rest of the monorepo. This test walks every TypeScript file
- * under `packages/*\/{src,test}/**` (excluding this package's own dirs)
- * and asserts none of them mention `@cursor/sdk` — including type-only
- * imports.
+ * under each `packages/*` directory (excluding this package's own dir,
+ * plus `node_modules` / `dist` / coverage outputs) and asserts none of
+ * them mention `@cursor/sdk` — including type-only imports and
+ * including top-level config files (`vitest.config.ts`, etc.) that
+ * aren't under `src/` or `test/`.
  *
  * Why "any kind" rather than "runtime only": even type-only imports
  * couple the importing package to the SDK's release cadence. A mirror
@@ -33,9 +35,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGES_DIR = resolve(HERE, "..", "..");
 const REPO_ROOT = resolve(PACKAGES_DIR, "..");
 
-const SCAN_DIRS = ["src", "test"] as const;
-
 const ALLOWED_PACKAGE = "cursor-runner";
+
+// Directories within a package we never walk (build artifacts, deps,
+// editor caches). Anything else with a `.ts` file is fair game.
+const SKIP_DIRS = new Set(["node_modules", "dist", "coverage", ".turbo", ".tsbuildinfo"]);
 
 interface Hit {
   readonly file: string;
@@ -67,7 +71,7 @@ function walkTsFiles(root: string): string[] {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name === "node_modules" || entry.name === "dist") continue;
+        if (SKIP_DIRS.has(entry.name)) continue;
         stack.push(full);
       } else if (entry.isFile() && entry.name.endsWith(".ts")) {
         out.push(full);
@@ -98,10 +102,8 @@ describe("ED-2 — @cursor/sdk is imported in @ship/cursor-runner only", () => {
     const packageDirs = listPackageDirs().filter((p) => p.split(sep).at(-1) !== ALLOWED_PACKAGE);
     const hits: Hit[] = [];
     for (const pkg of packageDirs) {
-      for (const sub of SCAN_DIRS) {
-        for (const file of walkTsFiles(join(pkg, sub))) {
-          hits.push(...findHits(file));
-        }
+      for (const file of walkTsFiles(pkg)) {
+        hits.push(...findHits(file));
       }
     }
 
@@ -115,16 +117,11 @@ describe("ED-2 — @cursor/sdk is imported in @ship/cursor-runner only", () => {
   });
 
   test("the test would catch a violation if one existed (sanity check on the scan)", () => {
-    // Self-test: if we scan our own package dirs, we DO find SDK imports
+    // Self-test: if we scan our own package, we DO find SDK imports
     // (in `runner.ts`, `index.ts`, etc.). This guards against the scan
     // silently returning [] due to a bug in the walker.
     const cursorRunnerDir = join(PACKAGES_DIR, ALLOWED_PACKAGE);
-    const ownHits: Hit[] = [];
-    for (const sub of SCAN_DIRS) {
-      for (const file of walkTsFiles(join(cursorRunnerDir, sub))) {
-        ownHits.push(...findHits(file));
-      }
-    }
+    const ownHits = walkTsFiles(cursorRunnerDir).flatMap(findHits);
     expect(ownHits.length).toBeGreaterThan(0);
   });
 });

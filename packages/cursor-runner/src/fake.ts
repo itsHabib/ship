@@ -41,10 +41,12 @@
  *   directly via `runner.calls`. Validating inputs would couple the
  *   fake to the real runner's config-resolution logic, which is `core`'s
  *   concern, not the runner's.
- * - Honor `input.signal`'s `abort()` event. (TODO: it should — wire it
- *   the same way as `handle.cancel()` so consumers can test the signal
- *   path. Added to validation plan for 5b's local-runner; the fake
- *   matches that wiring once both lock in.)
+ *
+ * Cancellation paths honored: `input.signal` (the AbortSignal route
+ * `core` will use for SIGINT / per-run timeout) AND `handle.cancel()`.
+ * Both go through the same internal cancellation pipeline so cancel
+ * idempotency holds across signal-then-handle, handle-then-signal,
+ * and any combination thereof.
  */
 
 import type { SDKMessage } from "@cursor/sdk";
@@ -174,6 +176,7 @@ export class FakeCursorRunner implements CursorRunner {
     const runId = `run-fake-${callIndex.toString().padStart(4, "0")}`;
 
     let terminated = false;
+    let cancelAttempted = false;
     let resolveResult!: (value: CursorRunResult) => void;
     const result = new Promise<CursorRunResult>((resolve) => {
       resolveResult = resolve;
@@ -187,12 +190,21 @@ export class FakeCursorRunner implements CursorRunner {
 
     void this.#emit(script, input, () => terminated, finalize);
 
-    const cancel = (): Promise<void> => {
+    // Both cancellation paths funnel through here so idempotency holds
+    // across any combination of signal-abort and handle.cancel(). The
+    // first call drives the script's `cancelBehavior`; every subsequent
+    // call is a no-op (resolves), regardless of `cancelBehavior`.
+    const cancelInternal = (): Promise<void> => {
       const behavior = script.cancelBehavior ?? "complete";
+      if (cancelAttempted) {
+        // Idempotent: a second cancel from any path is a silent no-op
+        // even if the first call threw under `cancelBehavior: "throw"`.
+        return Promise.resolve();
+      }
+      cancelAttempted = true;
       if (behavior === "throw" && !terminated) {
-        // Mirror real runner: cancel-after-terminal is always a no-op,
-        // even if the script asked us to throw on cancel. Only cancels
-        // observed before natural termination throw.
+        // Cancel-after-terminal is always a no-op even under "throw" —
+        // only the first pre-terminal cancel rejects.
         return Promise.reject(new Error(CANCEL_THROWN_MESSAGE));
       }
       if (behavior === "ignore") {
@@ -204,7 +216,30 @@ export class FakeCursorRunner implements CursorRunner {
       return Promise.resolve();
     };
 
-    return Promise.resolve({ agentId, runId, result, cancel });
+    // Wire input.signal — `core` will pass an AbortSignal for SIGINT
+    // and per-run timeouts. The fake honors it the same way the real
+    // runner will (forwards to the same internal pipeline). Pre-aborted
+    // signals fire synchronously below; otherwise we listen via `once`.
+    if (input.signal !== undefined) {
+      if (input.signal.aborted) {
+        void cancelInternal().catch(() => {
+          // If cancelBehavior is "throw" and the signal was already
+          // aborted, the resulting rejection is the consumer's problem
+          // to surface — the fake doesn't have a back-channel for it.
+          // Production code wouldn't pass an already-aborted signal
+          // and expect a clean exit.
+        });
+      } else {
+        const onAbort = (): void => {
+          void cancelInternal().catch(() => {
+            // Same rationale as above for the pre-aborted branch.
+          });
+        };
+        input.signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+
+    return Promise.resolve({ agentId, runId, result, cancel: cancelInternal });
   }
 
   async #emit(
@@ -217,11 +252,10 @@ export class FakeCursorRunner implements CursorRunner {
     for (const ev of script.events) {
       if (delay > 0) await sleep(delay);
       // Re-check terminated AFTER the delay: cancel can interleave during
-      // the sleep window. We don't need a pre-sleep check too — the only
-      // way `terminated` becomes true mid-loop today is via `cancel()`,
-      // which only races with the sleep, not with the synchronous loop
-      // prelude. (Once `input.signal` wiring lands per the file-top TODO,
-      // a pre-sleep check may become useful again.)
+      // the sleep window via either `handle.cancel()` or `signal.abort()`.
+      // The only way `terminated` becomes true mid-loop is during this
+      // sleep, so a single post-sleep check is sufficient — we don't need
+      // a pre-sleep check too.
       if (isTerminated()) return;
       try {
         input.onEvent(ev);

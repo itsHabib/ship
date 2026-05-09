@@ -1,11 +1,13 @@
 /**
  * Smoke test for `index.ts` (the package's main public barrel).
  *
- * `runner.ts` is type-only; its exports don't appear at runtime. This
- * file verifies the runtime exports the barrel makes consumers depend
- * on — error classes and the SDK type re-exports — exist and are the
- * right shape. A typo in the barrel would otherwise only surface in a
- * downstream package.
+ * Only runtime exports are asserted here: `MissingApiKeyError` and
+ * `CursorRunFailedError`. The `runner.ts` types and the SDK
+ * re-exports (`SDKMessage`, `McpServerConfig`) are erased at runtime
+ * (`export type ...`), so a smoke test can't reach them — drift in
+ * those is caught at typecheck time by every consumer that imports
+ * them. A typo in a runtime export would otherwise only surface in a
+ * downstream package's CI; this test fails it loud here.
  *
  * `FakeCursorRunner` lives behind the `./test/fake` subpath, NOT the
  * main barrel — its absence here is intentional, not an oversight.

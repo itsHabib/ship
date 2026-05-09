@@ -334,7 +334,7 @@ After review/approval, implement as **two PRs** (5a and 5b). Within each sub-PR,
 2. **`src/runner.ts`** — `CursorRunner` / `CursorRunInput` / `CursorRunHandle` / `CursorRunResult` types. Pure types; type-only imports of `SDKMessage` / `McpServerConfig` from `@cursor/sdk`.
 3. **`src/errors.ts`** — `MissingApiKeyError`, `CursorRunFailedError`.
 4. **`src/fake.ts` + tests** — `FakeCursorRunner`, `FakeCursorScript`. Tests cover the validation plan's "FakeCursorRunner" section (synchronous emission default, async pacing opt-in, FIFO, cancel behaviors, run-without-script throws).
-5. **`src/index.ts`** — barrel for the main entry. Subpath-fake export resolves to `dist/fake.js` via `package.json#exports`.
+5. **`src/index.ts`** — barrel for the main entry. Subpath-fake export resolves to `./src/fake.ts` via `package.json#exports` (consistent with the no-build-step convention used by every other `@ship/*` package).
 6. **`test/sdk-import-isolation.test.ts`** — implements ED-2: globs `packages/*/{src,test}/**` minus this package, asserts zero `from "@cursor/sdk"` matches.
 7. **`make check`** + **`make coverage`** — green from repo root.
 

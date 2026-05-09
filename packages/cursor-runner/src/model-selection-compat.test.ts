@@ -5,15 +5,16 @@
  * `@ship/workflow` defines its own `ModelSelection` Zod schema + type
  * rather than re-exporting from `@cursor/sdk`, so the workflow package
  * has no runtime SDK dependency. That mirror has to stay in lockstep
- * with the SDK's exported `ModelSelection`; this test catches drift in
- * both directions:
+ * with the SDK's exported `ModelSelection`; this test catches drift:
  *
  * - **Runtime:** the workflow schema parses values constructed against
  *   the SDK type (proves the SDK shape doesn't add fields the workflow
  *   schema doesn't know how to accept, since the schema is `.strict()`).
  * - **Compile-time:** the SDK shape is assignable to the workflow
- *   shape and vice versa (the bottom-of-file `const`s stop compiling
- *   if the SDK adds a required field or renames one).
+ *   shape (the bottom-of-file `const`s stop compiling if the SDK adds
+ *   a required field or renames one). Only this direction is asserted;
+ *   the reverse (`workflow → SDK`) is omitted on purpose — see the
+ *   inline comment near the constants for why.
  *
  * The test lives here — not in `@ship/workflow` — because cursor-runner
  * is the sole package permitted to import from `@cursor/sdk` (per

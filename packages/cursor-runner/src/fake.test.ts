@@ -212,6 +212,97 @@ describe("FakeCursorRunner — cancel behaviors", () => {
     // still be a no-op (matches LocalCursorRunner's terminated-flag guard).
     await expect(handle.cancel()).resolves.toBeUndefined();
   });
+
+  test('cancelBehavior: "throw" — only the first pre-terminal cancel rejects; subsequent calls no-op', async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueue({
+      events: [evA, evB],
+      result: baseResult(),
+      cancelBehavior: "throw",
+      delayMsBetweenEvents: 50,
+    });
+
+    const handle = await runner.run(baseInput());
+    await expect(handle.cancel()).rejects.toThrow(/scripted cancel error/i);
+    // Second cancel must NOT reject again — idempotency contract holds
+    // even under the "throw" behavior. Concurrent cancel paths (signal
+    // + handle, timeout + user) MUST be safe.
+    await expect(handle.cancel()).resolves.toBeUndefined();
+    await expect(handle.cancel()).resolves.toBeUndefined();
+  });
+});
+
+describe("FakeCursorRunner — AbortSignal cancellation", () => {
+  test("aborting input.signal mid-flight cancels the run (cancelBehavior: complete by default)", async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueue({
+      events: [evA, evB, evC],
+      result: baseResult({ status: "succeeded" }),
+      delayMsBetweenEvents: 50,
+    });
+
+    const controller = new AbortController();
+    const handle = await runner.run(baseInput({ signal: controller.signal }));
+    controller.abort();
+    const result = await handle.result;
+    expect(result.status).toBe("cancelled");
+  });
+
+  test("a pre-aborted signal cancels the run before any event emits", async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueue({
+      events: [evA, evB],
+      result: baseResult({ status: "succeeded" }),
+      delayMsBetweenEvents: 50,
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const onEvent = vi.fn();
+    const handle = await runner.run(baseInput({ onEvent, signal: controller.signal }));
+    const result = await handle.result;
+    expect(result.status).toBe("cancelled");
+    // The pre-aborted path should beat the first event emission.
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  test("signal-then-handle cancel is idempotent (signal first, then handle.cancel)", async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueue({
+      events: [evA, evB],
+      result: baseResult({ status: "succeeded" }),
+      delayMsBetweenEvents: 50,
+    });
+
+    const controller = new AbortController();
+    const handle = await runner.run(baseInput({ signal: controller.signal }));
+    controller.abort();
+    // handle.cancel() AFTER the signal already cancelled — must no-op.
+    await expect(handle.cancel()).resolves.toBeUndefined();
+    const result = await handle.result;
+    expect(result.status).toBe("cancelled");
+  });
+
+  test("handle-then-signal cancel is idempotent (handle.cancel first, then abort)", async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueue({
+      events: [evA, evB],
+      result: baseResult({ status: "succeeded" }),
+      delayMsBetweenEvents: 50,
+    });
+
+    const controller = new AbortController();
+    const handle = await runner.run(baseInput({ signal: controller.signal }));
+    await handle.cancel();
+    // Aborting the signal AFTER handle.cancel — must not flip status
+    // back, must not re-resolve, must not throw.
+    expect(() => {
+      controller.abort();
+    }).not.toThrow();
+    const result = await handle.result;
+    expect(result.status).toBe("cancelled");
+  });
 });
 
 describe("FakeCursorRunner — queue mechanics", () => {
