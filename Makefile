@@ -1,4 +1,4 @@
-.PHONY: install lint lint-fix format format-check typecheck test test-watch check ci clean
+.PHONY: install lint lint-fix format format-check typecheck test test-watch coverage check ci clean
 
 install:
 	pnpm install
@@ -24,9 +24,12 @@ test:
 test-watch:
 	pnpm run test:watch
 
+coverage:
+	pnpm run coverage
+
 check: typecheck lint format-check test
 
-ci: install check
+ci: install check coverage
 
 clean:
 	pnpm exec rimraf -g "**/dist" "**/coverage" "**/*.tsbuildinfo"

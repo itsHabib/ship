@@ -77,16 +77,16 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 4 — QE/SDET: `packages/test-harness` + scenario suite + coverage gates
+## Phase 4 — QE/SDET: `packages/test-harness` + scenario suite + coverage gates ✅ (done 2026-05-09)
 
 📄 [phases/04-qe-sdet.md](phases/04-qe-sdet.md) — task doc.
 
 **Goal:** lock in the test taxonomy (unit / scenario / e2e) before more packages land. Build the harness + initial scenario suite at the storage level (Cursor / Tower mocked, since they don't exist yet); set up CI coverage gates and the e2e skeleton that phases 5–9 plug their real adapters into.
 
-- [ ] Review and approve `phases/04-qe-sdet.md`.
-- [ ] Implement per the doc's "Implementation plan" section.
+- [x] Review and approve `phases/04-qe-sdet.md`.
+- [x] Implement per the doc's "Implementation plan" section.
 
-**Done when:** `pnpm --filter @ship/test-harness test` green; `make check` passes; coverage gates active in CI; the documented scenarios all pass against the in-memory store.
+**Validated:** `make check` passes from repo root (typecheck + lint + format:check + 195 tests). `make coverage` passes per-package thresholds (`@ship/workflow` / `@ship/mcp` 100% at 95/90; `@ship/store` 92.34% / 88.82% at 90/85; `@ship/test-harness` 100% at 80/75). Five scenarios under `packages/test-harness/scenarios/` exercise happy-path / cancel-mid-flight / phase-failure / list-filters / concurrent-readers. E2E skeleton at `e2e/` exits cleanly with `SHIP_LIVE` unset.
 
 ---
 
@@ -182,7 +182,8 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 - No PR opening (that's the first V2 phase, ~30 lines of `gh` invocation).
 - No reviews, no CI repair, no comment management.
 - No cloud Cursor runtime.
-- No recipes, no communication-layer primitives, no dashboard.
+- No recipes, no dashboard.
+- Communication-layer primitives are a separate sibling project, not a Ship V2 phase.
 - No multi-tenant features, no hosted service.
 
 Each of those is a phase that composes onto V1 cleanly when V1 is done — that's the whole point of the package boundaries.
