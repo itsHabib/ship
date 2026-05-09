@@ -8,12 +8,11 @@
  * - Numeric refinements: positive vs nonnegative + integer enforcement.
  * - State-machine helpers (`canTransition`, `isTerminal`): exhaustive over
  *   the small status enum.
- * - `modelSelectionSchema`: runtime + compile-time structural compatibility
- *   with `@cursor/sdk`'s `ModelSelection`. The SDK is a devDep import,
- *   never pulled into the runtime graph of `domain`.
+ * - `modelSelectionSchema`: runtime parse coverage. Structural-compat
+ *   with `@cursor/sdk`'s `ModelSelection` is asserted in
+ *   `@ship/cursor-runner` (the only package allowed to import the SDK
+ *   per ED-2 in `phases/05-cursor-runner.md`).
  */
-
-import type { ModelSelection as SDKModelSelection } from "@cursor/sdk";
 
 import { describe, expect, test } from "vitest";
 
@@ -206,33 +205,12 @@ describe("modelSelectionSchema", () => {
       modelSelectionSchema.safeParse({ id: "x", params: [{ id: "p", value: "" }] }).success,
     ).toBe(false);
   });
-
-  test("accepts a value typed as @cursor/sdk's ModelSelection (id-only)", () => {
-    const sdkValue: SDKModelSelection = { id: "composer-2" };
-    expect(modelSelectionSchema.parse(sdkValue)).toEqual(sdkValue);
-  });
-
-  test("accepts a value typed as @cursor/sdk's ModelSelection (with params)", () => {
-    const sdkValue: SDKModelSelection = {
-      id: "composer-2",
-      params: [{ id: "thinking", value: "high" }],
-    };
-    expect(modelSelectionSchema.parse(sdkValue)).toEqual(sdkValue);
-  });
 });
 
-// Compile-time structural compatibility check between domain `ModelSelection`
-// and `@cursor/sdk`'s exported `ModelSelection`. The runtime tests above
-// exercise the parse path; this guards the inverse: the SDK shape must be
-// assignable to ours. If the SDK adds a required field, these constants stop
-// compiling.
-const _sdkSampleEmpty: SDKModelSelection = { id: "composer-2" };
-const _sdkSampleFull: SDKModelSelection = {
-  id: "composer-2",
-  params: [{ id: "thinking", value: "high" }],
-};
-const _domainFromSdkEmpty: ModelSelection = _sdkSampleEmpty;
-const _domainFromSdkFull: ModelSelection = _sdkSampleFull;
+// Structural-compat between this mirror and `@cursor/sdk`'s exported
+// `ModelSelection` lives in `@ship/cursor-runner` — the only package
+// allowed to import from `@cursor/sdk` per ED-2 (phases/05-cursor-runner.md).
+// See `packages/cursor-runner/src/model-selection-compat.test.ts`.
 
 describe("worktreeRefSchema", () => {
   test("accepts a valid worktree", () => {

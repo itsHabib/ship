@@ -1,5 +1,5 @@
 {
-  "name": "@ship/workflow",
+  "name": "@ship/cursor-runner",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,13 +9,17 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./test/fake": {
+      "types": "./src/fake.ts",
+      "default": "./src/fake.ts"
     }
   },
   "scripts": {
     "test": "vitest run"
   },
   "dependencies": {
-    "ulid": "^2.4.0",
-    "zod": "^3.24.1"
+    "@cursor/sdk": "^1.0.12",
+    "@ship/workflow": "workspace:*"
   }
 }

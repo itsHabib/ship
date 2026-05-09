@@ -36,6 +36,15 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.17)
 
+  packages/cursor-runner:
+    dependencies:
+      '@cursor/sdk':
+        specifier: ^1.0.12
+        version: 1.0.12
+      '@ship/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+
   packages/mcp:
     dependencies:
       '@ship/workflow':
@@ -75,10 +84,6 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
-    devDependencies:
-      '@cursor/sdk':
-        specifier: ^1.0.12
-        version: 1.0.12
 
 packages:
 
