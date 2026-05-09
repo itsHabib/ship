@@ -64,16 +64,16 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 3 — `packages/store`
+## Phase 3 — `packages/store` ✅ (done 2026-05-08)
 
 📄 [phases/03-store.md](phases/03-store.md) — task doc (functional/non-functional req, tradeoffs, decisions, API contract, validation plan, risks, open questions).
 
 **Goal:** SQLite persistence with hand-written SQL + Zod parse on hydration. No ORM.
 
-- [ ] Review and approve `phases/03-store.md`.
-- [ ] Implement per the doc's "Implementation plan" section.
+- [x] Review and approve `phases/03-store.md`.
+- [x] Implement per the doc's "Implementation plan" section.
 
-**Done when:** `pnpm --filter @ship/store test` is green, `make check` is green from repo root, and the doc's acceptance criteria are met.
+**Validated:** `make check` passes from repo root (typecheck + lint + format:check + test). All 172 tests pass; per-package `pnpm --filter @ship/store test` exits 0 with 57 tests run (migrations + per-table CRUD + connection PRAGMAs + atomicity + barrel smoke).
 
 ---
 
