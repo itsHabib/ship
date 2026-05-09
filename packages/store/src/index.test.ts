@@ -28,6 +28,7 @@ import type {
 
 import {
   createStore,
+  CursorRunNotFoundError,
   MigrationError,
   PhaseNotFoundError,
   StoreSchemaError,
@@ -74,11 +75,13 @@ describe("@ship/store barrel exports", () => {
   });
 
   test("typed errors are runtime-instantiable Error subclasses with discriminating names", () => {
+    expect(new CursorRunNotFoundError("cr_x")).toBeInstanceOf(Error);
     expect(new MigrationError("0001.sql", "boom")).toBeInstanceOf(Error);
     expect(new PhaseNotFoundError("ph_x")).toBeInstanceOf(Error);
     expect(new StoreSchemaError("bad json")).toBeInstanceOf(Error);
     expect(new WorkflowRunNotFoundError("wf_x")).toBeInstanceOf(Error);
 
+    expect(new CursorRunNotFoundError("cr_x").name).toBe("CursorRunNotFoundError");
     expect(new MigrationError("0001.sql", "boom").name).toBe("MigrationError");
     expect(new PhaseNotFoundError("ph_x").name).toBe("PhaseNotFoundError");
     expect(new StoreSchemaError("bad json").name).toBe("StoreSchemaError");

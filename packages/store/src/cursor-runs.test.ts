@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { Store } from "./store.js";
 
-import { WorkflowRunNotFoundError } from "./errors.js";
+import { CursorRunNotFoundError, WorkflowRunNotFoundError } from "./errors.js";
 import { createStore } from "./store.js";
 
 const validWorktree: WorktreeRef = {
@@ -166,7 +166,13 @@ describe("cursor runs (via createStore)", () => {
     expect(noop).toEqual(recorded);
   });
 
-  test("updateCursorRunStatus: unknown id throws", () => {
-    expect(() => store.updateCursorRunStatus(newCursorRunId(), { status: "succeeded" })).toThrow();
+  test("updateCursorRunStatus: unknown id throws CursorRunNotFoundError (with patch)", () => {
+    expect(() => store.updateCursorRunStatus(newCursorRunId(), { status: "succeeded" })).toThrow(
+      CursorRunNotFoundError,
+    );
+  });
+
+  test("updateCursorRunStatus: unknown id throws CursorRunNotFoundError (empty patch path)", () => {
+    expect(() => store.updateCursorRunStatus(newCursorRunId(), {})).toThrow(CursorRunNotFoundError);
   });
 });

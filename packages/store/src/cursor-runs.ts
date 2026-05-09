@@ -35,7 +35,7 @@ import { cursorRunRefSchema } from "@ship/workflow";
 
 import type { Db } from "./db.js";
 
-import { StoreSchemaError, WorkflowRunNotFoundError } from "./errors.js";
+import { CursorRunNotFoundError, StoreSchemaError, WorkflowRunNotFoundError } from "./errors.js";
 
 /**
  * Inputs accepted by `recordCursorRun`.
@@ -144,7 +144,7 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
     if (!hasAnyPatchField(patch)) {
       const current = selectByIdStmt.get(id);
       if (!current) {
-        throw new Error(`cursor run not found: ${id}`);
+        throw new CursorRunNotFoundError(id);
       }
       return parseCursorRun(current);
     }
@@ -167,7 +167,7 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
       .prepare(`UPDATE cursor_runs SET ${sets.join(", ")} WHERE id = ?`)
       .run(...params);
     if (result.changes === 0) {
-      throw new Error(`cursor run not found: ${id}`);
+      throw new CursorRunNotFoundError(id);
     }
     const updated = selectByIdStmt.get(id);
     if (!updated) {

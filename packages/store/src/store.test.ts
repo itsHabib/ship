@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { Store } from "./store.js";
 
+import { openDatabase } from "./db.js";
 import { createStore } from "./store.js";
 
 const validWorktree: WorktreeRef = {
@@ -83,17 +84,16 @@ describe("createStore: connection setup PRAGMAs (file-backed)", () => {
     }
   });
 
-  test("busy_timeout = 5000 on the store's connection", () => {
-    const store = createStore({ dbPath });
+  test("openDatabase sets busy_timeout = 5000 on the connection", () => {
+    // busy_timeout is per-connection, so the only honest way to assert
+    // it is to read PRAGMA back on a handle from `openDatabase` directly.
+    // Going through `createStore` would still be testing a separate
+    // connection from the store's own.
+    const db = openDatabase(dbPath);
     try {
-      // We can't read the store's own busy_timeout directly, but we can verify
-      // the PRAGMA stuck on the file by opening another connection — the
-      // PRAGMA is per-connection, so this only proves the configurer ran the
-      // PRAGMA at all when invoked. Round-trip a method that uses the
-      // connection to make sure the store is functional.
-      expect(store.listRuns({})).toEqual([]);
+      expect(db.pragma("busy_timeout", { simple: true })).toBe(5000);
     } finally {
-      store.close();
+      db.close();
     }
   });
 });

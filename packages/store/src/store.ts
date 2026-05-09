@@ -163,30 +163,48 @@ function defaultClock(): string {
  * Synchronous; matches the rest of `@ship/store`. Throws if migrations
  * fail (`MigrationError`) or if `better-sqlite3` cannot open the path.
  * After this returns, the store is fully usable until `close()`.
+ *
+ * On any failure during init (migrations, prepared-statement compile,
+ * etc.) the open SQLite handle is closed before re-throwing — otherwise
+ * a long-lived caller (the daemon path, future retry loops) would
+ * accumulate open file handles and leak SQLite locks.
  */
 export function createStore(opts: CreateStoreOptions): Store {
   const clock = opts.clock ?? defaultClock;
   const db = openDatabase(opts.dbPath);
-  runMigrations(db, { clock });
+  try {
+    runMigrations(db, { clock });
 
-  const phaseOps = createPhaseOps(db, clock);
-  const workflowRunOps = createWorkflowRunOps(db, clock, phaseOps);
-  const cursorRunOps = createCursorRunOps(db, clock);
+    const phaseOps = createPhaseOps(db, clock);
+    const workflowRunOps = createWorkflowRunOps(db, clock, phaseOps);
+    const cursorRunOps = createCursorRunOps(db, clock);
 
-  return {
-    appendPhase: phaseOps.append,
-    cancelRun: workflowRunOps.cancel,
-    close: () => {
-      db.pragma("wal_checkpoint(TRUNCATE)");
-      db.close();
-    },
-    createWorkflowRun: workflowRunOps.create,
-    getCursorRun: cursorRunOps.get,
-    getRun: workflowRunOps.get,
-    listRuns: workflowRunOps.list,
-    recordCursorRun: cursorRunOps.record,
-    updateCursorRunStatus: cursorRunOps.updateStatus,
-    updatePhase: phaseOps.update,
-    updateWorkflowRunStatus: workflowRunOps.updateStatus,
-  };
+    return {
+      appendPhase: phaseOps.append,
+      cancelRun: workflowRunOps.cancel,
+      close: () => {
+        // wal_checkpoint(TRUNCATE) cleans up the -wal / -shm sidecars on
+        // a happy shutdown. It can throw SQLITE_BUSY when another
+        // connection is mid-write — in that case we still need
+        // db.close() to run, otherwise the SQLite handle and any file
+        // locks leak. The checkpoint failure is non-fatal for shutdown.
+        try {
+          db.pragma("wal_checkpoint(TRUNCATE)");
+        } finally {
+          db.close();
+        }
+      },
+      createWorkflowRun: workflowRunOps.create,
+      getCursorRun: cursorRunOps.get,
+      getRun: workflowRunOps.get,
+      listRuns: workflowRunOps.list,
+      recordCursorRun: cursorRunOps.record,
+      updateCursorRunStatus: cursorRunOps.updateStatus,
+      updatePhase: phaseOps.update,
+      updateWorkflowRunStatus: workflowRunOps.updateStatus,
+    };
+  } catch (err: unknown) {
+    db.close();
+    throw err;
+  }
 }

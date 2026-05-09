@@ -47,6 +47,7 @@ export type { RecordCursorRunInput, UpdateCursorRunInput } from "./cursor-runs.j
 
 // --- errors.ts: typed error subclasses ---
 export {
+  CursorRunNotFoundError,
   MigrationError,
   PhaseNotFoundError,
   StoreSchemaError,

@@ -41,9 +41,6 @@ const DEFAULT_LIMIT = 50;
 /** Hard upper bound on `listRuns` row cap; over-max throws. */
 const MAX_LIMIT = 200;
 
-/** Internal: status values that are sticky and require no further mutation on `cancel`. */
-const TERMINAL_STATUSES = new Set<string>(["succeeded", "failed", "cancelled"]);
-
 /**
  * Inputs accepted by `createWorkflowRun`.
  *
@@ -124,6 +121,14 @@ interface WorkflowRunStmts {
   insert: Statement;
   selectById: Statement<[string], WorkflowRunRow>;
   updateStatus: Statement;
+  /**
+   * Conditional cancel: flip `status` to `cancelled` only if the row
+   * isn't already terminal. Combined with `result.changes`, this lets
+   * `cancel` decide atomically — without a separate read — whether a
+   * cancel actually happened, so a concurrent `succeeded`/`failed`
+   * write from another connection can never be silently overwritten.
+   */
+  conditionalCancel: Statement;
 }
 
 /**
@@ -143,6 +148,10 @@ export function createWorkflowRunOps(
   phases: PhaseOps,
 ): WorkflowRunOps {
   const stmts: WorkflowRunStmts = {
+    conditionalCancel: db.prepare(
+      `UPDATE workflow_runs SET status = 'cancelled', updated_at = ?
+         WHERE id = ? AND status NOT IN ('succeeded', 'failed', 'cancelled')`,
+    ),
     insert: db.prepare(
       `INSERT INTO workflow_runs (id, repo, doc_path, status, base_ref, worktree_json, policy_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -228,6 +237,29 @@ function listRunsImpl(db: Db, phases: PhaseOps, filter: ListRunsFilter): Workflo
   return rows.map((row) => parseRun(row, grouped.get(row.id) ?? []));
 }
 
+/**
+ * Idempotent, race-safe cancel.
+ *
+ * Why a conditional UPDATE rather than read-then-write: with
+ * `busy_timeout` the package explicitly tolerates concurrent writers
+ * across processes. A naive `SELECT status; if (!terminal) UPDATE
+ * status='cancelled'` is non-atomic — between the read and the write
+ * another connection can flip the row to `succeeded` or `failed`, and
+ * the unconditional UPDATE would silently overwrite that terminal
+ * state. Doing the work as a single conditional UPDATE inside a
+ * transaction makes the "is it already terminal?" check and the
+ * cancel write atomic from SQLite's perspective.
+ *
+ * `result.changes` discriminates the three cases:
+ * - `1` — we successfully flipped a non-terminal run to `cancelled`;
+ *         flip any in-flight phases inside the same transaction so
+ *         either both commit or neither does.
+ * - `0` — either the row didn't exist, or it was already terminal
+ *         (and a concurrent writer beat us, or it was always
+ *         terminal). The post-txn lookup distinguishes:
+ *         `null` → throw `WorkflowRunNotFoundError`; otherwise return
+ *         the current row unchanged.
+ */
 function cancelRun(
   db: Db,
   stmts: WorkflowRunStmts,
@@ -235,24 +267,19 @@ function cancelRun(
   clock: () => string,
   id: string,
 ): WorkflowRun {
-  const existing = stmts.selectById.get(id);
-  if (!existing) {
-    throw new WorkflowRunNotFoundError(id);
-  }
-  if (TERMINAL_STATUSES.has(existing.status)) {
-    return hydrateOne(phases, existing);
-  }
   const txn = db.transaction((): void => {
     const now = clock();
-    stmts.updateStatus.run("cancelled", now, id);
-    phases.cancelInFlightForRun(id, now);
+    const result = stmts.conditionalCancel.run(now, id);
+    if (result.changes > 0) {
+      phases.cancelInFlightForRun(id, now);
+    }
   });
   txn();
-  const updated = stmts.selectById.get(id);
-  if (!updated) {
-    throw new Error(`internal: workflow run ${id} vanished after cancel`);
+  const row = stmts.selectById.get(id);
+  if (!row) {
+    throw new WorkflowRunNotFoundError(id);
   }
-  return hydrateOne(phases, updated);
+  return hydrateOne(phases, row);
 }
 
 /**

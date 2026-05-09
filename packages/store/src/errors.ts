@@ -1,15 +1,20 @@
 /**
  * Typed error subclasses for `@ship/store`.
  *
- * Every store method that fails throws one of these (or, for `MigrationError`,
- * the migration runner does) so `core` can `instanceof`-discriminate failures
- * without parsing message strings. All four extend the builtin `Error`; the
- * subclass identity carries the meaning, not the message.
+ * The store throws one of these for every **expected** failure mode, so
+ * `core` can `instanceof`-discriminate without parsing message strings.
+ * Internal-invariant violations ("a row vanished after I just inserted
+ * it") are bugs in the store itself, not the caller's contract — those
+ * surface as plain `Error` and never as one of these subclasses; if a
+ * caller ever sees one, it's a `@ship/store` bug.
  *
  * Why these specifically (per phases/03-store.md § "Error policy"):
- * - `WorkflowRunNotFoundError` / `PhaseNotFoundError` separate "missing
- *   parent" and "missing phase" so callers can produce different UX per
- *   case.
+ * - `WorkflowRunNotFoundError` / `PhaseNotFoundError` /
+ *   `CursorRunNotFoundError` separate the three "id doesn't resolve"
+ *   cases so callers can produce different UX per kind. Read methods
+ *   (`getRun`, `getCursorRun`, `listRuns`) return `null` / `[]`
+ *   instead — `not-found` is only an error from a mutator's
+ *   perspective.
  * - `StoreSchemaError` is the catch for hydration failures — JSON-blob
  *   corruption, column drift, missing required column. The Zod parse at
  *   the seam throws this with the offending field path in the message.
@@ -57,6 +62,23 @@ export class PhaseNotFoundError extends Error {
   constructor(phaseId: string) {
     super(`phase not found: ${phaseId}`);
     this.phaseId = phaseId;
+  }
+}
+
+/**
+ * Thrown by `updateCursorRunStatus` when the cursor-run id does not
+ * resolve. `getCursorRun` returns `null` for the same case (read methods
+ * surface "not found" as a value, not an exception).
+ */
+export class CursorRunNotFoundError extends Error {
+  /** Identifies the subclass at runtime without `instanceof`. */
+  override readonly name = "CursorRunNotFoundError";
+  /** The id the caller passed in. */
+  readonly cursorRunId: string;
+
+  constructor(cursorRunId: string) {
+    super(`cursor run not found: ${cursorRunId}`);
+    this.cursorRunId = cursorRunId;
   }
 }
 

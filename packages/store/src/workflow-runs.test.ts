@@ -157,6 +157,39 @@ describe("workflow runs (via createStore)", () => {
     expect(again.updatedAt).toBe(cancelledAt);
   });
 
+  test("cancelRun does NOT overwrite a terminal succeeded status (race-safety)", () => {
+    // Models the multi-connection race the conditional UPDATE guards
+    // against: another writer transitioned the row to `succeeded`.
+    // `cancelRun` must respect the terminal state.
+    const input = makeInput();
+    store.createWorkflowRun(input);
+    store.updateWorkflowRunStatus(input.id, "running");
+
+    const succeededAt = "2026-05-08T00:09:00.000Z";
+    currentNow = succeededAt;
+    store.updateWorkflowRunStatus(input.id, "succeeded");
+
+    currentNow = "2026-05-08T00:10:00.000Z";
+    const result = store.cancelRun(input.id);
+    expect(result.status).toBe<WorkflowStatus>("succeeded");
+    expect(result.updatedAt).toBe(succeededAt);
+  });
+
+  test("cancelRun does NOT overwrite a terminal failed status (race-safety)", () => {
+    const input = makeInput();
+    store.createWorkflowRun(input);
+    store.updateWorkflowRunStatus(input.id, "running");
+
+    const failedAt = "2026-05-08T00:09:00.000Z";
+    currentNow = failedAt;
+    store.updateWorkflowRunStatus(input.id, "failed");
+
+    currentNow = "2026-05-08T00:10:00.000Z";
+    const result = store.cancelRun(input.id);
+    expect(result.status).toBe<WorkflowStatus>("failed");
+    expect(result.updatedAt).toBe(failedAt);
+  });
+
   test("cancelRun: unknown id throws WorkflowRunNotFoundError", () => {
     expect(() => store.cancelRun(newWorkflowRunId())).toThrow(WorkflowRunNotFoundError);
   });
