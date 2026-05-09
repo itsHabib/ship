@@ -58,6 +58,15 @@ importers:
         specifier: ^7.6.13
         version: 7.6.13
 
+  packages/test-harness:
+    dependencies:
+      '@ship/store':
+        specifier: workspace:*
+        version: link:../store
+      '@ship/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+
   packages/workflow:
     dependencies:
       ulid:
