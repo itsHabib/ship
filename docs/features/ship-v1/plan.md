@@ -77,7 +77,20 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 4 — `packages/tower-adapter`
+## Phase 4 — QE/SDET: `packages/test-harness` + scenario suite + coverage gates
+
+📄 [phases/04-qe-sdet.md](phases/04-qe-sdet.md) — task doc.
+
+**Goal:** lock in the test taxonomy (unit / scenario / e2e) before more packages land. Build the harness + initial scenario suite at the storage level (Cursor / Tower mocked, since they don't exist yet); set up CI coverage gates and the e2e skeleton that phases 5–9 plug their real adapters into.
+
+- [ ] Review and approve `phases/04-qe-sdet.md`.
+- [ ] Implement per the doc's "Implementation plan" section.
+
+**Done when:** `pnpm --filter @ship/test-harness test` green; `make check` passes; coverage gates active in CI; the documented scenarios all pass against the in-memory store.
+
+---
+
+## Phase 5 — `packages/tower-adapter`
 
 **Goal:** Tower MCP client via stdio.
 
@@ -85,6 +98,7 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 - [ ] `TowerAdapter` interface: `getRepo`, `addWorktree`, `getWorktree`, `removeWorktree`.
 - [ ] Map Tower MCP responses into Ship's domain types (no leaks).
 - [ ] Vitest: against a recorded transcript or a local fake Tower MCP server.
+- [ ] `FakeTowerAdapter` exported for downstream tests; harness extended in `@ship/test-harness`.
 
 **Decisions you'll need to weigh in on:**
 - Does Tower MCP currently expose JSON output for what we need? (Open question #1 in the original design doc.)
@@ -94,21 +108,21 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 5 — `packages/cursor-runner`
+## Phase 6 — `packages/cursor-runner`
 
 **Goal:** the only `@cursor/sdk` importer. `CursorRunner` interface + impl + `FakeCursorRunner` for downstream tests.
 
 - [ ] Implement against the spike findings, not the SDK reference doc alone.
 - [ ] NDJSON event writer (with whatever batching the spike showed we need).
 - [ ] SIGINT/AbortSignal wired to `run.cancel()`.
-- [ ] `FakeCursorRunner` exported under `cursor-runner/test/fake.ts` — scriptable event sequence, configurable success/fail/cancel.
+- [ ] `FakeCursorRunner` exported under `cursor-runner/test/fake.ts` — scriptable event sequence, configurable success/fail/cancel; plugged into `@ship/test-harness`.
 - [ ] Vitest: prompt assembly, options mapping, fake-driven success and failure paths.
 
 **Done when:** `pnpm --filter cursor-runner test` green; the same trivial spike prompt now runs through the package and produces equivalent output.
 
 ---
 
-## Phase 6 — `packages/core`
+## Phase 7 — `packages/core`
 
 **Goal:** `ShipService` — the workflow brain. Holds the state machine.
 
@@ -116,13 +130,14 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 - [ ] Methods: `ship(input)`, `getRun(id)`, `listRuns(filter)`, `cancelRun(id)`.
 - [ ] State transitions enforce the rules in spec.md § "State transitions".
 - [ ] Artifact write logic (prompt.md, task-doc.md, events.ndjson, result.json, summary.md).
-- [ ] Vitest: state transitions, artifact paths, error paths, all using fakes from #4 and #5.
+- [ ] Vitest: state transitions, artifact paths, error paths, all using fakes from #5 and #6.
+- [ ] Extend `@ship/test-harness` scenarios to cover full-stack flows through `ShipService`.
 
 **Done when:** `pnpm --filter core test` green; an end-to-end test using fakes goes from `pending` → `succeeded`.
 
 ---
 
-## Phase 7 — `packages/cli`
+## Phase 8 — `packages/cli`
 
 **Goal:** the binary you can invoke locally. Same `ShipService` instance the MCP server uses.
 
@@ -134,7 +149,7 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 8 — `packages/mcp-server`
+## Phase 9 — `packages/mcp-server`
 
 **Goal:** stdio MCP server exposing the four V1 tools.
 
@@ -147,12 +162,12 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 9 — Live integration test + dogfood
+## Phase 10 — Live integration test + dogfood
 
-**Goal:** the first real `ship` invocation against your real Cursor SDK and real Tower, on a trivial test repo.
+**Goal:** the first real `ship` invocation against your real Cursor SDK and real Tower, on a trivial test repo. Swaps the fakes in `@ship/test-harness`'s e2e harness for the real adapters built in phases 5–6.
 
 - [ ] Test repo: throwaway dir registered in Tower with a one-line task doc ("add a `hello` function and a test for it").
-- [ ] Run `ship ship docs/features/hello.md --repo <testrepo>`.
+- [ ] Run `ship ship docs/features/hello.md --repo <testrepo>` behind `SHIP_LIVE=1`.
 - [ ] Assert: worktree created, files changed, tests pass in the worktree, `result.json` populated, `summary.md` non-empty.
 - [ ] Then dogfood: write the next Ship feature as a task doc and ship it through Ship.
 
