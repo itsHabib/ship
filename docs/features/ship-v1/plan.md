@@ -92,15 +92,14 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ## Phase 5 — `packages/cursor-runner`
 
-**Goal:** the only `@cursor/sdk` importer. Substrate-agnostic `CursorRunner` interface + local impl + `FakeCursorRunner` for downstream tests. Cloud impl is V2+ behind the same interface.
+📄 [phases/05-cursor-runner.md](phases/05-cursor-runner.md) — task doc.
 
-- [ ] Implement against the spike findings, not the SDK reference doc alone.
-- [ ] NDJSON event writer (with whatever batching the spike showed we need).
-- [ ] SIGINT/AbortSignal wired to `run.cancel()`.
-- [ ] `FakeCursorRunner` exported under `cursor-runner/test/fake.ts` — scriptable event sequence, configurable success/fail/cancel; plugged into `@ship/test-harness`.
-- [ ] Vitest: prompt assembly, options mapping, fake-driven success and failure paths.
+**Goal:** the only `@cursor/sdk` importer. Substrate-agnostic `CursorRunner` interface + `LocalCursorRunner` impl + `FakeCursorRunner` for downstream tests. Cloud impl is V2+ behind the same interface. Implementation grounded in the [spike findings](../../cursor-sdk-typescript.md#spike-findings-run-1-2026-05-06), not the SDK reference doc alone.
 
-**Done when:** `pnpm --filter cursor-runner test` green; the same trivial spike prompt now runs through the package and produces equivalent output.
+- [ ] Review and approve `phases/05-cursor-runner.md`.
+- [ ] Implement per the doc's "Implementation plan" section (lands as 5a + 5b sub-PRs).
+
+**Done when:** `pnpm --filter @ship/cursor-runner test` green; `make check` + `make coverage` pass; ED-2 import-isolation test verifies no `@cursor/sdk` leak outside the package; `@ship/test-harness` harness gains a `cursor: FakeCursorRunner` field with a scenario exercising it end-to-end.
 
 ---
 
