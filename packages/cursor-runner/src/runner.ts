@@ -51,11 +51,15 @@ import type { ModelSelection } from "@ship/workflow";
  *                   run via `run.cancel()`. Composes with timers and
  *                   process-level SIGINT wiring in `core`.
  * - `onEvent`     — called once per `SDKMessage` emitted by the SDK
- *                   stream, in stream order. **Sync, no-throw.** The
- *                   runner wraps each call in try/catch and silently
- *                   swallows on throw; consumers that need visibility
- *                   queue async work and use their own error handling.
- *                   See ED-4.
+ *                   stream, in stream order. **Fire-and-forget; the
+ *                   runner does NOT await the return value.** The
+ *                   signature accepts `void | Promise<void>` so async
+ *                   consumers typecheck cleanly, but the runner
+ *                   attaches a no-op `.catch` to any returned Promise
+ *                   without awaiting — both sync throws and async
+ *                   rejections are silently swallowed (ED-4). Consumers
+ *                   that need visibility queue work themselves with
+ *                   their own error handling.
  */
 export interface CursorRunInput {
   readonly cwd: string;
@@ -64,7 +68,7 @@ export interface CursorRunInput {
   readonly mcpServers?: Record<string, McpServerConfig>;
   readonly agentName?: string;
   readonly signal?: AbortSignal;
-  readonly onEvent: (event: SDKMessage) => void;
+  readonly onEvent: (event: SDKMessage) => void | Promise<void>;
 }
 
 /**

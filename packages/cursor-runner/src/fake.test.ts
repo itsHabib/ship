@@ -127,6 +127,39 @@ describe("FakeCursorRunner — onEvent error swallowing", () => {
     // All three events were attempted despite each one throwing.
     expect(calls).toBe(3);
   });
+
+  test("async onEvent rejection is swallowed (mirrors LocalCursorRunner behavior)", async () => {
+    // Cycle-3 review applied to fake too: TS permits async fns to
+    // satisfy `=> void`. The fake must swallow async rejections the
+    // same way the real runner does, otherwise tests written against
+    // the fake will see leaked unhandled rejections that wouldn't
+    // happen in production.
+    const runner = new FakeCursorRunner();
+    runner.enqueue({ events: [evA, evB], result: baseResult() });
+
+    let calls = 0;
+    const onEvent = (): Promise<void> => {
+      calls += 1;
+      return Promise.reject(new Error("async consumer broke"));
+    };
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const handle = await runner.run(baseInput({ onEvent }));
+      await expect(handle.result).resolves.toEqual(baseResult());
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(unhandled).toHaveLength(0);
+      expect(calls).toBe(2);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
 });
 
 describe("FakeCursorRunner — cancel behaviors", () => {

@@ -31,7 +31,7 @@
  *   stream success, throw, or cancel.
  */
 
-import type { Run, RunResult, SDKAgent } from "@cursor/sdk";
+import type { Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
 
 import { Agent } from "@cursor/sdk";
 
@@ -147,6 +147,13 @@ export class LocalCursorRunner implements CursorRunner {
      * the pipeline after `wait()` returns) and `cancelInitiated` (set
      * here) guards. The terminated check absorbs cancel-after-terminal;
      * the cancelInitiated check absorbs concurrent cancel races.
+     *
+     * If `sdkRun.cancel()` rejects (transient transport/runtime error),
+     * we reset `cancelInitiated = false` so a retry from any path
+     * (re-call of `handle.cancel()`, signal re-fire) can attempt the
+     * SDK cancel again. Without this reset a single transient failure
+     * permanently disables cancellation while `terminated` is still
+     * false — a real hang risk caught in cycle-3 review.
      */
     const cancelInternal = async (): Promise<void> => {
       if (terminated || cancelInitiated) return;
@@ -154,10 +161,11 @@ export class LocalCursorRunner implements CursorRunner {
       try {
         await sdkRun.cancel();
       } catch {
-        // SDK cancel-after-terminal behavior is unverified per spike #1
-        // findings; swallow defensively. The pipeline's `terminated`
-        // flag is the source of truth for whether the run actually
-        // ended.
+        // Allow retries: the SDK cancel call failed transiently. The
+        // pipeline's `terminated` flag is still the source of truth
+        // for whether the run ended; if it didn't, future cancel
+        // attempts should be allowed to try again.
+        cancelInitiated = false;
       }
     };
 
@@ -214,15 +222,31 @@ export class LocalCursorRunner implements CursorRunner {
       detachSignalListener: () => void;
     },
   ): Promise<void> {
+    /**
+     * Calls `input.onEvent(ev)` once and swallows BOTH sync throws and
+     * async rejections. The `onEvent` type is documented sync (ED-4),
+     * but TypeScript permits async functions to satisfy `=> void`
+     * signatures — without async-aware swallow logic a rejecting
+     * async consumer leaks an unhandled rejection past the runner
+     * (cycle-3 review). Extracted so the for-await body stays shallow.
+     */
+    const safelyEmit = (ev: SDKMessage): void => {
+      try {
+        const maybePromise: unknown = input.onEvent(ev);
+        if (isPromiseLike(maybePromise)) {
+          maybePromise.then(undefined, () => {
+            /* swallow async rejection — ED-4 contract */
+          });
+        }
+      } catch {
+        // sync throw — same swallow per ED-4.
+      }
+    };
+
     try {
       try {
         for await (const ev of sdkRun.stream()) {
-          try {
-            input.onEvent(ev);
-          } catch {
-            // ED-4: onEvent exceptions are swallowed at the runner
-            // boundary; the SDK run is unaffected.
-          }
+          safelyEmit(ev);
         }
       } catch (streamErr) {
         // Stream itself errored before run.wait could observe a terminal
@@ -289,6 +313,19 @@ export class LocalCursorRunner implements CursorRunner {
       return undefined;
     }
   }
+}
+
+/**
+ * Best-effort Promise detection. Avoids `instanceof Promise` because
+ * a thenable from a different realm (or a vendored mini-Promise)
+ * still needs the same swallow treatment.
+ */
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
 }
 
 /**

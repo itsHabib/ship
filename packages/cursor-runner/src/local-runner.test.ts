@@ -347,6 +347,38 @@ describe("LocalCursorRunner — onEvent contract", () => {
     expect(onEvent).toHaveBeenCalledTimes(2);
   });
 
+  test("async onEvent rejection is swallowed (no unhandled rejection leaks past the runner)", async () => {
+    // TS permits an async fn to satisfy `=> void`; without async-aware
+    // swallow logic this would leak. Cycle-3 review (Codex P2).
+    const { run } = makeMockRun({ events: [evA, evB] });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const onEvent = vi
+      .fn()
+      .mockImplementation(() => Promise.reject(new Error("async consumer broke")));
+    const runner = new LocalCursorRunner();
+    // Trap unhandled rejections at the process level for this test —
+    // the swallow must hold even under Node's strict-mode default.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const handle = await runner.run(baseInput({ onEvent }));
+      await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+      // Give the microtask queue a tick to flush any leaked rejections.
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(unhandled).toHaveLength(0);
+      expect(onEvent).toHaveBeenCalledTimes(2);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("stream errors with no terminal RunResult → handle.result rejects with CursorRunFailedError", async () => {
     const streamErr = new Error("network disconnected mid-stream");
     const { run } = makeMockRun({ streamThrows: streamErr, waitThrows: streamErr });
@@ -473,6 +505,29 @@ describe("LocalCursorRunner — cancellation", () => {
     const runner = new LocalCursorRunner();
     const handle = await runner.run(baseInput());
     await expect(handle.cancel()).resolves.toBeUndefined();
+    await handle.result;
+  });
+
+  test("transient SDK cancel failure does NOT permanently disable cancel — second call retries", async () => {
+    // Cycle-3 review (Codex P1): if cancelInitiated stays `true` after a
+    // rejected sdkRun.cancel(), all subsequent cancel attempts no-op
+    // while the run continues. Retry must succeed.
+    const { cancelSpy, run } = makeMockRun({
+      events: [evA, evB],
+      result: { durationMs: 0, id: "run-test-0001", status: "cancelled" },
+    });
+    // First call rejects, second succeeds.
+    cancelSpy.mockRejectedValueOnce(new Error("transient transport"));
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new LocalCursorRunner();
+    const handle = await runner.run(baseInput());
+    // First cancel: SDK rejects, runner swallows + resets cancelInitiated.
+    await handle.cancel();
+    // Second cancel: should reach the SDK again.
+    await handle.cancel();
+    expect(cancelSpy).toHaveBeenCalledTimes(2);
     await handle.result;
   });
 });
