@@ -24,6 +24,12 @@ describe("@ship/cursor-runner barrel export (index.ts)", () => {
     expect(new cursorRunner.MissingApiKeyError()).toBeInstanceOf(Error);
   });
 
+  test("re-exports LocalCursorRunner (the V1 runtime implementation)", () => {
+    expect(typeof cursorRunner.LocalCursorRunner).toBe("function");
+    // Constructor takes no required args.
+    expect(new cursorRunner.LocalCursorRunner()).toBeInstanceOf(cursorRunner.LocalCursorRunner);
+  });
+
   test("does NOT re-export FakeCursorRunner from the main barrel", () => {
     // The fake is intentionally only reachable via the `./test/fake`
     // subpath (per `package.json#exports`) so consumer production code
