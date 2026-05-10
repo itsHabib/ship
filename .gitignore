@@ -29,6 +29,18 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Local credentials (never commit). Defensive — keys live outside the
+# repo by default (`..\.keys`); these patterns catch any case where a
+# key file is dropped into the repo root for live e2e convenience.
+.keys
+.keys.*
+*.key
+*.secret
+credentials.json
+# Vim undo files (e.g. `..keys.un~` for an edited `.keys` file would
+# otherwise leak partial credential content if accidentally staged).
+*.un~
+
 # Misc
 *.log
 coverage/

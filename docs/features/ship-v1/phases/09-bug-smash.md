@@ -255,4 +255,24 @@ Twenty raw findings from the pre-doc ad-hoc agent run, preserved here for L1 re-
 
 **Zero P0/P1 findings.** V1's correctness surface holds up under hostile code-read + L2 adversarial input on both binaries. The chips are all UX / observability / boundary-parity polish.
 
-**L3 status:** deferred pending user `CURSOR_API_KEY` load. If L3 surfaces additional findings, they get appended here as a "Phase 9 L3 outcome" subsection.
+### L3 results (completed 2026-05-10)
+
+User loaded `CURSOR_API_KEY` into the conversation env (copied `..\.keys` into the repo root under a freshly-added `.gitignore` pattern — see follow-up PR). Three back-to-back `make e2e-verbose` runs against `e2e/fixtures/test-repo/`:
+
+| Run | Wall-clock | Cursor durationMs | Workflow status | Cursor status |
+|---|---|---|---|---|
+| 1 | 37s | 34561 | succeeded | succeeded |
+| 2 | 26s | 23855 | succeeded | succeeded |
+| 3 | 24s | 21723 | succeeded | succeeded |
+
+F5 checklist — every item green across all 3 runs:
+
+- ✅ `RunResult.status` matches the persisted `WorkflowRun.status`.
+- ✅ `events.ndjson` ends with a terminal event and parses cleanly line-by-line (the streaming tailer in `hello-world.e2e.test.ts` printed `[ship-event] <type>` for every appended line; run 3 explicitly emitted a final `[ship-event] status`).
+- ✅ `summary` non-empty on every run — full structured "Files changed / Tests / Risks" markdown matching the prompt template's "Final summary" section.
+- ✅ `artifacts.{prompt,events,result}Path` resolved to proper Windows paths inside the isolated tmp tree (e.g. `C:\Users\MICHAE~1\AppData\Local\Temp\ship-live-W5eYvC\ship\runs\wf_...`).
+- ✅ Wall-clock 24–37s, comfortably inside the 5-minute test timeout.
+
+**Zero L3 findings to chip.** The 16-test suite (4 unit/scenario test files + the 1 live e2e × 3 runs) passed every assertion. The agent produced slightly different scaffolds across runs (run 3 added `vitest.config.ts`; runs 1–2 skipped it) — that's expected `composer-2` non-determinism on file-set choice, not a Ship correctness issue.
+
+**Phase 9 closed.** L1 + L2 + L3 all complete. Zero P0/P1; 5 P2/P3 chips noted in the Outcome chip-queue table; live e2e validates the real Cursor SDK path end-to-end.
