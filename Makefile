@@ -32,8 +32,14 @@ check: typecheck lint format-check test
 integration:
 	pnpm exec vitest run --config e2e/vitest.e2e.config.ts
 
+integration-verbose:
+	SHIP_E2E_VERBOSE=1 pnpm exec vitest run --config e2e/vitest.e2e.config.ts
+
 e2e:
 	SHIP_LIVE=1 pnpm exec vitest run --config e2e/vitest.e2e.config.ts
+
+e2e-verbose:
+	SHIP_LIVE=1 SHIP_E2E_VERBOSE=1 pnpm exec vitest run --config e2e/vitest.e2e.config.ts
 
 ci: install check coverage integration
 

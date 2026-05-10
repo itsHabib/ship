@@ -27,6 +27,15 @@ import { defineConfig } from "vitest/config";
  *   SHIP_LIVE=1 pnpm exec vitest run --config e2e/vitest.e2e.config.ts  # integration + live e2e
  */
 const live = process.env["SHIP_LIVE"] === "1";
+// Independent opt-in for streaming child stdout / agent events to the
+// terminal in real time. By default vitest captures test stdout and
+// only shows it on failure, which makes long live runs feel like
+// they've hung; setting `SHIP_E2E_VERBOSE=1` flips on
+// `disableConsoleIntercept` and the `verbose` reporter so writes pass
+// straight through. Off by default because most CI runs prefer the
+// concise default reporter — it's the operator-watching-a-live-run
+// flow that wants the noise.
+const verbose = process.env["SHIP_E2E_VERBOSE"] === "1";
 const root = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
@@ -40,12 +49,7 @@ export default defineConfig({
     passWithNoTests: true,
     testTimeout: 5 * 60 * 1000,
     hookTimeout: 60 * 1000,
-    // Live e2e + subprocess integration runs are slow; the operator
-    // wants to see progress (CLI stdout, agent events stream) while
-    // they wait. By default vitest captures test stdout and only
-    // shows it on failure. `disableConsoleIntercept` plus the
-    // `verbose` reporter passes child stdout straight through.
-    disableConsoleIntercept: true,
-    reporters: live ? ["verbose"] : ["default"],
+    disableConsoleIntercept: verbose,
+    reporters: verbose ? ["verbose"] : ["default"],
   },
 });
