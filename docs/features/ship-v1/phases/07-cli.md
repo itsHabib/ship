@@ -149,10 +149,12 @@ The `service.ts` wrapper builds a lazy `ShipService` (not constructed until the 
 
 ### ED-2 — Path resolution: `<UserConfigDir>/ship/`
 
-`resolveDbPath()` returns `<UserConfigDir>/ship/state.db`; `resolveRunsDir()` returns `<UserConfigDir>/ship/runs/`. `UserConfigDir` comes from `os.homedir()` + platform-specific subpath:
+`resolveDbPath()` returns `<UserConfigDir>/ship/state.db`; `resolveRunsDir()` returns `<UserConfigDir>/ship/runs/`. `<UserConfigDir>` is the platform-specific user-config root (no `ship` suffix); the `/ship/` segment is appended exactly once by the resolver:
 
-- macOS / Linux: `~/.config/ship/` (XDG-default, simple).
-- Windows: `%APPDATA%\ship\` (`process.env.APPDATA` falls back to `os.homedir() + "\\AppData\\Roaming\\ship"`).
+- macOS / Linux: `<UserConfigDir>` = `~/.config` → resolved paths `~/.config/ship/state.db` and `~/.config/ship/runs/`.
+- Windows: `<UserConfigDir>` = `process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming")` → resolved paths `%APPDATA%\ship\state.db` and `%APPDATA%\ship\runs\`.
+
+The `ship` subdirectory is appended once inside `resolveDbPath()` / `resolveRunsDir()`, never inside the platform branches — that avoids the doubled-path failure mode (`...\ship\ship\state.db`) when `APPDATA` is unset and the fallback already terminates with the user's roaming root.
 
 `--db-path` and `--runs-dir` are global flags on `program` that override. Tests pass `--db-path :memory:` to keep state ephemeral.
 
@@ -233,7 +235,7 @@ Test wiring: the test harness's `createServiceFromHarness(h)` returns a service 
 
 ## API boundaries / contracts
 
-The `cli` package exports nothing. It's a binary; it has a `bin` entry in `package.json` and no public TS API. The internal modules (`commands/*.ts`, `service.ts`, `format.ts`) are private to the package.
+The `cli` package exports nothing. It's a thin binary wrapper with no public TS API. The internal modules (`commands/*.ts`, `service.ts`, `format.ts`) are private to the package. V1 invokes it via `pnpm exec tsx src/bin.ts`; the `package.json#bin` shorthand + a build step land in V2 (see ED-1 + the `package.json` shape below).
 
 `package.json` shape:
 
