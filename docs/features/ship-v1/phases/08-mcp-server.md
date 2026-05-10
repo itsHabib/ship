@@ -133,14 +133,14 @@ Single executable: `ship-mcp-server` (registered via `package.json#bin`, deferre
 1. Reads `SHIP_DB_PATH`, `SHIP_RUNS_DIR`, `CURSOR_API_KEY` from env (with `<UserConfigDir>/ship/` defaults via the same resolver as the CLI).
 2. Pre-flight: rejects with exit 1 + a clear "set CURSOR_API_KEY" message if the key is missing.
 3. Constructs the `ShipService` via `createDefaultShipService(opts)`.
-4. Constructs the MCP `Server`, registers four tools + one resource (per F1–F5).
+4. Constructs the MCP `McpServer` (high-level dispatch-aware variant — see ED-3), registers four tools + one resource (per F1–F5).
 5. Connects the server to stdio transport (`StdioServerTransport`).
 6. `await server.connect(transport)`.
 7. The process stays alive until stdin closes or the client disconnects. Then it exits 0.
 
 ```ts
 // src/bin.ts (sketch)
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerShipTool } from "./tools/ship.js";
 // ...
@@ -152,7 +152,10 @@ if (process.env["CURSOR_API_KEY"] === undefined) {
 }
 
 const factory = createDefaultShipService({ dbPath, runsDir });
-const server = new Server({ name: "ship", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
+const server = new McpServer(
+  { name: "ship", version: "0.1.0" },
+  { capabilities: { tools: {}, resources: {} } },
+);
 registerShipTool(server, factory);
 registerGetWorkflowRunTool(server, factory);
 registerListWorkflowRunsTool(server, factory);
@@ -163,17 +166,39 @@ await server.connect(new StdioServerTransport());
 
 ### ED-3 — Tool layout
 
-Each tool lives in `src/tools/<name>.ts` and exports a `register<Name>Tool(server: Server, factory: ServiceFactory): void`. The function:
+The MCP protocol exposes tools through a single `tools/call` JSON-RPC method that dispatches by `params.name`, not through one method per tool — registering `setRequestHandler(toolASchema, ...)` then `setRequestHandler(toolBSchema, ...)` would have the second registration replace the first on the low-level `Server` API. Likewise, `tools/list` and `resources/list` are not auto-installed when per-item handlers are registered; they have to be wired explicitly.
 
-1. Calls `server.setRequestHandler(<schema>, handler)` for the tool's request type.
+The high-level `McpServer` class (`@modelcontextprotocol/sdk/server/mcp.js`) handles both concerns: it owns a single `tools/call` dispatcher, a single `tools/list` enumerator, and the same pair for resources. Each tool registers via `server.tool(name, description, zodInputSchema, handler)`; the SDK collects them into the dispatcher and exposes them via `tools/list` automatically. We use that.
+
+Each tool still lives in `src/tools/<name>.ts` and exports a `register<Name>Tool(server: McpServer, factory: ServiceFactory): void`. The function:
+
+1. Calls `server.tool(toolName, description, inputZodSchema, handler)` once.
 2. The handler:
-   - Validates `request.params.arguments` against the appropriate `@ship/mcp` input schema (`.parse()` throws on mismatch).
+   - Receives the already-validated `args` (the SDK runs the Zod schema before calling).
    - Calls the matching service method.
-   - Validates the result against the `@ship/mcp` output schema (defense-in-depth).
+   - Validates the result against the `@ship/mcp` output schema (defense-in-depth — schema drift between core and the wire shouldn't reach a client).
    - Returns a `CallToolResult` with the JSON-stringified output as a single text content block.
 3. Errors propagate via `mapErrorToJsonRpcError` (see ED-4).
 
-The MCP SDK's tool registration also requires a tool metadata block (name, description, input schema in JSON Schema form). The `@ship/mcp` package exposes Zod schemas; we convert each to JSON Schema once at startup using `zod-to-json-schema` (one tiny dep) so the SDK can advertise the input shape to clients.
+```ts
+// src/tools/ship.ts (sketch)
+import { shipInputSchema, shipOutputSchema } from "@ship/mcp";
+
+export function registerShipTool(server: McpServer, factory: ServiceFactory): void {
+  server.tool(
+    "ship",
+    "Start a workflow run from an approved task doc.",
+    shipInputSchema.shape,
+    async (args) => {
+      const out = await factory().ship(args);
+      const validated = shipOutputSchema.parse(out);
+      return { content: [{ type: "text", text: JSON.stringify(validated) }] };
+    },
+  );
+}
+```
+
+Because `McpServer` accepts the Zod schema directly, we don't need a `zod-to-json-schema` conversion step: the SDK derives the JSON Schema for `tools/list` from the Zod schema's `.shape`. (This is a small win over the `Server` + manual approach — one fewer dep, one fewer conversion to keep in sync.)
 
 ### ED-4 — Error mapping
 
@@ -189,7 +214,7 @@ Mirrors the CLI's user-vs-internal split from Phase 7 § ED-4. The mapping table
 
 ### ED-5 — Resource handler
 
-`ship://runs/{id}` registers via `server.setRequestHandler(ReadResourceRequestSchema, ...)`. The handler:
+`ship://runs/{id}` registers via `server.resource(name, uriTemplate, handler)` on the `McpServer` (matches the per-tool `server.tool(...)` registration in ED-3 — same dispatch ergonomics). The handler:
 
 1. Parses the URI to extract `{id}` (regex against `/^ship:\/\/runs\/([^/]+)$/`).
 2. Calls `factory().getRun(id)`.
@@ -200,10 +225,10 @@ The resource is **read-only**; the server doesn't advertise resource subscriptio
 
 ### ED-6 — Test transport
 
-Smoke tests use the SDK's `InMemoryTransport` (a paired transport that lets a `Client` and `Server` talk in-process). For each test:
+Smoke tests use the SDK's `InMemoryTransport` (a paired transport that lets a `Client` and `McpServer` talk in-process). For each test:
 
 1. Construct a `ShipService` factory wired with `FakeCursorRunner`.
-2. Build a `Server` with the four tools + resource registered.
+2. Build an `McpServer` with the four tools + resource registered.
 3. Connect a `Client` over `InMemoryTransport`.
 4. Call each tool / read the resource and assert on the response.
 
@@ -229,19 +254,22 @@ Alternative considered: import the server module in-process. Rejected because `b
 
 ### ED-8 — Capability declaration
 
-The MCP `Server` constructor needs a capabilities block. V1:
+The MCP `McpServer` constructor still needs a capabilities block. V1:
 
 ```ts
-{
-  capabilities: {
-    tools: {},          // we register four
-    resources: {},      // we register one URI template
-    // no prompts, no logging, no completion
+new McpServer(
+  { name: "ship", version: "0.1.0" },
+  {
+    capabilities: {
+      tools: {},          // four tools registered via server.tool(...)
+      resources: {},      // one URI template registered via server.resource(...)
+      // no prompts, no logging, no completion
+    },
   },
-}
+);
 ```
 
-`tools` and `resources` are empty objects (per MCP convention) since we just signal "this server supports them." Listing-of-tools/resources happens at runtime via the `ListToolsRequestSchema` / `ListResourcesRequestSchema` handlers the SDK auto-registers when we `setRequestHandler` for the per-item schemas.
+`tools` and `resources` are empty objects (per MCP convention) since we just signal "this server supports them." With the high-level `McpServer` class, `tools/list` and `resources/list` JSON-RPC methods are wired automatically once tools/resources are registered via `server.tool(...)` / `server.resource(...)` — there's no separate `ListToolsRequestSchema` / `ListResourcesRequestSchema` handler to install. (This was an error in revision 0 of this doc that conflated `McpServer`'s behavior with the lower-level `Server` API; on `Server` the list handlers DO have to be wired explicitly.)
 
 ### ED-9 — Repo-wide isolation test
 
@@ -268,8 +296,7 @@ The `mcp-server` package exports nothing. It's a binary with no public TS API. T
     "@ship/cursor-runner": "workspace:*",
     "@ship/mcp": "workspace:*",
     "@ship/store": "workspace:*",
-    "@ship/workflow": "workspace:*",
-    "zod-to-json-schema": "^3.23.0"
+    "@ship/workflow": "workspace:*"
   },
   "devDependencies": {
     "@ship/test-harness": "workspace:*",
@@ -332,7 +359,7 @@ For `ship`, `get_workflow_run`, `list_workflow_runs`, `cancel_workflow_run`:
 |---|---|---|
 | MCP TS SDK API changes between minor versions | Brittle handlers | Pin `^1.0.0` (semver-compatible). Test the actually-installed version in a smoke test that exercises every tool + resource. |
 | `await server.connect(stdio)` blocks; tests can hang if a handler throws synchronously | Test runner deadlock | The `InMemoryTransport` pattern in tests doesn't share this concern; subprocess tests use a hard `timeout` in `spawn` options. |
-| Zod-to-JSON-Schema conversion drift | MCP clients see different shape than the runtime validator accepts | Convert once at module load; tests assert that the JSON Schema's `properties` keys match the Zod schema's `.shape` keys. |
+| MCP SDK JSON-Schema derivation drift | MCP clients see a different `tools/list` shape than the runtime Zod validator accepts | The high-level `McpServer.tool(...)` registration takes the Zod schema directly and the SDK derives `tools/list`'s JSON Schema from it — single source of truth, nothing to keep in sync manually. A smoke test calls `client.listTools()` once and asserts the returned schema matches the Zod schema's `.shape` keys. |
 | Long-running `ship` tool call holds an MCP request open for minutes | Driver-agent times out | Document this in the MCP server's README; V2 adds streaming responses (per spec.md). V1 advice: agents call `ship` then poll `get_workflow_run` if they need to multitask. |
 | `mapErrorToJsonRpcError` drift from the CLI's `isUserError` | Same logical error → different exit semantics across the two consumers | Both helpers consult the same set of typed errors; an integration test pins the user-vs-internal split for both consumers. Could share a helper later if drift surfaces. |
 | Stdio framing bugs the in-memory transport doesn't catch | Real MCP clients fail in ways tests miss | The L3 subprocess integration test runs the actual binary over real stdio. Phase 7's bug-smash showed this is the layer that catches `bin.ts`-only regressions. |
@@ -342,7 +369,7 @@ For `ship`, `get_workflow_run`, `list_workflow_runs`, `cancel_workflow_run`:
 1. **Should the MCP server expose a `tools/call` audit log?** Proposed: V2. V1 already writes per-run artifacts (events.ndjson) for the `ship` flow, which is the loudest one; the read-only tools are uninteresting for now.
 2. **`ship` tool: stream events.ndjson lines back as MCP notifications?** Proposed: V2 once the SDK supports streaming responses ergonomically. V1 returns once the run terminates.
 3. **Single binary or split (`ship-mcp-server` vs `ship-mcp-server-cloud` later)?** Proposed: single. Cloud transport is V2; we'll add a flag (`--transport=sse`) when it lands.
-4. **Server name + version exposed in the `Server` constructor.** Proposed: `name: "ship"`, `version: "0.1.0"` for V1. Bumps with the npm package version once we publish.
+4. **Server name + version exposed in the `McpServer` constructor.** Proposed: `name: "ship"`, `version: "0.1.0"` for V1. Bumps with the npm package version once we publish.
 5. **Should the `--repo` "label" parameter be required at the MCP boundary?** Per Phase 7's CLI, yes (it's `requiredOption`). The schema in `@ship/mcp` already marks it required, so the MCP boundary inherits that. No action needed here.
 
 ## Implementation plan
@@ -352,17 +379,16 @@ After review/approval, implement as **a single PR** in this order:
 1. **`packages/core/src/default-wiring.ts` + tests** — `createDefaultShipService(opts)` factored from `@ship/cli/src/service.ts`. The CLI's `createCliService` becomes a thin wrapper that supplies the path-resolution defaults; tests in `@ship/cli` carry forward unchanged. Re-export the new helper from `@ship/core/src/index.ts`.
 2. **`packages/mcp-server/{package.json, tsconfig.json, vitest.config.ts}`** — workspace wiring matching the Phase 7 pattern. Deps per § "API boundaries / contracts". `vitest.config.ts` sets the 80/75 coverage threshold.
 3. **`src/errors.ts` + tests** — `mapErrorToJsonRpcError(err): JsonRpcError`. Tests pin the typed-error-to-code mapping per ED-4.
-4. **`src/schemas.ts` + tests** — `zodToMcpInputSchema(zodSchema)` helper that converts a `@ship/mcp` Zod schema to the JSON Schema shape the MCP SDK advertises. Test that the converted schema's required keys match the Zod schema's `.shape`.
-5. **`src/tools/ship.ts` + tests** — `registerShipTool(server, factory)`. In-memory transport tests exercise happy path + each error path.
-6. **`src/tools/get-workflow-run.ts` + tests** — `registerGetWorkflowRunTool(server, factory)`.
-7. **`src/tools/list-workflow-runs.ts` + tests** — `registerListWorkflowRunsTool(server, factory)`.
-8. **`src/tools/cancel-workflow-run.ts` + tests** — `registerCancelWorkflowRunTool(server, factory)`.
-9. **`src/resources/runs.ts` + tests** — `registerRunsResource(server, factory)`. Tests cover URI parse + null → not-found + happy path.
-10. **`src/server.ts`** — `buildServer(factory)` factory that constructs the MCP `Server` and registers all tools + the resource. Pure factory; no transport, no env. Tests in step 11 use this with `InMemoryTransport`.
-11. **`src/bin.ts`** — entrypoint. Reads env, builds the service factory + server, connects to stdio. Lightly tested (smoke).
-12. **`packages/mcp-server/test/dep-direction.test.ts`** — `packages/mcp-server/src/**` MUST find zero `from "@ship/cli"` matches.
-13. **`e2e/integration/mcp-server.integration.test.ts`** — subprocess test. Spawns the binary with `SHIP_TEST_FAKE_CURSOR=1`, connects via stdio, exercises each tool + the resource + the missing-API-key pre-flight.
-14. **`make check`** + **`make coverage`** + **`make integration`** — green.
-15. **Mark Phase 8 done in [plan.md](../plan.md).**
+4. **`src/tools/ship.ts` + tests** — `registerShipTool(server, factory)`. The Zod input schema is passed straight to `server.tool(...)`; no separate JSON-Schema conversion module needed. In-memory transport tests exercise happy path + each error path.
+5. **`src/tools/get-workflow-run.ts` + tests** — `registerGetWorkflowRunTool(server, factory)`.
+6. **`src/tools/list-workflow-runs.ts` + tests** — `registerListWorkflowRunsTool(server, factory)`.
+7. **`src/tools/cancel-workflow-run.ts` + tests** — `registerCancelWorkflowRunTool(server, factory)`.
+8. **`src/resources/runs.ts` + tests** — `registerRunsResource(server, factory)`. Tests cover URI parse + null → not-found + happy path.
+9. **`src/server.ts`** — `buildServer(factory)` factory that constructs the `McpServer` and registers all tools + the resource. Pure factory; no transport, no env. Tests in step 10 use this with `InMemoryTransport`.
+10. **`src/bin.ts`** — entrypoint. Reads env, builds the service factory + server, connects to stdio. Lightly tested (smoke).
+11. **`packages/mcp-server/test/dep-direction.test.ts`** — `packages/mcp-server/src/**` MUST find zero `from "@ship/cli"` matches.
+12. **`e2e/integration/mcp-server.integration.test.ts`** — subprocess test. Spawns the binary with `SHIP_TEST_FAKE_CURSOR=1`, connects via stdio, exercises each tool + the resource + the missing-API-key pre-flight.
+13. **`make check`** + **`make coverage`** + **`make integration`** — green.
+14. **Mark Phase 8 done in [plan.md](../plan.md).**
 
 Total LOC estimate (per CLAUDE.md weighting): ~250 src + ~280 tests = **390 weighted**. Single PR, comfortably inside the < 500 amazing band.
