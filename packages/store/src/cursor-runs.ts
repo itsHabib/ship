@@ -1,27 +1,6 @@
 /**
- * Per-table module for `cursor_runs`.
- *
- * Owns every SQL string that touches the `cursor_runs` table. Three
- * methods exposed to `store.ts`:
- * - `record`       — INSERT a fresh row with `status = 'running'`.
- *                    Translates `SQLITE_CONSTRAINT_FOREIGNKEY` into
- *                    `WorkflowRunNotFoundError` so callers don't have
- *                    to know about SQLite error codes.
- * - `updateStatus` — patch any subset of `{status, endedAt, durationMs}`.
- *                    The empty patch is a no-op (returns the current
- *                    row); a non-existent id throws.
- * - `get`          — point-read. Returns `null` for unknown ids
- *                    (matching `getRun`'s semantics for `workflow_runs`).
- *
- * Cursor runs are persisted as a separate table — not eagerly hydrated
- * into `WorkflowRun` — because `Phase.cursorRunId` is the FK and
- * `WorkflowRun` itself doesn't carry a `cursorRun` field in V1. Callers
- * that need cursor-run metadata for a phase fetch it explicitly via
- * `getCursorRun(phase.cursorRunId)`. See phases/03-store.md § F4.
- *
- * Hydration uses `cursorRunRefSchema.parse` at the seam, same pattern as
- * the other two tables. Optional columns are conditionally assigned to
- * the candidate object so `exactOptionalPropertyTypes` is happy.
+ * Per-table module for `cursor_runs`. Owns every SQL string that touches
+ * the table; hydrates rows via `cursorRunRefSchema`.
  */
 
 import type {
@@ -38,12 +17,8 @@ import type { Db } from "./db.js";
 import { CursorRunNotFoundError, StoreSchemaError, WorkflowRunNotFoundError } from "./errors.js";
 
 /**
- * Inputs accepted by `recordCursorRun`.
- *
- * `status` defaults to `"running"` and `startedAt` to `clock()`; both
- * are not part of the input. `model` is optional because the SDK leaves
- * it undefined on resume per the documented gotcha (see
- * `cursorRunRefSchema` in `@ship/workflow`).
+ * Inputs for `recordCursorRun`. `model` is optional because the SDK
+ * leaves it undefined on resume.
  */
 export interface RecordCursorRunInput {
   id: string;
@@ -54,25 +29,14 @@ export interface RecordCursorRunInput {
   artifactsDir: string;
 }
 
-/**
- * Patch shape for `updateCursorRunStatus`.
- *
- * Every field is optional — the caller only sends what it wants to
- * change. Typical pattern: a runner receives the SDK's terminal event
- * and calls with `{ status: "succeeded", endedAt: now, durationMs: dt }`.
- */
+/** Patch shape for `updateCursorRunStatus`; every field optional. */
 export interface UpdateCursorRunInput {
   status?: CursorRunStatus;
   endedAt?: string;
   durationMs?: number;
 }
 
-/**
- * The internal cursor-run-table API consumed by `store.ts`.
- *
- * Not re-exported from the package barrel; only the public `Store`
- * interface in `store.ts` is.
- */
+/** Internal cursor-run-table API consumed by `store.ts`. */
 export interface CursorRunOps {
   /** Insert a cursor run with `status = 'running'`; throws if `workflowRunId` is unknown. */
   record: (input: RecordCursorRunInput) => CursorRunRef;
@@ -82,7 +46,6 @@ export interface CursorRunOps {
   get: (id: string) => CursorRunRef | null;
 }
 
-/** Internal: shape of one row returned by every `SELECT * FROM cursor_runs`. */
 interface CursorRunRow {
   id: string;
   workflow_run_id: string;
@@ -96,15 +59,12 @@ interface CursorRunRow {
   artifacts_dir: string;
 }
 
-/** Column list shared by every `SELECT` against `cursor_runs`. */
 const CURSOR_RUN_COLUMNS =
   "id, workflow_run_id, agent_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir";
 
 /**
- * Constructs the `cursor_runs` ops bound to a given DB connection and
- * clock. Caches every static prepared statement at construction time
- * per ED-6. The dynamic-SET update builds SQL on the fly because the
- * SET shape varies per call.
+ * Constructs the `cursor_runs` ops. Caches static prepared statements
+ * (ED-6); the dynamic-SET update builds SQL per call.
  */
 export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
   const insertStmt = db.prepare(
@@ -116,10 +76,7 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
   );
 
   function record(input: RecordCursorRunInput): CursorRunRef {
-    // Wrap insert + hydration in one transaction so a `parseCursorRun`
-    // failure (e.g. caller passed an unparseable `endedAt`, or the row
-    // shape drifted) rolls back the write. Atomic-fail beats
-    // fail-after-corruption.
+    // Wrap insert + hydration in one txn so a Zod failure rolls back the write.
     const txn = db.transaction((): CursorRunRef => {
       try {
         insertStmt.run(
@@ -170,10 +127,9 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
       params.push(patch.durationMs);
     }
     params.push(id);
-    // Wrap update + hydration in one transaction so a post-state that
-    // fails Zod validation (e.g. negative `durationMs` from a buggy
-    // caller) rolls back the write rather than leaving the row in a
-    // shape future reads will reject as `StoreSchemaError`.
+    // Wrap update + hydration in one txn so a post-state that fails Zod
+    // (e.g. negative durationMs) rolls back rather than committing a row
+    // future reads will reject.
     const txn = db.transaction((): CursorRunRef => {
       const result = db
         .prepare(`UPDATE cursor_runs SET ${sets.join(", ")} WHERE id = ?`)
@@ -198,11 +154,7 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
   return { get, record, updateStatus };
 }
 
-/**
- * Returns true when at least one field of an `UpdateCursorRunInput`
- * patch is set. Lets the empty-patch path skip the dynamic-SET SQL
- * altogether.
- */
+/** True when at least one field of the patch is set. */
 function hasAnyPatchField(patch: UpdateCursorRunInput): boolean {
   return (
     patch.status !== undefined || patch.endedAt !== undefined || patch.durationMs !== undefined
@@ -210,16 +162,9 @@ function hasAnyPatchField(patch: UpdateCursorRunInput): boolean {
 }
 
 /**
- * Builds a `CursorRunRef` candidate from a row and runs
- * `cursorRunRefSchema.parse`.
- *
- * `model_json` is parsed back to a `ModelSelection`; failed
- * `JSON.parse` is wrapped as `StoreSchemaError` for uniform handling
- * with Zod-parse failures. Optional columns are conditionally assigned
- * so `exactOptionalPropertyTypes` is happy.
- *
- * Note: `workflow_run_id` is NOT part of `CursorRunRef` (it's the FK,
- * not surface), so the candidate omits it.
+ * Builds a `CursorRunRef` candidate and runs `cursorRunRefSchema.parse`.
+ * Failed `JSON.parse` of `model_json` is wrapped as `StoreSchemaError`.
+ * `workflow_run_id` is the FK and is not part of the surface shape.
  */
 function parseCursorRun(row: CursorRunRow): CursorRunRef {
   let model: unknown;
@@ -264,12 +209,7 @@ function parseCursorRun(row: CursorRunRow): CursorRunRef {
   return result.data;
 }
 
-/**
- * Detects `SQLITE_CONSTRAINT_FOREIGNKEY` errors from `better-sqlite3`.
- * Same shape as `phases.ts`'s detector; duplicated rather than shared
- * because the per-table modules deliberately don't import each other
- * for non-SQL helpers.
- */
+/** Detects `SQLITE_CONSTRAINT_FOREIGNKEY` errors from `better-sqlite3`. */
 function isForeignKeyViolation(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   return (err as Error & { code?: unknown }).code === "SQLITE_CONSTRAINT_FOREIGNKEY";

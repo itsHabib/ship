@@ -1,12 +1,4 @@
-/**
- * Tests for `clock.ts`.
- *
- * Coverage shape:
- * - Auto-advance: consecutive calls produce strictly-monotonic timestamps.
- * - `.advance(ms)`: jumps forward without producing a string; next call reflects the jump.
- * - `.set(iso)`: jumps absolute; next call reflects the new position.
- * - Bad input: invalid ISO / negative stepMs / non-finite advance → RangeError.
- */
+/** Tests for `clock.ts` — auto-advance, `.advance`/`.set`, and bad-input cases. */
 
 import { describe, expect, test } from "vitest";
 

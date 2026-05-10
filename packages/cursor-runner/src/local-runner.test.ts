@@ -1,15 +1,6 @@
 /**
- * Tests for `local-runner.ts`.
- *
- * The SDK is mocked at the module boundary via `vi.mock("@cursor/sdk")`
- * so these tests run without `CURSOR_API_KEY` and without network. The
- * mock exposes `Agent.create` as a vi.fn() that the per-test setup
- * configures with whatever `SDKAgent` / `Run` shape the test needs.
- *
- * Coverage maps to the validation plan's "LocalCursorRunner" section
- * in `phases/05-cursor-runner.md`. The cancellation-timing assertion
- * (<30s) is a no-op against the mock — that bound exists for the live
- * path; Spike v2 informs whether to tighten it post-merge.
+ * Tests for `local-runner.ts`. SDK mocked via `vi.mock("@cursor/sdk")`
+ * so tests run without `CURSOR_API_KEY` or network.
  */
 
 import type { Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
@@ -349,7 +340,7 @@ describe("LocalCursorRunner — onEvent contract", () => {
 
   test("async onEvent rejection is swallowed (no unhandled rejection leaks past the runner)", async () => {
     // TS permits an async fn to satisfy `=> void`; without async-aware
-    // swallow logic this would leak. Cycle-3 review (Codex P2).
+    // swallow logic the rejection would leak past the runner.
     const { run } = makeMockRun({ events: [evA, evB] });
     const { agent } = makeMockAgent({ run });
     vi.mocked(Agent.create).mockResolvedValue(agent);
@@ -393,10 +384,9 @@ describe("LocalCursorRunner — onEvent contract", () => {
   });
 
   test("clean stream + wait() rejection → handle.result rejects (does not hang forever)", async () => {
-    // Cycle-1 review (Codex P1): if the stream completes normally but
-    // sdkRun.wait() rejects, the pipeline must surface the failure via
-    // handle.result rather than letting the rejection escape as an
-    // unhandled async error.
+    // If stream completes normally but wait() rejects, the pipeline
+    // must surface the failure via handle.result rather than letting
+    // the rejection escape as unhandled.
     const waitErr = new Error("SDK runtime crashed after clean stream");
     const { run } = makeMockRun({ events: [evA], waitThrows: waitErr });
     const { agent, disposeSpy } = makeMockAgent({ run });
@@ -509,9 +499,9 @@ describe("LocalCursorRunner — cancellation", () => {
   });
 
   test("transient SDK cancel failure does NOT permanently disable cancel — second call retries", async () => {
-    // Cycle-3 review (Codex P1): if cancelInitiated stays `true` after a
-    // rejected sdkRun.cancel(), all subsequent cancel attempts no-op
-    // while the run continues. Retry must succeed.
+    // If cancelInitiated stays `true` after a rejected sdkRun.cancel(),
+    // all subsequent cancel attempts no-op while the run continues.
+    // Retry must succeed.
     const { cancelSpy, run } = makeMockRun({
       events: [evA, evB],
       result: { durationMs: 0, id: "run-test-0001", status: "cancelled" },

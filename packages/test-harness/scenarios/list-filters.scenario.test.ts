@@ -1,19 +1,4 @@
-/**
- * Scenario: listRuns filtering across multiple repos and statuses.
- *
- * Seeds a fixed corpus of runs across two repos (`alpha`, `beta`) × three
- * statuses (`pending`, `running`, `succeeded`), each with 0-2 phases, then
- * asserts:
- * - `listRuns({})` returns all in most-recent-first order
- * - `listRuns({ repo })` filters correctly
- * - `listRuns({ status: [...] })` filters correctly
- * - `listRuns({ repo, status })` AND-combines
- * - phases are correctly grouped to their parent (no cross-leak)
- *
- * Exercises the two-query budget path (see workflow-runs.test.ts) at the
- * scenario level: same data, same assertions, end-to-end through the
- * public API.
- */
+/** Scenario: listRuns filtering across two repos × three statuses, with phase grouping. */
 
 import { afterEach, beforeEach, expect, test } from "vitest";
 

@@ -1,19 +1,4 @@
-/**
- * Tests for `phases.ts` exercised via the public `createStore` API.
- *
- * Coverage shape (per phases/03-store.md § "Validation plan"):
- * - appendPhase: round-trip via getRun.
- * - updatePhase: status / startedAt / endedAt round-trip via getRun.
- * - appendPhase for non-existent run id: WorkflowRunNotFoundError
- *   (FK violation translated to typed error).
- * - updatePhase for non-existent phase id: PhaseNotFoundError.
- * - Multiple phases: chronological order on getRun.
- * - cancelRun rollback (atomicity): a phase update that fails inside
- *   the cancel transaction leaves both the run AND the phase in their
- *   pre-cancel state. Uses a SQLite trigger to force the failure
- *   without monkey-patching internal modules.
- * - appendPhase / updatePhase bump the parent run's updated_at.
- */
+/** Tests for `phases.ts` via the public `createStore` API. */
 
 import type { WorkflowPolicy, WorkflowStatus, WorktreeRef } from "@ship/workflow";
 
@@ -189,12 +174,8 @@ describe("phases (via createStore)", () => {
   });
 });
 
-// =====================================================================
-// cancelRun atomicity — phase update fails inside the txn → rollback.
-// Uses a temp-file dbPath so a second connection in the test can install
-// a SQLite BEFORE-UPDATE trigger that raises on every UPDATE phases.
-// =====================================================================
-
+// cancelRun atomicity: a phase update failure inside the txn rolls back
+// both run and phase. Uses a SQLite trigger to force the failure.
 describe("cancelRun atomicity (rollback)", () => {
   let db: Db;
   const clock = (): string => "2026-05-08T00:00:00.000Z";

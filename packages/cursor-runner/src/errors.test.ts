@@ -1,11 +1,4 @@
-/**
- * Tests for `errors.ts`.
- *
- * Both error classes are tiny — a `name` override and a constructor —
- * but the contract is load-bearing for `core` (it `instanceof`-checks
- * to decide retry vs. fail-fast). These tests pin the shape so a
- * future rename or message change is loud.
- */
+/** Tests for `errors.ts` — pin the shape so renames/message-changes fail loud. */
 
 import { describe, expect, test } from "vitest";
 
