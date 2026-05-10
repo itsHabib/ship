@@ -89,6 +89,22 @@ describe("ShipService.ship — happy path", () => {
     h.store.close();
   });
 
+  test("succeeded run links the phase row to the recorded cursorRunId", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    const row = h.store.getRun(out.workflowRunId);
+    expect(row?.phases[0]?.cursorRunId).toBeDefined();
+    expect(row?.phases[0]?.cursorRunId).toBe(out.cursorRun.id);
+  });
+
   test("succeeded run: state transitions, artifacts persisted, ShipOutput populated", async () => {
     h.cursor.enqueue({
       events: [],
@@ -321,6 +337,47 @@ describe("ShipService.cancelRun", () => {
 
   test("cancel a run that doesn't exist → throws (store invariant)", async () => {
     await expect(h.service.cancelRun("wf_does-not-exist")).rejects.toBeDefined();
+  });
+
+  test("cancel arriving during prepareArtifacts (post-row, pre-runner) skips the runner and resolves cancelled", async () => {
+    // Stall fs.mkdir so cancelRun() fires after the row is created
+    // but before the "running" transition. The service should detect
+    // the cancelled row, skip the runner entirely, and resolve with
+    // status: "cancelled". The cursor runner must NOT be invoked.
+    let resolveMkdir: (() => void) | undefined;
+    const mkdirGate = new Promise<void>((resolve) => {
+      resolveMkdir = resolve;
+    });
+    const origMkdir = h.fs.mkdir.bind(h.fs);
+    h.fs.mkdir = async (p, opts) => {
+      await mkdirGate;
+      return origMkdir(p, opts);
+    };
+
+    const shipPromise = h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 30);
+    });
+
+    const runs = h.store.listRuns({ limit: 10 });
+    const id = runs[0]?.id;
+    expect(id).toBeDefined();
+    if (id === undefined) return;
+
+    await h.service.cancelRun(id);
+    resolveMkdir?.();
+
+    const out = await shipPromise;
+    expect(out.status).toBe("cancelled");
+    expect(h.cursor.calls).toHaveLength(0);
+
+    const row = h.store.getRun(out.workflowRunId);
+    expect(row?.status).toBe("cancelled");
   });
 
   test("cancel arriving during runner startup is honored: controller is registered before cursor.run()", async () => {

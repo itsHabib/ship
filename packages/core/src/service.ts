@@ -182,6 +182,16 @@ async function executeAndFinalize(ctx: ShipContext, prep: PreparedRun): Promise<
 
   try {
     const prompt = await prepareArtifacts(ctx, prep);
+
+    // Concurrent `cancelRun()` may have flipped the workflow + phase
+    // rows to `cancelled` while we were doing fs work. Bail before
+    // transitioning back to `running` — that would silently re-open
+    // a user-cancelled run and let the runner produce a terminal
+    // succeeded/failed that overwrites the cancellation.
+    if (ctx.store.getRun(prep.workflowRunId)?.status === "cancelled") {
+      return finalizeAlreadyCancelled(ctx, prep);
+    }
+
     ctx.store.updatePhase(prep.phaseId, { status: "running", startedAt: ctx.clock() });
     ctx.store.updateWorkflowRunStatus(prep.workflowRunId, "running");
 
@@ -212,6 +222,10 @@ async function executeAndFinalize(ctx: ShipContext, prep: PreparedRun): Promise<
       model,
       artifactsDir: prep.paths.dir,
     });
+    // Link the phase to the cursor-run so `getRun()` consumers can
+    // join phase rows back to their `cursor_runs` metadata after
+    // process restart.
+    ctx.store.updatePhase(prep.phaseId, { cursorRunId });
     ctx.activeRuns.set(prep.workflowRunId, { controller, handle });
 
     const result = await handle.result;
@@ -326,6 +340,27 @@ async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
     cursorRun: assertTerminalCursorRunRef(cursorRunRef, cursorTerminal),
     paths,
     summary: result.summary,
+  });
+}
+
+/**
+ * Path for "row was cancelled before the runner started" — fs prep is
+ * already on disk but `cursor.run()` hasn't been invoked, so there's
+ * no cursor-run row to record. Marks the phase as cancelled and
+ * returns a ShipOutput whose `cursorRun` is synthesized with status
+ * `cancelled`.
+ */
+function finalizeAlreadyCancelled(ctx: ShipContext, prep: PreparedRun): ShipOutput {
+  const endedAt = ctx.clock();
+  ctx.store.updatePhase(prep.phaseId, { status: "cancelled", endedAt });
+  const updatedRun = ctx.store.getRun(prep.workflowRunId);
+  return buildShipOutput({
+    workflowRunId: prep.workflowRunId,
+    status: "cancelled",
+    worktree: updatedRun?.worktree ?? prep.worktree,
+    cursorRun: synthesizeFailedCursorRun(prep.workflowRunId, prep.paths.dir, endedAt, "cancelled"),
+    paths: prep.paths,
+    summary: undefined,
   });
 }
 
