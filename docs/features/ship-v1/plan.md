@@ -120,14 +120,14 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ## Phase 7 — `packages/cli`
 
-**Goal:** the binary you can invoke locally. Same `ShipService` instance the MCP server uses.
+📄 [phases/07-cli.md](phases/07-cli.md) — task doc.
 
-- [ ] Commander setup.
-- [ ] Subcommands: `ship`, `status`, `list`, `cancel`.
-- [ ] `ship ship <docPath> --workdir <path>` (default `--workdir .`).
-- [ ] Smoke tests via fake-runner-backed service.
+**Goal:** the binary you can invoke locally. Thin wrapper over `ShipService` — same instance the MCP server (Phase 8) uses; the CLI just maps argv to method calls and prints. Subcommands `ship` / `status` / `list` / `cancel`.
 
-**Done when:** `pnpm --filter cli test` green; `node packages/cli/dist/cli.js list` runs end-to-end against a real local store.
+- [ ] Review and approve `phases/07-cli.md`.
+- [ ] Implement per the doc's "Implementation plan" section (single PR).
+
+**Done when:** `pnpm --filter @ship/cli test` green; smoke tests cover all four subcommands via the fake-runner-backed service; `pnpm --filter @ship/cli exec tsx src/bin.ts list --json` runs end-to-end against a fresh local SQLite store and prints `{"runs":[]}`; ED dep-direction test verifies `cli` doesn't import `mcp-server`.
 
 ---
 
