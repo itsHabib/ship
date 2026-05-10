@@ -105,16 +105,16 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 6 — `packages/core`
+## Phase 6 — `packages/core` ✅ (done 2026-05-10)
 
 📄 [phases/06-core.md](phases/06-core.md) — task doc.
 
 **Goal:** `ShipService` — the workflow brain. Holds the state machine, owns artifact-write logic + the rendered implementation prompt template. Workspace-agnostic: `ship(input)` accepts a workdir path the caller supplies; Ship doesn't create or destroy workspaces. Phase 6 extends `@ship/mcp`'s `shipInputSchema` to add the required `workdir` field (and an optional `branch`) — see [phases/06-core.md § API boundaries](phases/06-core.md#api-boundaries--contracts).
 
-- [ ] Review and approve `phases/06-core.md`.
-- [ ] Implement per the doc's "Implementation plan" section (lands as 6a + 6b + 6c sub-PRs).
+- [x] Review and approve `phases/06-core.md` (landed via [#7](https://github.com/itsHabib/ship/pull/7)).
+- [x] Implement per the doc's "Implementation plan" section. Landed as 6a (artifact helpers + `ShipFs`, [#8](https://github.com/itsHabib/ship/pull/8)) + 6b (`ShipService` + state machine + dep-direction isolation, [#9](https://github.com/itsHabib/ship/pull/9)) + 6c (harness extension + cross-package scenarios, this PR).
 
-**Done when:** `pnpm --filter @ship/core test` green; cross-package scenarios drive `pending` → `succeeded` and `pending` → `cancelled` via `ShipService` against fakes; ED dep-direction test verifies `core` doesn't import `cli` / `mcp-server`.
+**Validated:** `make check` passes (typecheck + lint + format:check + 337 tests). `make coverage` clears core's 90/85 threshold (98.78% stmts / 87.71% branches). Cross-package scenarios under `packages/test-harness/scenarios/core-*.scenario.test.ts` drive `ship()` → `getRun()` → `listRuns()` happy path, cancel-mid-flight (terminal `cancelled`, partial events preserved), and doc-validation (escape rejected pre-row, runner not invoked). ED dep-direction test (`packages/core/test/dep-direction.test.ts`) verifies `core` doesn't import `cli` / `mcp-server`.
 
 ---
 

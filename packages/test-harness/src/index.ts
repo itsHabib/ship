@@ -4,8 +4,13 @@
  */
 
 // --- harness.ts ---
-export type { CreateHarnessOptions, Harness } from "./harness.js";
-export { createHarness } from "./harness.js";
+export type {
+  CreateHarnessOptions,
+  CreateServiceFromHarnessOptions,
+  Harness,
+  ServiceBundle,
+} from "./harness.js";
+export { createHarness, createServiceFromHarness } from "./harness.js";
 
 // --- clock.ts ---
 export type { TestClock } from "./clock.js";

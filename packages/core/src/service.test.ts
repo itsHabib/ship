@@ -78,6 +78,44 @@ async function createHarness(opts?: { defaultModelId?: string }): Promise<Harnes
   return { service, fs, store, cursor, config };
 }
 
+describe("createShipService — dep injection defaults", () => {
+  test("omitted `ids` falls back to real ULID factories; produces a wf_<26> id", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir("/state/runs", { recursive: true });
+    await fs.mkdir(WORKDIR, { recursive: true });
+    await fs.writeFile(`${WORKDIR}/docs.md`, "x");
+    const store = createStore({
+      dbPath: ":memory:",
+      clock: deterministicClock("2026-05-09T00:00:00.000Z"),
+    });
+    const cursor = new FakeCursorRunner();
+    cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const service = createShipService({
+      store,
+      cursor,
+      fs,
+      clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
+      config: {
+        runsDir: RUNS_DIR,
+        defaultModel: { id: "composer-2" },
+        mcpServers: { foo: { type: "stdio" as const, command: "/bin/foo" } },
+      },
+      // `ids` deliberately omitted to hit the `deps.ids ?? {...}` fallback.
+    });
+
+    const out = await service.ship({ workdir: WORKDIR, repo: "ship", docPath: "docs.md" });
+    expect(out.workflowRunId).toMatch(/^wf_[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+    // Configured `mcpServers` reaches the runner — exercises the conditional spread.
+    expect(cursor.calls[0]?.input.mcpServers).toEqual({
+      foo: { type: "stdio", command: "/bin/foo" },
+    });
+    store.close();
+  });
+});
+
 describe("ShipService.ship — happy path", () => {
   let h: Harness;
 
@@ -266,6 +304,30 @@ describe("ShipService.ship — failure mapping", () => {
     const row = h.store.getRun(out.workflowRunId);
     expect(row?.status).toBe("failed");
     expect(row?.phases[0]?.errorMessage).toMatch(/ENOSPC|disk full/);
+  });
+
+  test("store.updateCursorRunStatus throwing surfaces as a failed ShipOutput; cursorRun gets the terminal-status fallback", async () => {
+    // Exercises the swallow-and-fall-through path: updateCursorRunStatus
+    // throws inside `finalizeSuccess` (bubbles to outer catch), then
+    // throws again inside `finalizeFailure` (swallowed). The cursor-run
+    // row is left at `running`, so `assertTerminalCursorRunRef` applies
+    // the fallback terminal status when building ShipOutput.
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    h.store.updateCursorRunStatus = () => {
+      throw new Error("simulated cursor-run update failure");
+    };
+
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    expect(out.status).toBe("failed");
+    expect(out.cursorRun.status).toBe("failed");
   });
 
   test("fs.writeFile fails persisting result.json → ShipOutput failed; phase carries cause", async () => {

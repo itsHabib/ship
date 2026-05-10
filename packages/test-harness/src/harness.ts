@@ -1,10 +1,17 @@
 /**
  * `Harness` — scenario-test substrate that bundles a `@ship/store`, a
- * deterministic `TestClock`, prefixed-ULID id factories, and a `close()`.
+ * deterministic `TestClock`, prefixed-ULID id factories, a
+ * scripted `FakeCursorRunner`, and a `close()`. The
+ * `createServiceFromHarness(h)` helper wires these collaborators into
+ * a `ShipService` for cross-package scenario tests.
  */
 
+import type { ShipService, ShipServiceConfig } from "@ship/core";
+import type { CursorRunner } from "@ship/cursor-runner";
 import type { Store } from "@ship/store";
 
+import { createMemoryShipFs, createShipService, type MemoryShipFs } from "@ship/core";
+import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore } from "@ship/store";
 import { newCursorRunId, newPhaseId, newWorkflowRunId } from "@ship/workflow";
 
@@ -26,10 +33,12 @@ export interface CreateHarnessOptions {
   clockStepMs?: number;
 }
 
-/** Handle a scenario test holds onto. Owns the store, clock, and id factories. */
+/** Handle a scenario test holds onto. Owns the store, clock, fake runner, and id factories. */
 export interface Harness {
   readonly store: Store;
   readonly clock: TestClock;
+  /** Scriptable cursor runner. Tests `enqueue()` per expected `cursor.run()`. */
+  readonly cursor: FakeCursorRunner;
   /** Id factories returning fresh prefixed ULIDs via `@ship/workflow`. */
   readonly ids: {
     workflowRun: () => string;
@@ -48,6 +57,7 @@ export interface Harness {
 export function createHarness(opts: CreateHarnessOptions = {}): Harness {
   const clock = createTestClock(opts.clockStart ?? DEFAULT_CLOCK_START, opts.clockStepMs);
   const store = createStore({ clock, dbPath: opts.dbPath ?? ":memory:" });
+  const cursor = new FakeCursorRunner();
 
   let closed = false;
   return {
@@ -57,6 +67,7 @@ export function createHarness(opts: CreateHarnessOptions = {}): Harness {
       closed = true;
       store.close();
     },
+    cursor,
     ids: {
       cursorRun: newCursorRunId,
       phase: newPhaseId,
@@ -66,4 +77,53 @@ export function createHarness(opts: CreateHarnessOptions = {}): Harness {
   };
 }
 
+/**
+ * Construction options for `createServiceFromHarness`. The harness's
+ * store + cursor + clock are reused; the rest is freshly minted per
+ * call so multiple services can co-exist over the same store rows.
+ */
+export interface CreateServiceFromHarnessOptions {
+  /** Default model `core` falls back to when `input.model` is omitted. Default `"composer-2"`. */
+  defaultModelId?: string;
+  /** Absolute artifacts directory inside the in-memory `ShipFs`. Default `/state/runs`. */
+  runsDir?: string;
+  /** Optional override `CursorRunner`. Defaults to the harness's `FakeCursorRunner`. */
+  cursor?: CursorRunner;
+}
+
+/** Bundle returned by `createServiceFromHarness` — convenient for scenario assertions. */
+export interface ServiceBundle {
+  readonly service: ShipService;
+  /** The in-memory FS the service is wired to; tests read it for artifact assertions. */
+  readonly fs: MemoryShipFs;
+  readonly config: ShipServiceConfig;
+}
+
+/**
+ * Wires `harness.store` + `harness.cursor` + a fresh in-memory `ShipFs` +
+ * `harness.clock` into a `ShipService`. The returned bundle exposes the
+ * service plus the `fs` (so tests can inspect artifacts) and `config`
+ * (so tests can resolve absolute artifact paths).
+ */
+export function createServiceFromHarness(
+  h: Harness,
+  opts: CreateServiceFromHarnessOptions = {},
+): ServiceBundle {
+  const fs = createMemoryShipFs();
+  const config: ShipServiceConfig = {
+    runsDir: opts.runsDir ?? DEFAULT_RUNS_DIR,
+    defaultModel: { id: opts.defaultModelId ?? "composer-2" },
+  };
+  const service = createShipService({
+    store: h.store,
+    cursor: opts.cursor ?? h.cursor,
+    fs,
+    clock: h.clock,
+    config,
+    ids: h.ids,
+  });
+  return { service, fs, config };
+}
+
 const DEFAULT_CLOCK_START = "2026-05-09T00:00:00.000Z";
+const DEFAULT_RUNS_DIR = "/state/runs";

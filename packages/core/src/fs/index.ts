@@ -6,4 +6,4 @@
 
 export type { ShipFs, FileStat } from "./shape.js";
 export { createNodeShipFs } from "./node.js";
-export { createMemoryShipFs } from "./memory.js";
+export { createMemoryShipFs, type MemoryShipFs } from "./memory.js";

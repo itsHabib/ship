@@ -15,6 +15,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ship/core": "workspace:*",
+    "@ship/cursor-runner": "workspace:*",
     "@ship/store": "workspace:*",
     "@ship/workflow": "workspace:*"
   }
