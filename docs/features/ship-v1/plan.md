@@ -109,7 +109,7 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 📄 [phases/06-core.md](phases/06-core.md) — task doc.
 
-**Goal:** `ShipService` — the workflow brain. Holds the state machine, owns artifact-write logic + the rendered implementation prompt template. Workspace-agnostic: `ship(input)` accepts a workdir path the caller supplies; Ship doesn't create or destroy workspaces.
+**Goal:** `ShipService` — the workflow brain. Holds the state machine, owns artifact-write logic + the rendered implementation prompt template. Workspace-agnostic: `ship(input)` accepts a workdir path the caller supplies; Ship doesn't create or destroy workspaces. Phase 6 extends `@ship/mcp`'s `shipInputSchema` to add the required `workdir` field (and an optional `branch`) — see [phases/06-core.md § API boundaries](phases/06-core.md#api-boundaries--contracts).
 
 - [ ] Review and approve `phases/06-core.md`.
 - [ ] Implement per the doc's "Implementation plan" section (lands as 6a + 6b + 6c sub-PRs).
