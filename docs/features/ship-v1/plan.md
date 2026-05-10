@@ -118,16 +118,16 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 7 — `packages/cli`
+## Phase 7 — `packages/cli` ✅ (done 2026-05-10)
 
 📄 [phases/07-cli.md](phases/07-cli.md) — task doc.
 
 **Goal:** the binary you can invoke locally. Thin wrapper over `ShipService` — same instance the MCP server (Phase 8) uses; the CLI just maps argv to method calls and prints. Subcommands `ship` / `status` / `list` / `cancel`.
 
-- [ ] Review and approve `phases/07-cli.md`.
-- [ ] Implement per the doc's "Implementation plan" section (single PR).
+- [x] Review and approve `phases/07-cli.md` (landed via [#11](https://github.com/itsHabib/ship/pull/11)).
+- [x] Implement per the doc's "Implementation plan" section (this PR).
 
-**Done when:** `pnpm --filter @ship/cli test` green; smoke tests cover all four subcommands via the fake-runner-backed service; `pnpm --filter @ship/cli exec tsx src/bin.ts list --json` runs end-to-end against a fresh local SQLite store and prints `{"runs":[]}`; ED dep-direction test verifies `cli` doesn't import `mcp-server`.
+**Validated:** `make check` passes from repo root (typecheck + lint + format:check + 378 tests). `make coverage` clears `@ship/cli`'s 80/75 floor at 91.81% stmts / 93.39% branches. Argv → service plumbing covered for all four subcommands via fake-runner-backed harness; exit-code mapping pinned to spec.md's three-code contract; `pnpm --filter @ship/cli exec tsx src/bin.ts list --json` smoke-tested end-to-end against a fresh local SQLite store and printed `{"runs":[]}`. ED dep-direction test verifies `cli` doesn't import `mcp-server`.
 
 ---
 
