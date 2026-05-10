@@ -99,7 +99,7 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 - [ ] Review and approve `phases/05-cursor-runner.md`.
 - [ ] Implement per the doc's "Implementation plan" section (lands as 5a + 5b sub-PRs).
 
-**Done when:** `pnpm --filter @ship/cursor-runner test` green; `make check` + `make coverage` pass; ED-2 import-isolation test verifies no `@cursor/sdk` leak outside the package; `@ship/test-harness` harness gains a `cursor: FakeCursorRunner` field with a scenario exercising it end-to-end.
+**Done when:** `pnpm --filter @ship/cursor-runner test` green; `make check` + `make coverage` pass; ED-2 import-isolation test (lives in `packages/cursor-runner/test/`) verifies no `@cursor/sdk` leak outside the package. (Harness extension — `cursor: FakeCursorRunner` field on `Harness` plus a workflow-lifecycle scenario — is deferred to Phase 6, where `core` makes the scenario meaningful.)
 
 ---
 

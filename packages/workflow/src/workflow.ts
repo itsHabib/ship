@@ -131,9 +131,12 @@ const modelParameterValueSchema = z
  *
  * Structurally mirrors `@cursor/sdk`'s exported `ModelSelection`. We define
  * it locally instead of re-exporting from the SDK so this package keeps its
- * "no runtime SDK dependency" property — the SDK is `cursor-runner`'s
- * concern. A compile-time and runtime compatibility check lives in
- * `workflow.test.ts` to catch SDK shape drift early.
+ * "no SDK dependency" property — the SDK is `cursor-runner`'s concern. A
+ * runtime + compile-time structural-compat check lives in
+ * `@ship/cursor-runner`'s `model-selection-compat.test.ts` (the only
+ * package permitted to import from `@cursor/sdk` per ED-2 in
+ * `phases/05-cursor-runner.md`); SDK shape drift fails CI there before it
+ * can reach this package.
  *
  * Shape: `{ id: string; params?: Array<{ id: string; value: string }> }`.
  */
