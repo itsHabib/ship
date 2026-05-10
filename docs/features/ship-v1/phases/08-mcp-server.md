@@ -1,6 +1,6 @@
 # Phase 8 — `packages/mcp-server`
 
-Status: design draft, revision 0 (2026-05-10). Awaiting review before implementation.
+Status: design draft, revision 2 (2026-05-10). SDK shape verified against installed `@modelcontextprotocol/sdk@1.29.0`; switched the per-tool/resource registration calls from the deprecated positional `server.tool(...)` / `server.resource(...)` overloads to the modern config-object `server.registerTool(...)` / `server.registerResource(...)` (same dispatch, no deprecation warning). See ED-3 / ED-5 / ED-8.
 Owner: itsHabib
 Date: 2026-05-10
 
@@ -152,10 +152,7 @@ if (process.env["CURSOR_API_KEY"] === undefined) {
 }
 
 const factory = createDefaultShipService({ dbPath, runsDir });
-const server = new McpServer(
-  { name: "ship", version: "0.1.0" },
-  { capabilities: { tools: {}, resources: {} } },
-);
+const server = new McpServer({ name: "ship", version: "0.1.0" });
 registerShipTool(server, factory);
 registerGetWorkflowRunTool(server, factory);
 registerListWorkflowRunsTool(server, factory);
@@ -168,11 +165,13 @@ await server.connect(new StdioServerTransport());
 
 The MCP protocol exposes tools through a single `tools/call` JSON-RPC method that dispatches by `params.name`, not through one method per tool — registering `setRequestHandler(toolASchema, ...)` then `setRequestHandler(toolBSchema, ...)` would have the second registration replace the first on the low-level `Server` API. Likewise, `tools/list` and `resources/list` are not auto-installed when per-item handlers are registered; they have to be wired explicitly.
 
-The high-level `McpServer` class (`@modelcontextprotocol/sdk/server/mcp.js`) handles both concerns: it owns a single `tools/call` dispatcher, a single `tools/list` enumerator, and the same pair for resources. Each tool registers via `server.tool(name, description, zodInputSchema, handler)`; the SDK collects them into the dispatcher and exposes them via `tools/list` automatically. We use that.
+The high-level `McpServer` class (`@modelcontextprotocol/sdk/server/mcp.js`) handles both concerns: it owns a single `tools/call` dispatcher, a single `tools/list` enumerator, and the same pair for resources. Each tool registers via `server.registerTool(name, config, handler)`; the SDK collects them into the dispatcher and exposes them via `tools/list` automatically. We use that.
+
+(Verified against the installed SDK `@modelcontextprotocol/sdk@1.29.0`: both the legacy positional `server.tool(name, description, schemaShape, handler)` and the modern `server.registerTool(name, config, handler)` overloads exist; the legacy form carries a `@deprecated` JSDoc tag on every overload. We use `registerTool` to avoid the deprecation warning and to keep the input/output schema in one config object.)
 
 Each tool still lives in `src/tools/<name>.ts` and exports a `register<Name>Tool(server: McpServer, factory: ServiceFactory): void`. The function:
 
-1. Calls `server.tool(toolName, description, inputZodSchema, handler)` once.
+1. Calls `server.registerTool(toolName, { description, inputSchema, outputSchema }, handler)` once.
 2. The handler:
    - Receives the already-validated `args` (the SDK runs the Zod schema before calling).
    - Calls the matching service method.
@@ -185,10 +184,12 @@ Each tool still lives in `src/tools/<name>.ts` and exports a `register<Name>Tool
 import { shipInputSchema, shipOutputSchema } from "@ship/mcp";
 
 export function registerShipTool(server: McpServer, factory: ServiceFactory): void {
-  server.tool(
+  server.registerTool(
     "ship",
-    "Start a workflow run from an approved task doc.",
-    shipInputSchema.shape,
+    {
+      description: "Start a workflow run from an approved task doc.",
+      inputSchema: shipInputSchema.shape,
+    },
     async (args) => {
       const out = await factory().ship(args);
       const validated = shipOutputSchema.parse(out);
@@ -198,7 +199,7 @@ export function registerShipTool(server: McpServer, factory: ServiceFactory): vo
 }
 ```
 
-Because `McpServer` accepts the Zod schema directly, we don't need a `zod-to-json-schema` conversion step: the SDK derives the JSON Schema for `tools/list` from the Zod schema's `.shape`. (This is a small win over the `Server` + manual approach — one fewer dep, one fewer conversion to keep in sync.)
+Because `McpServer` accepts the Zod raw shape directly, we don't need a `zod-to-json-schema` conversion step: the SDK derives the JSON Schema for `tools/list` from the registered shape. (This is a small win over the `Server` + manual approach — one fewer dep, one fewer conversion to keep in sync.)
 
 ### ED-4 — Error mapping
 
@@ -214,9 +215,9 @@ Mirrors the CLI's user-vs-internal split from Phase 7 § ED-4. The mapping table
 
 ### ED-5 — Resource handler
 
-`ship://runs/{id}` registers via `server.resource(name, uriTemplate, handler)` on the `McpServer` (matches the per-tool `server.tool(...)` registration in ED-3 — same dispatch ergonomics). The handler:
+`ship://runs/{id}` registers via `server.registerResource(name, new ResourceTemplate(...), config, handler)` on the `McpServer` (matches the per-tool `server.registerTool(...)` registration in ED-3 — same dispatch ergonomics; the legacy positional `server.resource(...)` overloads are also `@deprecated` per the installed SDK 1.29.0). The handler:
 
-1. Parses the URI to extract `{id}` (regex against `/^ship:\/\/runs\/([^/]+)$/`).
+1. Receives the resolved `URL` plus the template `Variables` from the SDK; pulls `id` out of `variables`.
 2. Calls `factory().getRun(id)`.
 3. `null` → JSON-RPC `-32602` "not found: <id>".
 4. Otherwise validates the returned run against `getWorkflowRunOutputSchema` and returns a `ReadResourceResult` with `application/json` content.
@@ -254,22 +255,13 @@ Alternative considered: import the server module in-process. Rejected because `b
 
 ### ED-8 — Capability declaration
 
-The MCP `McpServer` constructor still needs a capabilities block. V1:
+The MCP `McpServer` constructor accepts an optional capabilities block, but the high-level class **auto-registers `tools.listChanged` and `resources.listChanged` capabilities the first time `registerTool` / `registerResource` is called** (verified by reading the installed SDK 1.29.0's `setToolRequestHandlers` / `setResourceRequestHandlers`). So V1 omits the explicit `capabilities` block and relies on auto-registration:
 
 ```ts
-new McpServer(
-  { name: "ship", version: "0.1.0" },
-  {
-    capabilities: {
-      tools: {},          // four tools registered via server.tool(...)
-      resources: {},      // one URI template registered via server.resource(...)
-      // no prompts, no logging, no completion
-    },
-  },
-);
+new McpServer({ name: "ship", version: "0.1.0" });
 ```
 
-`tools` and `resources` are empty objects (per MCP convention) since we just signal "this server supports them." With the high-level `McpServer` class, `tools/list` and `resources/list` JSON-RPC methods are wired automatically once tools/resources are registered via `server.tool(...)` / `server.resource(...)` — there's no separate `ListToolsRequestSchema` / `ListResourcesRequestSchema` handler to install. (This was an error in revision 0 of this doc that conflated `McpServer`'s behavior with the lower-level `Server` API; on `Server` the list handlers DO have to be wired explicitly.)
+With the high-level `McpServer` class, `tools/list` and `resources/list` JSON-RPC methods are also wired automatically once tools/resources are registered — there's no separate `ListToolsRequestSchema` / `ListResourcesRequestSchema` handler to install. (This was an error in revision 0 of this doc that conflated `McpServer`'s behavior with the lower-level `Server` API; on `Server` the list handlers DO have to be wired explicitly.)
 
 ### ED-9 — Repo-wide isolation test
 

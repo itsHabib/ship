@@ -17,4 +17,8 @@ describe("@ship/core barrel export (index.ts)", () => {
     expect(typeof core.renderImplementationPrompt).toBe("function");
     expect(core.ARTIFACT_FILES.events).toBe("events.ndjson");
   });
+
+  test("re-exports the default production-wiring factory", () => {
+    expect(typeof core.createDefaultShipService).toBe("function");
+  });
 });

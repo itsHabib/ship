@@ -4,6 +4,10 @@
 export type { ShipService, ShipServiceConfig, ShipServiceDeps } from "./service.js";
 export { createShipService } from "./service.js";
 
+// --- default production wiring (consumed by cli + mcp-server) ---
+export type { DefaultShipServiceOpts, ShipServiceFactory } from "./default-wiring.js";
+export { createDefaultShipService } from "./default-wiring.js";
+
 // --- re-exports of MCP boundary types so consumers (cli, mcp-server) ---
 // don't need a direct `@ship/mcp` dep just to type ShipService's surface.
 export type { ListWorkflowRunsInput, ShipArtifacts, ShipInput, ShipOutput } from "@ship/mcp";
