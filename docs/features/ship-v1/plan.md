@@ -107,16 +107,14 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ## Phase 6 — `packages/core`
 
-**Goal:** `ShipService` — the workflow brain. Holds the state machine. Workspace-agnostic: `ship(input)` accepts a workdir path the caller supplies; Ship doesn't create or destroy workspaces.
+📄 [phases/06-core.md](phases/06-core.md) — task doc.
 
-- [ ] `createShipService({ store, cursor, fs, clock, config })`. (No Tower dependency.)
-- [ ] Methods: `ship(input)`, `getRun(id)`, `listRuns(filter)`, `cancelRun(id)`.
-- [ ] State transitions enforce the rules in spec.md § "State transitions".
-- [ ] Artifact write logic (prompt.md, task-doc.md, events.ndjson, result.json, summary.md).
-- [ ] Vitest: state transitions, artifact paths, error paths, all using fakes from #5.
-- [ ] Extend `@ship/test-harness` scenarios to cover full-stack flows through `ShipService`.
+**Goal:** `ShipService` — the workflow brain. Holds the state machine, owns artifact-write logic + the rendered implementation prompt template. Workspace-agnostic: `ship(input)` accepts a workdir path the caller supplies; Ship doesn't create or destroy workspaces.
 
-**Done when:** `pnpm --filter core test` green; an end-to-end test using fakes goes from `pending` → `succeeded`.
+- [ ] Review and approve `phases/06-core.md`.
+- [ ] Implement per the doc's "Implementation plan" section (lands as 6a + 6b + 6c sub-PRs).
+
+**Done when:** `pnpm --filter @ship/core test` green; cross-package scenarios drive `pending` → `succeeded` and `pending` → `cancelled` via `ShipService` against fakes; ED dep-direction test verifies `core` doesn't import `cli` / `mcp-server`.
 
 ---
 
