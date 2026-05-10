@@ -82,7 +82,7 @@ Hand-crafted JSON-RPC over stdio (`SHIP_TEST_FAKE_CURSOR=1`, no quota burn):
 - **Protocol layer:** init with mismatched `protocolVersion`, init with empty `clientInfo`, send a request before initialize, oversize payload (1MB+ args).
 - **`tools/list`:** before initialize (should reject), after initialize (should return all 4).
 - **`tools/call`:** unknown tool name, known tool with missing required field, known tool with extra field (strict-mode rejects), valid call followed by another concurrent call (interleaved on the same connection), valid call then close stdin mid-flight.
-- **`resources/read`:** `ship://other/123` (template miss), `ship://runs/` (empty id), `ship://runs/wf_VALID_BUT_UNKNOWN`, `ship://runs/banana%2Fwithslash` (URL-encoded slash), URL with extreme length (10kB).
+- **`resources/read`:** `ship://other/123` (template miss), `ship://runs/` (empty id), `ship://runs/wf_01ABCDEFGHJKMNPQRSTVWXYZAB` (schema-valid ULID but unknown to the store — exercises the not-found branch, not Zod's regex rejection), `ship://runs/banana` (regex-rejected ID), `ship://runs/foo%2Fbar` (URL-encoded slash — Codex called out that an actually-valid-but-unknown placeholder is required here so the unknown-id path isn't masked by pre-handler rejection), URL with extreme length (10kB).
 - **Robustness:** init then send pure garbage on stdin (server should ignore + stay alive); init, valid tool call, then close stdin (server should exit cleanly without leaking the SQLite handle or the runs-dir).
 
 ### F5 — Live e2e dogfood (L3)
@@ -101,11 +101,11 @@ Each surprise → chip with reproducer.
 
 ## Non-functional requirements
 
-- **No production code touched directly in this phase.** Chips become PRs that touch code.
+- **No production code touched directly in this phase.** Every confirmed finding becomes a chip, then a PR. The earlier draft carved out a "fixed inline if one-line trivial" exception in the Validation plan; that's been removed — it conflicted with this requirement and made phase completion subjective. A P0 hot-fix is still its own PR (just an urgent one opened in parallel with the smash session), never an inline edit in this phase's branch.
 - **No new tests added directly.** Tests come with the chip's PR (one regression test per chip).
 - **Chip rigor.** Every chip has a reproducer, a suggested approach, and explicit out-of-scope notes so each chip's PR ships independently without coupling.
 - **Severity discipline.** Each chip carries P0/P1/P2/P3. P0/P1 land before V1 ships; P2 deferred to V2 if the queue is full; P3 opportunistic.
-- **Doc-first per chip.** P0/P1 chips with non-trivial fixes (touching `service.ts`, the state machine, or schema shapes) get sub-task docs at `docs/features/ship-v1/phases/09a-...md`, `09b-...md`, etc. before implementation. Trivial one-line fixes (typo, comment correction, error-message rename) can go direct.
+- **Doc-first per chip's PR.** P0/P1 chips with non-trivial fixes (touching `service.ts`, the state machine, or schema shapes) get sub-task docs at `docs/features/ship-v1/phases/09a-...md`, `09b-...md`, etc. before implementation lands in the chip's PR. Trivial one-line chips (typo, comment correction, error-message rename) skip the sub-task doc and ship the fix in the PR directly. Either way, every confirmed finding still produces a chip — the doc-first/skip rule only governs whether the chip's own PR needs its sub-task doc.
 - **Harness bugs are their own chips.** Bugs found in `e2e/scenarios/` or `e2e/integration/` during L3 get chipped against the harness path, not conflated with `@ship/*` package findings — different files, different reviewers, different scope.
 
 ## Tradeoffs
@@ -160,7 +160,7 @@ The 20-finding ad-hoc agent report from the pre-doc round is preserved in Append
 
 Phase 9 is "done" when ALL of:
 
-- L1 read pass complete; every confirmed finding chipped (or fixed inline if one-line trivial).
+- L1 read pass complete; every confirmed finding chipped (no inline edits in this phase's branch).
 - L2 CLI + MCP smash matrices run end-to-end; behaviors recorded; chips filed for spec/UX violations.
 - `make integration` runs cleanly 3 times in a row (no flake).
 - L3 live e2e runs 3 times (or marked "L3 deferred" with reason in this doc's outcome section).
