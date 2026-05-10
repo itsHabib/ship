@@ -241,8 +241,22 @@ export class LocalCursorRunner implements CursorRunner {
         return;
       }
 
-      const result = await sdkRun.wait();
-      callbacks.finalizeOk(mapRunResult(result, input));
+      // Stream completed normally; wait() can still reject on its own
+      // (SDK-side failure after a clean stream). If we don't catch
+      // here, the rejection escapes through `void this.#runPipeline(...)`
+      // as an unhandled rejection and `handle.result` never settles.
+      let waitResult: RunResult;
+      try {
+        waitResult = await sdkRun.wait();
+      } catch (waitErr) {
+        callbacks.finalizeError(
+          new CursorRunFailedError("run.wait() rejected after a clean stream", {
+            cause: waitErr,
+          }),
+        );
+        return;
+      }
+      callbacks.finalizeOk(mapRunResult(waitResult, input));
     } finally {
       // Dispose regardless. Disposal failures don't change the run's
       // outcome — they're SDK cleanup concerns surfaced via stderr if

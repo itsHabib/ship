@@ -360,6 +360,23 @@ describe("LocalCursorRunner — onEvent contract", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("clean stream + wait() rejection → handle.result rejects (does not hang forever)", async () => {
+    // Cycle-1 review (Codex P1): if the stream completes normally but
+    // sdkRun.wait() rejects, the pipeline must surface the failure via
+    // handle.result rather than letting the rejection escape as an
+    // unhandled async error.
+    const waitErr = new Error("SDK runtime crashed after clean stream");
+    const { run } = makeMockRun({ events: [evA], waitThrows: waitErr });
+    const { agent, disposeSpy } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new LocalCursorRunner();
+    const handle = await runner.run(baseInput());
+    await expect(handle.result).rejects.toThrow(/run\.wait\(\) rejected/);
+    await expect(handle.result).rejects.toMatchObject({ cause: waitErr });
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
   test("stream error with a recoverable wait() RunResult → handle.result resolves with that terminal", async () => {
     // Some SDK errors make the stream throw but wait() can still produce
     // a structured terminal result. We prefer the terminal over re-
