@@ -7,6 +7,7 @@
  */
 
 import type { ShipService } from "@ship/core";
+import type { CursorRunner } from "@ship/cursor-runner";
 
 import { createNodeShipFs, createShipService } from "@ship/core";
 import { LocalCursorRunner } from "@ship/cursor-runner";
@@ -22,6 +23,13 @@ export interface CliPathOpts {
   readonly runsDir: string;
   /** Default model id when `input.model` is omitted. */
   readonly defaultModelId?: string;
+  /**
+   * Cursor runner override. Production omits this and gets the real
+   * `LocalCursorRunner`; integration tests pass a `FakeCursorRunner`
+   * so they can exercise real `node:fs` + real SQLite without an API
+   * key + without burning real model quota.
+   */
+  readonly cursor?: CursorRunner;
 }
 
 export type ServiceFactory = () => ShipService;
@@ -45,7 +53,7 @@ export function createCliService(opts: CliPathOpts): ServiceFactory {
     mkdirSync(opts.runsDir, { recursive: true });
     const clock = (): string => new Date().toISOString();
     const store = createStore({ dbPath: opts.dbPath, clock });
-    const cursor = new LocalCursorRunner();
+    const cursor = opts.cursor ?? new LocalCursorRunner();
     const fs = createNodeShipFs();
     cached = createShipService({
       store,

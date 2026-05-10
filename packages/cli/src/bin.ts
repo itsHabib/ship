@@ -26,7 +26,11 @@ main().catch((err: unknown) => {
     process.exit(err.code);
   }
   if (err instanceof CommanderError) {
-    process.exit(err.exitCode || 1);
+    // `--help` and `--version` throw `CommanderError` with
+    // `exitCode: 0`; pass the code through directly. Earlier versions
+    // used `err.exitCode || 1` here, which silently flipped a
+    // legitimate 0 to 1 because `0` is falsy.
+    process.exit(err.exitCode);
   }
   process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(2);

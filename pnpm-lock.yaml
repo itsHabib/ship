@@ -36,6 +36,37 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.17)
 
+  e2e:
+    dependencies:
+      '@ship/cli':
+        specifier: workspace:*
+        version: link:../packages/cli
+      '@ship/core':
+        specifier: workspace:*
+        version: link:../packages/core
+      '@ship/cursor-runner':
+        specifier: workspace:*
+        version: link:../packages/cursor-runner
+      '@ship/store':
+        specifier: workspace:*
+        version: link:../packages/store
+      '@ship/test-harness':
+        specifier: workspace:*
+        version: link:../packages/test-harness
+      '@ship/workflow':
+        specifier: workspace:*
+        version: link:../packages/workflow
+      commander:
+        specifier: ^12.1.0
+        version: 12.1.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.17
+      tsx:
+        specifier: ^4.19.0
+        version: 4.21.0
+
   packages/cli:
     dependencies:
       '@ship/core':

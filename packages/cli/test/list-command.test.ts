@@ -62,14 +62,20 @@ test("--repo + repeated --status + --limit reach the service", async () => {
   expect(parsed.runs.length).toBeGreaterThanOrEqual(1);
 });
 
-test("invalid --status value is rejected with exit 2 (build-filter throw)", async () => {
+test("invalid --status value is rejected with exit 1 (InvalidArgumentError → user)", async () => {
   const { code } = await parseAndCatch(h.program, ["list", "--status", "bogus"]);
-  expect(code).toBe(2);
+  expect(code).toBe(1);
   expect(h.stderr.join("")).toMatch(/invalid --status: bogus/);
 });
 
-test("invalid --limit value is rejected with exit 2", async () => {
+test("invalid --limit value is rejected with exit 1", async () => {
   const { code } = await parseAndCatch(h.program, ["list", "--limit", "nope"]);
-  expect(code).toBe(2);
+  expect(code).toBe(1);
   expect(h.stderr.join("")).toMatch(/invalid --limit: nope/);
+});
+
+test("--limit above 200 cap → exit 1 (RangeError from store → user)", async () => {
+  const { code } = await parseAndCatch(h.program, ["list", "--limit", "99999999"]);
+  expect(code).toBe(1);
+  expect(h.stderr.join("")).toMatch(/exceeds maximum/);
 });

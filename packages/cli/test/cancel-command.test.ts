@@ -50,12 +50,8 @@ test("cancel --json emits the envelope", async () => {
   expect(parsed.workflowRunId).toBe(out.workflowRunId);
 });
 
-test("cancel unknown id → service throws → exit 2 (internal — store invariant violation)", async () => {
+test("cancel unknown id → exit 1 (user error: WorkflowRunNotFoundError)", async () => {
   const { code } = await parseAndCatch(h.program, ["cancel", "wf_01J0000000000000000000000Z"]);
-  // The store treats "cancel a non-existent id" as an invariant violation,
-  // not a user error — its `cancelRun` throws `WorkflowRunNotFoundError`,
-  // which the CLI maps to exit 2 (internal). If product wants exit 1
-  // here in V2, the mapping in `errors.ts#isUserError` widens to include
-  // that error type.
-  expect(code).toBe(2);
+  expect(code).toBe(1);
+  expect(h.stderr.join("")).toMatch(/workflow run not found/);
 });

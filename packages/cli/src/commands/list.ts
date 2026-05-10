@@ -6,7 +6,7 @@ import type { Command } from "commander";
 
 import type { ServiceFactory } from "../service.js";
 
-import { cliExit, rethrowCliExitOrMap } from "../errors.js";
+import { cliExit, InvalidArgumentError, rethrowCliExitOrMap } from "../errors.js";
 import { formatWorkflowRunList } from "../format.js";
 
 const VALID_STATUSES: ReadonlySet<string> = new Set([
@@ -55,7 +55,7 @@ function buildFilter(opts: ListOpts): ListRunsFilter {
   if (opts.status !== undefined && opts.status.length > 0) {
     for (const s of opts.status) {
       if (!VALID_STATUSES.has(s)) {
-        throw new Error(`invalid --status: ${s}`);
+        throw new InvalidArgumentError(`invalid --status: ${s}`);
       }
     }
     filter.status = opts.status as WorkflowStatus[];
@@ -63,7 +63,7 @@ function buildFilter(opts: ListOpts): ListRunsFilter {
   if (opts.limit !== undefined) {
     const parsed = Number.parseInt(opts.limit, 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      throw new Error(`invalid --limit: ${opts.limit}`);
+      throw new InvalidArgumentError(`invalid --limit: ${opts.limit}`);
     }
     filter.limit = parsed;
   }

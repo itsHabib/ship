@@ -1,0 +1,19 @@
+{
+  "name": "@ship/e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "@ship/cli": "workspace:*",
+    "@ship/core": "workspace:*",
+    "@ship/cursor-runner": "workspace:*",
+    "@ship/store": "workspace:*",
+    "@ship/test-harness": "workspace:*",
+    "@ship/workflow": "workspace:*",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0"
+  }
+}
