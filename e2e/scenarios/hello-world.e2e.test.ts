@@ -22,15 +22,7 @@
  */
 
 import { spawn } from "node:child_process";
-import {
-  cpSync,
-  createReadStream,
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  statSync,
-  watchFile,
-} from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,88 +79,129 @@ describe.skipIf(!HAS_KEY)("Phase 9 live e2e — ship the hello-world fixture", (
       process.stderr.write(`[ship-stderr] ${chunk}`);
     });
 
-    // Tail the runs/<id>/events.ndjson once it shows up so the operator
-    // sees the agent's stream events as the run unfolds. We discover the
-    // path lazily — `ship`'s --json result tells us where it lives, but
-    // we want the tail BEFORE the run finishes. Poll the runs dir until
-    // an `events.ndjson` appears, then tail it.
-    const runsDir = join(tmp, "ship", "runs");
-    tailEventsLazy(runsDir);
+    // Walk the tmp tree on each poll for an `events.ndjson` file —
+    // doesn't matter what subdirectory the CLI uses (`<tmp>/.config/ship/runs/`
+    // on POSIX, `<tmp>/AppData/Roaming/ship/runs/` on Windows, etc.), the
+    // walk picks it up either way. Once found, poll-read the file from the
+    // last position and emit each new event's `type` to stdout. Pure
+    // setInterval: no `watchFile`, so the loop doesn't keep the process
+    // alive past test completion. The interval is cleared in `finally`.
+    const tailer = startEventTailer(tmp, child);
 
-    const exitCode = await new Promise<number>((resolveCode) => {
-      child.on("close", (code) => {
-        resolveCode(code ?? -1);
+    try {
+      const exitCode = await new Promise<number>((resolveCode) => {
+        child.on("close", (code) => {
+          resolveCode(code ?? -1);
+        });
       });
-    });
-    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-    process.stdout.write(`[e2e] ship exited code=${exitCode.toString()} after ${elapsed}s\n`);
+      const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+      process.stdout.write(`[e2e] ship exited code=${exitCode.toString()} after ${elapsed}s\n`);
 
-    expect(exitCode).toBe(0);
-    const parsed = JSON.parse(stdout) as {
-      status: string;
-      summary?: string;
-      artifacts: { resultPath: string };
-    };
-    expect(parsed.status).toBe("succeeded");
-    expect(parsed.summary).toBeDefined();
-    expect((parsed.summary ?? "").length).toBeGreaterThan(0);
-    expect(statSync(parsed.artifacts.resultPath).isFile()).toBe(true);
-    expect(statSync(join(workdir, "src", "hello.ts")).isFile()).toBe(true);
+      expect(exitCode).toBe(0);
+      const parsed = JSON.parse(stdout) as {
+        status: string;
+        summary?: string;
+        artifacts: { resultPath: string };
+      };
+      expect(parsed.status).toBe("succeeded");
+      expect(parsed.summary).toBeDefined();
+      expect((parsed.summary ?? "").length).toBeGreaterThan(0);
+      expect(statSync(parsed.artifacts.resultPath).isFile()).toBe(true);
+      expect(statSync(join(workdir, "src", "hello.ts")).isFile()).toBe(true);
+    } finally {
+      tailer.stop();
+    }
   });
 });
 
+interface EventTailer {
+  stop(): void;
+}
+
 /**
- * Polls `runsDir` for an `events.ndjson` file, then tails it line by
- * line and pipes each event's `type` (or whatever shape the SDK emits)
- * to stdout so the operator can watch the agent stream in real time.
- * Best-effort — silently no-ops if the file never shows up.
+ * Polls `tmp` recursively for any `events.ndjson` file. Once found,
+ * keeps polling its size and prints each newly-appended NDJSON line's
+ * `type` to stdout. Pure interval-based — no `watchFile`, so the
+ * process exits cleanly when `stop()` runs (which it always does, in
+ * the test's `finally`).
+ *
+ * Cheap: each poll is a stat + slice of the file from the last
+ * position. 250ms cadence is fine for human-watchable progress.
  */
-function tailEventsLazy(runsDir: string): void {
-  let started = false;
-  let position = 0;
+function startEventTailer(tmp: string, _child: { kill?: () => void }): EventTailer {
   const POLL_MS = 250;
+  let eventsPath: string | undefined;
+  let position = 0;
+
   const interval = setInterval(() => {
-    let eventsPath: string | undefined;
-    try {
-      const subs = readdirSync(runsDir);
-      for (const sub of subs) {
-        const candidate = join(runsDir, sub, "events.ndjson");
-        if (existsSync(candidate)) {
-          eventsPath = candidate;
-          break;
-        }
+    if (eventsPath === undefined) {
+      eventsPath = findEventsNdjson(tmp);
+      if (eventsPath !== undefined) {
+        process.stdout.write(`[e2e] tailing ${eventsPath}\n`);
       }
-    } catch {
-      // runsDir doesn't exist yet — try again next tick.
       return;
     }
-    if (eventsPath === undefined) return;
-    if (!started) {
-      started = true;
-      process.stdout.write(`[e2e] tailing ${eventsPath}\n`);
-      watchFile(eventsPath, { interval: POLL_MS }, (curr, prev) => {
-        if (curr.size <= position) return;
-        const stream = createReadStream(eventsPath, {
-          encoding: "utf-8",
-          start: position,
-          end: curr.size,
-        });
-        position = curr.size;
-        stream.on("data", (chunk: Buffer | string) => {
-          const text = typeof chunk === "string" ? chunk : chunk.toString("utf-8");
-          for (const line of text.split("\n").filter((l) => l.length > 0)) {
-            try {
-              const ev = JSON.parse(line) as { type?: string };
-              process.stdout.write(`[ship-event] ${ev.type ?? "?"}\n`);
-            } catch {
-              process.stdout.write(`[ship-event] (unparseable: ${line.slice(0, 60)}…)\n`);
-            }
-          }
-        });
-        // Keep the watch interval alive for the next chunk.
-        void prev;
-      });
-      clearInterval(interval);
+    let size: number;
+    try {
+      size = statSync(eventsPath).size;
+    } catch {
+      return;
+    }
+    if (size <= position) return;
+    let chunk: string;
+    try {
+      // Read the whole file then slice; for V1 sizes this is fine
+      // (events.ndjson tops out at hundreds of KB per run). Keeps the
+      // tailer dependency-free.
+      chunk = readFileSync(eventsPath, "utf-8").slice(position, size);
+    } catch {
+      return;
+    }
+    position = size;
+    for (const line of chunk.split("\n").filter((l) => l.length > 0)) {
+      try {
+        const ev = JSON.parse(line) as { type?: string };
+        process.stdout.write(`[ship-event] ${ev.type ?? "?"}\n`);
+      } catch {
+        process.stdout.write(`[ship-event] (unparseable: ${line.slice(0, 60)}…)\n`);
+      }
     }
   }, POLL_MS);
+
+  return {
+    stop: () => {
+      clearInterval(interval);
+    },
+  };
+}
+
+/**
+ * Recursively walks `root` looking for the first `events.ndjson`
+ * file. Returns the absolute path if found, `undefined` otherwise.
+ * Used to discover the CLI's runs dir without hardcoding its layout
+ * (which varies across platforms because `<UserConfigDir>` does).
+ */
+function findEventsNdjson(root: string): string | undefined {
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return undefined;
+  }
+  for (const name of entries) {
+    const child = join(root, name);
+    let isDir = false;
+    try {
+      isDir = statSync(child).isDirectory();
+    } catch {
+      continue;
+    }
+    if (!isDir) {
+      if (name === "events.ndjson") return child;
+      continue;
+    }
+    const found = findEventsNdjson(child);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
