@@ -209,27 +209,50 @@ Twenty raw findings from the pre-doc ad-hoc agent run, preserved here for L1 re-
 - **#16** — `packages/cli/src/commands/{ship,status,list,cancel}.ts`: claim "CLI double-prints because `rethrowCliExitOrMap` doesn't actually throw." **False:** `rethrowCliExitOrMap` rethrows on `CliExit`; the following `stderr.write` only runs for typed service errors that need formatting. Pattern is intentional. See `packages/cli/src/errors.ts:63-66`.
 - **#17** — `packages/core/src/default-wiring.ts:56-83`: claim "factory is not concurrency-safe; two parallel calls leak a SQLite handle." **False:** factory body is fully synchronous (no `await` between cache check and assignment); JS single-threaded execution prevents interleave on a single closure. Cross-process is a different question (covered by SQLite's own locking).
 
-### To investigate during L1 (each gets ED-1 disposition)
+### L1 dispositions (completed 2026-05-10)
 
-- **#2** — `packages/core/src/service.ts:178, 229`: `activeRuns.set` race window. Line 178 sets `{ controller }`; line 229 replaces with `{ controller, handle }` after `cursor.run()` returns. A `cancelRun` arriving between aborts via the original controller, but the line-229 replacement could lose visibility into the cancel state. Verify divergent end-state.
-- **#3** — `packages/core/src/service.ts:95-106`: `cancelRun` aborts the controller but never calls `active.handle?.cancel()`. Relies on the runner observing the signal. `LocalCursorRunner` does; a future runner that doesn't would let the run continue. Defensive-or-real?
-- **#5** — `packages/core/src/service.ts:130-178`: if `persistInitialState` succeeds (row created) but `executeAndFinalize` throws synchronously before line 178's `activeRuns.set`, the row stays `pending` forever with no cancel path. Unreachable today; verify by reading the call chain.
-- **#7** — `packages/mcp-server/src/bin.ts:66`: after `await server.connect(stdio)`, `main()` returns. SDK keeps the event loop pinned via stdio. But: no `process.stdin.on('close')` handling. When MCP client disconnects mid-`ship` call, the long-running `shipImpl` keeps writing to a now-orphaned store/fs. Real concern — verify behavior by killing the parent during a fake-cursor `ship`.
-- **#8** — `packages/mcp-server/src/bin.ts:86-89`: `process.stderr.write(msg)` then `process.exit(2)` races on Windows pipes; the message can be truncated. Use callback form or `process.exitCode = 2; return;`.
-- **#15** — `packages/core/src/service.ts:482`: `synthesizeFailedCursorRun` builds `id: cr_synthetic_${workflowRunId}` deterministically. Today the same workflowRunId can't trigger this twice (runs are unique-id), but the synthetic shape is fragile. Use a ULID factory.
-- **#18** — `packages/mcp-server/src/bin.ts:45-46`: `SHIP_DB_PATH` / `SHIP_RUNS_DIR` accept relative paths silently. CLI's cycle-4 carry-over added an absolute-path guard for `XDG_CONFIG_HOME`; mcp-server's env-var path doesn't have parity. MCP clients launching from different cwds → fragile. Verify against ship#14's fix shape.
-- **#19** — `packages/core/src/service.ts:191, 196`: state-write race window. Line 191 reads `getRun()?.status === "cancelled"` and bails; line 196 writes "running". A `cancelRun` arriving between reads "pending", flips to "cancelled" via `store.cancelRun`, then line 196 unconditionally overwrites with "running". Need a CAS or row-level transition guard. **Highest-priority candidate.**
-- **#20** — `packages/mcp-server/src/tools/list-workflow-runs.ts:28-32`: spread filter passes `status: []` through to the store. CLI treats `--status` absent as "all"; MCP treats `status: []` as filter-with-empty-array. Boundary-mismatch candidate. Verify how the store interprets an empty-array filter.
+**Chipped** (5 chips filed via `mcp__ccd_session__spawn_task` with reproducer + suggested approach + out-of-scope guard, per ED-2):
 
-### Lower-priority observations (investigate if time permits, otherwise drop)
+- **#7** → "mcp-server: handle MCP client disconnect mid-tool-call" (P2). `packages/mcp-server/src/bin.ts:66` has no transport-close handler; in-flight `ship` calls keep running after client drops, leaking the SQLite handle. Fix needs a new `ShipService.close()` / `abortAll()` accessor.
+- **#18** → "mcp-server: reject relative SHIP_DB_PATH / SHIP_RUNS_DIR" (P3). `packages/mcp-server/src/bin.ts:45-46` accepts relative env-var paths silently; parity gap with the CLI's `XDG_CONFIG_HOME` absolute-path guard from ship#14 cycle-4. Fix: `isAbsolute()` guard, fall back to default on miss.
+- **#8** → "Switch both bins from process.exit to process.exitCode" (P3). Both `packages/cli/src/bin.ts` and `packages/mcp-server/src/bin.ts` use the `stderr.write(msg); process.exit(code)` anti-pattern; Windows pipe-async can truncate. Fix: switch to `process.exitCode = code; return;` so the event loop drains.
+- **#9** → "Rename listRuns error to reference --limit not internal symbol" (P3). `packages/store/src/workflow-runs.ts:clampLimit` throws `RangeError("listRuns limit 201 exceeds maximum 200")` — names internal function in user-facing surface. Fix: boundary-agnostic message.
+- **CLI workflowRunId validation parity** → "CLI: validate workflowRunId shape at boundary, matching MCP" (P3). MCP boundary regex-validates `workflowRunId`; CLI forwards raw argv. `cancel ""` produces "workflow run not found: " (trailing space); `status wf_BAD` conflates malformed with absent. Fix: shared `validateWorkflowRunId` helper from `@ship/mcp`; both binaries call it.
 
-- **#4** — `cancelRun` raises `WorkflowRunNotFoundError` after aborting the controller for a partial-match. Currently unreachable (Map keys are full IDs); fragile if Map semantics ever change.
-- **#6** — `mapErrorToMcpError` uses `err.name === "ZodError"` for cross-bundle ZodError detection. A user-thrown `Error` with `name === "ZodError"` would route to `InvalidParams`. Low-risk; intentional workaround for pnpm hoisting.
-- **#9** — `listRuns` over-limit message says "listRuns limit 201 exceeds maximum 200" — names the internal symbol rather than `--limit`. UX nit (P3).
-- **#11** — `extractId` rejects array form correctly. URL-encoded slashes in `id` (`ship://runs/foo%2Fbar`) decode-or-not depending on SDK; a literal `%`-bearing ID in the store would mismatch. Low-impact.
-- **#13** — `finalizeSuccess` writes `result.json` then `summary.md` sequentially. If the second throws after the first succeeds, the artifact says "succeeded" but the row will flip to failed by the catch. Mitigated by `finalizeFailure` rewriting `result.json` on the way down.
-- **#14** — `finalizeFailure` swallows secondary write errors silently. Loses observability on disk-full during cleanup.
+**False positives** (confirmed by code-read; added to the pre-screened list above):
+
+- **#2** — claim: `activeRuns.set` line 178 vs line 229 races losing the controller. **False:** line 229 stores the SAME `controller` reference, just adds `handle`. AbortController is preserved across both sets. Cancel observability is intact throughout. Verified `packages/core/src/service.ts:178, 229`.
+- **#3** — claim: `cancelRun` should also call `active.handle?.cancel()`. **False:** the `CursorRunner` contract (`packages/cursor-runner/src/runner.ts:23-24`) explicitly says "Aborting this signal cancels the SDK run via `run.cancel()`." Signal-observation is the documented mechanism; `handle.cancel()` is for callers without a signal. We have the signal; calling both would be redundant.
+- **#19** — claim: state-write race between `service.ts:191` (getRun) and `:196` (updateWorkflowRunStatus). **False:** lines 191-196 are all synchronous `better-sqlite3` calls. JS single-threaded execution prevents any other JS task (incl. a concurrent `cancelRun`) from interleaving between them. The cancellation window is the `await prepareArtifacts` on line 184 — which line 191 explicitly checks for. Design is sound.
+- **#20** — claim: empty-array `status: []` filter creates a CLI/MCP boundary mismatch. **False:** `packages/store/src/workflow-runs.ts:buildListSql` explicitly skips the `WHERE status IN (...)` clause when `filter.status.length === 0`. Empty array = no filter, matching CLI's `--status` absent. Documented in `ListRunsFilter` JSDoc.
+
+**Speculative → dropped** (not chipped; impact too low or scenario unreachable):
+
+- **#5** — `persistInitialState` partial-failure (createWorkflowRun succeeds, appendPhase fails). Practically unreachable: two consecutive same-file `better-sqlite3` writes don't fail between them under any condition we can manufacture. Cleanup path exists via `cancel <id>` if the user discovers the orphan row. Drop.
+- **#15** — `synthesizeFailedCursorRun` deterministic ID (`cr_synthetic_${workflowRunId}`). Never persists to the database (only injected into the `ShipOutput` shape); collision risk is purely cosmetic and currently unreachable since workflowRunIds are unique. Drop.
+
+**Lower-priority observations** (dropped without chipping):
+
+- **#4** `cancelRun` partial-match Map race — false: Map keys are full IDs, no partial-match path exists.
+- **#6** `mapErrorToMcpError` name-based ZodError detection — intentional workaround for pnpm hoisting; not a bug.
+- **#11** URL-encoded slash in resource id — verified via L2 smash earlier: `ship://runs/banana%2Fwithslash` returns SDK-level "not found"; no failure.
+- **#13** result.json + summary.md sequential write inconsistency — partial-write outcome mismatch theoretical; `finalizeFailure` rewrites result.json on the way down, mitigating. Drop.
+- **#14** `finalizeFailure` swallows secondary write errors — observability nit; covered by V2 logging story, not V1.
 
 ## Outcome
 
-(Filled in when Phase 9 closes — chip queue snapshot, deferred items, lessons learned.)
+**Phase 9 L1 complete** (2026-05-10). L2 partial (pre-doc round confirmed `cancel ""` + `status wf_INVALID` boundary findings; F4 stdio-close scenario deferred to chip #7's PR test). L3 pending user `CURSOR_API_KEY` load.
+
+**Chip queue snapshot** (5 chips, all P2/P3, within the 8-cap):
+
+| # | Title | Severity | Files | Reproducer source |
+|---|---|---|---|---|
+| 1 | mcp-server: handle MCP client disconnect mid-tool-call | P2 | `packages/mcp-server/src/bin.ts` + `packages/core/src/service.ts` | L1 read + F4 scenario for the chip's PR test |
+| 2 | mcp-server: reject relative SHIP_DB_PATH / SHIP_RUNS_DIR | P3 | `packages/mcp-server/src/bin.ts` | L1 read; reproduced via env-var override |
+| 3 | Switch both bins from `process.exit` to `process.exitCode` | P3 | `packages/{cli,mcp-server}/src/bin.ts` | L1 read; Node.js documented gotcha |
+| 4 | Rename `listRuns` error to reference `--limit` not internal symbol | P3 | `packages/store/src/workflow-runs.ts` | L2 smash (`ship list --limit 201`) |
+| 5 | CLI: validate workflowRunId shape at boundary, matching MCP | P3 | `packages/cli/src/commands/{status,cancel}.ts` + `@ship/mcp` shared helper | L2 smash (`cancel ""`, `status wf_BAD`) |
+
+**Zero P0/P1 findings.** V1's correctness surface holds up under hostile code-read + L2 adversarial input on both binaries. The chips are all UX / observability / boundary-parity polish.
+
+**L3 status:** deferred pending user `CURSOR_API_KEY` load. If L3 surfaces additional findings, they get appended here as a "Phase 9 L3 outcome" subsection.
