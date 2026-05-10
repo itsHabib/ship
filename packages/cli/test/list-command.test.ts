@@ -77,7 +77,7 @@ test("invalid --limit value is rejected with exit 1", async () => {
 test("--limit above 200 cap → exit 1 (RangeError from store → user)", async () => {
   const { code } = await parseAndCatch(h.program, ["list", "--limit", "99999999"]);
   expect(code).toBe(1);
-  expect(h.stderr.join("")).toMatch(/exceeds maximum/);
+  expect(h.stderr.join("")).toMatch(/exceeds the maximum allowed value/);
 });
 
 test("--limit with trailing garbage (e.g. '10abc') is rejected, not silently coerced to 10", async () => {
