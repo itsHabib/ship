@@ -274,8 +274,13 @@ export class LocalCursorRunner implements CursorRunner {
 
   /**
    * Best-effort `run.wait()` after a stream error. Returns `undefined`
-   * if `wait()` itself rejects — in that case the caller propagates the
-   * original stream error.
+   * if `wait()` itself rejects — in that case the caller wraps the
+   * original stream error in a `CursorRunFailedError` ("stream errored
+   * without a terminal RunResult") and surfaces it via `finalizeError`.
+   * This wrapper's own rejection is intentionally swallowed so the
+   * caller has a clean two-branch decision: did wait() give us a
+   * terminal? If yes, prefer it; if no, propagate the (wrapped) stream
+   * error.
    */
   async #tryWait(sdkRun: Run): Promise<RunResult | undefined> {
     try {
