@@ -45,7 +45,7 @@ Tests that assert on the old message text must be updated:
 
 - `packages/store/src/workflow-runs.test.ts` — search for `listRuns limit` and update the matchers.
 - `packages/cli/src/format.test.ts` / `packages/cli/test/list-command.test.ts` — same.
-- `e2e/integration/cli-binary.integration.test.ts:91-95` — currently matches `/exceeds maximum/`, which still works under the new wording (`exceeds the maximum allowed value`), but verify the regex isn't anchored.
+- `e2e/integration/cli-binary.integration.test.ts:91-95` — currently matches `/exceeds maximum/`. **The substring does NOT survive the rename**: the new wording inserts `the` between `exceeds` and `maximum`, so the regex needs updating to `/exceeds the maximum allowed value/`. (Cycle-1 review of #19 caught the earlier draft's wrong claim that this regex was unaffected — both Codex and Claude flagged it independently.)
 
 The agent should run `grep -rn "listRuns limit" packages/ e2e/` to find every assertion site, then update.
 
@@ -61,7 +61,7 @@ The agent should run `grep -rn "listRuns limit" packages/ e2e/` to find every as
 |---|---|---|---|
 | Message style | "limit ... exceeds the maximum allowed value 200" | "limit ... exceeds 200" (terse) | Operator-readable; matches the prose style of other user-facing errors in the codebase. |
 | Naming the symbol | Drop `listRuns` prefix entirely | Replace with `--limit` (CLI-specific) or `params.limit` (MCP-specific) | The store layer is boundary-agnostic; the message shouldn't favor either consumer. |
-| Test text matching | Update exact-string assertions; leave regex assertions if `/exceeds maximum/` still holds | Rewrite all assertions as regex | Minimal blast radius; preserve existing regex matchers that happen to still work. |
+| Test text matching | Update every assertion — both exact-string and regex — to match the new wording | Rewrite all assertions as regex | The earlier draft assumed `/exceeds maximum/` would still match; it doesn't (cycle-1 review caught this). All four pinned-text sites need updating. |
 
 ## Engineering decisions
 
@@ -84,7 +84,7 @@ Tempting to swap `RangeError` for a typed `LimitOutOfRangeError` class. Out of s
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Missed test pin breaks `make check` | Hot loop on lint/test failures | Agent runs `grep -rn "listRuns limit" packages/ e2e/` to find every callsite before editing. |
-| Regex assertion breaks under new wording | Same as above | `e2e/integration/cli-binary.integration.test.ts:91-95` uses `/exceeds maximum/`; new wording is `exceeds the maximum allowed value` — substring still matches. |
+| Regex assertion breaks under new wording | Test failure | `e2e/integration/cli-binary.integration.test.ts:91-95` uses `/exceeds maximum/`. The new wording inserts `the` (`exceeds the maximum allowed value`), so the regex DOES need updating. The agent caught this during cycle-0 implementation; cycle-1 review of #19 then flagged the original Risks-table claim that the substring "still matched" was wrong. |
 | The change touches a hot path | Performance regression | `clampLimit` runs once per `listRuns` call; message construction cost is negligible. |
 
 ## Out of scope
