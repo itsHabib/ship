@@ -10,6 +10,7 @@
 
 import type { SDKMessage } from "@cursor/sdk";
 
+import { getEventListeners } from "node:events";
 import { describe, expect, test, vi } from "vitest";
 
 import type { CursorRunInput, CursorRunResult } from "./runner.js";
@@ -308,7 +309,85 @@ describe("FakeCursorRunner — AbortSignal cancellation", () => {
     const result = await handle.result;
     expect(result.status).toBe("cancelled");
   });
+
+  test("signal-abort overrides cancelBehavior: throw — always hard-cancels with cancelled status", async () => {
+    const runner = new FakeCursorRunner();
+    // The script asks for cancel-throw, but signal-abort is an external
+    // "stop now" event (SIGINT, timeout) that always hard-cancels —
+    // independent of `cancelBehavior` (which only governs handle.cancel).
+    runner.enqueue({
+      events: [evA, evB],
+      result: baseResult({ status: "succeeded" }),
+      cancelBehavior: "throw",
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+    const handle = await runner.run(baseInput({ signal: controller.signal }));
+    await expect(handle.result).resolves.toMatchObject({ status: "cancelled" });
+  });
+
+  test("signal-abort overrides cancelBehavior: ignore — signal still hard-cancels", async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueue({
+      events: [evA, evB],
+      result: baseResult({ status: "succeeded" }),
+      cancelBehavior: "ignore",
+      delayMsBetweenEvents: 50,
+    });
+
+    const controller = new AbortController();
+    const handle = await runner.run(baseInput({ signal: controller.signal }));
+    controller.abort();
+    await expect(handle.result).resolves.toMatchObject({ status: "cancelled" });
+  });
+
+  test("signal listener is removed on natural termination (no leak across runs)", async () => {
+    // A long-lived signal is reused across many runs; if the runner
+    // doesn't remove its listener on natural termination, listeners
+    // accumulate. We assert via the event-target's own listenerCount-
+    // adjacent behavior: after a clean run, aborting the same signal
+    // does NOT trigger the previous run's cancel pipeline. (Easiest
+    // proxy: just count outstanding listeners before/after.)
+    const runner = new FakeCursorRunner();
+    runner.enqueue({ events: [], result: baseResult({ status: "succeeded" }) });
+
+    const controller = new AbortController();
+    const before = listenerCount(controller.signal);
+    const handle = await runner.run(baseInput({ signal: controller.signal }));
+    await handle.result;
+    const after = listenerCount(controller.signal);
+    expect(after).toBe(before);
+  });
+
+  test("pending sleep timer is cleared on cancel (run completes promptly, no event-loop hang)", async () => {
+    const runner = new FakeCursorRunner();
+    // A 10s delay would normally keep the event loop alive long after
+    // handle.result resolves; the abortable-sleep + listener cleanup
+    // must clear it. We assert the run terminates within ~100ms of
+    // cancel.
+    runner.enqueue({
+      events: [evA, evB],
+      result: baseResult({ status: "succeeded" }),
+      delayMsBetweenEvents: 10_000,
+    });
+
+    const handle = await runner.run(baseInput());
+    const start = Date.now();
+    await handle.cancel();
+    await handle.result;
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(500);
+  });
 });
+
+// Counts active "abort" listeners on an AbortSignal via Node's
+// `getEventListeners` (stable since 15.2.0; we require Node 22).
+// Used by the listener-leak regression test to assert the runner
+// removes its listener on natural termination.
+function listenerCount(signal: AbortSignal): number {
+  return getEventListeners(signal, "abort").length;
+}
 
 describe("FakeCursorRunner — queue mechanics", () => {
   test("enqueue is FIFO across multiple run() calls", async () => {

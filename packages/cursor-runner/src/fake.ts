@@ -182,16 +182,33 @@ export class FakeCursorRunner implements CursorRunner {
       resolveResult = resolve;
     });
 
+    // Resources we need to release at termination so detached state
+    // (pending timers, signal listeners) doesn't outlive the run:
+    // - `activeSleep`: the in-flight `sleep(delay)` between events. Without
+    //   clearing on cancel, the timer keeps the event loop alive after
+    //   `handle.result` resolves (real concern flagged by cycle-3 review).
+    // - `signalListener`: removed in `finalize` so a long-lived signal
+    //   reused across many runs doesn't accumulate listeners (also
+    //   cycle-3 review).
+    let activeSleep: { cancel: () => void } | null = null;
+    let signalListener: (() => void) | null = null;
+
     const finalize = (terminal: CursorRunResult): void => {
       if (terminated) return;
       terminated = true;
+      activeSleep?.cancel();
+      activeSleep = null;
+      if (signalListener !== null && input.signal !== undefined) {
+        input.signal.removeEventListener("abort", signalListener);
+      }
+      signalListener = null;
       resolveResult(terminal);
     };
 
-    // Both cancellation paths funnel through here so idempotency holds
-    // across any combination of signal-abort and handle.cancel(). The
-    // first call drives the script's `cancelBehavior`; every subsequent
-    // call is a no-op (resolves), regardless of `cancelBehavior`.
+    // `handle.cancel()` path — respects the script's `cancelBehavior`.
+    // Signal-abort goes through `hardCancelFromSignal` below so test
+    // scripts that simulate "the SDK throws on cancel" only affect
+    // explicit `handle.cancel()` calls, not signal-driven aborts.
     const cancelInternal = (): Promise<void> => {
       const behavior = script.cancelBehavior ?? "complete";
       if (cancelAttempted) {
@@ -214,37 +231,42 @@ export class FakeCursorRunner implements CursorRunner {
       return Promise.resolve();
     };
 
+    // Signal-abort path — always a hard cancel. We deliberately do NOT
+    // route signal abort through `cancelInternal` because the script's
+    // `cancelBehavior` is a test construct for simulating consumer-
+    // visible failures from `handle.cancel()`; signal-driven aborts
+    // (SIGINT, per-run timeout) are external "stop now" events that
+    // can't legitimately produce a thrown error from the runner. The
+    // resulting status is always `"cancelled"`.
+    const hardCancelFromSignal = (): void => {
+      if (terminated) return;
+      cancelAttempted = true;
+      finalize({ ...script.result, status: "cancelled" });
+    };
+
     // Wire input.signal — `core` will pass an AbortSignal for SIGINT
-    // and per-run timeouts. The fake honors it the same way the real
-    // runner will (forwards to the same internal pipeline). A
-    // pre-aborted signal MUST be processed before #emit starts —
-    // otherwise with the default `delayMsBetweenEvents: 0`, #emit
-    // runs synchronously to completion and resolves the result before
-    // the signal check ever fires (real bug caught in cycle-2 review).
+    // and per-run timeouts. A pre-aborted signal MUST be processed
+    // before #emit starts — otherwise with the default
+    // `delayMsBetweenEvents: 0`, #emit runs synchronously to completion
+    // and resolves the result before the signal check ever fires.
     if (input.signal !== undefined) {
       if (input.signal.aborted) {
-        void cancelInternal().catch(() => {
-          // If cancelBehavior is "throw" and the signal was already
-          // aborted, the resulting rejection is the consumer's problem
-          // to surface — the fake doesn't have a back-channel for it.
-          // Production code wouldn't pass an already-aborted signal
-          // and expect a clean exit.
-        });
+        hardCancelFromSignal();
       } else {
-        const onAbort = (): void => {
-          void cancelInternal().catch(() => {
-            // Same rationale as above for the pre-aborted branch.
-          });
-        };
-        input.signal.addEventListener("abort", onAbort, { once: true });
+        signalListener = hardCancelFromSignal;
+        input.signal.addEventListener("abort", signalListener, { once: true });
       }
     }
 
     // Start emission AFTER the pre-abort check. If the signal was
     // pre-aborted, `terminated` is now true and `#emit` exits its
     // loop on the first iteration. Otherwise emission proceeds as
-    // normal and `signal.abort()` interleaves via the listener above.
-    void this.#emit(script, input, () => terminated, finalize);
+    // normal and `signal.abort()` / `handle.cancel()` interleave via
+    // the wiring above.
+    const setActiveSleep = (s: { cancel: () => void } | null): void => {
+      activeSleep = s;
+    };
+    void this.#emit(script, input, () => terminated, finalize, setActiveSleep);
 
     return Promise.resolve({ agentId, runId, result, cancel: cancelInternal });
   }
@@ -254,15 +276,20 @@ export class FakeCursorRunner implements CursorRunner {
     input: CursorRunInput,
     isTerminated: () => boolean,
     finalize: (terminal: CursorRunResult) => void,
+    setActiveSleep: (s: { cancel: () => void } | null) => void,
   ): Promise<void> {
     const delay = script.delayMsBetweenEvents ?? 0;
     for (const ev of script.events) {
-      if (delay > 0) await sleep(delay);
-      // Re-check terminated AFTER the delay: cancel can interleave during
-      // the sleep window via either `handle.cancel()` or `signal.abort()`.
-      // The only way `terminated` becomes true mid-loop is during this
-      // sleep, so a single post-sleep check is sufficient — we don't need
-      // a pre-sleep check too.
+      if (delay > 0) {
+        const s = abortableSleep(delay);
+        setActiveSleep(s);
+        await s.promise;
+        setActiveSleep(null);
+      }
+      // Re-check terminated AFTER the (possibly aborted) sleep: cancel
+      // can interleave during the sleep window via either
+      // `handle.cancel()` or `signal.abort()`, both of which call
+      // `finalize` which clears the pending timer via `activeSleep.cancel()`.
       if (isTerminated()) return;
       try {
         input.onEvent(ev);
@@ -277,8 +304,23 @@ export class FakeCursorRunner implements CursorRunner {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
+/**
+ * Sleeps for `ms` milliseconds, returning a `cancel()` that clears the
+ * pending timer and resolves the promise immediately. The awaiting code
+ * is expected to re-check terminated state after the await — `cancel()`
+ * doesn't reject; it just hurries the wakeup so the loop exits cleanly.
+ */
+function abortableSleep(ms: number): { promise: Promise<void>; cancel: () => void } {
+  // Definitely-assigned: the Promise constructor runs its executor
+  // synchronously, so `cancelFn` is set before the constructor
+  // returns. The `!` reflects that — no dead-code placeholder.
+  let cancelFn!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, ms);
+    cancelFn = (): void => {
+      clearTimeout(t);
+      resolve();
+    };
   });
+  return { cancel: cancelFn, promise };
 }

@@ -128,11 +128,18 @@ describe("ED-2 — @cursor/sdk is imported in @ship/cursor-runner only", () => {
   });
 
   test("the test would catch a violation if one existed (sanity check on the scan)", () => {
-    // Self-test: if we scan our own package, we DO find SDK imports
-    // (in `runner.ts`, `index.ts`, etc.). This guards against the scan
-    // silently returning [] due to a bug in the walker.
+    // Two-part self-test, both required:
+    // 1. The walker must find at least one TS file in the allowed
+    //    package (catches `walkTsFiles` regressions even if the
+    //    package somehow stops importing the SDK).
+    // 2. The walker must surface at least one SDK import in the
+    //    allowed package (catches `findHits` regressions). This holds
+    //    by design — `cursor-runner` exists to import the SDK; the
+    //    invariant is meaningful even if the regex tightens further.
     const cursorRunnerDir = join(PACKAGES_DIR, ALLOWED_PACKAGE);
-    const ownHits = walkTsFiles(cursorRunnerDir).flatMap(findHits);
+    const ownFiles = walkTsFiles(cursorRunnerDir);
+    expect(ownFiles.length).toBeGreaterThan(0);
+    const ownHits = ownFiles.flatMap(findHits);
     expect(ownHits.length).toBeGreaterThan(0);
   });
 
