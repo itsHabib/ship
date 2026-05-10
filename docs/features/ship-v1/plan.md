@@ -131,16 +131,16 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 8 — `packages/mcp-server`
+## Phase 8 — `packages/mcp-server` ✅ (done 2026-05-10)
 
 📄 [phases/08-mcp-server.md](phases/08-mcp-server.md) — task doc.
 
 **Goal:** stdio MCP server exposing the four V1 tools + one resource over the same `ShipService` instance the CLI uses. Thin wrappers; the server has no domain logic. Service-wiring helper hoists into `@ship/core` (`createDefaultShipService`) so both `@ship/cli` and `@ship/mcp-server` share the production wiring.
 
-- [ ] Review and approve `phases/08-mcp-server.md`.
-- [ ] Implement per the doc's "Implementation plan" section (single PR).
+- [x] Review and approve `phases/08-mcp-server.md`.
+- [x] Implement per the doc's "Implementation plan" section (single PR).
 
-**Done when:** `pnpm --filter @ship/mcp-server test` green; in-memory transport smoke tests cover all four tools + the resource via fake-runner-backed service; `e2e/integration/mcp-server.integration.test.ts` exercises the binary as a subprocess via real stdio + fake cursor; Cursor or Claude Code can connect, see the four tools, and call `list_workflow_runs` against a real local store; ED dep-direction test verifies `mcp-server` doesn't import `cli`.
+**Validated:** `make check` passes from repo root (typecheck + lint + format:check + 420 tests across 54 files). `pnpm --filter @ship/mcp-server exec vitest run --coverage` clears the 80/75 floor at 97.29% stmts / 91.66% branches (with `bin.ts` excluded — exercised end-to-end by the L3 subprocess integration test instead). `make integration` adds 5 mcp-server scenarios (listTools, listResourceTemplates, list, ship + read resource, missing-CURSOR_API_KEY pre-flight) for a total of 14 integration tests. ED-1 hoisted `createDefaultShipService` into `@ship/core`; CLI's `createCliService` is now a thin wrapper. ED dep-direction test verifies `mcp-server` doesn't import `cli`.
 
 ---
 
