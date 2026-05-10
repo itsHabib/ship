@@ -32,3 +32,6 @@ Thumbs.db
 # Misc
 *.log
 coverage/
+
+# Claude Code (CLI harness state — local only)
+.claude/

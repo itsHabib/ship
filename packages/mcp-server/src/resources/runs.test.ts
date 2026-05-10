@@ -1,4 +1,4 @@
-/** `ship://runs/{id}` resource tests — happy path + unknown-id + listResources. */
+/** `ship://runs/{id}` resource tests — happy path + unknown-id + listResourceTemplates. */
 
 import type { ShipOutput } from "@ship/mcp";
 import type { WorkflowRun } from "@ship/workflow";

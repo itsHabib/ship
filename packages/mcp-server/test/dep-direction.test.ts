@@ -18,10 +18,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 // Catches every form: `from "..."`, `import "..."`, `import("...")`,
-// `require("...")`, `export ... from "..."`. Bare keyword references
-// in comments don't match (no quoted module specifier follows).
+// `require("...")`, `export ... from "..."` — including subpath
+// specifiers like `@ship/cli/src/foo` or `@ship/cli/test/...`. Bare
+// keyword references in comments don't match (no quoted module
+// specifier follows).
 const CLI_IMPORT_PATTERN =
-  /\b(?:from\s+|import\s*\(\s*|import\s+|require\s*\(\s*)["']@ship\/cli["']/;
+  /\b(?:from\s+|import\s*\(\s*|import\s+|require\s*\(\s*)["']@ship\/cli(?:\/[^"']+)?["']/;
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SRC_DIR = join(HERE, "..", "src");

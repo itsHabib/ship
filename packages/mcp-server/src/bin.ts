@@ -31,7 +31,13 @@ import { buildServer } from "./server.js";
 
 async function main(): Promise<void> {
   const useFake = process.env["SHIP_TEST_FAKE_CURSOR"] === "1";
-  if (!useFake && process.env["CURSOR_API_KEY"] === undefined) {
+  // Treat both "unset" and "set to empty string" as missing — the
+  // Cursor SDK rejects an empty key the same way it rejects an
+  // absent one, so accepting `""` here would let the server start
+  // and silently fail every real `ship` call instead of failing
+  // fast at boot. Cycle-1 review (ship#15) caught this gap.
+  const apiKey = process.env["CURSOR_API_KEY"];
+  if (!useFake && (apiKey === undefined || apiKey === "")) {
     process.stderr.write("error: CURSOR_API_KEY is not set\n");
     process.exit(1);
   }

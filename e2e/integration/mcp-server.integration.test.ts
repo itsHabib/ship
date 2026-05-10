@@ -124,24 +124,49 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
 
 describe("ship-mcp-server binary — pre-flight", () => {
   test("missing CURSOR_API_KEY (without SHIP_TEST_FAKE_CURSOR) → exit 1 with stderr message", () => {
-    const env: NodeJS.ProcessEnv = { ...process.env };
-    delete env["XDG_CONFIG_HOME"];
+    const env = sanitizedPreflightEnv();
     delete env["CURSOR_API_KEY"];
-    delete env["SHIP_TEST_FAKE_CURSOR"];
-    env["HOME"] = cenv.tmp;
-    env["APPDATA"] = cenv.tmp;
-    env["USERPROFILE"] = cenv.tmp;
 
     const result = spawnSync(process.execPath, ["--import", "tsx/esm", BIN], {
       encoding: "utf-8",
       cwd: PKG,
-      env: filterEnvForStdio(env),
+      env,
+      timeout: 5_000,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/CURSOR_API_KEY/);
+  });
+
+  test("empty CURSOR_API_KEY is treated as missing → exit 1 (cycle-1 review fix)", () => {
+    const env = sanitizedPreflightEnv();
+    env["CURSOR_API_KEY"] = "";
+
+    const result = spawnSync(process.execPath, ["--import", "tsx/esm", BIN], {
+      encoding: "utf-8",
+      cwd: PKG,
+      env,
       timeout: 5_000,
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/CURSOR_API_KEY/);
   });
 });
+
+/**
+ * Builds a child env scoped to the per-test tmp + stripped of
+ * `XDG_CONFIG_HOME` / `SHIP_TEST_FAKE_CURSOR` so the preflight path
+ * runs without interference. Caller still chooses what (if anything)
+ * to set on `CURSOR_API_KEY`.
+ */
+function sanitizedPreflightEnv(): Record<string, string> {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env["XDG_CONFIG_HOME"];
+  delete env["SHIP_TEST_FAKE_CURSOR"];
+  env["HOME"] = cenv.tmp;
+  env["APPDATA"] = cenv.tmp;
+  env["USERPROFILE"] = cenv.tmp;
+  return filterEnvForStdio(env);
+}
 
 /**
  * Strips `undefined` values so the stdio transport's env-passing path

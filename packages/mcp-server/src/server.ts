@@ -20,8 +20,15 @@ import { registerShipTool } from "./tools/ship.js";
 
 /** Server name reported via the MCP `initialize` handshake. */
 const SERVER_NAME = "ship";
-/** Bumped manually with releases of `@ship/mcp-server`. */
-const SERVER_VERSION = "0.1.0";
+/**
+ * Tracks `packages/mcp-server/package.json#version` — every other
+ * workspace package is also at `0.0.0` pre-publish, and the MCP
+ * `initialize` metadata should not lie about the build it's served
+ * from. Bump this in lock-step with `package.json` when we publish.
+ * (The Phase 8 doc Open Question 4 proposed `0.1.0`; deferred to the
+ * actual publish PR for consistency with the rest of the workspace.)
+ */
+const SERVER_VERSION = "0.0.0";
 
 /**
  * Constructs an `McpServer` with all four V1 tools and the runs

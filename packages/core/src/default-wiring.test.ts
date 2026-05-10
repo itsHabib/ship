@@ -24,7 +24,12 @@ describe("createDefaultShipService", () => {
     expect(typeof first.cancelRun).toBe("function");
   });
 
-  test("dbPath = :memory: skips the parent-dir mkdir (no disk side-effects)", () => {
+  test("dbPath = :memory: skips the db-parent mkdir (the runsDir mkdir still fires)", () => {
+    // The factory always `mkdirSync(runsDir, { recursive: true })` so
+    // the artifact writer doesn't fault on a fresh install; only the
+    // *parent of dbPath* mkdir is short-circuited for the `:memory:`
+    // sentinel. Keep the runsDir under a `/tmp` prefix so the side-
+    // effect is harmless on every CI runner.
     const factory = createDefaultShipService({
       dbPath: ":memory:",
       runsDir: "/tmp/ship-default-wiring-test",
