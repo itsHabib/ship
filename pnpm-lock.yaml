@@ -36,6 +36,21 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.17)
 
+  packages/core:
+    dependencies:
+      '@ship/cursor-runner':
+        specifier: workspace:*
+        version: link:../cursor-runner
+      '@ship/mcp':
+        specifier: workspace:*
+        version: link:../mcp
+      '@ship/store':
+        specifier: workspace:*
+        version: link:../store
+      '@ship/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+
   packages/cursor-runner:
     dependencies:
       '@cursor/sdk':
