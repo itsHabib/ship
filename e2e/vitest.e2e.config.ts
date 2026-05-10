@@ -40,5 +40,12 @@ export default defineConfig({
     passWithNoTests: true,
     testTimeout: 5 * 60 * 1000,
     hookTimeout: 60 * 1000,
+    // Live e2e + subprocess integration runs are slow; the operator
+    // wants to see progress (CLI stdout, agent events stream) while
+    // they wait. By default vitest captures test stdout and only
+    // shows it on failure. `disableConsoleIntercept` plus the
+    // `verbose` reporter passes child stdout straight through.
+    disableConsoleIntercept: true,
+    reporters: live ? ["verbose"] : ["default"],
   },
 });
