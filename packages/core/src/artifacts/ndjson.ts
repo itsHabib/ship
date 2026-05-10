@@ -47,20 +47,32 @@ export function createNdjsonEventWriter(fs: ShipFs, targetPath: string): EventWr
     close(): Promise<void> {
       if (closed) return Promise.resolve();
       closed = true;
-      return new Promise<void>((resolve) => {
+      return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const settle = (): void => {
+          if (settled) return;
+          settled = true;
+          if (firstError !== null) reject(firstError);
+          else resolve();
+        };
+
         // Wait for `close` rather than `finish` because `close` fires
         // after both the error path (error → close) and the success
         // path (finish → close), letting `firstError` settle either
-        // way before we read it. End the stream if it's still alive;
-        // an already-destroyed stream skips straight to `close`.
-        stream.once("close", () => {
-          if (firstError !== null) {
-            resolve(Promise.reject(firstError));
-            return;
-          }
-          resolve();
-        });
-        if (!stream.destroyed) {
+        // way before we read it.
+        stream.once("close", settle);
+
+        if (stream.destroyed) {
+          // The stream was destroyed before `close()` ran — typically a
+          // sync-destroy at construction (e.g. memory FS surfacing
+          // ENOENT for a missing parent dir). The 'close' event may
+          // have already fired, in which case `once("close")` would
+          // never trigger; and skipping `end()` removes the only path
+          // to a deferred 'close'. Schedule a fallback settle on
+          // `setImmediate` so we resolve after any pending error/close
+          // events have fired and `firstError` has been captured.
+          setImmediate(settle);
+        } else {
           stream.end();
         }
       });

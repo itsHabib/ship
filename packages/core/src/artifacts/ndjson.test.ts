@@ -56,4 +56,18 @@ describe("createNdjsonEventWriter", () => {
     await expect(w.close()).rejects.toMatchObject({ code: "ENOENT" });
     await expect(w.close()).resolves.toBeUndefined();
   });
+
+  test("close() settles even when the stream's 'close' event fired before close() ran", async () => {
+    // Open a writer over a missing parent → stream is sync-destroyed.
+    // Drain the event loop so the open-time 'error' and 'close' events
+    // fire BEFORE `close()` is invoked. Without the setImmediate
+    // fallback, `once("close")` would never trigger and the promise
+    // would hang.
+    const fs = createMemoryShipFs();
+    const w = createNdjsonEventWriter(fs, "/missing/events.ndjson");
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    await expect(w.close()).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
