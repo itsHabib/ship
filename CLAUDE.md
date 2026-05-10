@@ -40,6 +40,17 @@ Follow this general workflow for implementing a feature
 - repeat the review cycle 3 times before reaching out
 - when ready to merge reach out
 
+## Agent commit trailers
+
+Every agent-authored commit gets a `Co-authored-by:` trailer identifying the agent, **when the agent provides one**. This makes agent provenance auditable via `git log --grep` without inspecting branches or PR descriptions — a recurring need as Ship-on-Ship dogfooding ramps and a single feature may have commits from multiple agents.
+
+Examples seen in this repo:
+
+- **Claude Code** → `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` (added by Claude Code automatically when it commits on the operator's behalf).
+- **Cursor agents** (via `@ship/cursor-runner` → `@cursor/sdk`) → `Co-authored-by: Cursor <cursoragent@cursor.com>` (added by the Cursor SDK / `agent.send` flow during a ship run).
+
+Agents that don't provide a canonical trailer aren't required to invent one — skipping is fine for those. The rule applies to whoever has a documented identity. Human-authored commits don't need a trailer.
+
 ## PR sizing
 
 Target weighted-LOC bands per PR:
