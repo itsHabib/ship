@@ -68,6 +68,13 @@ describe("path resolution", () => {
     expect(userConfigDir().endsWith(".config")).toBe(true);
   });
 
+  test("POSIX ignores a relative XDG_CONFIG_HOME (spec: only absolute paths are valid)", () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    process.env["XDG_CONFIG_HOME"] = "relative/.config";
+    expect(userConfigDir()).not.toBe("relative/.config");
+    expect(userConfigDir().endsWith(".config")).toBe(true);
+  });
+
   test("Windows uses APPDATA when set; falls back to ~/AppData/Roaming when not", () => {
     Object.defineProperty(process, "platform", { value: "win32" });
     process.env["APPDATA"] = "C:\\Users\\dev\\AppData\\Roaming";

@@ -68,7 +68,13 @@ export async function createCliHarness(): Promise<CliHarness> {
   };
 }
 
-/** Parse argv with the captured streams. Returns the `CliExit` code if any (else 0). */
+/**
+ * Parse argv with the captured streams. Returns the `CliExit` code
+ * if any (else 0). Commander's `--help` / `--version` paths throw
+ * with `exitCode: 0`; pass it through directly rather than `|| 1`,
+ * which would silently flip 0 → 1 (the same regression that was
+ * fixed in `bin.ts` during PR #12 cycle-1).
+ */
 export async function parseAndCatch(
   program: Command,
   argv: readonly string[],
@@ -79,7 +85,9 @@ export async function parseAndCatch(
   } catch (err) {
     if (err instanceof CliExit) return { code: err.code, thrown: null };
     if (err !== null && typeof err === "object" && "exitCode" in err) {
-      return { code: Number(err.exitCode) || 1, thrown: err };
+      const raw = err.exitCode;
+      const code = typeof raw === "number" ? raw : Number(raw);
+      return { code: Number.isFinite(code) ? code : 1, thrown: err };
     }
     return { code: -1, thrown: err };
   }

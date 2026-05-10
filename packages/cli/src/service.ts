@@ -14,7 +14,7 @@ import { LocalCursorRunner } from "@ship/cursor-runner";
 import { createStore } from "@ship/store";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 export interface CliPathOpts {
   /** Absolute path to the SQLite db file, or `:memory:` for ephemeral. */
@@ -75,10 +75,12 @@ export function createCliService(opts: CliPathOpts): ServiceFactory {
  * once on top of this root — see ED-2 in the Phase 7 task doc.
  *
  * POSIX honors the `XDG_CONFIG_HOME` env var per the XDG Base
- * Directory Specification; falls back to `~/.config` when unset or
- * empty. Windows reads `%APPDATA%`, falling back to
- * `~/AppData/Roaming` when the env var is unset (e.g. inside a
- * cmd.exe spawned without the user environment).
+ * Directory Specification; falls back to `~/.config` when unset,
+ * empty, or set to a non-absolute path (the spec says relative
+ * values are invalid and should be ignored). Windows reads
+ * `%APPDATA%`, falling back to `~/AppData/Roaming` when the env
+ * var is unset (e.g. inside a cmd.exe spawned without the user
+ * environment).
  */
 export function userConfigDir(): string {
   if (process.platform === "win32") {
@@ -87,7 +89,7 @@ export function userConfigDir(): string {
     return join(homedir(), "AppData", "Roaming");
   }
   const xdg = process.env["XDG_CONFIG_HOME"];
-  if (xdg !== undefined && xdg !== "") return xdg;
+  if (xdg !== undefined && xdg !== "" && isAbsolute(xdg)) return xdg;
   return join(homedir(), ".config");
 }
 
