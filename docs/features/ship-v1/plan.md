@@ -133,14 +133,14 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ## Phase 8 — `packages/mcp-server`
 
-**Goal:** stdio MCP server exposing the four V1 tools.
+📄 [phases/08-mcp-server.md](phases/08-mcp-server.md) — task doc.
 
-- [ ] MCP TS SDK v1.x as server.
-- [ ] Tool registry: `ship`, `get_workflow_run`, `list_workflow_runs`, `cancel_workflow_run`.
-- [ ] Resource: `ship://runs/{id}`.
-- [ ] Smoke tests via fake-runner-backed service.
+**Goal:** stdio MCP server exposing the four V1 tools + one resource over the same `ShipService` instance the CLI uses. Thin wrappers; the server has no domain logic. Service-wiring helper hoists into `@ship/core` (`createDefaultShipService`) so both `@ship/cli` and `@ship/mcp-server` share the production wiring.
 
-**Done when:** Cursor or Claude Code connects, sees the four tools, and can call `list_workflow_runs` against a real local store.
+- [ ] Review and approve `phases/08-mcp-server.md`.
+- [ ] Implement per the doc's "Implementation plan" section (single PR).
+
+**Done when:** `pnpm --filter @ship/mcp-server test` green; in-memory transport smoke tests cover all four tools + the resource via fake-runner-backed service; `e2e/integration/mcp-server.integration.test.ts` exercises the binary as a subprocess via real stdio + fake cursor; Cursor or Claude Code can connect, see the four tools, and call `list_workflow_runs` against a real local store; ED dep-direction test verifies `mcp-server` doesn't import `cli`.
 
 ---
 
