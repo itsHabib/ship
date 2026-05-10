@@ -13,7 +13,7 @@ export {
 } from "./errors.js";
 
 // --- fs ---
-export type { FileStat, ShipFs } from "./fs/index.js";
+export type { FileStat, MemoryShipFs, ShipFs } from "./fs/index.js";
 export { createMemoryShipFs, createNodeShipFs } from "./fs/index.js";
 
 // --- artifacts ---

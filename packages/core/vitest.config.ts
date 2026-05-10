@@ -11,11 +11,12 @@ export default defineConfig({
       include: ["src/**/*.ts"],
       exclude: ["**/*.test.ts"],
       thresholds: {
-        // 6b's failure-path branches (artifact-write fail, edge cases in
-        // finalizeFailure) won't be fully covered until 6c's cross-package
-        // scenarios. Branches start at 80; tighten to 85 in 6c.
+        // 6c restored the runtime-touching band's 90/85 floor: the
+        // cross-package scenarios in `@ship/test-harness` exercise the
+        // failure-path branches (artifact-write fail, cancel-during-prep,
+        // cancelled-preservation race) end-to-end through `ShipService`.
         statements: 90,
-        branches: 80,
+        branches: 85,
         functions: 90,
         lines: 90,
       },

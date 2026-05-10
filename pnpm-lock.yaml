@@ -84,6 +84,12 @@ importers:
 
   packages/test-harness:
     dependencies:
+      '@ship/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ship/cursor-runner':
+        specifier: workspace:*
+        version: link:../cursor-runner
       '@ship/store':
         specifier: workspace:*
         version: link:../store
