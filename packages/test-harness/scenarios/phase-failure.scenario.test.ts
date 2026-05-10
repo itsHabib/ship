@@ -1,16 +1,4 @@
-/**
- * Scenario: phase failure.
- *
- * A phase fails. The store does NOT auto-cascade run status — that's
- * `core`'s job. The scenario asserts:
- * - phase ends `failed` with `errorMessage` populated
- * - parent run's `updated_at` was bumped at every step
- * - run can be transitioned to `failed` by an explicit
- *   `updateWorkflowRunStatus` call (the move `core` will make next)
- * - cursor-run carries its own `failed` status independently
- *
- * Models the "implementation tried, agent reported a blocker" path.
- */
+/** Scenario: phase failure — store does NOT auto-cascade run status; `core` makes the explicit move. */
 
 import { afterEach, beforeEach, expect, test } from "vitest";
 

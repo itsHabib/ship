@@ -1,12 +1,6 @@
 /**
- * Tests for `store.ts` — the public `createStore` factory.
- *
- * Covers what no per-table test does: connection-setup PRAGMAs (WAL,
- * foreign_keys, busy_timeout) on the running store, and the close()
- * contract.
- *
- * The CRUD round-trips for each table live in the per-table test
- * files; this file only asserts the wiring guarantees.
+ * Tests for `store.ts`. Pins connection PRAGMAs and the `close()`
+ * contract; CRUD round-trips live in the per-table test files.
  */
 
 import type { WorkflowPolicy, WorktreeRef } from "@ship/workflow";
@@ -69,8 +63,7 @@ describe("createStore: connection setup PRAGMAs (file-backed)", () => {
   test("foreign_keys = ON: appendPhase to non-existent run is rejected", () => {
     const store = createStore({ dbPath });
     try {
-      // FK enforcement is verified indirectly by the typed-error translation;
-      // a successful WorkflowRunNotFoundError implies foreign_keys = ON.
+      // FK enforcement verified indirectly: the typed-error translation requires foreign_keys = ON.
       expect(() =>
         store.appendPhase({
           id: newPhaseId(),
@@ -85,10 +78,7 @@ describe("createStore: connection setup PRAGMAs (file-backed)", () => {
   });
 
   test("openDatabase sets busy_timeout = 5000 on the connection", () => {
-    // busy_timeout is per-connection, so the only honest way to assert
-    // it is to read PRAGMA back on a handle from `openDatabase` directly.
-    // Going through `createStore` would still be testing a separate
-    // connection from the store's own.
+    // busy_timeout is per-connection; read PRAGMA back on a handle from openDatabase directly.
     const db = openDatabase(dbPath);
     try {
       expect(db.pragma("busy_timeout", { simple: true })).toBe(5000);
@@ -106,9 +96,7 @@ describe("createStore: in-memory + clock + close()", () => {
   });
 
   afterEach(() => {
-    // close() may have been called by the test; calling again is OK if the
-    // test already closed (better-sqlite3 returns silently). We rely on
-    // each test owning its lifecycle.
+    // Each test owns its own close() lifecycle.
   });
 
   test(":memory: dbPath produces a working store", () => {
