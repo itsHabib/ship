@@ -171,7 +171,7 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
   program
     .command("ship <docPath>")
     .option("--workdir <path>", "absolute path of the workspace", ".")
-    .option("--repo <name>", "Tower-registered repo name (required)")
+    .requiredOption("--repo <name>", "Tower-registered repo name")
     // ...
     .action(async (docPath: string, opts) => {
       const out = await factory().ship({ workdir: path.resolve(opts.workdir), repo: opts.repo, docPath });
@@ -251,7 +251,6 @@ The `cli` package exports nothing. It's a thin binary wrapper with no public TS 
   "dependencies": {
     "@ship/core": "workspace:*",
     "@ship/cursor-runner": "workspace:*",
-    "@ship/mcp": "workspace:*",
     "@ship/store": "workspace:*",
     "@ship/workflow": "workspace:*",
     "commander": "^12.0.0"
@@ -344,7 +343,7 @@ Tests live in `packages/cli/src/**/*.test.ts` (unit) plus `packages/cli/test/dep
 
 After review/approval, implement as **a single PR** in this order:
 
-1. **`packages/cli/{package.json, tsconfig.json, vitest.config.ts}`** — workspace wiring matching Phase 6's pattern. Deps: `@ship/core` / `@ship/cursor-runner` / `@ship/mcp` / `@ship/store` / `@ship/workflow` (`workspace:*`); `commander`. devDeps: `@ship/test-harness` (`workspace:*`), `@types/node`. `vitest.config.ts` sets the 80/75 coverage threshold.
+1. **`packages/cli/{package.json, tsconfig.json, vitest.config.ts}`** — workspace wiring matching Phase 6's pattern. Deps: `@ship/core` / `@ship/cursor-runner` / `@ship/store` / `@ship/workflow` (`workspace:*`); `commander`. The CLI doesn't take a direct dep on `@ship/mcp`; `ShipInput` / `ShipOutput` flow through `@ship/core`'s `ShipService` typing transitively. devDeps: `@ship/test-harness` (`workspace:*`), `@types/node`. `vitest.config.ts` sets the 80/75 coverage threshold.
 2. **`src/service.ts` + tests** — `createCliService(opts): ServiceFactory` lazy factory that wires `LocalCursorRunner` + `createNodeShipFs` + `createStore` + `createShipService`. Tests cover lazy caching + invalid `dbPath`.
 3. **`src/format.ts` + tests** — pretty + JSON formatters for the four output shapes. Snapshot-style tests pin the pretty output.
 4. **`src/commands/ship.ts` + tests** — `registerShipCommand(program, factory)`. Tests parse argv programmatically against a fake-factory-backed program.
