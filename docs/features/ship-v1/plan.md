@@ -144,16 +144,21 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 9 — Live integration test + dogfood
+## Phase 9 — V1 bug-smash (incl. live e2e + dogfood)
 
-**Goal:** the first real `ship` invocation against a real Cursor SDK on a workdir the test sets up. Swaps the `FakeCursorRunner` in `@ship/test-harness`'s e2e harness for the real one built in Phase 5. The workdir comes from whatever the test prefers — `git worktree`, plain `cp`, Tower if installed; Ship doesn't care.
+📄 [phases/09-bug-smash.md](phases/09-bug-smash.md) — task doc.
 
-- [ ] Test repo: the existing `e2e/fixtures/test-repo/` fixture, copied into a tmp workdir at test setup.
-- [ ] Run `ship ship docs/features/hello.md --workdir <tmp>` behind `SHIP_LIVE=1`.
-- [ ] Assert: files changed in the workdir, tests pass there, `result.json` populated, `summary.md` non-empty.
-- [ ] Then dogfood: write the next Ship feature as a task doc and ship it through Ship.
+**Goal:** cross-cutting hardening pass after Phase 8 merged V1 feature-complete on `main`. Three smash layers: L1 hostile-reviewer code-read, L2 adversarial input on both binaries (`@ship/cli` argv matrix + `@ship/mcp-server` JSON-RPC matrix, no API key needed), L3 live e2e + dogfood (the original "live integration test + dogfood" content folded in here as the third layer; needs `SHIP_LIVE=1` + `CURSOR_API_KEY`).
 
-**Done when:** V1 is real, dogfooded, and green.
+This phase produces chips, not code. Each surfaced bug becomes its own `mcp__ccd_session__spawn_task` chip → user-curated → its own task doc + PR.
+
+- [ ] Review and approve `phases/09-bug-smash.md`.
+- [ ] L1 read pass; re-triage the seed agent-report findings through the validation bar (ED-1).
+- [ ] L2 CLI + MCP smash matrices + flake check.
+- [ ] L3 live e2e (user loads `CURSOR_API_KEY`); dogfood pass.
+- [ ] All chips have reproducer + suggested approach + out-of-scope guard; queue ≤ 8 P2/P3.
+
+**Done when:** chips filed (or "L3 deferred" noted) + outcome section in [phases/09-bug-smash.md](phases/09-bug-smash.md) populated.
 
 ---
 
