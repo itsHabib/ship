@@ -1,6 +1,6 @@
 /**
  * Append-only JSON-lines writer for `events.ndjson`. Wraps a Node
- * `WritableStream` opened in append mode; one `JSON.stringify(event)` +
+ * `Writable` opened in append mode; one `JSON.stringify(event)` +
  * `\n` per `write()` call.
  */
 
@@ -9,13 +9,36 @@ import type { ShipFs } from "../fs/shape.js";
 export interface EventWriter {
   /** Serialize and append one event. Synchronous from the caller's view. */
   write(event: unknown): void;
-  /** Flush + close the underlying stream. Idempotent. */
+  /**
+   * Flush + close the underlying stream. Idempotent. Rejects with
+   * the first error the stream emitted (if any) — see notes on
+   * `createNdjsonEventWriter` for why error surfacing flows through
+   * `close()` rather than back through `write()`.
+   */
   close(): Promise<void>;
 }
 
+/**
+ * Wraps `fs.createWriteStream(targetPath, { flags: "a" })` with an
+ * NDJSON-shaped surface.
+ *
+ * Stream errors (ENOSPC mid-write, ENOENT for a missing parent, etc.)
+ * surface via Node's stream `error` event, which by default crashes
+ * the process if no listener is attached. The writer attaches an
+ * internal `error` listener at construction so a single failed run
+ * never tears the host process down. The first error captured is
+ * remembered and surfaced via the next `close()`'s rejection — the
+ * caller learns about IO failures without having to listen for stream
+ * events themselves, and `write()` stays synchronous fire-and-forget.
+ */
 export function createNdjsonEventWriter(fs: ShipFs, targetPath: string): EventWriter {
   const stream = fs.createWriteStream(targetPath, { flags: "a" });
   let closed = false;
+  let firstError: Error | null = null;
+
+  stream.on("error", (err: Error) => {
+    firstError ??= err;
+  });
 
   return {
     write(event): void {
@@ -24,11 +47,22 @@ export function createNdjsonEventWriter(fs: ShipFs, targetPath: string): EventWr
     close(): Promise<void> {
       if (closed) return Promise.resolve();
       closed = true;
-      return new Promise<void>((resolve, reject) => {
-        stream.end((err?: Error | null) => {
-          if (err !== null && err !== undefined) reject(err);
-          else resolve();
+      return new Promise<void>((resolve) => {
+        // Wait for `close` rather than `finish` because `close` fires
+        // after both the error path (error → close) and the success
+        // path (finish → close), letting `firstError` settle either
+        // way before we read it. End the stream if it's still alive;
+        // an already-destroyed stream skips straight to `close`.
+        stream.once("close", () => {
+          if (firstError !== null) {
+            resolve(Promise.reject(firstError));
+            return;
+          }
+          resolve();
         });
+        if (!stream.destroyed) {
+          stream.end();
+        }
       });
     },
   };

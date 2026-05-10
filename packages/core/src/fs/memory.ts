@@ -44,29 +44,32 @@ export function createMemoryShipFs(): MemoryShipFs {
 
   return {
     stat: (path) => {
-      if (fs.files.has(path)) return Promise.resolve(fileStat(true));
-      if (fs.dirs.has(path)) return Promise.resolve(fileStat(false));
+      const norm = normalize(path);
+      if (fs.files.has(norm)) return Promise.resolve(fileStat(true));
+      if (fs.dirs.has(norm)) return Promise.resolve(fileStat(false));
       return Promise.reject(ENOENT(path));
     },
     readFile: (path) => {
-      const content = fs.files.get(path);
+      const content = fs.files.get(normalize(path));
       if (content === undefined) return Promise.reject(ENOENT(path));
       return Promise.resolve(content);
     },
     writeFile: (path, data) => {
+      const norm = normalize(path);
       try {
-        ensureParentDir(path);
+        ensureParentDir(norm);
       } catch (err) {
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
-      fs.files.set(path, data);
+      fs.files.set(norm, data);
       return Promise.resolve();
     },
     mkdir: (path, _opts) => {
       // Recursive only — `ShipFs.mkdir` types `opts.recursive: true`.
       // Walk every ancestor and add it; idempotent on existing dirs.
-      const parts = normalizeParts(path);
-      let prefix = path.startsWith("/") ? "/" : "";
+      const norm = normalize(path);
+      const parts = normalizeParts(norm);
+      let prefix = norm.startsWith("/") ? "/" : "";
       for (const part of parts) {
         prefix = joinPart(prefix, part);
         fs.dirs.add(prefix);
@@ -74,27 +77,62 @@ export function createMemoryShipFs(): MemoryShipFs {
       return Promise.resolve();
     },
     createWriteStream: (path, _opts) => {
-      ensureParentDir(path);
-      const chunks: string[] = [fs.files.get(path) ?? ""];
+      // Mirrors `node:fs.createWriteStream`: open-time failures (missing
+      // parent dir, bad path) surface via the stream's `error` event on a
+      // later tick rather than throwing synchronously. The writer the
+      // memory FS hands back is the same shape consumers see in
+      // production, so test code paths exercise the same error wiring.
+      const norm = normalize(path);
+      const parent = parentDir(norm);
+      const parentMissing = parent !== "" && !fs.dirs.has(parent);
+
+      if (parentMissing) {
+        const failed = new Writable({
+          write: (_chunk, _enc, cb) => {
+            cb();
+          },
+          final: (cb) => {
+            cb();
+          },
+        });
+        // Synchronous destroy sets the destroyed flag immediately while
+        // emitting the 'error' (and subsequent 'close') events on a
+        // later tick — same observable contract as `node:fs`.
+        failed.destroy(ENOENT(path));
+        return failed;
+      }
+
+      const chunks: string[] = [fs.files.get(norm) ?? ""];
       return new Writable({
         write(chunk, _enc, cb): void {
           chunks.push(typeof chunk === "string" ? chunk : (chunk as Buffer).toString("utf-8"));
           cb();
         },
         final(cb): void {
-          fs.files.set(path, chunks.join(""));
+          fs.files.set(norm, chunks.join(""));
           cb();
         },
       });
     },
     realpath: (path) => {
+      const norm = normalize(path);
       // No symlinks in the memory FS — realpath is identity if the
       // path resolves to a known file or directory.
-      if (fs.files.has(path) || fs.dirs.has(path)) return Promise.resolve(path);
+      if (fs.files.has(norm) || fs.dirs.has(norm)) return Promise.resolve(norm);
       return Promise.reject(ENOENT(path));
     },
     snapshot: () => ({ files: new Map(fs.files), dirs: new Set(fs.dirs) }),
   };
+}
+
+/**
+ * Canonicalizes a path so the memory FS treats POSIX (`/foo/bar`) and
+ * Win32 (`\foo\bar` or `/foo\bar`) forms as the same key. Production
+ * `node:fs` handles separators platform-natively; the memory FS picks
+ * POSIX as its canonical form so cross-platform tests don't fight it.
+ */
+function normalize(path: string): string {
+  return path.replace(/\\/g, "/");
 }
 
 function parentDir(path: string): string {

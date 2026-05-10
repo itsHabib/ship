@@ -65,6 +65,17 @@ describe("createMemoryShipFs", () => {
     expect(await fs.readFile("/d/log.ndjson", "utf-8")).toBe("line1\nline2\n");
   });
 
+  test("createWriteStream over a missing parent emits an async error event (matches node:fs)", async () => {
+    const fs = createMemoryShipFs();
+    const stream = fs.createWriteStream("/missing/file", { flags: "a" });
+    const err = await new Promise<NodeJS.ErrnoException>((resolve) => {
+      stream.on("error", (e: NodeJS.ErrnoException) => {
+        resolve(e);
+      });
+    });
+    expect(err.code).toBe("ENOENT");
+  });
+
   test("createWriteStream in append mode preserves prior content", async () => {
     const fs = createMemoryShipFs();
     await fs.mkdir("/d", { recursive: true });

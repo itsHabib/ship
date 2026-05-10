@@ -4,6 +4,8 @@
  * `createMemoryShipFs` satisfy this shape.
  */
 
+import type { Writable } from "node:stream";
+
 export interface FileStat {
   isFile(): boolean;
   isDirectory(): boolean;
@@ -18,9 +20,11 @@ export interface ShipFs {
   mkdir(path: string, opts: { recursive: true }): Promise<void>;
   /**
    * Append-mode writable. The caller `.write()`s lines and `.end()`s
-   * to flush+close. Errors surface via the stream's `error` event.
+   * to flush+close. Open-time failures (e.g. missing parent dir) and
+   * mid-stream IO errors surface asynchronously via the stream's
+   * `error` event — same contract as `node:fs.createWriteStream`.
    */
-  createWriteStream(path: string, opts: { flags: "a" }): NodeJS.WritableStream;
+  createWriteStream(path: string, opts: { flags: "a" }): Writable;
   /**
    * Resolves a symlinked path to its real target. Used by symlink-escape
    * checks; matches `node:fs/promises`'s `realpath`.

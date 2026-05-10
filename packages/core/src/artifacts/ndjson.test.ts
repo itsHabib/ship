@@ -43,8 +43,17 @@ describe("createNdjsonEventWriter", () => {
     expect(content).toBe('{"prior":1}\n{"next":1}\n');
   });
 
-  test("write to a stream over a non-existent parent dir surfaces ENOENT eagerly", () => {
+  test("stream-level error (e.g. missing parent dir) surfaces via close()'s rejection, not via a sync throw", async () => {
     const fs = createMemoryShipFs();
-    expect(() => createNdjsonEventWriter(fs, "/missing/events.ndjson")).toThrow(/ENOENT/);
+    const w = createNdjsonEventWriter(fs, "/missing/events.ndjson");
+    w.write({ noted: true });
+    await expect(w.close()).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("close() called twice after a stream error returns a single rejection then resolves", async () => {
+    const fs = createMemoryShipFs();
+    const w = createNdjsonEventWriter(fs, "/missing/events.ndjson");
+    await expect(w.close()).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(w.close()).resolves.toBeUndefined();
   });
 });
