@@ -1,34 +1,9 @@
 /**
  * `LocalCursorRunner` — the only runtime user of `@cursor/sdk` in the
- * monorepo (per ED-2).
- *
- * Drives a local Cursor agent (`Agent.create({ local: { cwd } })`),
- * streams SDK events to the consumer's `onEvent`, and resolves the
- * handle's `result` once the SDK reports a terminal status. Every line
- * of code in the package that names `@cursor/sdk` at runtime lives in
- * this file; consumers (`core`, `mcp-server`) never import the SDK
- * directly.
- *
- * V1 ships local-only. V2 will add `CloudCursorRunner` as a separate
- * class behind the same `CursorRunner` interface — substrate
- * polymorphism is structural, not a discriminator field.
- *
- * Behavioral contracts (validation plan in `phases/05-cursor-runner.md`):
- * - `CURSOR_API_KEY` is read at `run()` time. Env-only, never persisted
- *   on `this`, the input, the handle, or any artifact (ED-1).
- * - `Agent.create` / `agent.send` failures are wrapped in
- *   `CursorRunFailedError`. If the agent was created but `send` threw,
- *   the agent IS disposed in the catch path.
- * - `RunResult.status === "error"` resolves the handle's `result` with
- *   `status: "failed"`, NOT a throw (per the error policy split).
- * - Cancellation via `signal` and `handle.cancel()` both funnel through
- *   the same internal pipeline and are idempotent (a `terminated` flag
- *   gates duplicate calls; SDK's `run.cancel()` is invoked at most once).
- * - `onEvent` exceptions are caught and silently swallowed (ED-4 — fire-
- *   and-forget contract; consumers that need visibility queue async
- *   work themselves).
- * - `agent[Symbol.asyncDispose]()` runs in a finally regardless of
- *   stream success, throw, or cancel.
+ * monorepo (per ED-2). Drives a local Cursor agent via
+ * `Agent.create({ local: { cwd } })`, streams events to `onEvent`,
+ * resolves `handle.result` on terminal status. See
+ * `phases/05-cursor-runner.md` for the full contract.
  */
 
 import type { Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
@@ -39,34 +14,23 @@ import type { CursorRunHandle, CursorRunInput, CursorRunner, CursorRunResult } f
 
 import { CursorRunFailedError, MissingApiKeyError } from "./errors.js";
 
-/** Env var the runner reads on every `run()` call. */
 const API_KEY_ENV = "CURSOR_API_KEY";
 
-/**
- * SDK-agnostic runner for local Cursor agents.
- *
- * Construct once, reuse across runs — the runner holds no per-run state
- * itself; every `run()` returns a fresh handle bound to a fresh SDK
- * agent. Cross-run state (workflow ids, archived runs, etc.) is `core`'s
- * concern.
- */
+/** Construct once, reuse across runs. The runner holds no per-run state. */
 export class LocalCursorRunner implements CursorRunner {
   async run(input: CursorRunInput): Promise<CursorRunHandle> {
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
       throw new MissingApiKeyError();
     }
-
     const { agent, sdkRun } = await this.#startAgent(apiKey, input);
-
     return this.#buildHandle(agent, sdkRun, input);
   }
 
   /**
-   * Creates the SDK agent and submits the first prompt. Pre-run failures
-   * (either `Agent.create` or `agent.send` throwing) surface as
-   * `CursorRunFailedError`; if the agent was created before the throw,
-   * we dispose it before re-throwing.
+   * Creates the SDK agent and submits the first prompt. Pre-run
+   * failures wrap as `CursorRunFailedError`; if `Agent.create` succeeded
+   * but `agent.send` threw, we dispose the agent before re-throwing.
    */
   async #startAgent(
     apiKey: string,
@@ -76,14 +40,10 @@ export class LocalCursorRunner implements CursorRunner {
     try {
       agent = await Agent.create({
         apiKey,
-        // Reconstruct `model` field-by-field rather than passing
-        // `input.model` straight through. The SDK's `ModelSelection`
-        // and `@ship/workflow`'s mirror are structurally identical at
-        // runtime, but TypeScript's `exactOptionalPropertyTypes`
-        // refuses the cross-type assignment (workflow's expanded type
-        // has `params?: T[] | undefined`, SDK's is `params?: T[]`).
-        // Conditional-spreading the optional field is the cleanest
-        // fix — no `as` cast, no precision loss.
+        // Reconstruct `model` field-by-field — workflow's mirror and
+        // SDK's `ModelSelection` are structurally identical at runtime,
+        // but `exactOptionalPropertyTypes` rejects the cross-type
+        // assignment of optional `params`.
         model: {
           id: input.model.id,
           ...(input.model.params !== undefined && { params: input.model.params }),
@@ -96,10 +56,6 @@ export class LocalCursorRunner implements CursorRunner {
       return { agent, sdkRun };
     } catch (err) {
       if (agent !== undefined) {
-        // We created the agent but agent.send threw — release it before
-        // re-throwing so the SDK doesn't leak a wedged session. Disposal
-        // failure is swallowed: the originating SDK error is what the
-        // caller cares about.
         try {
           await agent[Symbol.asyncDispose]();
         } catch {
@@ -114,18 +70,14 @@ export class LocalCursorRunner implements CursorRunner {
   }
 
   /**
-   * Wires the SDK run into a `CursorRunHandle`: the streaming + wait +
-   * dispose pipeline runs in the background; cancel paths funnel through
-   * a single internal cancel function with a `terminated` guard for
-   * idempotency.
+   * Wires the SDK run into a `CursorRunHandle`. Cancellation funnels
+   * through one internal pipeline guarded by `terminated` (cancel-after-
+   * terminal) and `cancelInitiated` (concurrent cancel races); the
+   * latter resets on SDK-cancel rejection so transient failures don't
+   * permanently disable cancel.
    */
   #buildHandle(agent: SDKAgent, sdkRun: Run, input: CursorRunInput): CursorRunHandle {
     let terminated = false;
-    // Distinct from `terminated`: tracks whether we've already invoked
-    // `sdkRun.cancel()` so concurrent cancel calls (signal + handle,
-    // multiple handle.cancel() races) don't fan out duplicate SDK
-    // cancels. The flag flips before the await so even synchronous
-    // re-entry sees it.
     let cancelInitiated = false;
     let resolveResult!: (value: CursorRunResult) => void;
     let rejectResult!: (reason: unknown) => void;
@@ -142,38 +94,20 @@ export class LocalCursorRunner implements CursorRunner {
       signalListener = undefined;
     };
 
-    /**
-     * Single cancel pipeline. Idempotent via the `terminated` (set by
-     * the pipeline after `wait()` returns) and `cancelInitiated` (set
-     * here) guards. The terminated check absorbs cancel-after-terminal;
-     * the cancelInitiated check absorbs concurrent cancel races.
-     *
-     * If `sdkRun.cancel()` rejects (transient transport/runtime error),
-     * we reset `cancelInitiated = false` so a retry from any path
-     * (re-call of `handle.cancel()`, signal re-fire) can attempt the
-     * SDK cancel again. Without this reset a single transient failure
-     * permanently disables cancellation while `terminated` is still
-     * false — a real hang risk caught in cycle-3 review.
-     */
     const cancelInternal = async (): Promise<void> => {
       if (terminated || cancelInitiated) return;
       cancelInitiated = true;
       try {
         await sdkRun.cancel();
       } catch {
-        // Allow retries: the SDK cancel call failed transiently. The
-        // pipeline's `terminated` flag is still the source of truth
-        // for whether the run ended; if it didn't, future cancel
-        // attempts should be allowed to try again.
+        // Allow retries: a transient SDK-side failure shouldn't
+        // permanently disable cancel while the run is still live.
         cancelInitiated = false;
       }
     };
 
     if (input.signal !== undefined) {
       if (input.signal.aborted) {
-        // Pre-aborted: kick the cancel synchronously before we start the
-        // stream so the SDK sees it as early as possible. The pipeline
-        // below will still run wait() and observe the cancelled status.
         void cancelInternal();
       } else {
         signalListener = (): void => {
@@ -208,9 +142,9 @@ export class LocalCursorRunner implements CursorRunner {
   }
 
   /**
-   * Background pipeline: stream events, await `run.wait()` for the
-   * structured result, map to Ship's vocabulary, dispose the agent.
-   * Disposal happens in a `finally` regardless of how the stream ended.
+   * Background pipeline: stream events, await `run.wait()`, map to
+   * Ship vocabulary, dispose the agent in `finally` regardless of
+   * outcome.
    */
   async #runPipeline(
     agent: SDKAgent,
@@ -223,23 +157,19 @@ export class LocalCursorRunner implements CursorRunner {
     },
   ): Promise<void> {
     /**
-     * Calls `input.onEvent(ev)` once and swallows BOTH sync throws and
-     * async rejections. The `onEvent` type is documented sync (ED-4),
-     * but TypeScript permits async functions to satisfy `=> void`
-     * signatures — without async-aware swallow logic a rejecting
-     * async consumer leaks an unhandled rejection past the runner
-     * (cycle-3 review). Extracted so the for-await body stays shallow.
+     * Calls `onEvent` once and swallows both sync throws and async
+     * rejections (ED-4). Extracted so the for-await body stays shallow.
      */
     const safelyEmit = (ev: SDKMessage): void => {
       try {
         const maybePromise: unknown = input.onEvent(ev);
         if (isPromiseLike(maybePromise)) {
           maybePromise.then(undefined, () => {
-            /* swallow async rejection — ED-4 contract */
+            /* swallow */
           });
         }
       } catch {
-        // sync throw — same swallow per ED-4.
+        /* swallow */
       }
     };
 
@@ -249,9 +179,8 @@ export class LocalCursorRunner implements CursorRunner {
           safelyEmit(ev);
         }
       } catch (streamErr) {
-        // Stream itself errored before run.wait could observe a terminal
-        // status. Still try to wait — if the SDK has a terminal result
-        // for us, prefer that. Otherwise propagate.
+        // Stream errored before wait() observed a terminal. Try wait()
+        // anyway — if the SDK has a terminal for us, prefer it.
         const result = await this.#tryWait(sdkRun);
         if (result !== undefined) {
           callbacks.finalizeOk(mapRunResult(result, input));
@@ -265,10 +194,8 @@ export class LocalCursorRunner implements CursorRunner {
         return;
       }
 
-      // Stream completed normally; wait() can still reject on its own
-      // (SDK-side failure after a clean stream). If we don't catch
-      // here, the rejection escapes through `void this.#runPipeline(...)`
-      // as an unhandled rejection and `handle.result` never settles.
+      // wait() can reject after a clean stream. Catch here so the
+      // rejection doesn't escape via `void this.#runPipeline(...)`.
       let waitResult: RunResult;
       try {
         waitResult = await sdkRun.wait();
@@ -282,30 +209,16 @@ export class LocalCursorRunner implements CursorRunner {
       }
       callbacks.finalizeOk(mapRunResult(waitResult, input));
     } finally {
-      // Dispose regardless. Disposal failures don't change the run's
-      // outcome — they're SDK cleanup concerns surfaced via stderr if
-      // the SDK chooses to log them. We don't propagate.
       try {
         await agent[Symbol.asyncDispose]();
       } catch {
         /* swallow */
       }
-      // Belt and suspenders: detach the signal listener if `finalizeOk` /
-      // `finalizeError` somehow short-circuited (shouldn't happen).
       callbacks.detachSignalListener();
     }
   }
 
-  /**
-   * Best-effort `run.wait()` after a stream error. Returns `undefined`
-   * if `wait()` itself rejects — in that case the caller wraps the
-   * original stream error in a `CursorRunFailedError` ("stream errored
-   * without a terminal RunResult") and surfaces it via `finalizeError`.
-   * This wrapper's own rejection is intentionally swallowed so the
-   * caller has a clean two-branch decision: did wait() give us a
-   * terminal? If yes, prefer it; if no, propagate the (wrapped) stream
-   * error.
-   */
+  /** Best-effort `run.wait()` after a stream error. `undefined` if `wait()` itself rejects. */
   async #tryWait(sdkRun: Run): Promise<RunResult | undefined> {
     try {
       return await sdkRun.wait();
@@ -315,11 +228,6 @@ export class LocalCursorRunner implements CursorRunner {
   }
 }
 
-/**
- * Best-effort Promise detection. Avoids `instanceof Promise` because
- * a thenable from a different realm (or a vendored mini-Promise)
- * still needs the same swallow treatment.
- */
 function isPromiseLike(value: unknown): value is Promise<unknown> {
   return (
     value !== null &&
@@ -328,15 +236,7 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
   );
 }
 
-/**
- * Maps `RunResult` (SDK vocabulary) to `CursorRunResult` (Ship
- * vocabulary). Per ED-3 the mapping lives here, not in `core`.
- *
- * - `RunResult.status: "finished"` → `"succeeded"`
- * - `"error"` → `"failed"` with `errorMessage` populated from
- *   `RunResult.result` (the SDK surfaces the error text there)
- * - `"cancelled"` → `"cancelled"`
- */
+/** Maps `RunResult` (SDK vocab) to `CursorRunResult` (Ship vocab) per ED-3. */
 function mapRunResult(result: RunResult, input: CursorRunInput): CursorRunResult {
   const branches = result.git?.branches ?? [];
   const durationMs = result.durationMs ?? 0;
@@ -363,8 +263,6 @@ function mapRunResult(result: RunResult, input: CursorRunInput): CursorRunResult
   return {
     branches,
     durationMs,
-    // `input.model` is required on `CursorRunInput`, so we always have
-    // something to fall back to if the SDK omits `result.model` on error.
     model: result.model ?? input.model,
     errorMessage: result.result ?? "Cursor SDK reported error without a message",
     status: "failed",

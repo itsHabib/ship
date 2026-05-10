@@ -1,18 +1,4 @@
-/**
- * Tests for `workflow.ts` — schemas, types, helpers, and constants.
- *
- * Coverage shape (per task doc § Validation plan):
- * - Each enum schema: every documented value accepted, unknown rejected.
- * - Each object schema: positive case + .strict() rejection + missing-field
- *   rejection + empty-string rejection (where applicable).
- * - Numeric refinements: positive vs nonnegative + integer enforcement.
- * - State-machine helpers (`canTransition`, `isTerminal`): exhaustive over
- *   the small status enum.
- * - `modelSelectionSchema`: runtime parse coverage. Structural-compat
- *   with `@cursor/sdk`'s `ModelSelection` is asserted in
- *   `@ship/cursor-runner` (the only package allowed to import the SDK
- *   per ED-2 in `phases/05-cursor-runner.md`).
- */
+/** Tests for `workflow.ts`. Pins schema validation, state machine, and policy defaults. */
 
 import { describe, expect, test } from "vitest";
 
@@ -207,10 +193,8 @@ describe("modelSelectionSchema", () => {
   });
 });
 
-// Structural-compat between this mirror and `@cursor/sdk`'s exported
-// `ModelSelection` lives in `@ship/cursor-runner` — the only package
-// allowed to import from `@cursor/sdk` per ED-2 (phases/05-cursor-runner.md).
-// See `packages/cursor-runner/src/model-selection-compat.test.ts`.
+// Structural-compat with `@cursor/sdk`'s `ModelSelection` is asserted in
+// `@ship/cursor-runner` (per phases/05-cursor-runner.md ED-2).
 
 describe("worktreeRefSchema", () => {
   test("accepts a valid worktree", () => {

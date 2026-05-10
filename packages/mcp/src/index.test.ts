@@ -1,10 +1,4 @@
-/**
- * Smoke test for `index.ts` (the package's public barrel).
- *
- * The `mcp.test.ts` file exercises each schema directly. This file just
- * verifies the barrel re-exports what consumers will import — a typo here
- * would otherwise surface in `mcp-server` or `core` with a worse error.
- */
+/** Smoke test verifying the barrel re-exports every schema. */
 
 import { describe, expect, test } from "vitest";
 

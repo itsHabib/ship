@@ -1,15 +1,4 @@
-/**
- * Scenario: cancel mid-flight.
- *
- * A run with a `running` phase gets cancelled. Asserts:
- * - run status flips to `cancelled`, updated_at bumped
- * - any in-flight phase is also flipped to `cancelled` with `endedAt`
- *   set, IN THE SAME TRANSACTION as the run-status flip
- * - `cancelRun` is idempotent (second call is a no-op)
- *
- * This is the canonical "user hits cancel while the agent is still
- * working" flow that the MCP `cancel_workflow_run` tool will trigger.
- */
+/** Scenario: cancel mid-flight — run + in-flight phase both flip to cancelled; idempotent. */
 
 import { afterEach, beforeEach, expect, test } from "vitest";
 

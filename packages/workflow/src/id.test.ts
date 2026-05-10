@@ -1,10 +1,4 @@
-/**
- * Tests for the three ID factories in `id.ts`.
- *
- * For each factory we assert (a) the emitted string starts with the right
- * prefix and the body matches the Crockford-base32 ULID regex, and (b) three
- * rapid-fire calls produce distinct values (basic uniqueness sanity).
- */
+/** Tests for ID factories. Pins prefix + ULID body shape and rapid-fire uniqueness. */
 
 import { describe, expect, test } from "vitest";
 

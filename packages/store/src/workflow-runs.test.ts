@@ -1,22 +1,4 @@
-/**
- * Tests for `workflow-runs.ts` exercised via the public `createStore` API.
- *
- * Coverage shape (per phases/03-store.md § "Validation plan"):
- * - createWorkflowRun + getRun round-trip, including phases: [].
- * - updateWorkflowRunStatus: status transitions bump updated_at; missing
- *   id throws.
- * - cancelRun: idempotent on terminal; pending → cancelled; running with
- *   in-flight phase flips both atomically; non-existent throws; rollback
- *   on phase-update failure preserves run state (atomicity).
- * - listRuns: ordering, filtering by repo / status / both, limit
- *   defaults / over-max, two-query budget verification (against the
- *   per-table module directly so we can spy on `db.prepare`), same-
- *   millisecond tiebreak.
- * - Hydration error path: manually corrupt JSON → StoreSchemaError;
- *   missing required column → StoreSchemaError.
- * - State-machine bypass note: store does not validate transitions
- *   (per ED).
- */
+/** Tests for `workflow-runs.ts` via the public `createStore` API. */
 
 import type { WorkflowPolicy, WorkflowRun, WorkflowStatus, WorktreeRef } from "@ship/workflow";
 
@@ -126,8 +108,7 @@ describe("workflow runs (via createStore)", () => {
   });
 
   test("updateWorkflowRunStatus: store does NOT enforce state machine (pending → succeeded passes)", () => {
-    // Documented in ED: core is the canonical state-machine owner; the store
-    // is a dumb writer. Asserts the absence of a guard is intentional.
+    // core owns the state machine; the store is a dumb writer.
     const input = makeInput();
     store.createWorkflowRun(input);
     const result = store.updateWorkflowRunStatus(input.id, "succeeded");
@@ -158,9 +139,7 @@ describe("workflow runs (via createStore)", () => {
   });
 
   test("cancelRun does NOT overwrite a terminal succeeded status (race-safety)", () => {
-    // Models the multi-connection race the conditional UPDATE guards
-    // against: another writer transitioned the row to `succeeded`.
-    // `cancelRun` must respect the terminal state.
+    // Models the multi-connection race the conditional UPDATE guards against.
     const input = makeInput();
     store.createWorkflowRun(input);
     store.updateWorkflowRunStatus(input.id, "running");
@@ -247,10 +226,6 @@ describe("workflow runs (via createStore)", () => {
     expect(cancelledPhase?.status).toBe("cancelled");
   });
 });
-
-// =====================================================================
-// listRuns
-// =====================================================================
 
 describe("listRuns", () => {
   let store: Store;
@@ -370,7 +345,7 @@ describe("listRuns", () => {
   });
 
   test("same-millisecond created_at: ULIDs sort tiebreak (larger id first)", () => {
-    // Force-equal createdAt for two rows; the ORDER BY tiebreak is `id DESC`.
+    // ORDER BY tiebreak is `id DESC` when createdAt collides.
     const fixedNow = "2026-05-08T00:00:00.000Z";
     currentNow = fixedNow;
     const a = store.createWorkflowRun(makeInput({ id: "wf_01HMXAAAAAAAAAAAAAAAAAAAAA" }));
@@ -382,10 +357,7 @@ describe("listRuns", () => {
   });
 });
 
-// =====================================================================
-// Two-query budget — uses per-table modules directly so we can spy on `db.prepare`.
-// =====================================================================
-
+// Two-query budget: drives per-table modules directly so we can spy on `db.prepare`.
 describe("listRuns two-query budget", () => {
   let db: Db;
 
@@ -404,7 +376,7 @@ describe("listRuns two-query budget", () => {
     const phases = createPhaseOps(db, clock);
     const wf = createWorkflowRunOps(db, clock, phases);
 
-    // Seed two runs + one phase each (so the IN clause has work to do).
+    // Seed two runs + one phase each so the IN clause has work to do.
     for (let i = 0; i < 2; i++) {
       const id = newWorkflowRunId();
       wf.create({
@@ -418,7 +390,7 @@ describe("listRuns two-query budget", () => {
       phases.append({ id: newPhaseId(), inputJson: "{}", kind: "implement", workflowRunId: id });
     }
 
-    // After the cached `db.prepare` calls inside the constructors, spy and run.
+    // Spy after constructor-time prepare() calls so only `list` is counted.
     const spy = vi.spyOn(db, "prepare");
     const rows = wf.list({});
     expect(rows).toHaveLength(2);
@@ -439,16 +411,12 @@ describe("listRuns two-query budget", () => {
   });
 });
 
-// =====================================================================
-// Hydration error path — corrupt rows from outside the API.
-// =====================================================================
-
+// Hydration error paths: corrupt rows from outside the API and verify
+// the parse-at-the-seam translates to StoreSchemaError.
 describe("hydration error paths", () => {
   let db: Db;
 
   beforeEach(() => {
-    // Drive the per-table modules directly so the test can corrupt rows
-    // without going through the public API.
     db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
     db.pragma("journal_mode = WAL");

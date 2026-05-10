@@ -1,28 +1,7 @@
 /**
- * Per-table module for `phases`.
- *
- * Owns every SQL string that touches the `phases` table, plus the
- * `workflow_runs.updated_at` bump that every phase mutation triggers
- * (per phases/03-store.md § F2 "updatedAt semantics").
- *
- * Methods exposed to the rest of the package:
- * - `append`     — insert a new phase + bump parent run's `updated_at`,
- *                  inside a single transaction.
- * - `update`     — patch any subset of fields + bump parent run's
- *                  `updated_at`, inside a single transaction.
- * - `listByRunId`     — read all phases for one run, ordered chronologically.
- * - `listByRunIds`    — read all phases for many runs in one query and
- *                       group them by run id; used by `listRuns` to keep
- *                       the hydration cost at exactly two queries total.
- * - `cancelInFlightForRun` — flip every `pending` / `running` phase under
- *                            a run to `cancelled`. Called from inside
- *                            `workflow-runs.cancel()`'s transaction.
- *
- * Hydration (row → `Phase` domain shape): the JSON-blob columns the spec
- * declares for phases (`input_json`, `output_json`) stay opaque strings —
- * `phaseSchema` validates them as `z.string().min(1)`, not as parsed JSON.
- * Optional columns are conditionally assigned to the candidate object so
- * `exactOptionalPropertyTypes` is happy.
+ * Per-table module for `phases`. Owns every SQL string that touches the
+ * table, plus the `workflow_runs.updated_at` bump every phase mutation
+ * triggers.
  */
 
 import type { Phase, PhaseKind, PhaseStatus } from "@ship/workflow";
@@ -34,13 +13,8 @@ import type { Db } from "./db.js";
 import { PhaseNotFoundError, StoreSchemaError, WorkflowRunNotFoundError } from "./errors.js";
 
 /**
- * Inputs accepted by `appendPhase`.
- *
- * Mirrors the shape declared in phases/03-store.md § F2. `inputJson` is
- * a non-empty string per `@ship/workflow`'s `phaseSchema`; for the V1
- * `implement` phase, `core` writes `JSON.stringify({ docPath, repo,
- * baseRef })`. `status` defaults to `"pending"` and is not part of the
- * input.
+ * Inputs for `appendPhase`. `inputJson` is a non-empty string per
+ * `phaseSchema`; status defaults to `"pending"`.
  */
 export interface AppendPhaseInput {
   id: string;
@@ -50,12 +24,8 @@ export interface AppendPhaseInput {
 }
 
 /**
- * Patch shape for `updatePhase`.
- *
- * Every field is optional — the caller only sends the columns it wants
- * to change. The empty patch is a no-op for the phase row itself but
- * still bumps the parent run's `updated_at` (cheap and consistent with
- * "any phase touch is a run touch").
+ * Patch shape for `updatePhase`. Empty patch is a no-op for the phase
+ * row itself but still bumps the parent run's `updated_at`.
  */
 export interface UpdatePhaseInput {
   status?: PhaseStatus;
@@ -66,13 +36,7 @@ export interface UpdatePhaseInput {
   errorMessage?: string;
 }
 
-/**
- * The internal phase-table API consumed by `workflow-runs.ts` and
- * `store.ts`.
- *
- * Not re-exported from the package barrel; only the `Store` interface in
- * `store.ts` is public.
- */
+/** Internal phase-table API consumed by `workflow-runs.ts` and `store.ts`. */
 export interface PhaseOps {
   /** Insert a phase with `status = 'pending'`; bumps the parent run's `updated_at`. */
   append: (input: AppendPhaseInput) => Phase;
@@ -86,7 +50,6 @@ export interface PhaseOps {
   cancelInFlightForRun: (runId: string, endedAt: string) => void;
 }
 
-/** Internal: shape of one row returned by every `SELECT * FROM phases`. */
 interface PhaseRow {
   id: string;
   workflow_run_id: string;
@@ -101,16 +64,12 @@ interface PhaseRow {
   created_at: string;
 }
 
-/** Column list shared by every `SELECT` in this module so the row shape stays in lock-step. */
 const PHASE_COLUMNS =
   "id, workflow_run_id, kind, status, started_at, ended_at, cursor_run_id, input_json, output_json, error_message, created_at";
 
 /**
- * Constructs the `phases` ops bound to a given DB connection and clock.
- *
- * Caches every static prepared statement at construction time per ED-6.
- * The dynamic-SET update and the dynamic-IN list build SQL on the fly
- * because their shape varies per call.
+ * Constructs the `phases` ops. Caches static prepared statements (ED-6);
+ * the dynamic-SET update and dynamic-IN list build SQL per call.
  */
 export function createPhaseOps(db: Db, clock: () => string): PhaseOps {
   const insertStmt = db.prepare(
@@ -130,9 +89,7 @@ export function createPhaseOps(db: Db, clock: () => string): PhaseOps {
   const bumpRunUpdatedAtStmt = db.prepare(`UPDATE workflow_runs SET updated_at = ? WHERE id = ?`);
 
   function append(input: AppendPhaseInput): Phase {
-    // Insert + parent bump + hydrate, all in one transaction. A Zod
-    // failure on the hydrated row rolls back the insert rather than
-    // committing a row that future reads will reject.
+    // Insert + parent bump + hydrate in one txn so a Zod failure rolls back.
     const txn = db.transaction((): Phase => {
       const now = clock();
       try {
@@ -154,9 +111,7 @@ export function createPhaseOps(db: Db, clock: () => string): PhaseOps {
   }
 
   function update(id: string, patch: UpdatePhaseInput): Phase {
-    // Patch + parent bump + hydrate, all in one transaction. A Zod
-    // failure on the hydrated row (e.g. caller passed a non-datetime
-    // `endedAt`) rolls back the patch.
+    // Patch + parent bump + hydrate in one txn so a Zod failure rolls back.
     const txn = db.transaction((): Phase => {
       const existing = selectByIdStmt.get(id);
       if (!existing) {
@@ -201,15 +156,8 @@ export function createPhaseOps(db: Db, clock: () => string): PhaseOps {
 }
 
 /**
- * Applies an `UpdatePhaseInput` patch as a single dynamic UPDATE.
- *
- * Built per call because the SET list varies; the prepared-statement
- * cache rule (ED-6) explicitly accepts dynamic SQL where the shape
- * depends on per-call input.
- *
- * The empty-patch case (`sets.length === 0`) is a no-op at the SQL
- * level; the `bumpRunUpdatedAt` outside this helper still fires so the
- * parent run's `updated_at` reflects the call.
+ * Applies an `UpdatePhaseInput` patch as a dynamic UPDATE. Empty patch
+ * is a SQL no-op; the parent-run `updated_at` bump still fires outside.
  */
 function applyPhasePatch(db: Db, id: string, patch: UpdatePhaseInput): void {
   const sets: string[] = [];
@@ -244,15 +192,10 @@ function applyPhasePatch(db: Db, id: string, patch: UpdatePhaseInput): void {
 }
 
 /**
- * Builds a `Phase` candidate from a row and runs `phaseSchema.parse`.
- *
- * Optional columns are only set when their SQL value is non-null, to keep
- * `exactOptionalPropertyTypes` quiet — `phaseSchema` declares them as
- * `.optional()` (i.e. "key may be absent"), not `.nullable()` (i.e.
- * "key present, value may be null").
- *
- * On schema-parse failure, throws `StoreSchemaError` with the offending
- * id baked into the message and the underlying `ZodError` as `cause`.
+ * Builds a `Phase` candidate and runs `phaseSchema.parse`. Optional
+ * columns are conditionally assigned (schema uses `.optional()`, not
+ * `.nullable()`). On parse failure throws `StoreSchemaError` with the
+ * underlying `ZodError` as `cause`.
  */
 function parsePhase(row: PhaseRow): Phase {
   const candidate: {
@@ -291,14 +234,7 @@ function parsePhase(row: PhaseRow): Phase {
   return result.data;
 }
 
-/**
- * Detects `SQLITE_CONSTRAINT_FOREIGNKEY` errors from `better-sqlite3`.
- *
- * The driver attaches a `code` property whose value is the symbolic
- * SQLite extended error code. We use this rather than parsing
- * `err.message` so a SQLite version bump that rewords the message
- * doesn't break the type-translation seam.
- */
+/** Detects `SQLITE_CONSTRAINT_FOREIGNKEY` via the driver's `code` property. */
 function isForeignKeyViolation(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   return (err as Error & { code?: unknown }).code === "SQLITE_CONSTRAINT_FOREIGNKEY";

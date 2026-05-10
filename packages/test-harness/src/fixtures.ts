@@ -1,27 +1,12 @@
 /**
- * Reusable test fixtures for `@ship/test-harness` consumers.
- *
- * Every scenario test reaches for the same handful of "valid sample"
- * entities — a worktree ref, a workflow policy, a task doc string, and the
- * corresponding `*Input` shapes the store accepts. Centralizing them here
- * keeps test bodies focused on the behavior under test rather than
- * boilerplate fixture construction, and makes it impossible for two
- * scenarios to disagree on what "the canonical sample" looks like.
- *
- * All fixtures are deeply frozen at module load (`Object.freeze` recursively
- * via the helper below). Tests that need a tweaked variant should spread:
- *
- * ```ts
- * const customWorktree = { ...sampleWorktree, repo: "other" };
- * ```
- *
- * not mutate the fixture in place.
+ * Reusable test fixtures and `*Input` builders for scenarios. Frozen at module
+ * load — tests that need a tweaked variant should spread, not mutate.
  */
 
 import type { AppendPhaseInput, CreateWorkflowRunInput, RecordCursorRunInput } from "@ship/store";
 import type { WorkflowPolicy, WorktreeRef } from "@ship/workflow";
 
-/** Sample task doc body; what `core` will eventually feed to the prompt template. */
+/** Sample task doc body fed to the prompt template. */
 export const sampleTaskDoc: string = [
   "# Sample task",
   "",
@@ -32,12 +17,7 @@ export const sampleTaskDoc: string = [
   "- `hello()` returns `'world'`.",
 ].join("\n");
 
-/**
- * Sample `WorktreeRef`. Mirrors the shape Tower returns for a worktree
- * branched off `main` under `<repo>/.worktrees/<name>`. The `path` is
- * intentionally Unix-style; tests that exercise Windows path handling
- * should construct their own.
- */
+/** Sample `WorktreeRef` mirroring Tower's shape for a worktree off `main`. */
 export const sampleWorktree: Readonly<WorktreeRef> = Object.freeze({
   baseRef: "main",
   branch: "ship/sample-task",
@@ -46,23 +26,14 @@ export const sampleWorktree: Readonly<WorktreeRef> = Object.freeze({
   repo: "ship",
 });
 
-/** Sample `WorkflowPolicy`. Matches `DEFAULT_WORKFLOW_POLICY` from `@ship/workflow`. */
+/** Sample `WorkflowPolicy`. Matches `DEFAULT_WORKFLOW_POLICY`. */
 export const samplePolicy: Readonly<WorkflowPolicy> = Object.freeze({
   agentTimeoutMs: 30 * 60 * 1000,
   baseRef: "main",
   maxRunDurationMs: 30 * 60 * 1000,
 });
 
-/**
- * Builds a `CreateWorkflowRunInput` with the canonical sample data, so
- * scenarios don't repeat the assembly. Caller passes the run id (typically
- * `harness.ids.workflowRun()`).
- *
- * Spread to override fields:
- * ```ts
- * createSampleWorkflowRunInput(id, { repo: "tower" })
- * ```
- */
+/** Builds a `CreateWorkflowRunInput` with canonical sample data. */
 export function createSampleWorkflowRunInput(
   id: string,
   overrides: Partial<CreateWorkflowRunInput> = {},
@@ -78,10 +49,7 @@ export function createSampleWorkflowRunInput(
   };
 }
 
-/**
- * Builds an `AppendPhaseInput` with canonical sample data. Caller passes
- * the phase + parent ids; everything else is the V1 `implement` shape.
- */
+/** Builds an `AppendPhaseInput` with canonical sample data (V1 `implement` shape). */
 export function createSampleAppendPhaseInput(
   id: string,
   workflowRunId: string,
@@ -100,10 +68,7 @@ export function createSampleAppendPhaseInput(
   };
 }
 
-/**
- * Builds a `RecordCursorRunInput` with canonical sample data. The
- * `artifactsDir` is intentionally not a real path; tests don't write to it.
- */
+/** Builds a `RecordCursorRunInput` with canonical sample data. */
 export function createSampleRecordCursorRunInput(
   id: string,
   workflowRunId: string,

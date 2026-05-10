@@ -1,22 +1,4 @@
-/**
- * Scenario: happy-path workflow run.
- *
- * Walks the V1 lifecycle at the storage level, exercising the full
- * sequence `core` will eventually drive:
- *   createWorkflowRun (pending)
- *     → updateWorkflowRunStatus(running)
- *     → appendPhase(implement, pending)
- *     → updatePhase(running, startedAt)
- *     → recordCursorRun(running)
- *     → updateCursorRunStatus(succeeded, endedAt, durationMs)
- *     → updatePhase(succeeded, endedAt, cursorRunId, outputJson)
- *     → updateWorkflowRunStatus(succeeded)
- *
- * Asserts the final hydrated `getRun` shape matches expectations and the
- * cursor-run is independently retrievable via `getCursorRun`. This is the
- * baseline — every subsequent scenario diverges from this happy path at
- * one specific step.
- */
+/** Scenario: happy-path workflow run — pending → running → succeeded across run + phase + cursor-run. */
 
 import { afterEach, beforeEach, expect, test } from "vitest";
 

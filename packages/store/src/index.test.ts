@@ -1,16 +1,7 @@
 /**
- * Smoke test for the public barrel.
- *
- * Asserts the surface enumerated in phases/03-store.md § "API boundaries":
- * `createStore` is callable, the typed error subclasses are exported, and
- * the input types resolve. This catches the case where a per-table refactor
- * silently drops a re-export from `index.ts`.
- *
- * No CRUD coverage here — that's in the per-table test files.
- *
- * Type re-exports are validated by the `import type { ... }` block alone:
- * if any of those names disappear from `index.ts`, this file fails to
- * typecheck (which gates the test run).
+ * Smoke test for the public barrel. Pins the exported surface; type
+ * re-exports are validated by the `import type` block alone (a missing
+ * name fails typecheck, which gates the test run).
  */
 
 import { describe, expect, test } from "vitest";
@@ -35,9 +26,7 @@ import {
   WorkflowRunNotFoundError,
 } from "./index.js";
 
-// Compile-time references to keep the type imports load-bearing — without
-// them an autofixer would happily strip "unused" imports and the smoke
-// guarantee would silently weaken.
+// Compile-time reference so an autofixer can't strip the type imports.
 type _Surface = readonly [
   CreateStoreOptions,
   CreateWorkflowRunInput,
