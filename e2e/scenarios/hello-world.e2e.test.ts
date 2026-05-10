@@ -47,6 +47,15 @@ describe.skipIf(!HAS_KEY)("Phase 9 live e2e — ship the hello-world fixture", (
     // Stream child stdout/stderr to the parent in real time so the
     // operator sees progress during a live run (which can take 30-90s).
     // We still capture stdout into a buffer for the post-run JSON parse.
+    // Clear `XDG_CONFIG_HOME` along with the HOME-equivalent vars so the
+    // CLI's POSIX path resolution lands inside `tmp` instead of the
+    // operator's real config dir.
+    const isolatedEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete isolatedEnv["XDG_CONFIG_HOME"];
+    isolatedEnv["HOME"] = tmp;
+    isolatedEnv["APPDATA"] = tmp;
+    isolatedEnv["USERPROFILE"] = tmp;
+
     const child = spawn(
       process.execPath,
       [
@@ -63,7 +72,7 @@ describe.skipIf(!HAS_KEY)("Phase 9 live e2e — ship the hello-world fixture", (
       ],
       {
         cwd: CLI_PKG,
-        env: { ...process.env, HOME: tmp, APPDATA: tmp, USERPROFILE: tmp },
+        env: isolatedEnv,
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -131,6 +140,11 @@ interface EventTailer {
 function startEventTailer(tmp: string, _child: { kill?: () => void }): EventTailer {
   const POLL_MS = 250;
   let eventsPath: string | undefined;
+  // Byte offset into the file. SDK events can include non-ASCII text
+  // (assistant messages with smart quotes / emoji), so we slice at the
+  // byte level on a Buffer rather than at the string level — string
+  // indices are UTF-16 code units, which can split a multi-byte
+  // sequence at the boundary and produce invalid UTF-8 for `JSON.parse`.
   let position = 0;
 
   const interval = setInterval(() => {
@@ -150,10 +164,11 @@ function startEventTailer(tmp: string, _child: { kill?: () => void }): EventTail
     if (size <= position) return;
     let chunk: string;
     try {
-      // Read the whole file then slice; for V1 sizes this is fine
-      // (events.ndjson tops out at hundreds of KB per run). Keeps the
-      // tailer dependency-free.
-      chunk = readFileSync(eventsPath, "utf-8").slice(position, size);
+      // Read the whole file as a Buffer, slice in bytes, decode to
+      // UTF-8. For V1 sizes (hundreds of KB) this is fine; keeps the
+      // tailer dependency-free and avoids the multi-byte split bug.
+      const buf = readFileSync(eventsPath);
+      chunk = buf.subarray(position, size).toString("utf-8");
     } catch {
       return;
     }

@@ -36,16 +36,21 @@ interface RunResult {
 }
 
 function run(argv: readonly string[]): RunResult {
+  // Clone process.env minus the keys that resolve to the user's real
+  // config dir. `XDG_CONFIG_HOME` would otherwise win on POSIX since
+  // `userConfigDir()` prefers it over the `HOME`-based fallback, and
+  // the subprocess would write to the operator's actual
+  // `~/.config/ship/` instead of the tmpdir we set up.
+  const isolatedEnv: NodeJS.ProcessEnv = { ...process.env };
+  delete isolatedEnv["XDG_CONFIG_HOME"];
+  isolatedEnv["HOME"] = tmp;
+  isolatedEnv["APPDATA"] = tmp;
+  isolatedEnv["USERPROFILE"] = tmp;
+
   const result = spawnSync(process.execPath, ["--import", "tsx/esm", BIN, ...argv], {
     encoding: "utf-8",
     cwd: CLI_PKG,
-    env: {
-      ...process.env,
-      // Keep the test isolated from the user's real config dir.
-      APPDATA: tmp,
-      HOME: tmp,
-      USERPROFILE: tmp,
-    },
+    env: isolatedEnv,
   });
   return {
     status: result.status ?? -1,
