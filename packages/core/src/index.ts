@@ -1,7 +1,16 @@
-/**
- * `@ship/core` — public barrel. 6a publishes the artifact helpers + the
- * `ShipFs` interface; 6b adds `ShipService` + `createShipService`.
- */
+/** `@ship/core` — public barrel. */
+
+// --- service ---
+export type { ShipService, ShipServiceConfig, ShipServiceDeps } from "./service.js";
+export { createShipService } from "./service.js";
+
+// --- errors ---
+export {
+  ArtifactWriteFailedError,
+  DocNotFoundError,
+  DocPathEscapesWorkdirError,
+  WorkdirNotFoundError,
+} from "./errors.js";
 
 // --- fs ---
 export type { FileStat, ShipFs } from "./fs/index.js";

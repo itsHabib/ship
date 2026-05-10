@@ -25,14 +25,14 @@ const workflowRunIdSchema = z.string().regex(WORKFLOW_RUN_ID_PATTERN);
 /** Input to the `ship` tool. Optional fields default in `core`. */
 export const shipInputSchema = z
   .object({
-    repo: z.string().min(1),
-    // Path to the task doc, relative to the repo root. `core` resolves and
-    // rejects symlink escapes.
+    /** Absolute path of the workspace the caller created. `core` runs the agent here. */
+    workdir: z.string().min(1),
+    /** Path to the task doc. Relative paths resolve against `workdir`; absolute paths are also accepted as long as they realpath inside `workdir`. Symlink-escape rejected by `core`. */
     docPath: z.string().min(1),
+    repo: z.string().min(1),
     worktreeName: z.string().min(1).optional(),
     baseRef: z.string().min(1).optional(),
-    // Cursor model id (e.g. `"composer-2"`); `cursor-runner` lifts it into a
-    // full `ModelSelection`.
+    branch: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
   })
   .strict();

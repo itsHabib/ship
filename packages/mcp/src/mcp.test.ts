@@ -53,15 +53,17 @@ const validWorkflowRun: WorkflowRun = {
 
 describe("shipInputSchema", () => {
   test("accepts a minimal input", () => {
-    const v: ShipInput = { repo: "ship", docPath: "docs/x.md" };
+    const v: ShipInput = { workdir: "/work/wt/feat", repo: "ship", docPath: "docs/x.md" };
     expect(shipInputSchema.parse(v)).toEqual(v);
   });
 
   test("accepts input with all optional fields", () => {
     const v: ShipInput = {
+      workdir: "/work/wt/feat",
       repo: "ship",
       docPath: "docs/x.md",
       worktreeName: "feat-x",
+      branch: "ship/feat-x",
       baseRef: "main",
       model: "composer-2",
     };
@@ -69,16 +71,32 @@ describe("shipInputSchema", () => {
   });
 
   test("rejects unknown keys", () => {
-    expect(shipInputSchema.safeParse({ repo: "ship", docPath: "x", extra: 1 }).success).toBe(false);
+    expect(
+      shipInputSchema.safeParse({
+        workdir: "/w",
+        repo: "ship",
+        docPath: "x",
+        extra: 1,
+      }).success,
+    ).toBe(false);
   });
 
   test("rejects missing required field", () => {
-    expect(shipInputSchema.safeParse({ repo: "ship" }).success).toBe(false);
+    expect(shipInputSchema.safeParse({ repo: "ship", docPath: "x" }).success).toBe(false);
+    expect(shipInputSchema.safeParse({ workdir: "/w", repo: "ship" }).success).toBe(false);
+    expect(shipInputSchema.safeParse({ workdir: "/w", docPath: "x" }).success).toBe(false);
   });
 
   test("rejects empty string in required field", () => {
-    expect(shipInputSchema.safeParse({ repo: "", docPath: "x" }).success).toBe(false);
-    expect(shipInputSchema.safeParse({ repo: "ship", docPath: "" }).success).toBe(false);
+    expect(shipInputSchema.safeParse({ workdir: "", repo: "ship", docPath: "x" }).success).toBe(
+      false,
+    );
+    expect(shipInputSchema.safeParse({ workdir: "/w", repo: "", docPath: "x" }).success).toBe(
+      false,
+    );
+    expect(shipInputSchema.safeParse({ workdir: "/w", repo: "ship", docPath: "" }).success).toBe(
+      false,
+    );
   });
 });
 
