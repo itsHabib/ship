@@ -1,12 +1,4 @@
-/**
- * Tests for `mcp.ts` — input/output schemas for the four V1 MCP tools.
- *
- * For each tool we exercise the input schema (positive, .strict() rejection,
- * malformed `wf_<ulid>` id rejection where applicable, missing required
- * field) and the output schema (positive, .strict() rejection). The
- * `listWorkflowRunsInputSchema` tests additionally cover the `limit`
- * boundary and integer enforcement.
- */
+/** Tests for the four V1 MCP tools' input/output schemas. */
 
 import type { TerminalCursorRunRef, WorkflowRun, WorktreeRef } from "@ship/workflow";
 

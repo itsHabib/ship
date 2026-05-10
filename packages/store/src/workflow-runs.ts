@@ -1,29 +1,6 @@
 /**
- * Per-table module for `workflow_runs`.
- *
- * Owns every SQL string that touches `workflow_runs`, plus the
- * row → domain hydration that combines a workflow row with its phases
- * (delegated to `PhaseOps`). Returns hydrated `WorkflowRun` shapes from
- * `get`, `list`, every mutator, and `cancel`.
- *
- * Methods exposed to `store.ts`:
- * - `create`        — INSERT a fresh row with `status = 'pending'`.
- * - `updateStatus`  — flip `status` and bump `updated_at`. Does NOT
- *                     check the workflow state machine; `core` does
- *                     that with `canTransition` from `@ship/workflow`
- *                     before invoking. (See § F2 / ED rationale.)
- * - `get`           — single row + its phases, hydrated.
- * - `list`          — filter + order + limit, plus phases for the
- *                     matched runs in one extra query. Two queries
- *                     total, regardless of N (per § F3).
- * - `cancel`        — idempotent. Terminal runs: read-only return.
- *                     Non-terminal: one transaction flips the run to
- *                     `cancelled` and any in-flight phase to
- *                     `cancelled` with `endedAt = clock()`.
- *
- * Hydration uses Zod's `workflowRunSchema.parse` at the seam: column
- * drift, malformed JSON blobs, or missing fields throw
- * `StoreSchemaError` immediately rather than leaking through `core`.
+ * Per-table module for `workflow_runs`. Owns SQL plus the row → domain
+ * hydration that combines a row with its phases (via `PhaseOps`).
  */
 
 import type { WorkflowPolicy, WorkflowRun, WorkflowStatus, WorktreeRef } from "@ship/workflow";
@@ -42,14 +19,8 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
 /**
- * Inputs accepted by `createWorkflowRun`.
- *
- * Mirrors phases/03-store.md § F2. The store is responsible only for
- * persisting these fields verbatim; it does NOT generate ids (the caller
- * passes a `wf_<ulid>` from `@ship/workflow`'s `newWorkflowRunId()`) and
- * it does NOT default the policy (`core` does, falling back to
- * `DEFAULT_WORKFLOW_POLICY`). `status` is forced to `"pending"` and is
- * not part of the input.
+ * Inputs for `createWorkflowRun`. Caller supplies a `wf_<ulid>` id;
+ * status is forced to `"pending"` and is not part of the input.
  */
 export interface CreateWorkflowRunInput {
   id: string;
@@ -61,13 +32,9 @@ export interface CreateWorkflowRunInput {
 }
 
 /**
- * Filter shape for `listRuns`.
- *
- * - `repo`   — exact-match.
- * - `status` — IN-clause; an empty array is treated as "no status filter."
- * - `limit`  — defaults to 50; throws `RangeError` if greater than 200
- *              or non-positive (the schema-level invariant `core` is
- *              meant to enforce, but the store double-checks).
+ * Filter for `listRuns`. `status` is an IN-clause (empty array = no
+ * filter); `limit` defaults to 50 and throws `RangeError` if > 200 or
+ * non-positive.
  */
 export interface ListRunsFilter {
   repo?: string;
@@ -75,12 +42,7 @@ export interface ListRunsFilter {
   limit?: number;
 }
 
-/**
- * The internal workflow-run-table API consumed by `store.ts`.
- *
- * Not re-exported from the package barrel; only the public `Store`
- * interface in `store.ts` is.
- */
+/** Internal workflow-run-table API consumed by `store.ts`. */
 export interface WorkflowRunOps {
   /** Insert a new workflow run with `status = 'pending'`; returns the hydrated row. */
   create: (input: CreateWorkflowRunInput) => WorkflowRun;
@@ -94,7 +56,6 @@ export interface WorkflowRunOps {
   cancel: (id: string) => WorkflowRun;
 }
 
-/** Internal: shape of one row returned by every `SELECT * FROM workflow_runs`. */
 interface WorkflowRunRow {
   id: string;
   repo: string;
@@ -107,37 +68,22 @@ interface WorkflowRunRow {
   updated_at: string;
 }
 
-/** Column list shared by every `SELECT` against `workflow_runs`. */
 const WORKFLOW_RUN_COLUMNS =
   "id, repo, doc_path, status, base_ref, worktree_json, policy_json, created_at, updated_at";
 
-/**
- * Internal: the prepared statements every method in this module needs.
- * Built once by `createWorkflowRunOps` and threaded into the per-method
- * helpers (which live at the top level so the factory function fits
- * inside the lint cap).
- */
 interface WorkflowRunStmts {
   insert: Statement;
   selectById: Statement<[string], WorkflowRunRow>;
   updateStatus: Statement;
   /**
-   * Conditional cancel: flip `status` to `cancelled` only if the row
-   * isn't already terminal. Combined with `result.changes`, this lets
-   * `cancel` decide atomically — without a separate read — whether a
-   * cancel actually happened, so a concurrent `succeeded`/`failed`
-   * write from another connection can never be silently overwritten.
+   * Conditional UPDATE that only flips non-terminal rows. Combined with
+   * `result.changes`, lets `cancel` decide atomically whether a cancel
+   * happened so a concurrent terminal write is never overwritten.
    */
   conditionalCancel: Statement;
 }
 
-/**
- * Bundle of dependencies the per-method helpers need. Built once by
- * `createWorkflowRunOps` and threaded into each helper as a single
- * argument, so we stay under the 5-param eslint cap even with
- * `db` (for `db.transaction(...)`) and `phases` (for hydration +
- * cancel-coordination) both required.
- */
+/** Bundle threaded into helpers to stay under the eslint param cap. */
 interface WorkflowRunDeps {
   db: Db;
   stmts: WorkflowRunStmts;
@@ -146,15 +92,10 @@ interface WorkflowRunDeps {
 }
 
 /**
- * Constructs the `workflow_runs` ops bound to a given DB connection,
- * clock, and `PhaseOps` instance. The `PhaseOps` dependency exists
- * because hydration needs to fetch phases per run, and `cancel` needs to
- * flip in-flight phases inside the same transaction as the run-status
- * flip.
- *
- * Caches every static prepared statement at construction time per ED-6.
- * The dynamic-WHERE `list` builds SQL on the fly because the WHERE shape
- * varies per call.
+ * Constructs the `workflow_runs` ops. `PhaseOps` is required because
+ * hydration fetches phases per run and `cancel` flips in-flight phases
+ * in the same txn. Caches static prepared statements (ED-6); the
+ * dynamic-WHERE `list` builds SQL per call.
  */
 export function createWorkflowRunOps(
   db: Db,
@@ -186,21 +127,12 @@ export function createWorkflowRunOps(
   };
 }
 
-/**
- * Look up a single row by id and hydrate it into a `WorkflowRun`. Caller
- * passes an already-fetched row to avoid a redundant SELECT inside the
- * mutator paths (`updateStatus`, `cancel`) where the row was just
- * touched.
- */
+/** Hydrate a row + its phases into a `WorkflowRun`. */
 function hydrateOne(phases: PhaseOps, row: WorkflowRunRow): WorkflowRun {
   return parseRun(row, phases.listByRunId(row.id));
 }
 
-/**
- * INSERT + hydrate inside one transaction so a Zod-rejecting
- * post-state (caller passed an unparseable `worktree` shape, etc.)
- * rolls back the write. Atomic-fail rather than fail-after-corruption.
- */
+/** INSERT + hydrate in one txn so a Zod-rejecting post-state rolls back. */
 function createRun(deps: WorkflowRunDeps, input: CreateWorkflowRunInput): WorkflowRun {
   const txn = deps.db.transaction((): WorkflowRun => {
     const now = deps.clock();
@@ -224,10 +156,7 @@ function createRun(deps: WorkflowRunDeps, input: CreateWorkflowRunInput): Workfl
   return txn();
 }
 
-/**
- * UPDATE + hydrate inside one transaction; same atomicity guarantee
- * as `createRun`.
- */
+/** UPDATE + hydrate in one txn; same atomicity guarantee as `createRun`. */
 function updateRunStatus(deps: WorkflowRunDeps, id: string, status: WorkflowStatus): WorkflowRun {
   const txn = deps.db.transaction((): WorkflowRun => {
     const result = deps.stmts.updateStatus.run(status, deps.clock(), id);
@@ -258,33 +187,13 @@ function listRunsImpl(deps: WorkflowRunDeps, filter: ListRunsFilter): WorkflowRu
 }
 
 /**
- * Idempotent, race-safe cancel.
- *
- * Why a conditional UPDATE rather than read-then-write: with
- * `busy_timeout` the package explicitly tolerates concurrent writers
- * across processes. A naive `SELECT status; if (!terminal) UPDATE
- * status='cancelled'` is non-atomic — between the read and the write
- * another connection can flip the row to `succeeded` or `failed`, and
- * the unconditional UPDATE would silently overwrite that terminal
- * state. Doing the work as a single conditional UPDATE inside a
- * transaction makes the "is it already terminal?" check and the
- * cancel write atomic from SQLite's perspective.
- *
- * `result.changes` discriminates the three cases:
- * - `1` — we successfully flipped a non-terminal run to `cancelled`;
- *         flip any in-flight phases inside the same transaction so
- *         either both commit or neither does.
- * - `0` — either the row didn't exist, or it was already terminal
- *         (and a concurrent writer beat us, or it was always
- *         terminal). The post-txn lookup distinguishes:
- *         `null` → throw `WorkflowRunNotFoundError`; otherwise return
- *         the current row unchanged.
+ * Idempotent, race-safe cancel via a single conditional UPDATE: lets the
+ * "already terminal?" check and the cancel write happen atomically so a
+ * concurrent terminal write from another connection is never overwritten.
+ * `result.changes === 1` → also flip in-flight phases in the same txn;
+ * `=== 0` → row didn't exist (post-lookup throws) or was already terminal.
  */
 function cancelRun(deps: WorkflowRunDeps, id: string): WorkflowRun {
-  // Whole transaction: conditional UPDATE + (if cancelled) phase flip
-  // + post-state lookup + hydrate. A Zod failure on the hydrated row
-  // (e.g. column drift) rolls back the cancel rather than committing
-  // a bad row that future reads will reject.
   const txn = deps.db.transaction((): WorkflowRun => {
     const now = deps.clock();
     const result = deps.stmts.conditionalCancel.run(now, id);
@@ -301,13 +210,8 @@ function cancelRun(deps: WorkflowRunDeps, id: string): WorkflowRun {
 }
 
 /**
- * Validates and normalizes a `listRuns` `limit` value.
- *
- * Throws `RangeError` for over-max or non-positive, matching the
- * spec.md / phases/03-store.md contract (`default 50, max 200`). `core`
- * is expected to enforce this at the MCP boundary; the store
- * double-checks because the same code path is reachable from `cli` and
- * tests, neither of which sit behind that boundary.
+ * Validates and normalizes a `listRuns` limit. Default 50, max 200;
+ * throws `RangeError` for over-max or non-positive.
  */
 function clampLimit(limit: number | undefined): number {
   if (limit === undefined) return DEFAULT_LIMIT;
@@ -322,12 +226,8 @@ function clampLimit(limit: number | undefined): number {
 
 /**
  * Builds the dynamic `SELECT ... FROM workflow_runs` SQL for `listRuns`.
- *
- * Returns the full SQL string plus the bind parameters in the order the
- * `?` placeholders appear. The ordering tiebreak is `created_at DESC,
- * id DESC` — `created_at` is at ms resolution and may collide; ULIDs
- * embed time in their first chars, so larger-id-first preserves
- * "newer first" inside a millisecond.
+ * Tiebreak is `created_at DESC, id DESC` — same-ms collisions are broken
+ * by larger-id-first, which preserves "newer first" since ULIDs embed time.
  */
 function buildListSql(filter: ListRunsFilter, limit: number): { sql: string; params: unknown[] } {
   const where: string[] = [];
@@ -350,16 +250,8 @@ function buildListSql(filter: ListRunsFilter, limit: number): { sql: string; par
 
 /**
  * Builds a `WorkflowRun` candidate from a row + its phases and runs
- * `workflowRunSchema.parse`.
- *
- * The two JSON blobs (`worktree_json`, `policy_json`) are parsed here
- * with a `try`/`catch` that wraps `SyntaxError` into `StoreSchemaError`
- * — failed `JSON.parse` is the most likely "manual corruption" failure
- * mode and rewriting it as a typed error keeps the catch surface
- * uniform with Zod-parse failures.
- *
- * On schema-parse failure, throws `StoreSchemaError` with the offending
- * id baked into the message and the underlying `ZodError` as `cause`.
+ * `workflowRunSchema.parse`. Failed `JSON.parse` of the two JSON blobs
+ * is wrapped as `StoreSchemaError` for uniform handling with Zod failures.
  */
 function parseRun(row: WorkflowRunRow, runPhases: WorkflowRun["phases"]): WorkflowRun {
   let worktree: unknown;

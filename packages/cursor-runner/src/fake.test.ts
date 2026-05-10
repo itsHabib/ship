@@ -1,12 +1,4 @@
-/**
- * Tests for `fake.ts`.
- *
- * The fake is the seam every downstream `core` test will exercise; its
- * own behavior has to be airtight or downstream tests inherit subtle
- * bugs (mis-ordered events, leaked cancel state, swallowed-throw
- * surprises). Each test here pins one behavioral contract from the
- * validation plan in `phases/05-cursor-runner.md`.
- */
+/** Tests for `fake.ts`. Pins one behavioral contract per test. */
 
 import type { SDKMessage } from "@cursor/sdk";
 
@@ -129,11 +121,10 @@ describe("FakeCursorRunner — onEvent error swallowing", () => {
   });
 
   test("async onEvent rejection is swallowed (mirrors LocalCursorRunner behavior)", async () => {
-    // Cycle-3 review applied to fake too: TS permits async fns to
-    // satisfy `=> void`. The fake must swallow async rejections the
-    // same way the real runner does, otherwise tests written against
-    // the fake will see leaked unhandled rejections that wouldn't
-    // happen in production.
+    // TS permits async fns to satisfy `=> void`. The fake must swallow
+    // async rejections the same way the real runner does, otherwise
+    // tests written against the fake see leaked unhandled rejections
+    // that wouldn't happen in production.
     const runner = new FakeCursorRunner();
     runner.enqueue({ events: [evA, evB], result: baseResult() });
 
@@ -284,11 +275,10 @@ describe("FakeCursorRunner — AbortSignal cancellation", () => {
 
   test("a pre-aborted signal cancels the run before any event emits (default delay = 0)", async () => {
     const runner = new FakeCursorRunner();
-    // Default `delayMsBetweenEvents: 0` means `#emit` runs synchronously
-    // to completion if not gated. Cycle-2 review flagged this: the
-    // pre-abort signal check MUST run before `#emit` starts, otherwise
-    // events fully emit and the result resolves "succeeded" before the
-    // signal is observed. This test pins the bug fix.
+    // Default `delayMsBetweenEvents: 0` makes `#emit` synchronous, so
+    // the pre-abort signal check MUST run before `#emit` starts;
+    // otherwise events fully emit and the result resolves "succeeded"
+    // before the signal is observed.
     runner.enqueue({
       events: [evA, evB],
       result: baseResult({ status: "succeeded" }),

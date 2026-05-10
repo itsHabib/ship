@@ -1,14 +1,4 @@
-/**
- * Tests for `cursor-runs.ts` exercised via the public `createStore` API.
- *
- * Coverage shape (per phases/03-store.md § "Validation plan"):
- * - recordCursorRun + updateCursorRunStatus + getCursorRun round-trip
- *   matches `cursorRunRefSchema`.
- * - getCursorRun of a non-existent id returns `null` (does not throw).
- * - recordCursorRun for a bad workflowRunId raises (we translate the
- *   FK violation to `WorkflowRunNotFoundError`).
- * - The optional `model` field round-trips through the JSON column.
- */
+/** Tests for `cursor-runs.ts` via the public `createStore` API. */
 
 import type { ModelSelection, WorkflowPolicy, WorktreeRef } from "@ship/workflow";
 
@@ -177,11 +167,7 @@ describe("cursor runs (via createStore)", () => {
   });
 
   test("updateCursorRunStatus: invalid post-state rolls back (durationMs negative)", () => {
-    // TS allows `number` for durationMs, but the schema demands
-    // `nonnegative()`. Without txn-wrapping, the bad row would commit
-    // and future reads would all fail with StoreSchemaError. The fix
-    // wraps the update + hydration in a transaction; a Zod failure on
-    // the hydrated row rolls back the write.
+    // Schema demands nonnegative durationMs; the txn-wrap rolls back on Zod failure.
     const runId = seedRun();
     const id = newCursorRunId();
     store.recordCursorRun({

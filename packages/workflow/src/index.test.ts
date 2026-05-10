@@ -1,11 +1,4 @@
-/**
- * Smoke test for `index.ts` (the package's public barrel).
- *
- * The other test files exercise modules directly. This file verifies that
- * the barrel re-exports what consumers will import — a typo in the barrel
- * would otherwise only surface in a downstream package, with a worse
- * error message.
- */
+/** Smoke test for the barrel. Pins that consumers' imports actually resolve. */
 
 import { describe, expect, test } from "vitest";
 

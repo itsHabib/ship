@@ -1,13 +1,4 @@
-/**
- * Tests for `harness.ts`.
- *
- * Covers what no scenario test directly asserts:
- * - default `:memory:` dbPath produces a working store
- * - file-backed dbPath produces a real file
- * - clock + ids are wired to the underlying store (clock string lands as
- *   `createdAt`; ids round-trip)
- * - `close()` is idempotent
- */
+/** Tests for `harness.ts` — defaults, file-backed dbPath, wiring, and idempotent close. */
 
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";

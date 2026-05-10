@@ -1,18 +1,4 @@
-/**
- * Tests for `migrations.ts`.
- *
- * Coverage shape (per phases/03-store.md § "Migrations"):
- * - Fresh `:memory:` DB: runner creates `_migrations`, applies the real
- *   `0001_init.sql`, the three application tables exist and are queryable.
- * - Re-run is a no-op: `_migrations` still has one row.
- * - Synthetic `0002` migration: runner applies it on top of an already-
- *   migrated DB. Uses a tmp directory so we exercise the same readdir +
- *   readFileSync code path production uses.
- * - Mid-statement failure: txn rolls back, the `_migrations` row is not
- *   inserted, and a subsequent retry succeeds. Asserts atomicity.
- * - `MigrationError` shape: filename + `cause` populated.
- * - Injectable clock: `_migrations.applied_at` reflects the injected value.
- */
+/** Tests for `migrations.ts`. Pins idempotency, atomic rollback, and `MigrationError` shape. */
 
 import Database from "better-sqlite3";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
