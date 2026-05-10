@@ -26,6 +26,7 @@ describe("createCliService", () => {
 describe("path resolution", () => {
   const origPlatform = process.platform;
   const origAppData = process.env["APPDATA"];
+  const origXdg = process.env["XDG_CONFIG_HOME"];
 
   afterEach(() => {
     Object.defineProperty(process, "platform", { value: origPlatform });
@@ -34,16 +35,37 @@ describe("path resolution", () => {
     } else {
       process.env["APPDATA"] = origAppData;
     }
+    if (origXdg === undefined) {
+      delete process.env["XDG_CONFIG_HOME"];
+    } else {
+      process.env["XDG_CONFIG_HOME"] = origXdg;
+    }
   });
 
   test("resolveDbPath / resolveRunsDir append `ship` exactly once on POSIX", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
+    delete process.env["XDG_CONFIG_HOME"];
     const home = userConfigDir();
     expect(resolveDbPath().startsWith(home)).toBe(true);
     expect(resolveDbPath().endsWith("state.db")).toBe(true);
     // Crucially: not `<home>/ship/ship/state.db`.
     expect(resolveDbPath()).not.toMatch(/[\\/]ship[\\/]ship[\\/]state\.db$/);
     expect(resolveRunsDir()).not.toMatch(/[\\/]ship[\\/]ship[\\/]runs$/);
+  });
+
+  test("POSIX honors XDG_CONFIG_HOME when set; falls back to ~/.config when unset", () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    process.env["XDG_CONFIG_HOME"] = "/custom/xdg";
+    expect(userConfigDir()).toBe("/custom/xdg");
+    delete process.env["XDG_CONFIG_HOME"];
+    expect(userConfigDir().endsWith(".config") || userConfigDir().endsWith(".config\\")).toBe(true);
+  });
+
+  test("POSIX treats empty XDG_CONFIG_HOME as unset (per the XDG spec)", () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    process.env["XDG_CONFIG_HOME"] = "";
+    expect(userConfigDir()).not.toBe("");
+    expect(userConfigDir().endsWith(".config")).toBe(true);
   });
 
   test("Windows uses APPDATA when set; falls back to ~/AppData/Roaming when not", () => {

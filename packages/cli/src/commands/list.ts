@@ -61,8 +61,12 @@ function buildFilter(opts: ListOpts): ListRunsFilter {
     filter.status = opts.status as WorkflowStatus[];
   }
   if (opts.limit !== undefined) {
-    const parsed = Number.parseInt(opts.limit, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
+    // Use `Number()` (not `parseInt`) so partial-numeric input like
+    // `--limit 10abc` rejects with NaN instead of silently coercing
+    // to `10`. The store enforces the upper bound (200); we just
+    // need a positive integer here.
+    const parsed = Number(opts.limit);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
       throw new InvalidArgumentError(`invalid --limit: ${opts.limit}`);
     }
     filter.limit = parsed;

@@ -73,11 +73,21 @@ export function createCliService(opts: CliPathOpts): ServiceFactory {
  * Returns the platform-specific user-config root (no `ship` suffix).
  * `resolveDbPath` / `resolveRunsDir` append the `ship` segment exactly
  * once on top of this root — see ED-2 in the Phase 7 task doc.
+ *
+ * POSIX honors the `XDG_CONFIG_HOME` env var per the XDG Base
+ * Directory Specification; falls back to `~/.config` when unset or
+ * empty. Windows reads `%APPDATA%`, falling back to
+ * `~/AppData/Roaming` when the env var is unset (e.g. inside a
+ * cmd.exe spawned without the user environment).
  */
 export function userConfigDir(): string {
   if (process.platform === "win32") {
-    return process.env["APPDATA"] ?? join(homedir(), "AppData", "Roaming");
+    const appData = process.env["APPDATA"];
+    if (appData !== undefined && appData !== "") return appData;
+    return join(homedir(), "AppData", "Roaming");
   }
+  const xdg = process.env["XDG_CONFIG_HOME"];
+  if (xdg !== undefined && xdg !== "") return xdg;
   return join(homedir(), ".config");
 }
 

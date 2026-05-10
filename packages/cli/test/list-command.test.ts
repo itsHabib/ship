@@ -79,3 +79,15 @@ test("--limit above 200 cap → exit 1 (RangeError from store → user)", async 
   expect(code).toBe(1);
   expect(h.stderr.join("")).toMatch(/exceeds maximum/);
 });
+
+test("--limit with trailing garbage (e.g. '10abc') is rejected, not silently coerced to 10", async () => {
+  const { code } = await parseAndCatch(h.program, ["list", "--limit", "10abc"]);
+  expect(code).toBe(1);
+  expect(h.stderr.join("")).toMatch(/invalid --limit: 10abc/);
+});
+
+test("--limit with a fractional value (e.g. '3.5') is rejected", async () => {
+  const { code } = await parseAndCatch(h.program, ["list", "--limit", "3.5"]);
+  expect(code).toBe(1);
+  expect(h.stderr.join("")).toMatch(/invalid --limit: 3.5/);
+});
