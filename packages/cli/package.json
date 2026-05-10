@@ -1,0 +1,22 @@
+{
+  "name": "@ship/cli",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/bin.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ship/core": "workspace:*",
+    "@ship/cursor-runner": "workspace:*",
+    "@ship/store": "workspace:*",
+    "@ship/workflow": "workspace:*",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@ship/test-harness": "workspace:*",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0"
+  }
+}
