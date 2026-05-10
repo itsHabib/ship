@@ -109,7 +109,7 @@ Smoke tests construct a `ShipService` using `FakeCursorRunner` (via `@ship/test-
 | Output formatting | Plain text default + `--json` flag | Always JSON / always plain | Plain text for humans at the terminal; JSON for scripts and the e2e harness in Phase 9. The default is the human path. |
 | Default `--workdir` | `.` (resolved at parse time) | Required (no default) | Spec.md doesn't require it. Defaulting to CWD matches every other repo CLI's expectation. |
 | `--repo` required | CLI-level required flag with friendly error | Let Zod reject with "expected string" | The Zod error reads as an internal-validation message; the CLI's role is to translate to a "missing --repo" suggestion. |
-| Exit codes | `0` succeeded, `1` failed/cancelled, `2` validation error, `3` not-found | All non-zero treated equal | Lets shell scripts distinguish "ran but failed" from "ran but cancelled" from "input was wrong" without parsing stderr. See § "Exit codes". |
+| Exit codes | `0` success, `1` user error, `2` internal error (per spec.md) | Distinguish run-failed / cancelled with their own codes | Spec.md § "Internal interfaces" pins the three-code convention. Failed / cancelled runs exit 0 and surface the run status via stdout's `status` field; shell scripts that need to distinguish can grep that field. See § "Exit codes". |
 | Default model handling | Hard-coded `composer-2` in `bin.ts` config | Config file / env override | Spec.md pins composer-2 as the default. Env override (`SHIP_MODEL=…`) lands in V2 if needed. |
 | `runsDir` / `dbPath` resolution | `<UserConfigDir>/ship/{state.db, runs/}` via `node:os` | env-driven only | UserConfigDir gives a sensible cross-platform default; `--db-path` / `--runs-dir` overrides handle tests + power users. |
 | Smoke tests via Commander program | Construct `program` and parse argv programmatically | Spawn child processes | Spawning is slow + flaky in CI; programmatic parsing exercises the same wiring with no IO overhead. |
@@ -181,12 +181,13 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
 
 ### ED-4 — Exit codes
 
+Aligns with spec.md § "Internal interfaces" — `0 success, 1 user error, 2 internal error`. Three-code contract; the run's outcome (succeeded / failed / cancelled) lives in the printed status, not in the exit code.
+
 | Code | Meaning |
 |---|---|
-| `0` | Succeeded. `ship.status === "succeeded"`, `status` / `list` / `cancel` returned cleanly. |
-| `1` | Run terminal-failed or cancelled. `ship.status === "failed"` / `"cancelled"`. |
-| `2` | Caller-input validation error: missing required flag, malformed `workflowRunId`, doc not found before run starts. Mapped from `WorkdirNotFoundError`, `DocNotFoundError`, `DocPathEscapesWorkdirError`, Zod errors at the boundary. |
-| `3` | Not-found: `getRun` / `cancelRun` for an unknown id. |
+| `0` | Success. The CLI ran the command cleanly, regardless of the run's terminal status. `ship ship` resolving to `failed` or `cancelled` still exits 0 — the CLI did its job; the run's outcome is in stdout's `status` field. |
+| `1` | User error. Missing required flag, malformed `workflowRunId`, `--workdir` doesn't exist, `docPath` doesn't resolve, doc escapes the workdir, `getRun` / `cancelRun` for an unknown id. Mapped from `WorkdirNotFoundError`, `DocNotFoundError`, `DocPathEscapesWorkdirError`, `null` returns from `getRun`, and Zod errors at the boundary. |
+| `2` | Internal error. Anything else thrown out of `ShipService` (store invariant violations, unexpected throws, environment problems like missing `CURSOR_API_KEY` that the CLI couldn't pre-validate). |
 
 The mapping lives in a single `mapErrorToExitCode(err)` helper so the four subcommands stay consistent.
 
@@ -241,7 +242,6 @@ The `cli` package exports nothing. It's a binary; it has a `bin` entry in `packa
   "name": "@ship/cli",
   "private": true,
   "type": "module",
-  "bin": { "ship": "./dist/bin.js" },
   "main": "./src/bin.ts",
   "scripts": {
     "test": "vitest run"
@@ -257,7 +257,7 @@ The `cli` package exports nothing. It's a binary; it has a `bin` entry in `packa
 }
 ```
 
-The `dist/bin.js` is built lazily — V1 ships `tsx`-runnable source; the build step (and `bin` pointing at compiled JS) lands in V2 when the CLI is published. For now, local invocation is `pnpm --filter @ship/cli exec tsx src/bin.ts <args>`.
+V1 deliberately omits the `bin` entry: there's no build step yet, so a `bin` pointing at `dist/bin.js` would resolve to a missing file at install time. Local invocation is `pnpm --filter @ship/cli exec tsx src/bin.ts <args>`. The `bin` entry + a build step (probably `tsc --emitDeclarationOnly false` + a small esbuild/tsdown pass) lands in V2 when the CLI is actually published or installed via `npm i -g`.
 
 ## Validation plan
 
@@ -267,19 +267,20 @@ Tests live in `packages/cli/src/**/*.test.ts` (unit) plus `packages/cli/test/dep
 
 - ✅ Happy path: argv `["ship", "ship", "docs.md", "--workdir", "/tmp/wt", "--repo", "ship"]` → service.ship called with `{ workdir: "/tmp/wt", docPath: "docs.md", repo: "ship" }`; succeeded result → exit 0; pretty output contains workflowRunId + summary.
 - ✅ `--json` flag: same argv with `--json` → stdout is parseable JSON matching `ShipOutput` schema.
-- ❌ Missing `--repo` → exit 2; stderr contains "missing required option: --repo" or similar.
-- ❌ Missing positional `<docPath>` → exit 2; Commander's own error path.
-- ❌ Service throws `WorkdirNotFoundError` → exit 2; stderr names the workdir.
-- ✅ Service resolves `failed` → exit 1; pretty output names the failure.
-- ✅ Service resolves `cancelled` → exit 1; pretty output names the cancel.
+- ❌ Missing `--repo` → exit 1; stderr contains "missing required option: --repo" or similar.
+- ❌ Missing positional `<docPath>` → exit 1; Commander's own error path.
+- ❌ Service throws `WorkdirNotFoundError` → exit 1; stderr names the workdir.
+- ✅ Service resolves `failed` → exit 0 (CLI ran cleanly); stdout's `status` field is `"failed"`.
+- ✅ Service resolves `cancelled` → exit 0; stdout's `status` field is `"cancelled"`.
+- ❌ Service throws an unexpected non-typed error → exit 2; stderr names the error.
 - ✅ Default `--workdir .` resolves to absolute via `path.resolve(process.cwd())`.
 
 ### `ship status <workflowRunId>` argv → service call
 
 - ✅ Existing run: argv `["ship", "status", "wf_..."]` → service.getRun called → pretty output of hydrated row → exit 0.
 - ✅ `--json` flag: same argv → stdout is JSON matching `WorkflowRun` schema.
-- ❌ Unknown id (service returns null) → exit 3; stderr "not found: <id>".
-- ❌ Malformed id (e.g. "garbage") → exit 2; rejected at the schema boundary.
+- ❌ Unknown id (service returns null) → exit 1; stderr "not found: <id>".
+- ❌ Malformed id (e.g. "garbage") → exit 1; rejected at the schema boundary.
 
 ### `ship list` argv → service call
 
@@ -292,7 +293,7 @@ Tests live in `packages/cli/src/**/*.test.ts` (unit) plus `packages/cli/test/dep
 
 - ✅ In-flight run: argv `["ship", "cancel", "wf_..."]` → service.cancelRun called → exit 0; pretty output names the post-cancel status.
 - ✅ Already-terminal run → service returns the existing terminal status → exit 0; output reflects no-op.
-- ❌ Unknown id (service throws) → exit 3.
+- ❌ Unknown id (service throws) → exit 1.
 
 ### Service wiring (`src/service.ts`)
 
@@ -335,7 +336,7 @@ Tests live in `packages/cli/src/**/*.test.ts` (unit) plus `packages/cli/test/dep
 2. **`ship list` table output — fixed-width or aligned?** Proposed: fixed-width with a small per-column max (id 32, status 10, repo 24, ts 25). Truncate with ellipsis. Aligns with `gh run list`'s style; tests can snapshot a deterministic width.
 3. **`--db-path :memory:` for tests — does the CLI need to expose this, or do tests construct the service factory directly?** Proposed: tests use the factory directly (skipping argv path resolution). The `--db-path` flag still exists for power users + e2e, but isn't on the test-only path.
 4. **`--config <path>` flag for a TOML/JSON config file?** Proposed: V2. V1 is "all flags, all the time"; a config file invites scope creep.
-5. **Should `ship ship` exit 0 on `cancelled` (treating cancel as user-intent) instead of exit 1?** Proposed: V1 keeps `cancelled` → exit 1, since the run didn't accomplish what was asked. Shell scripts that distinguish can match on stdout's status field. Revisit if real usage shows the opposite preference.
+5. **Resolved (was: exit-code semantics for failed / cancelled runs).** Aligned with spec.md § "Internal interfaces": `0 success, 1 user error, 2 internal error`. Failed and cancelled runs exit 0; the run's status surfaces in stdout's `status` field. Shell scripts that distinguish can grep that field.
 
 ## Implementation plan
 
