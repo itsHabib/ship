@@ -90,16 +90,18 @@ Phases that introduce real surface area get their own task doc under `phases/` (
 
 ---
 
-## Phase 5 — `packages/cursor-runner`
+## Phase 5 — `packages/cursor-runner` ✅ (done 2026-05-09)
 
 📄 [phases/05-cursor-runner.md](phases/05-cursor-runner.md) — task doc.
 
 **Goal:** the only `@cursor/sdk` importer. Substrate-agnostic `CursorRunner` interface + `LocalCursorRunner` impl + `FakeCursorRunner` for downstream tests. Cloud impl is V2+ behind the same interface. Implementation grounded in the [spike findings](../../cursor-sdk-typescript.md#spike-findings-run-1-2026-05-06), not the SDK reference doc alone.
 
-- [ ] Review and approve `phases/05-cursor-runner.md`.
-- [ ] Implement per the doc's "Implementation plan" section (lands as 5a + 5b sub-PRs).
+- [x] Review and approve `phases/05-cursor-runner.md`.
+- [x] Implement per the doc's "Implementation plan" section. Landed as 5a (types + `FakeCursorRunner` + ED-2 isolation, [#4](https://github.com/itsHabib/ship/pull/4)) + 5b (`LocalCursorRunner`).
 
-**Done when:** `pnpm --filter @ship/cursor-runner test` green; `make check` + `make coverage` pass; ED-2 import-isolation test (lives in `packages/cursor-runner/test/`) verifies no `@cursor/sdk` leak outside the package. (Harness extension — `cursor: FakeCursorRunner` field on `Harness` plus a workflow-lifecycle scenario — is deferred to Phase 6, where `core` makes the scenario meaningful.)
+**Validated:** `make check` passes from repo root (typecheck + lint + format:check + 268 tests). `make coverage` clears cursor-runner's 90/85 floor at 100% stmts/funcs/lines and ≥93% branches. ED-2 import-isolation test catches every form of `@cursor/sdk` import (static / type-only / side-effect / dynamic / require / export-from). Harness extension for `cursor: FakeCursorRunner` deferred to Phase 6 where `core` makes a workflow-lifecycle scenario meaningful.
+
+**Spike v2 follow-up:** the cancellation-timing assertion in `LocalCursorRunner` tests stays at <30s pending a real-API spike. If a future Spike v2 shows the SDK regularly hits <5s, tighten in a follow-up.
 
 ---
 

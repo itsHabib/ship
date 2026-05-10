@@ -291,17 +291,41 @@ export class FakeCursorRunner implements CursorRunner {
       // `handle.cancel()` or `signal.abort()`, both of which call
       // `finalize` which clears the pending timer via `activeSleep.cancel()`.
       if (isTerminated()) return;
+      // Catch BOTH sync throws (try/catch) AND async rejections (.catch
+      // on the return value if Promise-like). The `onEvent` type is
+      // documented sync per ED-4, but TS permits async fns to satisfy
+      // `=> void`; without this, an async-rejecting onEvent leaks an
+      // unhandled rejection past the fake — diverging from
+      // `LocalCursorRunner`'s real behavior. Tests written against the
+      // fake should see the same swallow behavior production exhibits.
       try {
-        input.onEvent(ev);
+        const maybePromise: unknown = input.onEvent(ev);
+        if (isPromiseLike(maybePromise)) {
+          maybePromise.then(undefined, () => {
+            /* swallow async rejection — ED-4 contract */
+          });
+        }
       } catch {
-        // Mirror ED-4: onEvent exceptions are swallowed at the runner
-        // boundary; the run is unaffected.
+        // sync throw — same swallow per ED-4.
       }
     }
     if (!isTerminated()) {
       finalize(script.result);
     }
   }
+}
+
+/**
+ * Best-effort Promise detection. Avoids `instanceof Promise` because a
+ * thenable from a different realm (or a vendored mini-Promise) still
+ * needs the same swallow treatment.
+ */
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
 }
 
 /**

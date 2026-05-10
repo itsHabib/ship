@@ -73,6 +73,11 @@ export default tseslint.config(
     rules: {
       "max-lines-per-function": "off",
       "max-statements": "off",
+      // vitest's mocking patterns (vi.mocked, method spies, mock objects
+      // satisfying SDK interfaces) routinely require references to methods
+      // detached from their host object. The unbound-method rule's
+      // strictness is misaligned with that idiom in test files.
+      "@typescript-eslint/unbound-method": "off",
     },
   },
 

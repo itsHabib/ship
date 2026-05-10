@@ -10,7 +10,8 @@
  * What ships here:
  * - The substrate-agnostic `CursorRunner` interface plus its input /
  *   handle / result types. The contract `core` codes against.
- * - `LocalCursorRunner` (added in Phase 5b — not yet exported).
+ * - `LocalCursorRunner` — the V1 implementation that drives a local
+ *   Cursor agent via `Agent.create({ local: { cwd } })`.
  * - Typed errors for the two pre-run failure modes.
  * - Re-exports of the SDK types other packages structurally need
  *   (`SDKMessage`, `McpServerConfig`) so they can be reached without
@@ -29,6 +30,9 @@
 
 // --- runner.ts ---
 export type { CursorRunHandle, CursorRunInput, CursorRunner, CursorRunResult } from "./runner.js";
+
+// --- local-runner.ts ---
+export { LocalCursorRunner } from "./local-runner.js";
 
 // --- errors.ts ---
 export { CursorRunFailedError, MissingApiKeyError } from "./errors.js";
