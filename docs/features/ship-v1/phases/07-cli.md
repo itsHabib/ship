@@ -118,7 +118,7 @@ Smoke tests construct a `ShipService` using `FakeCursorRunner` (via `@ship/test-
 
 ### ED-1 — Binary shape
 
-Single executable: `ship` (registered via `package.json#bin`). Implemented in `src/bin.ts`. The binary:
+Single entrypoint at `src/bin.ts`. V1 invokes it via `pnpm --filter @ship/cli exec tsx src/bin.ts <args>` (no build step yet); the `ship` shorthand registered via `package.json#bin` lands in V2 alongside the build pass — see § "API boundaries / contracts" for the rationale. The entrypoint:
 
 1. Constructs the `ShipService` (per F5) with production wiring.
 2. Builds a Commander `program` with four subcommands.
