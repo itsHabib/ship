@@ -15,14 +15,17 @@ export interface ValidatedDoc {
 }
 
 /**
- * Validates `workdir` exists as a directory, `docPath` (relative to
- * `workdir`) exists as a file, and the realpath of the doc is a
- * descendant of the realpath of the workdir. Throws typed errors per
- * `errors.ts`.
+ * Validates `workdir` exists as a directory, the doc resolves to a
+ * file inside it (absolute `docPath` is allowed if it lands inside
+ * `workdir`'s realpath), and the realpath of the doc is a descendant
+ * of the realpath of the workdir. Throws typed errors per `errors.ts`.
  *
  * Uses string-concat rather than `path.resolve` to compose the full
  * doc path so the memory FS (POSIX-canonical) and platform-native
- * Node FS both work without drive-letter rewriting.
+ * Node FS both work without drive-letter rewriting. Returns the
+ * realpath'd absolute doc path so downstream `readFile` calls hit the
+ * canonical target — closes a small TOCTOU window between the
+ * symlink check and the read.
  */
 export async function validateWorkdirAndDoc(
   fs: ShipFs,
@@ -41,7 +44,7 @@ export async function validateWorkdirAndDoc(
     throw new DocPathEscapesWorkdirError(workdir, docPath);
   }
 
-  return { absoluteDocPath: candidate };
+  return { absoluteDocPath: realDoc };
 }
 
 function joinPath(workdir: string, relative: string): string {

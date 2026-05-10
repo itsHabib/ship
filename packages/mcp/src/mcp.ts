@@ -27,7 +27,7 @@ export const shipInputSchema = z
   .object({
     /** Absolute path of the workspace the caller created. `core` runs the agent here. */
     workdir: z.string().min(1),
-    /** Path to the task doc, relative to `workdir`. Symlink-escape rejected by `core`. */
+    /** Path to the task doc. Relative paths resolve against `workdir`; absolute paths are also accepted as long as they realpath inside `workdir`. Symlink-escape rejected by `core`. */
     docPath: z.string().min(1),
     repo: z.string().min(1),
     worktreeName: z.string().min(1).optional(),

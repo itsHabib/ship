@@ -12,11 +12,13 @@ describe("validateWorkdirAndDoc", () => {
     await fs.mkdir("/work/wt", { recursive: true });
     await fs.writeFile("/work/wt/docs.md", "task body");
     const out = await validateWorkdirAndDoc(fs, "/work/wt", "docs.md");
-    // Memory fs normalizes separators; on Windows `path.resolve` may
-    // emit `\`, but the memory fs still finds the file via its
-    // canonical POSIX form. The returned absoluteDocPath is whatever
-    // `path.resolve` produced — assert via a normalized comparison.
-    expect(out.absoluteDocPath.replace(/\\/g, "/")).toBe("/work/wt/docs.md");
+    // The returned `absoluteDocPath` is post-realpath: validate.ts
+    // composes the doc against the workdir via a small `joinPath`
+    // (not `path.resolve`), then resolves it through `ShipFs.realpath`
+    // and returns that canonical form. Memory fs's realpath is the
+    // identity on a present file, so this rounds back to the same
+    // POSIX path the test wrote.
+    expect(out.absoluteDocPath).toBe("/work/wt/docs.md");
   });
 
   test("missing workdir → WorkdirNotFoundError", async () => {
@@ -66,7 +68,7 @@ describe("validateWorkdirAndDoc", () => {
     await fs.mkdir("/work/wt", { recursive: true });
     await fs.writeFile("/work/wt/docs.md", "x");
     const out = await validateWorkdirAndDoc(fs, "/work/wt", "/work/wt/docs.md");
-    expect(out.absoluteDocPath.replace(/\\/g, "/")).toBe("/work/wt/docs.md");
+    expect(out.absoluteDocPath).toBe("/work/wt/docs.md");
   });
 
   test("workdir prefix-match doesn't false-positive sibling paths", async () => {

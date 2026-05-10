@@ -223,6 +223,35 @@ describe("ShipService.ship — failure mapping", () => {
     expect(row?.phases[0]?.errorMessage).toMatch(/no script enqueued/i);
   });
 
+  test("fs.writeFile fails persisting prompt.md (pre-runner, post-row) → ShipOutput failed", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    // Wrap writeFile so the prompt.md write rejects, exercising the
+    // post-row pre-runner failure path. The row has been created at
+    // this point, so the failure must resolve `failed`, not throw.
+    const origWriteFile = h.fs.writeFile.bind(h.fs);
+    h.fs.writeFile = (path: string, data: string): Promise<void> => {
+      if (path.endsWith("prompt.md")) {
+        return Promise.reject(new Error("ENOSPC: disk full"));
+      }
+      return origWriteFile(path, data);
+    };
+
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    expect(out.status).toBe("failed");
+    const row = h.store.getRun(out.workflowRunId);
+    expect(row?.status).toBe("failed");
+    expect(row?.phases[0]?.errorMessage).toMatch(/ENOSPC|disk full/);
+  });
+
   test("fs.writeFile fails persisting result.json → ShipOutput failed; phase carries cause", async () => {
     h.cursor.enqueue({
       events: [],
@@ -292,6 +321,60 @@ describe("ShipService.cancelRun", () => {
 
   test("cancel a run that doesn't exist → throws (store invariant)", async () => {
     await expect(h.service.cancelRun("wf_does-not-exist")).rejects.toBeDefined();
+  });
+
+  test("cancel arriving during runner startup is honored: controller is registered before cursor.run()", async () => {
+    // Stall `cursor.run()` so a cancelRun() called during startup
+    // sees an active-run entry and can abort. Without the
+    // before-cursor-run registration, the abort would no-op, the
+    // runner would complete naturally, and the cancelled state would
+    // be overwritten by `finalizeSuccess`.
+    let resolveStartup: (() => void) | undefined;
+    const startupGate = new Promise<void>((resolve) => {
+      resolveStartup = resolve;
+    });
+
+    const realRun = h.cursor.run.bind(h.cursor);
+    h.cursor.run = async (input) => {
+      await startupGate;
+      return realRun(input);
+    };
+
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+      cancelBehavior: "complete",
+    });
+
+    const shipPromise = h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    // Wait long enough for the active-run entry to be registered
+    // (synchronously, before `cursor.run()` is awaited).
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 30);
+    });
+
+    const runs = h.store.listRuns({ limit: 10 });
+    const id = runs[0]?.id;
+    expect(id).toBeDefined();
+    if (id === undefined) return;
+
+    const cancelOut = await h.service.cancelRun(id);
+    expect(cancelOut.status).toBe("cancelled");
+
+    resolveStartup?.();
+    const out = await shipPromise;
+    expect(out.status).toBe("cancelled");
+
+    // Workflow row preserves cancelled even though the runner's
+    // `cancelBehavior: "complete"` would otherwise produce a
+    // `succeeded` result that finalizeSuccess might overwrite with.
+    const row = h.store.getRun(out.workflowRunId);
+    expect(row?.status).toBe("cancelled");
   });
 
   test("cancel an in-flight run → ShipOutput status cancelled", async () => {

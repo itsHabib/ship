@@ -31,7 +31,9 @@ import {
 } from "@ship/workflow";
 import { basename } from "node:path";
 
+import type { EventWriter } from "./artifacts/ndjson.js";
 import type { ShipFs } from "./fs/shape.js";
+import type { ValidatedDoc } from "./validate.js";
 
 import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import { resolveRunArtifactPaths, type RunArtifactPaths } from "./artifacts/paths.js";
@@ -73,8 +75,8 @@ export interface ShipService {
 }
 
 interface ActiveRun {
-  readonly handle: CursorRunHandle;
   readonly controller: AbortController;
+  handle?: CursorRunHandle;
 }
 
 export function createShipService(deps: ShipServiceDeps): ShipService {
@@ -121,28 +123,25 @@ interface PreparedRun {
   readonly phaseId: string;
   readonly paths: RunArtifactPaths;
   readonly worktree: WorktreeRef;
-  readonly prompt: string;
-  readonly model: ModelSelection;
+  readonly baseRef: string;
+  readonly validated: ValidatedDoc;
 }
 
-async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
-  const { absoluteDocPath } = await validateWorkdirAndDoc(
-    ctx.fs,
-    ctx.input.workdir,
-    ctx.input.docPath,
-  );
+async function shipImpl(ctx: ShipContext): Promise<ShipOutput> {
+  // Pre-row validation throws cleanly with no row created.
+  const validated = await validateWorkdirAndDoc(ctx.fs, ctx.input.workdir, ctx.input.docPath);
+  const prep = persistInitialState(ctx, validated);
+  return executeAndFinalize(ctx, prep);
+}
 
+function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): PreparedRun {
   const workflowRunId = ctx.ids.workflowRun();
+  const phaseId = ctx.ids.phase();
   const paths = resolveRunArtifactPaths(ctx.config.runsDir, workflowRunId);
-  await ctx.fs.mkdir(paths.dir, { recursive: true });
-
-  const taskDoc = await ctx.fs.readFile(absoluteDocPath, "utf-8");
-  await ctx.fs.writeFile(paths.taskDoc, taskDoc);
 
   const baseRef = ctx.input.baseRef ?? DEFAULT_WORKFLOW_POLICY.baseRef;
   const branch = ctx.input.branch ?? "(unknown)";
   const worktreeName = ctx.input.worktreeName ?? (basename(ctx.input.workdir) || "workdir");
-
   const worktree: WorktreeRef = {
     repo: ctx.input.repo,
     name: worktreeName,
@@ -151,15 +150,8 @@ async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
     baseRef,
   };
 
-  const prompt = renderImplementationPrompt({
-    taskDoc,
-    repo: ctx.input.repo,
-    worktreePath: ctx.input.workdir,
-    ...(ctx.input.branch !== undefined && { branch: ctx.input.branch }),
-    baseRef,
-  });
-  await ctx.fs.writeFile(paths.prompt, prompt);
-
+  // Row exists from this point — fs and runner failures resolve with
+  // a persisted `failed` ShipOutput rather than throwing past `ship()`.
   ctx.store.createWorkflowRun({
     id: workflowRunId,
     repo: ctx.input.repo,
@@ -168,38 +160,46 @@ async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
     worktree,
     policy: DEFAULT_WORKFLOW_POLICY,
   });
-
-  const phaseId = ctx.ids.phase();
   ctx.store.appendPhase({
     id: phaseId,
     workflowRunId,
     kind: "implement",
     inputJson: JSON.stringify({ docPath: ctx.input.docPath }),
   });
-  ctx.store.updatePhase(phaseId, { status: "running", startedAt: ctx.clock() });
-  ctx.store.updateWorkflowRunStatus(workflowRunId, "running");
 
-  const model: ModelSelection = ctx.input.model ? { id: ctx.input.model } : ctx.config.defaultModel;
-
-  return { workflowRunId, phaseId, paths, worktree, prompt, model };
+  return { workflowRunId, phaseId, paths, worktree, baseRef, validated };
 }
 
-async function shipImpl(ctx: ShipContext): Promise<ShipOutput> {
-  const prep = await prepareRun(ctx);
-  const ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
+async function executeAndFinalize(ctx: ShipContext, prep: PreparedRun): Promise<ShipOutput> {
+  // Register the controller BEFORE invoking the runner so an early
+  // cancelRun() arriving during `cursor.run()` startup can abort the
+  // pre-aborted signal — see Phase 6 § ED-2.
   const controller = new AbortController();
+  ctx.activeRuns.set(prep.workflowRunId, { controller });
+
   let cursorRunId: string | undefined;
+  let ndjson: EventWriter | undefined;
 
   try {
+    const prompt = await prepareArtifacts(ctx, prep);
+    ctx.store.updatePhase(prep.phaseId, { status: "running", startedAt: ctx.clock() });
+    ctx.store.updateWorkflowRunStatus(prep.workflowRunId, "running");
+
+    const model: ModelSelection = ctx.input.model
+      ? { id: ctx.input.model }
+      : ctx.config.defaultModel;
+    ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
+    const ndjsonRef = ndjson;
+
     const handle = await ctx.cursor.run({
       cwd: ctx.input.workdir,
-      prompt: prep.prompt,
-      model: prep.model,
+      prompt,
+      model,
       ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
       agentName: `ship/${prep.workflowRunId}`,
       signal: controller.signal,
       onEvent: (ev) => {
-        ndjson.write(ev);
+        ndjsonRef.write(ev);
       },
     });
 
@@ -209,11 +209,10 @@ async function shipImpl(ctx: ShipContext): Promise<ShipOutput> {
       workflowRunId: prep.workflowRunId,
       agentId: handle.agentId,
       runtime: "local",
-      model: prep.model,
+      model,
       artifactsDir: prep.paths.dir,
     });
-
-    ctx.activeRuns.set(prep.workflowRunId, { handle, controller });
+    ctx.activeRuns.set(prep.workflowRunId, { controller, handle });
 
     const result = await handle.result;
     return await finalizeSuccess({
@@ -237,12 +236,30 @@ async function shipImpl(ctx: ShipContext): Promise<ShipOutput> {
     });
   } finally {
     ctx.activeRuns.delete(prep.workflowRunId);
-    try {
-      await ndjson.close();
-    } catch {
-      /* swallow — close errors after terminal don't change outcome */
+    if (ndjson !== undefined) {
+      try {
+        await ndjson.close();
+      } catch {
+        /* swallow — close errors after terminal don't change outcome */
+      }
     }
   }
+}
+
+async function prepareArtifacts(ctx: ShipContext, prep: PreparedRun): Promise<string> {
+  await ctx.fs.mkdir(prep.paths.dir, { recursive: true });
+  const taskDoc = await ctx.fs.readFile(prep.validated.absoluteDocPath, "utf-8");
+  await ctx.fs.writeFile(prep.paths.taskDoc, taskDoc);
+
+  const prompt = renderImplementationPrompt({
+    taskDoc,
+    repo: ctx.input.repo,
+    worktreePath: ctx.input.workdir,
+    ...(ctx.input.branch !== undefined && { branch: ctx.input.branch }),
+    baseRef: prep.baseRef,
+  });
+  await ctx.fs.writeFile(prep.paths.prompt, prompt);
+  return prompt;
 }
 
 interface FinalizeSuccessArgs {
@@ -276,27 +293,37 @@ async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
     });
   }
 
-  const terminalStatus: TerminalWorkflowStatus = result.status;
-  const phasePatch: { status: typeof terminalStatus; endedAt: string; errorMessage?: string } = {
-    status: terminalStatus,
+  // Read current row status so a concurrent `cancelRun()` that already
+  // flipped the workflow row to `cancelled` isn't overwritten by the
+  // runner's terminal status. Phase + cursor-run rows still reflect the
+  // run's actual outcome — they're internal-consistency markers.
+  const currentRun = ctx.store.getRun(args.workflowRunId);
+  const isCancelled = currentRun?.status === "cancelled";
+  const cursorTerminal: TerminalCursorRunStatus = isCancelled ? "cancelled" : result.status;
+  const finalStatus: TerminalWorkflowStatus = isCancelled ? "cancelled" : result.status;
+
+  const phasePatch: { status: TerminalWorkflowStatus; endedAt: string; errorMessage?: string } = {
+    status: cursorTerminal,
     endedAt,
   };
   if (result.errorMessage !== undefined) phasePatch.errorMessage = result.errorMessage;
   ctx.store.updatePhase(args.phaseId, phasePatch);
   ctx.store.updateCursorRunStatus(args.cursorRunId, {
-    status: terminalStatus,
+    status: cursorTerminal,
     endedAt,
     durationMs: result.durationMs,
   });
-  ctx.store.updateWorkflowRunStatus(args.workflowRunId, terminalStatus);
+  if (!isCancelled) {
+    ctx.store.updateWorkflowRunStatus(args.workflowRunId, result.status);
+  }
 
   const updatedRun = ctx.store.getRun(args.workflowRunId);
   const cursorRunRef = ctx.store.getCursorRun(args.cursorRunId);
   return buildShipOutput({
     workflowRunId: args.workflowRunId,
-    status: terminalStatus,
+    status: finalStatus,
     worktree: updatedRun?.worktree ?? args.worktree,
-    cursorRun: assertTerminalCursorRunRef(cursorRunRef, terminalStatus),
+    cursorRun: assertTerminalCursorRunRef(cursorRunRef, cursorTerminal),
     paths,
     summary: result.summary,
   });
@@ -317,34 +344,40 @@ async function finalizeFailure(args: FinalizeFailureArgs): Promise<ShipOutput> {
   const endedAt = ctx.clock();
   const errorMessage = args.err instanceof Error ? args.err.message : String(args.err);
 
-  ctx.store.updatePhase(args.phaseId, {
-    status: "failed",
+  const currentRun = ctx.store.getRun(args.workflowRunId);
+  const isCancelled = currentRun?.status === "cancelled";
+  const finalStatus: TerminalWorkflowStatus = isCancelled ? "cancelled" : "failed";
+
+  const phasePatch: { status: TerminalWorkflowStatus; endedAt: string; errorMessage?: string } = {
+    status: finalStatus,
     endedAt,
-    errorMessage,
-  });
+  };
+  if (!isCancelled) phasePatch.errorMessage = errorMessage;
+  ctx.store.updatePhase(args.phaseId, phasePatch);
   if (args.cursorRunId !== undefined) {
     try {
       ctx.store.updateCursorRunStatus(args.cursorRunId, {
-        status: "failed",
+        status: finalStatus,
         endedAt,
       });
     } catch {
       /* swallow — best-effort cleanup */
     }
   }
-  ctx.store.updateWorkflowRunStatus(args.workflowRunId, "failed");
+  if (!isCancelled) {
+    ctx.store.updateWorkflowRunStatus(args.workflowRunId, "failed");
+  }
 
   const updatedRun = ctx.store.getRun(args.workflowRunId);
   const cursorRunRef =
     args.cursorRunId !== undefined ? ctx.store.getCursorRun(args.cursorRunId) : null;
 
-  // Best-effort: try to write a truncated result.json with the error so the
-  // archive carries some forensics. If even that fails, swallow — we're in
-  // a failure path already.
+  // Best-effort: write a truncated result.json with the error so the
+  // archive carries some forensics. If even that fails, swallow.
   try {
     await ctx.fs.writeFile(
       args.paths.result,
-      `${JSON.stringify({ status: "failed", errorMessage }, null, 2)}\n`,
+      `${JSON.stringify({ status: finalStatus, errorMessage }, null, 2)}\n`,
     );
   } catch {
     /* swallow */
@@ -352,12 +385,12 @@ async function finalizeFailure(args: FinalizeFailureArgs): Promise<ShipOutput> {
 
   return buildShipOutput({
     workflowRunId: args.workflowRunId,
-    status: "failed",
+    status: finalStatus,
     worktree: updatedRun?.worktree ?? args.worktree,
     cursorRun:
       cursorRunRef !== null
-        ? assertTerminalCursorRunRef(cursorRunRef, "failed")
-        : synthesizeFailedCursorRun(args.workflowRunId, args.paths.dir, ctx.clock()),
+        ? assertTerminalCursorRunRef(cursorRunRef, finalStatus)
+        : synthesizeFailedCursorRun(args.workflowRunId, args.paths.dir, ctx.clock(), finalStatus),
     paths: args.paths,
     summary: undefined,
   });
@@ -400,20 +433,21 @@ function assertTerminalCursorRunRef(
 }
 
 /**
- * Builds a synthetic failed cursor-run ref when we never got far enough
- * to record one (e.g. cursor.run() rejected before returning a handle).
- * Used to produce a coherent ShipOutput in those edge cases.
+ * Builds a synthetic failed/cancelled cursor-run ref when we never got
+ * far enough to record one (e.g. cursor.run() rejected before returning
+ * a handle). Used to produce a coherent ShipOutput in those edge cases.
  */
 function synthesizeFailedCursorRun(
   workflowRunId: string,
   artifactsDir: string,
   endedAt: string,
+  status: TerminalCursorRunStatus,
 ): CursorRunRef & { status: TerminalCursorRunStatus } {
   return {
     id: `cr_synthetic_${workflowRunId}`,
     agentId: "agent-not-created",
     runtime: "local",
-    status: "failed",
+    status,
     startedAt: endedAt,
     endedAt,
     artifactsDir,
