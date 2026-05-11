@@ -29,9 +29,10 @@ After this phase:
 1. The MCP `ship` tool validates input via `shipInputSchema` (unchanged).
 2. The tool handler calls a new `ShipService.startShip(input)` method (see ED-1) which:
    - Performs the V1 pre-row validation (`validateWorkdirAndDoc`).
-   - Persists the `WorkflowRun` row + initial implement-`Phase` row with status `running` via the existing `persistInitialState`.
-   - Returns a `ShipStartOutput` of shape `{ workflowRunId, status: WorkflowStatus }`.
-   - Schedules the run continuation (the existing `executeAndFinalize`) on the event loop, **not** awaiting it. Continuation errors are caught and recorded into the run row + phase row via the same failure path V1 uses.
+   - Persists the `WorkflowRun` row + initial implement-`Phase` row via the existing `persistInitialState` (both rows are written with V1's default status, `pending`).
+   - Transitions the row + phase from `pending` to `running` via the same store call V1's `executeAndFinalize` uses today, **before yielding to the event loop** — this is one extra synchronous SQLite write inside `startShip` so the start response reflects a `running` state, not a transient `pending` the caller would have to poll past.
+   - Returns a `ShipStartOutput` of shape `{ workflowRunId, status: "running" }`. The `running` value is by design — see ED-3 for the schema-level pinning.
+   - Schedules the rest of the run continuation (the existing `executeAndFinalize`, with its initial `pending → running` step factored out per ED-1) on the event loop via `setImmediate`, **not** awaiting it. Continuation errors are caught and recorded into the run row + phase row via the same failure path V1 uses.
 3. The tool handler validates output against a new `shipStartOutputSchema` and returns it.
 4. The MCP tool **never** blocks waiting on the Cursor agent.
 
@@ -67,7 +68,7 @@ No change to `get_workflow_run`. Callers poll it by `workflowRunId` until `isTer
 | Where to split sync / async | Service layer: `ship` (sync) + `startShip` (async) | At the MCP handler — handler fires-and-forgets `ship` itself | Splitting at the service keeps the sync code path identical to V1 for the CLI and gives the MCP a clean named method to call. Fire-and-forgetting `ship` from the handler would leak the un-awaited promise inside the MCP server, complicate cancellation registration, and tangle the existing error mapping. |
 | Tool naming | Keep `ship` as the tool name; change its return contract | Add a new `start_ship` tool; deprecate `ship` | The current sync return shape isn't usable from an agent today (60s timeout), so almost no real caller depends on it. Keeping the name + changing the contract avoids tool-surface bloat and a deprecation cycle for a contract that nobody successfully consumes. |
 | Return shape on async path | `{ workflowRunId, status }` only | Return the full `WorkflowRun` row at start | At start time, the row has no artifacts, no cursor run, no terminal status — most of the rich fields are empty. Returning the minimal shape and asking callers to poll `get_workflow_run` keeps the contract honest and the response small. |
-| Background-continuation lifecycle | Fire on `setImmediate`; errors caught and routed to existing `finalizeFailure` | Use a worker thread / pool | Existing run model is single-process, single-user (spec.md § Non-functional). Adding workers is out of proportion to the change. |
+| Background-continuation primitive | `setImmediate` (yields to I/O before running) | `queueMicrotask` (same-tick) / a worker thread / pool | `setImmediate` has explicit "after this turn of the event loop" semantics, which keeps the test surface for cancellation deterministic. Worker threads are out of proportion to the change — existing run model is single-process, single-user per spec.md § Non-functional. |
 | Streaming progress responses | Deferred to a later phase | Implement SSE in the same PR | MCP SDK's progress notifications are not yet uniformly supported across editors / agent runtimes we care about. Async-return + poll works with every client. |
 | CLI changes | None | Add `ship ship --async` flag | The CLI's blocking behavior is correct for humans. No demand signal for an async CLI. Adding a flag is feature creep. |
 
@@ -83,7 +84,7 @@ shipImpl(ctx)
   → executeAndFinalize(ctx, prep)
 ```
 
-`startShip` runs `prepareRun` synchronously enough to return `{ workflowRunId, status: prep.workflowRun.status }`, then schedules `executeAndFinalize(ctx, prep)` on the event loop (`queueMicrotask` or `setImmediate`; precise primitive picked in the impl PR after a small bench) and **registers the controller in `activeRuns` before yielding**. `ship` keeps awaiting the full chain.
+`startShip` runs `prepareRun` synchronously, then transitions the row + phase from `pending` to `running` (one synchronous SQLite write), then schedules `executeAndFinalize(ctx, prep)` on the event loop via `setImmediate` and **registers the controller in `activeRuns` before yielding**. The two synchronous SQLite writes (persist + status-transition) happen on the same call stack before the return. `ship` (sync) keeps awaiting the full chain unchanged — it just goes through `prepareRun + setImmediate(executeAndFinalize)` + an internal terminal-state wait instead of the V1 monolithic `shipImpl`. Net behavior change for `ship`: none (it still resolves with `ShipOutput` at terminal state).
 
 Rationale: two named methods are clearer than a `mode: "sync" | "async"` parameter. The CLI keeps importing exactly what it imports today; the MCP handler imports the new method. Tests for each method are independent.
 
@@ -91,17 +92,21 @@ Rejected: implementing `ship` as `startShip + waitForTerminal`. That introduces 
 
 ### ED-2 — Background-continuation error path is the V1 failure path
 
-When the un-awaited `executeAndFinalize` rejects, the existing `finalizeFailure` runs (it already updates the row + phase to `failed`, writes `result.json` with the error message, and removes the entry from `activeRuns`). The new piece is a `.catch()` on the un-awaited promise that swallows the rejection at the top level so Node doesn't surface an unhandled-rejection — `finalizeFailure` already did the durable work. The catch logs at debug level only; the structured error is in `result.json` for `get_workflow_run` to surface.
+V1's `executeAndFinalize` already catches typed run failures internally (via `finalizeFailure`, which updates the row + phase to `failed`, writes `result.json` with the error message, and removes the entry from `activeRuns`) and resolves rather than rejects. The background continuation therefore inherits V1's "errors land as durable `failed` state" guarantee without us re-implementing it.
+
+The new piece is a top-level `.catch()` on the un-awaited promise as a **safety net only** — it fires solely if `finalizeFailure` itself throws (e.g. the SQLite handle is gone, the artifacts dir is unwritable). Under normal failures the catch never runs because `executeAndFinalize` already resolved. The catch logs at debug level; if it fires, the durable state is whatever `finalizeFailure` managed before it threw — `get_workflow_run` will reflect that. Node's unhandled-rejection guardrails are also satisfied (the implementation plan adds a step to verify `executeAndFinalize` has no early-exit path that skips `finalizeFailure`).
 
 Specifically:
 
 ```ts
 const start = await prepareRun(ctx);                        // throws ⇒ no row, ship-start fails
 activeRuns.set(start.workflowRunId, ...);                   // register controller
-queueMicrotask(() => {
+transitionRowAndPhaseToRunning(ctx, start);                 // sync SQLite write, see ED-1
+setImmediate(() => {
   executeAndFinalize(ctx, start).catch((err) => {
-    // finalizeFailure already ran inside executeAndFinalize for typed errors.
-    // This .catch only fires if finalizeFailure itself threw — log + drop.
+    // executeAndFinalize already runs finalizeFailure for typed errors and resolves.
+    // This .catch is a safety net for the case where finalizeFailure itself threw
+    // (lost SQLite handle, unwritable artifacts dir, etc.). Log + drop.
     logger.debug("ship-start: background continuation rejected after finalize", err);
   });
 });
@@ -115,10 +120,12 @@ The MCP boundary's "every tool ships an input + output schema" contract (V1 phas
 ```ts
 export const shipStartOutputSchema = z.object({
   workflowRunId: workflowRunIdSchema,
-  status: workflowStatusSchema,
+  status: z.literal("running"),
 });
 export type ShipStartOutput = z.infer<typeof shipStartOutputSchema>;
 ```
+
+The `status` field is narrowed to `z.literal("running")` rather than the broader `workflowStatusSchema` because `startShip` always returns `running` by design (per F1 — the `pending → running` transition happens synchronously inside `startShip` before the response). Narrowing here means a future implementation that accidentally returns a different status fails Zod validation at the boundary, not silently in production. Callers who want the live status poll `get_workflow_run`.
 
 This sits next to `shipOutputSchema`, exported from `@ship/mcp` and re-imported by `mcp-server`. The MCP tool handler validates against `shipStartOutputSchema` before sending; the CLI continues to use `shipOutputSchema`.
 
@@ -182,7 +189,7 @@ Optional. The existing `e2e/scenarios/` live harness gets one new scenario that 
 
 ## Open questions
 
-1. **Background-continuation primitive: `queueMicrotask` vs `setImmediate`?** Both run after the current call stack unwinds. `queueMicrotask` runs sooner (same tick), `setImmediate` after I/O. Default proposal: `setImmediate` — explicit "after this turn" semantics, easier to reason about during cancellation testing. Decide in impl PR after benching.
+1. ~~**Background-continuation primitive: `queueMicrotask` vs `setImmediate`?**~~ **Resolved in this revision:** `setImmediate`. Explicit "after this turn of the event loop" semantics keep the cancellation test surface deterministic; the difference vs `queueMicrotask` is on the order of a tick and not measurable in any user-visible way. Pinned in the Tradeoffs table + the ED-2 code sketch.
 2. **Should the start response include `cursorRun: null` placeholders?** Default: no. The shape is `{ workflowRunId, status }` only. Adding placeholders that are always null/empty is noise.
 3. **Should we add a `started_at` timestamp to the start response?** Default: no — `get_workflow_run` already returns `createdAt`; callers can read it from there. Adds one more field to keep in sync otherwise.
 
@@ -190,10 +197,11 @@ Optional. The existing `e2e/scenarios/` live harness gets one new scenario that 
 
 After this doc is reviewed and merged:
 
-1. **Add `shipStartOutputSchema` to `@ship/mcp`.** Plus exported `ShipStartOutput` type.
-2. **Add `ShipService.startShip` to `@ship/core`.** Factor `shipImpl` into `prepareRun` + `executeAndFinalize` (the second already exists). Wire the un-awaited continuation + `.catch()`.
-3. **Update the `ship` MCP tool handler in `@ship/mcp-server`.** Call `startShip` instead of `ship`. Validate output with `shipStartOutputSchema`.
-4. **Update unit tests** for the three packages above.
-5. **Add one integration test** under `e2e/integration/` per the Validation section.
-6. **Update relevant JSDoc** on the changed exports.
-7. **Land as one PR.** Estimated weighted budget ~210 LOC — single PR per the V1 sizing rule. If the diff comes in heavier than the "amazing" band, the natural split is "core + mcp changes" / "integration test" — but the small expected size makes the split unlikely to be worth the second review.
+1. **Add `shipStartOutputSchema` to `@ship/mcp`.** Plus exported `ShipStartOutput` type with `status: z.literal("running")` per ED-3.
+2. **Add `startShip` to the `ShipService` interface and implementation in `@ship/core`.** Add the method to the `ShipService` interface (`packages/core/src/service.ts`) so `mcp-server` can call it through the typed contract — without this step the mcp-server import will fail to typecheck. Then factor `shipImpl` into `prepareRun` + the existing `executeAndFinalize`, extracting the `pending → running` transition into its own helper so `startShip` can call it synchronously before yielding. Wire the un-awaited continuation + safety-net `.catch()` per ED-2.
+3. **Verify `executeAndFinalize`'s catch contract.** Before relying on the safety-net wording in ED-2, audit `packages/core/src/service.ts` `executeAndFinalize` (and its call graph into `finalizeFailure`) to confirm there's no early-exit path that returns / throws *before* `finalizeFailure` runs. If one exists, either fix it or update ED-2 to document the exposure. This is a doc-confirmation step, not a code change.
+4. **Update the `ship` MCP tool handler in `@ship/mcp-server`.** Call `startShip` instead of `ship`. Validate output with `shipStartOutputSchema`.
+5. **Update unit tests** for the three packages above.
+6. **Add one integration test** under `e2e/integration/` per the Validation section.
+7. **Update relevant JSDoc** on the changed exports.
+8. **Land as one PR.** Estimated weighted budget ~210 LOC — single PR per the V1 sizing rule. If the diff comes in heavier than the "amazing" band, the natural split is "core + mcp changes" / "integration test" — but the small expected size makes the split unlikely to be worth the second review.

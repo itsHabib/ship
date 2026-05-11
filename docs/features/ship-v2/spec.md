@@ -4,7 +4,7 @@ Status: design draft. Phase 01 (async ship tool) is the first V2 phase under des
 Owner: itsHabib
 Date: 2026-05-10
 
-> **Companion docs.** [ship-v1/spec.md](../ship-v1/spec.md) is the V1 design spec — feature-complete on `main` as of 2026-05-10. V2 phases compose onto V1 without retroactively redesigning it; each phase lands as its own doc + PR under `phases/`.
+> **Companion docs.** [ship-v1/spec.md](../ship-v1/spec.md) is the V1 design spec; the V1 implementation is feature-complete on `main` (V1 spec.md's own header still reads "design draft" — stale, tracked separately). V2 phases compose onto V1 without retroactively redesigning it; each phase lands as its own doc + PR under `phases/`.
 
 ## Summary
 
@@ -57,7 +57,7 @@ The V1 `phases` table already admits new `kind` values without ALTER. Every V2 s
 
 ### ED-2 — MCP tool surface grows; CLI mirrors selectively
 
-Each V2 phase adds at most one MCP tool. The CLI mirrors only the surfaces that make sense for a human (e.g. `ship open_pr <run_id>` is plausible; `ship review` probably isn't). The MCP / CLI symmetry from V1 is not a constraint — V2 surfaces are agent-driven first; CLI parity is opportunistic.
+Each V2 phase adds or modifies at most one MCP tool. (Phase 01 modifies `ship`'s return contract without adding a new tool; phases 02–04 each add one new tool — `open_pr`, `review`, `ci_fix`.) The CLI mirrors only the surfaces that make sense for a human (e.g. `ship open_pr <run_id>` is plausible; `ship review` probably isn't). The MCP / CLI symmetry from V1 is not a constraint — V2 surfaces are agent-driven first; CLI parity is opportunistic.
 
 ### ED-3 — V1 contracts stay backward-compatible at the data layer, not at the MCP tool layer
 
@@ -73,5 +73,5 @@ A V1 `WorkflowRun` row read by V2 code must hydrate without migration. A V1-shap
 
 ## Open questions
 
-1. **Does `ship` get a new tool name or a new contract on the same name?** Phase 01 design discusses both. Default proposal: keep the name; change the contract; document the break in the changelog.
+1. ~~**Does `ship` get a new tool name or a new contract on the same name?**~~ **Resolved by [phase 01](phases/01-async-ship-tool.md) § Tradeoffs:** keep the name `ship`; change the return contract. The break is documented in the impl PR's changelog.
 2. **Do V2 phases need a single umbrella `WorkflowRun` or multiple linked runs?** Default: single run, multiple `Phase` rows (per ED-1). Revisit only if a phase needs to outlive its parent run.
