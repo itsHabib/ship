@@ -44,14 +44,12 @@ Follow this general workflow for implementing a feature
 
 When an agent emits a canonical `Co-authored-by:` trailer as part of its commit flow, include it on every agent-authored commit. This makes agent provenance auditable via `git log` without inspecting branches or PR descriptions — a recurring need as Ship-on-Ship dogfooding ramps and a single feature may have commits from multiple agents.
 
-Trailers seen in this repo (verbatim — case matters for `git log --grep`, see "Auditing" below):
+Trailers seen in this repo:
 
-- **Claude Code** → `Co-Authored-By: Claude <model-name> <noreply@anthropic.com>` (mixed case; emitted automatically when Claude commits on the operator's behalf — `<model-name>` is filled in with whichever Claude version is active, e.g. `Claude Opus 4.7 (1M context)`).
-- **Cursor agents** (via `@ship/cursor-runner` → `@cursor/sdk`) → `Co-authored-by: Cursor <cursoragent@cursor.com>` (lowercase; added by the Cursor SDK during a `ship` run).
+- **Claude Code** → `Co-Authored-By: Claude <model-name> <noreply@anthropic.com>` (emitted automatically when Claude commits on the operator's behalf — `<model-name>` is filled in with whichever Claude version is active, e.g. `Claude Opus 4.7 (1M context)`).
+- **Cursor agents** (via `@ship/cursor-runner` → `@cursor/sdk`) → `Co-authored-by: Cursor <cursoragent@cursor.com>` (added by the Cursor SDK during a `ship` run).
 
-Agents that don't emit a trailer as part of their standard commit flow aren't required to invent one — skipping is fine. Human-authored commits don't need a trailer.
-
-**Auditing.** `git log --grep` is case-sensitive by default, so a single query won't catch both Claude Code's `Co-Authored-By:` and Cursor's `Co-authored-by:`. Use `git log -i --grep="Co-Authored-By:"` to catch both variants in one pass, or run two case-exact queries. GitHub's link-resolution for the trailer is case-insensitive, so PR pages render contributor attribution correctly either way.
+Agents that don't emit a trailer as part of their standard commit flow aren't required to invent one — skipping is fine. Human-authored commits don't need a trailer. Trailer casing varies across agents; that's expected and not a thing to fix — GitHub's attribution resolution is case-insensitive, and `git log -i --grep` handles both variants.
 
 ## PR sizing
 
