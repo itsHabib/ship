@@ -18,7 +18,7 @@ V2 phase 01 fixes that single thing. Subsequent V2 phases compose on top.
 
 - Make the MCP `ship` tool callable from a driver agent without falling out of the request budget.
 - Keep V1's persistence and durability guarantees untouched. Runs are still recorded under one `WorkflowRun` row; cancellation still works; nothing about the substrate-agnostic runner changes.
-- Add PR opening, review-cycle execution, and CI repair as new phases composing on the V1 `WorkflowRun` / `Phase` schema. Each phase = one new `Phase.kind` value + one new MCP tool (or a parameter to an existing one).
+- Add PR opening, review-cycle execution, and CI repair as new phases composing on the V1 `WorkflowRun` / `Phase` schema. Phases 02–04 each introduce one new `Phase.kind` value + one new MCP tool. Phase 01 is the odd one out: it changes the existing `ship` tool's return contract without adding a new `Phase.kind`.
 - Preserve the workspace-agnostic posture from V1 ED-3. V2 does not introduce a hard dependency on Tower or any specific workspace provider.
 
 ## Non-goals (V2)

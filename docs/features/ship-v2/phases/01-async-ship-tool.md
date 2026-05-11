@@ -27,12 +27,13 @@ This is the single smallest unblock for every later V2 phase that needs to call 
 After this phase:
 
 1. The MCP `ship` tool validates input via `shipInputSchema` (unchanged).
-2. The tool handler calls a new `ShipService.startShip(input)` method (see ED-1) which:
-   - Performs the V1 pre-row validation (`validateWorkdirAndDoc`).
-   - Persists the `WorkflowRun` row + initial implement-`Phase` row via the existing `persistInitialState` (both rows are written with V1's default status, `pending`).
-   - Transitions the row + phase from `pending` to `running` via the same store call V1's `executeAndFinalize` uses today, **before yielding to the event loop** — this is one extra synchronous SQLite write inside `startShip` so the start response reflects a `running` state, not a transient `pending` the caller would have to poll past.
-   - Returns a `ShipStartOutput` of shape `{ workflowRunId, status: "running" }`. The `running` value is by design — see ED-3 for the schema-level pinning.
-   - Schedules the rest of the run continuation (the existing `executeAndFinalize`, with its initial `pending → running` step factored out per ED-1) on the event loop via `setImmediate`, **not** awaiting it. Continuation errors are caught and recorded into the run row + phase row via the same failure path V1 uses.
+2. The tool handler calls a new `ShipService.startShip(input)` method (see ED-1). The synchronous step ordering inside `startShip` is exact (each step is on the same call stack — no `await` between them — until step 2.e):
+   - **2.a** Pre-row validation: `await validateWorkdirAndDoc(...)`. Throws ⇒ no row, `startShip` rejects.
+   - **2.b** Persist: `persistInitialState(...)` writes the `WorkflowRun` row + initial implement-`Phase` row with V1's default status `pending`. Throws ⇒ same as above plus DB rolls back per V1.
+   - **2.c** Transition: `transitionRowAndPhaseToRunning(...)` — one synchronous SQLite write taking row + phase from `pending → running`. Throws ⇒ row stays `pending`, no `activeRuns` entry exists yet so nothing to clean up.
+   - **2.d** Register controller: `activeRuns.set(workflowRunId, { controller, ... })`. After this point, an incoming `cancelRun(workflowRunId)` can observe the run. Registration happens **after** the transition (per ED-2's revised ordering) so a failed transition doesn't leak a stale active-runs entry; no concurrency window is opened, because steps 2.c → 2.d → 2.e are on the same synchronous call stack.
+   - **2.e** Schedule continuation: `setImmediate(() => executeAndFinalize(...).catch(safetyNet))`. Returns control to the caller after the next tick of the event loop is queued.
+   - **2.f** Return `ShipStartOutput` of shape `{ workflowRunId, status: "running" }`. The `running` value is by design — see ED-3 for the schema-level pinning.
 3. The tool handler validates output against a new `shipStartOutputSchema` and returns it.
 4. The MCP tool **never** blocks waiting on the Cursor agent.
 
@@ -44,9 +45,9 @@ The CLI's `ship ship` subcommand keeps the V1 sync behavior — it blocks, print
 
 ### F3 — Cancellation semantics unchanged
 
-`cancel_workflow_run` continues to work the V1 way. `activeRuns` is populated by `startShip` exactly as it is by V1's `ship` (the controller is registered before the background continuation begins, so a cancel arriving in the first few ms still aborts the SDK run via the existing signal-observation path).
+`cancel_workflow_run` continues to work the V1 way. `activeRuns` is populated by `startShip` exactly as it is by V1's `ship` (the controller is registered synchronously inside `startShip` so the background continuation observes the abort signal via the existing V1 signal-observation path).
 
-A specific guard required for safety: the `activeRuns.set(...)` call must complete **before** the tool handler returns. Otherwise a cancel arriving between "tool returns" and "background continuation registers the controller" finds no entry and silently no-ops. See § Risks.
+A specific guard required for safety: the `activeRuns.set(...)` call must complete **before the `setImmediate` callback runs** (per F1 step 2.d and the ED-2 sketch). Since both registration and the `setImmediate(...)` call are on the same synchronous call stack with no `await` between them, this is true by construction — the callback can't fire until the current call stack unwinds, which is after `return` from `startShip`. A cancel arriving between "tool returns" and "background continuation begins" finds the entry in `activeRuns` and aborts cleanly.
 
 ### F4 — `get_workflow_run` is the poll surface
 
@@ -84,11 +85,21 @@ shipImpl(ctx)
   → executeAndFinalize(ctx, prep)
 ```
 
-`startShip` runs `prepareRun` synchronously, then transitions the row + phase from `pending` to `running` (one synchronous SQLite write), then schedules `executeAndFinalize(ctx, prep)` on the event loop via `setImmediate` and **registers the controller in `activeRuns` before yielding**. The two synchronous SQLite writes (persist + status-transition) happen on the same call stack before the return. `ship` (sync) keeps awaiting the full chain unchanged — it just goes through `prepareRun + setImmediate(executeAndFinalize)` + an internal terminal-state wait instead of the V1 monolithic `shipImpl`. Net behavior change for `ship`: none (it still resolves with `ShipOutput` at terminal state).
+`startShip` follows the exact ordering enumerated in F1 step 2: `prepareRun` (validate + persist) → `transitionRowAndPhaseToRunning` → `activeRuns.set` → `setImmediate(executeAndFinalize)` → return. The two synchronous SQLite writes (persist + status-transition) happen on the same call stack before the return, with `activeRuns.set` placed between the transition and the `setImmediate` schedule so a failed transition can't leave a stale active-runs entry behind.
+
+`ship` (sync) shares the same factoring: it runs `prepareRun + transitionRowAndPhaseToRunning + activeRuns.set` identically, then awaits the continuation rather than fire-and-forgetting it. The wait is implemented by wrapping `setImmediate` in a deferred Promise:
+
+```ts
+const result = await new Promise<ShipOutput>((resolve, reject) => {
+  setImmediate(() => executeAndFinalize(ctx, prep).then(resolve, reject));
+});
+```
+
+That keeps `ship` going through the same `setImmediate` path as `startShip` (the shared code path is the entire body, not just `prepareRun`) so timing semantics are identical. No polling loop; no second copy of the continuation logic. Net behavior change for `ship`: none — it still resolves with `ShipOutput` at terminal state.
 
 Rationale: two named methods are clearer than a `mode: "sync" | "async"` parameter. The CLI keeps importing exactly what it imports today; the MCP handler imports the new method. Tests for each method are independent.
 
-Rejected: implementing `ship` as `startShip + waitForTerminal`. That introduces an extra in-process await loop on top of the row-write path; the current sync `ship` is a single transactional sequence and is easier to reason about as-is. Two methods, one shared `prepareRun` helper, is the lower-risk shape.
+Rejected: implementing `ship` as `startShip + waitForTerminal` *as separate calls from the caller's perspective*. That would expose the deferred-Promise mechanism to callers and force them to coordinate. Inlining the wait inside `ship` keeps the caller-visible surface unchanged (one method call, one resolved `ShipOutput`) while sharing 100% of the underlying code path with `startShip`.
 
 ### ED-2 — Background-continuation error path is the V1 failure path
 
@@ -99,9 +110,11 @@ The new piece is a top-level `.catch()` on the un-awaited promise as a **safety 
 Specifically:
 
 ```ts
-const start = await prepareRun(ctx);                        // throws ⇒ no row, ship-start fails
-activeRuns.set(start.workflowRunId, ...);                   // register controller
-transitionRowAndPhaseToRunning(ctx, start);                 // sync SQLite write, see ED-1
+const start = await prepareRun(ctx);                        // throws ⇒ no row, startShip rejects
+transitionRowAndPhaseToRunning(ctx, start);                 // sync SQLite write; throws ⇒ no
+                                                            //   activeRuns entry to clean up
+activeRuns.set(start.workflowRunId, ...);                   // register controller AFTER transition
+                                                            //   so a failed transition can't leak
 setImmediate(() => {
   executeAndFinalize(ctx, start).catch((err) => {
     // executeAndFinalize already runs finalizeFailure for typed errors and resolves.
@@ -112,6 +125,8 @@ setImmediate(() => {
 });
 return { workflowRunId: start.workflowRunId, status: "running" };
 ```
+
+Note the registration order vs the V1 sync `ship`: there is no concurrency window between `transitionRowAndPhaseToRunning` and `activeRuns.set` (both run on the same synchronous call stack with no `await` between them), so registering after the transition closes the failure-leak hole without opening any cancel-race hole. A cancel arriving during the `await prepareRun(...)` window finds no row and no activeRuns entry — `cancelRun` reports "not found," which is the V1 behavior. A cancel arriving after `setImmediate` fires the continuation finds both the row (in `running`) and the controller in `activeRuns` — the abort signal is observed by the continuation's call into `cursor.run({ signal, ... })` per V1 ED-2.
 
 ### ED-3 — `shipStartOutputSchema` is a new `@ship/mcp` export
 
@@ -171,7 +186,8 @@ Optional. The existing `e2e/scenarios/` live harness gets one new scenario that 
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Cancel-before-register race | A cancel arriving in the < 1ms between `startShip` returning and the background continuation registering its controller no-ops silently | `activeRuns.set(...)` happens **inside** `startShip` before the tool handler returns. The continuation only *reads* from `activeRuns` (via the abort signal already attached to the controller); no race. Test scenario covers this explicitly. |
+| Cancel-before-register race | A cancel arriving in the < 1ms between `startShip` returning and the background continuation registering its controller no-ops silently | `activeRuns.set(...)` happens **inside** `startShip` on the same synchronous call stack as the `setImmediate(...)` schedule — there is no async window between them, so the continuation's first observable behavior already has the abort signal attached. Test scenario covers this explicitly. |
+| Stale `activeRuns` entry after a failed transition | If `transitionRowAndPhaseToRunning` threw *after* `activeRuns.set`, the active-runs map would point at a never-fired continuation | Per ED-2's revised ordering, `activeRuns.set` runs **after** the transition. If the transition throws, the map stays clean; if the transition succeeds, registration follows immediately on the same call stack. |
 | Un-awaited promise leaks an unhandled rejection | Node process logs a confusing error; CI might fail strict-mode | The `.catch()` in ED-2 is the explicit handler. `finalizeFailure` is responsible for durable state; the catch only logs. Unit test asserts no unhandled rejection on a forced failure. |
 | Existing MCP clients (rare) that consumed the sync shape break | Workflow surfaces stop working for them | The break is documented in the impl PR's changelog. The only known consumer pattern is "agent calls `ship`, times out at 60s, polls `get_workflow_run`" — already broken on the response side; this phase makes the timeout go away. Direct-from-Inspector human callers are non-load-bearing. |
 | Background continuation outlives the MCP server process | If the MCP client disconnects mid-run, the run may keep going after stdin closes (V1 chip #7 territory) | Out of scope for this phase. V1 chip "mcp-server stdin-disconnect" is already filed and tracked; the fix for that lands in its own PR and composes cleanly with this one. |
