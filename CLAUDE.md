@@ -104,7 +104,7 @@ Follow this general workflow for implementing a feature
 - implement said feature
 - create a branch if you haven't already
 - create a PR
-- request copilot as reviewer
+- request Copilot as reviewer via REST: `gh api -X POST repos/<owner>/<repo>/pulls/<n>/requested_reviewers -f 'reviewers[]=Copilot'` (do NOT use `gh pr edit --add-reviewer copilot-swe-agent` — it silently no-ops). Verify with `gh pr view <n> --json reviewRequests`; if it's empty even though REST returned 201, the Copilot Code Review GitHub App isn't installed on the repo and the endpoint dropped the request.
 - comment "@codex review"
 - comment "@claude review"
 - ensure CI is green
