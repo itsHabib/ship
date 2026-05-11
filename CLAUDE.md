@@ -1,6 +1,6 @@
 # Ship
 
-A repo-native dev-workflow MCP toolkit. **Pre-implementation** as of 2026-05-06 — Phase 0 (Cursor SDK spike) and Phase 1 (monorepo scaffold) done; no package code yet. See [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) for what's next.
+A repo-native dev-workflow MCP toolkit. **V1 feature-complete on `main`** as of 2026-05-10 — Phases 0–9 shipped; both `@ship/cli` and `@ship/mcp-server` are runnable; Ship-on-Ship dogfooding has landed real PRs (#19, #21). See [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) for status and what's next (V2 surfaces: PR opening, review cycles, async-mode `ship` tool).
 
 ## Docs layout
 
