@@ -47,3 +47,6 @@ coverage/
 
 # Claude Code (CLI harness state — local only)
 .claude/
+
+# Tower worktrees (per-task workspaces; never committed)
+.worktrees/

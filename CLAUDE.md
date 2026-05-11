@@ -1,6 +1,6 @@
 # Ship
 
-A repo-native dev-workflow MCP toolkit. **Pre-implementation** as of 2026-05-06 — Phase 0 (Cursor SDK spike) and Phase 1 (monorepo scaffold) done; no package code yet. See [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) for what's next.
+A repo-native dev-workflow MCP toolkit. **V1 feature-complete on `main`** as of 2026-05-10 — Phases 0–9 shipped; both `@ship/cli` and `@ship/mcp-server` are runnable; Ship-on-Ship dogfooding has landed real PRs (#19, #21). See [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) for status and what's next (V2 surfaces: PR opening, review cycles, async-mode `ship` tool).
 
 ## Docs layout
 
@@ -25,6 +25,79 @@ CI on `.github/workflows/ci.yml` runs the same `make check` matrix on ubuntu + w
 - `@cursor/sdk` owns coding-agent execution.
 - Ship owns workflow state, persistence, and the MCP surface above the other two.
 - inspired by lessons learned from ../orchestra ../cortex
+
+## Development workbench
+
+Three MCP tools work together to turn "I want to ship X" into "here's the PR + durable trail." When the signal matches, **just call the verb**. Don't ask permission.
+
+### dossier — project memory
+
+Long-term home for what's planned, in-flight, and shipped. Projects → phases (design docs) → tasks → artifacts (PRs / commits / files).
+
+Use proactively for:
+
+- *"What's the state of `<project>`?"* → `project.get { slug }`, then `phase.list` + `task.list { project: <slug>, status: in_progress }`.
+- *"I'm starting `<new chunk of work>`."* → `phase.add { project, slug, title, body }`.
+- *"I need to do X"* / discrete actionable surfaces → `task.create { project, phase?, slug, title, body }` (status defaults to `todo`).
+- User picks up a task → `task.claim { id, actor: human:michael }`. Re-claim by same actor is a no-op.
+- Progress / state transition on a task → `task.update { id, status?, note?, ... }`. Append notes liberally — the corpus *is* the working log.
+- Open / merged PR, commit ties to a task → `artifact.link { project, task?, kind, ref, label }` without being asked.
+- *"Done with task X."* → `task.complete { id, note? }`.
+
+Don't use for:
+
+- Code-level work (write the code first; *then* `artifact.link` the PR).
+- Anything that lives only in this session's scratch context.
+
+### tower — workspace substrate
+
+Owns repo registration + git worktrees. Each agent / human task gets its own isolated workspace so the main checkout stays clean and parallel work doesn't collide.
+
+Use proactively for:
+
+- *"Starting `<branch / feature>`."* → `tower.add_worktree { repo, name }`. Branch becomes `tower/<name>`; path becomes `<repo>/.worktrees/<name>`.
+- New repo Tower doesn't know yet → `tower.register_repo { path }` (defaults name to dir basename).
+- *"What worktrees are open?"* → `tower.list_worktrees { repo? }` — includes PR / CI / review state.
+- Worktree done + PR merged → `tower.remove_worktree { repo, name }` to clean up the local clone.
+
+Don't use for:
+
+- Editing files inside the worktree (that's a normal file edit, not a Tower call).
+- Anything in the main checkout — Tower's job is the *isolated* workspace.
+
+### ship — workflow execution
+
+Hands a task doc to a coding agent, persists what happened, lets you inspect / cancel / replay. Owns nothing about the workspace (Tower's job) or the planning (Dossier's job).
+
+Use proactively for:
+
+- *"Ship `<task doc>` against `<worktree>`."* → `ship.ship { workdir, docPath, repo, branch }`. V1 blocks until terminal; if the MCP request times out, the workflow continues durably — poll `ship.get_workflow_run { workflowRunId }`. See [phases/08-mcp-server.md § Risks](docs/features/ship-v1/phases/08-mcp-server.md) and the V2 async-mode discussion.
+- *"What ran on `<repo>` recently?"* / *"What's still in flight?"* → `ship.list_workflow_runs { repo?, status?, limit? }`.
+- *"What did `<wf id>` do?"* → `ship.get_workflow_run { workflowRunId }` (also accessible via the `ship://runs/{id}` resource).
+- An in-flight run needs to stop → `ship.cancel_workflow_run { workflowRunId }` (idempotent on terminal rows).
+
+Don't use for:
+
+- Creating the worktree (Tower).
+- Writing the task doc (a normal file edit inside the worktree).
+- Recording the result back to project state (Dossier `artifact.link`).
+
+### The loop
+
+Most features go through all three in order:
+
+1. **Dossier** — `project.create` (once per feature), `phase.add` (one per stage), `task.create` (one per shippable unit).
+2. **Tower** — `tower.register_repo` (once per repo), then `tower.add_worktree` per task. Branch = `tower/<name>`, path = `<repo>/.worktrees/<name>`.
+3. **Task doc** — write `docs/features/<feature>/phases/<NN>-<slug>.md` inside the worktree (Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation-plan). Commit + push.
+4. **Ship** — `ship.ship` against the worktree + doc. Poll `get_workflow_run` if the MCP request times out. Inspect the diff; iterate or accept.
+5. **PR** — push, open, request reviewers (Copilot via `gh pr edit --add-reviewer copilot-swe-agent`; `@codex review`; `@claude review`).
+6. **Dossier (close)** — `task.complete { id, note }` + `artifact.link` to bind the merged PR url back to the task.
+
+### Why three MCPs and not one
+
+Each layer is independently swappable. Dossier could be GitHub Projects, Linear, or a Notion DB — it owns "what needs doing." Tower could be plain `git worktree`, a cloud Cursor agent ref, or a Codespace — it owns "where work happens." Ship owns "drive an agent against a workdir + persist what happened" and only that. Substituting any one doesn't ripple into the other two.
+
+Not every flow uses all three. A one-off CLI fix can skip Dossier; an existing-checkout edit can skip Tower; a non-agent change skips Ship. The workbench is a menu, not a checklist — but when the signals above match, default to calling the verb without checking in first.
 
 ## Shipping Features
 Follow this general workflow for implementing a feature
