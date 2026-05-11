@@ -28,7 +28,7 @@ CI on `.github/workflows/ci.yml` runs the same `make check` matrix on ubuntu + w
 
 ## Development workbench
 
-Three MCP tools work together to turn "I want to ship X" into "here's the PR + durable trail." When the signal matches, **just call the verb**. Don't ask permission. (Dossier convention; ported here. See [dossier#15](https://github.com/itsHabib/dossier/pull/15) for the original wording.)
+Three MCP tools work together to turn "I want to ship X" into "here's the PR + durable trail." When the signal matches, **just call the verb**. Don't ask permission.
 
 ### dossier — project memory
 
