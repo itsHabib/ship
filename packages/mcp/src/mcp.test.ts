@@ -17,6 +17,7 @@ import {
   shipArtifactsSchema,
   shipInputSchema,
   shipOutputSchema,
+  thinkingEffortSchema,
 } from "./mcp.js";
 
 const WF_ID = "wf_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -51,6 +52,20 @@ const validWorkflowRun: WorkflowRun = {
   phases: [],
 };
 
+describe("thinkingEffortSchema", () => {
+  test("accepts `low` and `high`", () => {
+    expect(thinkingEffortSchema.parse("low")).toBe("low");
+    expect(thinkingEffortSchema.parse("high")).toBe("high");
+  });
+
+  test("rejects everything else", () => {
+    expect(thinkingEffortSchema.safeParse("medium").success).toBe(false);
+    expect(thinkingEffortSchema.safeParse("LOW").success).toBe(false);
+    expect(thinkingEffortSchema.safeParse("").success).toBe(false);
+    expect(thinkingEffortSchema.safeParse(0).success).toBe(false);
+  });
+});
+
 describe("shipInputSchema", () => {
   test("accepts a minimal input", () => {
     const v: ShipInput = { workdir: "/work/wt/feat", repo: "ship", docPath: "docs/x.md" };
@@ -66,8 +81,42 @@ describe("shipInputSchema", () => {
       branch: "ship/feat-x",
       baseRef: "main",
       model: "composer-2",
+      thinking: "high",
     };
     expect(shipInputSchema.parse(v)).toEqual(v);
+  });
+
+  test("accepts thinking=low and thinking=high; omits when undefined", () => {
+    for (const t of ["low", "high"] as const) {
+      const parsed = shipInputSchema.parse({
+        workdir: "/w",
+        repo: "ship",
+        docPath: "x",
+        thinking: t,
+      });
+      expect(parsed.thinking).toBe(t);
+    }
+    const noThinking = shipInputSchema.parse({ workdir: "/w", repo: "ship", docPath: "x" });
+    expect(noThinking.thinking).toBeUndefined();
+  });
+
+  test("rejects unknown thinking value", () => {
+    expect(
+      shipInputSchema.safeParse({
+        workdir: "/w",
+        repo: "ship",
+        docPath: "x",
+        thinking: "medium",
+      }).success,
+    ).toBe(false);
+    expect(
+      shipInputSchema.safeParse({
+        workdir: "/w",
+        repo: "ship",
+        docPath: "x",
+        thinking: "",
+      }).success,
+    ).toBe(false);
   });
 
   test("rejects unknown keys", () => {

@@ -3,13 +3,14 @@
  * `ShipService.ship` and prints the resulting `ShipOutput`.
  */
 
+import type { ThinkingEffort } from "@ship/mcp";
 import type { Command } from "commander";
 
 import { resolve as resolvePath } from "node:path";
 
 import type { ServiceFactory } from "../service.js";
 
-import { cliExit, rethrowCliExitOrMap } from "../errors.js";
+import { cliExit, InvalidArgumentError, rethrowCliExitOrMap } from "../errors.js";
 import { formatShipOutput } from "../format.js";
 
 interface ShipOpts {
@@ -19,8 +20,11 @@ interface ShipOpts {
   baseRef?: string;
   worktreeName?: string;
   model?: string;
+  thinking?: string;
   json: boolean;
 }
+
+const VALID_THINKING: ReadonlySet<string> = new Set(["low", "high"]);
 
 export function registerShipCommand(program: Command, factory: ServiceFactory): void {
   program
@@ -32,9 +36,14 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
     .option("--base-ref <ref>", "git ref the worktree branched from")
     .option("--worktree-name <name>", "worktree slug")
     .option("--model <id>", "Cursor model id (e.g. composer-2)")
+    .option(
+      "--thinking <effort>",
+      "override the Cursor `thinking` model param (low|high); default is the wiring-level high",
+    )
     .option("--json", "emit machine-readable JSON instead of pretty output")
     .action(async (docPath: string, rawOpts: ShipOpts) => {
       try {
+        const thinking = parseThinking(rawOpts.thinking);
         const out = await factory().ship({
           workdir: resolvePath(rawOpts.workdir),
           repo: rawOpts.repo,
@@ -43,6 +52,7 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
           ...(rawOpts.baseRef !== undefined && { baseRef: rawOpts.baseRef }),
           ...(rawOpts.worktreeName !== undefined && { worktreeName: rawOpts.worktreeName }),
           ...(rawOpts.model !== undefined && { model: rawOpts.model }),
+          ...(thinking !== undefined && { thinking }),
         });
         process.stdout.write(`${formatShipOutput(out, rawOpts.json)}\n`);
       } catch (err) {
@@ -51,4 +61,12 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
         cliExit(code);
       }
     });
+}
+
+function parseThinking(raw: string | undefined): ThinkingEffort | undefined {
+  if (raw === undefined) return undefined;
+  if (!VALID_THINKING.has(raw)) {
+    throw new InvalidArgumentError(`invalid --thinking: ${raw} (expected: low | high)`);
+  }
+  return raw as ThinkingEffort;
 }

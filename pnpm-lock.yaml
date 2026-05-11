@@ -84,6 +84,9 @@ importers:
       '@ship/cursor-runner':
         specifier: workspace:*
         version: link:../cursor-runner
+      '@ship/mcp':
+        specifier: workspace:*
+        version: link:../mcp
       '@ship/store':
         specifier: workspace:*
         version: link:../store

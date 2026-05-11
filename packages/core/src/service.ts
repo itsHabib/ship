@@ -195,9 +195,7 @@ async function executeAndFinalize(ctx: ShipContext, prep: PreparedRun): Promise<
     ctx.store.updatePhase(prep.phaseId, { status: "running", startedAt: ctx.clock() });
     ctx.store.updateWorkflowRunStatus(prep.workflowRunId, "running");
 
-    const model: ModelSelection = ctx.input.model
-      ? { id: ctx.input.model }
-      : ctx.config.defaultModel;
+    const model: ModelSelection = resolveModelSelection(ctx.input, ctx.config.defaultModel);
     ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
     const ndjsonRef = ndjson;
 
@@ -465,6 +463,58 @@ function assertTerminalCursorRunRef(
     return { ...ref, status: fallbackStatus };
   }
   return ref as CursorRunRef & { status: TerminalCursorRunStatus };
+}
+
+/**
+ * Resolves the per-run `ModelSelection` from `input` over the wiring
+ * default. Three cases:
+ *
+ * - `input.model` set → fresh selection rooted on that id; carries
+ *   `input.thinking` if provided, else has no `params` (caller
+ *   explicitly overrode the model so we don't graft the wiring's
+ *   `thinking` onto a possibly-incompatible model id).
+ * - `input.thinking` set, `input.model` not → wiring default's id +
+ *   params with `thinking` overwritten by the input value.
+ * - Neither set → wiring default verbatim.
+ */
+function resolveModelSelection(input: ShipInput, defaultModel: ModelSelection): ModelSelection {
+  if (input.model !== undefined) {
+    if (input.thinking !== undefined) {
+      return { id: input.model, params: [{ id: "thinking", value: input.thinking }] };
+    }
+    return { id: input.model };
+  }
+  if (input.thinking !== undefined) {
+    return {
+      id: defaultModel.id,
+      params: mergeThinkingParam(defaultModel.params, input.thinking),
+    };
+  }
+  return defaultModel;
+}
+
+/**
+ * Replaces or appends the `thinking` param without disturbing any
+ * other params the wiring already configured. The current wiring
+ * only sets `thinking`, but this keeps the override hygienic if more
+ * defaults grow here later.
+ */
+function mergeThinkingParam(
+  base: ModelSelection["params"],
+  value: string,
+): NonNullable<ModelSelection["params"]> {
+  const next: NonNullable<ModelSelection["params"]> = [];
+  let replaced = false;
+  for (const p of base ?? []) {
+    if (p.id === "thinking") {
+      next.push({ id: "thinking", value });
+      replaced = true;
+    } else {
+      next.push(p);
+    }
+  }
+  if (!replaced) next.push({ id: "thinking", value });
+  return next;
 }
 
 /**
