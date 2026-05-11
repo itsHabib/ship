@@ -216,10 +216,12 @@ function cancelRun(deps: WorkflowRunDeps, id: string): WorkflowRun {
 function clampLimit(limit: number | undefined): number {
   if (limit === undefined) return DEFAULT_LIMIT;
   if (!Number.isInteger(limit) || limit <= 0) {
-    throw new RangeError(`listRuns limit must be a positive integer, got ${String(limit)}`);
+    throw new RangeError(`limit must be a positive integer, got ${String(limit)}`);
   }
   if (limit > MAX_LIMIT) {
-    throw new RangeError(`listRuns limit ${String(limit)} exceeds maximum ${String(MAX_LIMIT)}`);
+    throw new RangeError(
+      `limit ${String(limit)} exceeds the maximum allowed value ${String(MAX_LIMIT)}`,
+    );
   }
   return limit;
 }

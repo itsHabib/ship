@@ -40,7 +40,9 @@ describe("isUserError", () => {
   });
 
   test("RangeError (e.g. listRuns limit cap exceeded) is a user error", () => {
-    expect(isUserError(new RangeError("limit 99999999 exceeds maximum 200"))).toBe(true);
+    expect(
+      isUserError(new RangeError("limit 99999999 exceeds the maximum allowed value 200")),
+    ).toBe(true);
   });
 
   test("generic Error / non-Error does not map to user error (falls to internal)", () => {

@@ -91,7 +91,7 @@ describe("ship binary — subprocess smoke", () => {
   test("list --limit 99999999 exits 1 (RangeError from store → user)", () => {
     const r = run(["list", "--limit", "99999999"]);
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/exceeds maximum/);
+    expect(r.stderr).toMatch(/exceeds the maximum allowed value/);
   });
 
   test("cancel garbage exits 1 (WorkflowRunNotFoundError → user)", () => {
