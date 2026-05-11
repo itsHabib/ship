@@ -39,7 +39,8 @@ async function main(): Promise<void> {
   const apiKey = process.env["CURSOR_API_KEY"];
   if (!useFake && (apiKey === undefined || apiKey === "")) {
     process.stderr.write("error: CURSOR_API_KEY is not set\n");
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   const dbPath = process.env["SHIP_DB_PATH"] ?? join(userConfigDir(), "ship", "state.db");
@@ -85,5 +86,5 @@ function userConfigDir(): string {
 
 main().catch((err: unknown) => {
   process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(2);
+  process.exitCode = 2;
 });

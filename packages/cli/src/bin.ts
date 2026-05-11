@@ -2,7 +2,7 @@
 /**
  * Ship CLI entrypoint. Wires the production service factory and
  * hands argv to the Commander program. Maps `CliExit` (and any
- * stray throw) to `process.exit(code)` so the shell sees the right
+ * stray throw) to `process.exitCode` so the shell sees the right
  * exit status.
  */
 
@@ -23,15 +23,17 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   if (err instanceof CliExit) {
-    process.exit(err.code);
+    process.exitCode = err.code;
+    return;
   }
   if (err instanceof CommanderError) {
     // `--help` and `--version` throw `CommanderError` with
     // `exitCode: 0`; pass the code through directly. Earlier versions
     // used `err.exitCode || 1` here, which silently flipped a
     // legitimate 0 to 1 because `0` is falsy.
-    process.exit(err.exitCode);
+    process.exitCode = err.exitCode;
+    return;
   }
   process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(2);
+  process.exitCode = 2;
 });

@@ -68,7 +68,8 @@ export function rethrowCliExitOrMap(err: unknown): CliExitCode {
 /**
  * Throwable sentinel used in place of `process.exit` so tests can
  * catch it instead of the test runner aborting. The CLI binary's
- * top-level handler swaps it for an actual `process.exit(code)`.
+ * top-level handler swaps it for `process.exitCode = code; return;`
+ * so async stderr writes can flush before the event loop exits.
  */
 export class CliExit extends Error {
   readonly code: number;
