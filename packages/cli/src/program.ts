@@ -1,7 +1,7 @@
 /**
  * Builds the Commander `program` and registers the four subcommands.
  * Pure factory — no side effects, no `process.exit`. The binary
- * (`bin.ts`) calls `parseAsync` and maps `CliExit` to `process.exit`.
+ * (`bin.ts`) calls `parseAsync` and maps `CliExit` to `process.exitCode`.
  * Tests construct the program with `program.exitOverride()` so
  * Commander throws instead of calling `process.exit`.
  */
