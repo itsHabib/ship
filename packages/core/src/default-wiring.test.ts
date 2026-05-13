@@ -4,6 +4,8 @@
  * exercised via the integration suite in `e2e/integration/`.
  */
 
+import type { ModelSelection } from "@ship/workflow";
+
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -107,7 +109,7 @@ describe("createDefaultShipService", () => {
 function setupHarness(opts?: {
   defaultThinking?: "low" | "high";
   defaultModelId?: string;
-  defaultModelParams?: [];
+  defaultModelParams?: NonNullable<ModelSelection["params"]>;
 }): {
   service: ReturnType<ReturnType<typeof createDefaultShipService>>;
   cursor: FakeCursorRunner;
