@@ -85,6 +85,8 @@ export function createHarness(opts: CreateHarnessOptions = {}): Harness {
 export interface CreateServiceFromHarnessOptions {
   /** Default model `core` falls back to when `input.model` is omitted. Default `"composer-2"`. */
   defaultModelId?: string;
+  /** Optional default Cursor `thinking` param for tests that mirror production wiring. */
+  defaultThinking?: "low" | "high";
   /** Absolute artifacts directory inside the in-memory `ShipFs`. Default `/state/runs`. */
   runsDir?: string;
   /** Optional override `CursorRunner`. Defaults to the harness's `FakeCursorRunner`. */
@@ -112,7 +114,12 @@ export function createServiceFromHarness(
   const fs = createMemoryShipFs();
   const config: ShipServiceConfig = {
     runsDir: opts.runsDir ?? DEFAULT_RUNS_DIR,
-    defaultModel: { id: opts.defaultModelId ?? "composer-2" },
+    defaultModel: {
+      id: opts.defaultModelId ?? "composer-2",
+      ...(opts.defaultThinking !== undefined && {
+        params: [{ id: "thinking", value: opts.defaultThinking }],
+      }),
+    },
   };
   const service = createShipService({
     store: h.store,

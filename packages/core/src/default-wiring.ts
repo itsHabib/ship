@@ -17,6 +17,7 @@
 
 import type { CursorRunner } from "@ship/cursor-runner";
 import type { ThinkingEffort } from "@ship/mcp";
+import type { ModelSelection } from "@ship/workflow";
 
 import { LocalCursorRunner } from "@ship/cursor-runner";
 import { createStore } from "@ship/store";
@@ -47,10 +48,17 @@ export interface DefaultShipServiceOpts {
   /** Default model id when `input.model` is omitted. */
   readonly defaultModelId?: string;
   /**
+   * Exact default model params. Use `[]` for a custom `defaultModelId`
+   * that does not support Cursor's `thinking` grid. When omitted,
+   * Ship pins `thinking` from `defaultThinking`.
+   */
+  readonly defaultModelParams?: NonNullable<ModelSelection["params"]>;
+  /**
    * Wiring-level override for the default Cursor `thinking` param.
    * Applies when a `ship` call omits `input.thinking`. Production
    * omits this and gets `"high"`; e2e harnesses pass `"low"` to
    * downshift cost / latency for the whole `ShipService` instance.
+   * Ignored when `defaultModelParams` is provided.
    */
   readonly defaultThinking?: ThinkingEffort;
   /**
@@ -87,7 +95,9 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     const store = createStore({ dbPath: opts.dbPath, clock });
     const cursor = opts.cursor ?? new LocalCursorRunner();
     const fs = createNodeShipFs();
-    const thinking = opts.defaultThinking ?? PRODUCTION_DEFAULT_THINKING;
+    const defaultModelParams = opts.defaultModelParams ?? [
+      { id: "thinking", value: opts.defaultThinking ?? PRODUCTION_DEFAULT_THINKING },
+    ];
     cached = createShipService({
       store,
       cursor,
@@ -97,7 +107,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
         runsDir: opts.runsDir,
         defaultModel: {
           id: opts.defaultModelId ?? "composer-2",
-          params: [{ id: "thinking", value: thinking }],
+          params: defaultModelParams,
         },
       },
     });

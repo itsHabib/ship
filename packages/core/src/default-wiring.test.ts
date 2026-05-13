@@ -83,9 +83,32 @@ describe("createDefaultShipService", () => {
       params: [{ id: "thinking", value: "low" }],
     });
   });
+
+  test("opts.defaultModelParams can omit params for custom default model ids", async () => {
+    const { service, cursor } = setupHarness({
+      defaultModelId: "custom-model-without-thinking-grid",
+      defaultModelParams: [],
+    });
+    cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const { workdir } = makeWorkdir();
+    await service.ship({ workdir, repo: "ship", docPath: "docs.md" });
+
+    expect(cursor.calls[0]?.input.model).toEqual({
+      id: "custom-model-without-thinking-grid",
+      params: [],
+    });
+  });
 });
 
-function setupHarness(opts?: { defaultThinking?: "low" | "high"; defaultModelId?: string }): {
+function setupHarness(opts?: {
+  defaultThinking?: "low" | "high";
+  defaultModelId?: string;
+  defaultModelParams?: [];
+}): {
   service: ReturnType<ReturnType<typeof createDefaultShipService>>;
   cursor: FakeCursorRunner;
 } {
@@ -97,6 +120,7 @@ function setupHarness(opts?: { defaultThinking?: "low" | "high"; defaultModelId?
     cursor,
     ...(opts?.defaultThinking !== undefined && { defaultThinking: opts.defaultThinking }),
     ...(opts?.defaultModelId !== undefined && { defaultModelId: opts.defaultModelId }),
+    ...(opts?.defaultModelParams !== undefined && { defaultModelParams: opts.defaultModelParams }),
   });
   return { service: factory(), cursor };
 }

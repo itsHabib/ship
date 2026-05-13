@@ -101,6 +101,8 @@ describe("ship ship", () => {
   });
 
   test("--thinking low passes through to ShipService and overrides the wiring default", async () => {
+    h.close();
+    h = await createCliHarness({ defaultThinking: "high" });
     h.harness.cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },

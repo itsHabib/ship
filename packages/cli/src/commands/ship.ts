@@ -6,6 +6,7 @@
 import type { ThinkingEffort } from "@ship/mcp";
 import type { Command } from "commander";
 
+import { thinkingEffortSchema } from "@ship/mcp";
 import { resolve as resolvePath } from "node:path";
 
 import type { ServiceFactory } from "../service.js";
@@ -24,8 +25,6 @@ interface ShipOpts {
   json: boolean;
 }
 
-const VALID_THINKING: ReadonlySet<string> = new Set(["low", "high"]);
-
 export function registerShipCommand(program: Command, factory: ServiceFactory): void {
   program
     .command("ship <docPath>")
@@ -36,10 +35,7 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
     .option("--base-ref <ref>", "git ref the worktree branched from")
     .option("--worktree-name <name>", "worktree slug")
     .option("--model <id>", "Cursor model id (e.g. composer-2)")
-    .option(
-      "--thinking <effort>",
-      "override the Cursor `thinking` model param (low|high); default is the wiring-level high",
-    )
+    .option("--thinking <effort>", "Cursor thinking effort (low|high); defaults to high")
     .option("--json", "emit machine-readable JSON instead of pretty output")
     .action(async (docPath: string, rawOpts: ShipOpts) => {
       try {
@@ -65,8 +61,9 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
 
 function parseThinking(raw: string | undefined): ThinkingEffort | undefined {
   if (raw === undefined) return undefined;
-  if (!VALID_THINKING.has(raw)) {
+  const result = thinkingEffortSchema.safeParse(raw);
+  if (!result.success) {
     throw new InvalidArgumentError(`invalid --thinking: ${raw} (expected: low | high)`);
   }
-  return raw as ThinkingEffort;
+  return result.data;
 }

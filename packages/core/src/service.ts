@@ -11,7 +11,7 @@ import type {
   CursorRunResult,
   McpServerConfig,
 } from "@ship/cursor-runner";
-import type { ShipInput, ShipOutput } from "@ship/mcp";
+import type { ShipInput, ShipOutput, ThinkingEffort } from "@ship/mcp";
 import type { ListRunsFilter, Store } from "@ship/store";
 import type {
   CursorRunRef,
@@ -478,19 +478,27 @@ function assertTerminalCursorRunRef(
  * - Neither set → wiring default verbatim.
  */
 function resolveModelSelection(input: ShipInput, defaultModel: ModelSelection): ModelSelection {
-  if (input.model !== undefined) {
-    if (input.thinking !== undefined) {
-      return { id: input.model, params: [{ id: "thinking", value: input.thinking }] };
-    }
-    return { id: input.model };
-  }
-  if (input.thinking !== undefined) {
+  const { model, thinking } = input;
+
+  if (model !== undefined) {
     return {
-      id: defaultModel.id,
-      params: mergeThinkingParam(defaultModel.params, input.thinking),
+      id: model,
+      ...(thinking !== undefined && { params: [thinkingParam(thinking)] }),
     };
   }
+
+  if (thinking !== undefined) {
+    return {
+      id: defaultModel.id,
+      params: mergeThinkingParam(defaultModel.params, thinking),
+    };
+  }
+
   return defaultModel;
+}
+
+function thinkingParam(value: ThinkingEffort): { id: "thinking"; value: ThinkingEffort } {
+  return { id: "thinking", value };
 }
 
 /**
@@ -501,19 +509,19 @@ function resolveModelSelection(input: ShipInput, defaultModel: ModelSelection): 
  */
 function mergeThinkingParam(
   base: ModelSelection["params"],
-  value: string,
+  value: ThinkingEffort,
 ): NonNullable<ModelSelection["params"]> {
   const next: NonNullable<ModelSelection["params"]> = [];
   let replaced = false;
   for (const p of base ?? []) {
     if (p.id === "thinking") {
-      next.push({ id: "thinking", value });
+      next.push(thinkingParam(value));
       replaced = true;
     } else {
       next.push(p);
     }
   }
-  if (!replaced) next.push({ id: "thinking", value });
+  if (!replaced) next.push(thinkingParam(value));
   return next;
 }
 
