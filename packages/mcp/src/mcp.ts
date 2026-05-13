@@ -22,6 +22,17 @@ const workflowRunIdSchema = z.string().regex(WORKFLOW_RUN_ID_PATTERN);
 // ship
 // =====================================================================
 
+/**
+ * Allowed values for the `thinking` Cursor model parameter. Narrow enum
+ * (not the broader `ModelSelection.params` array) — exposing one knob at
+ * a time keeps Ship's surface insulated from churn in Cursor's parameter
+ * grid. Per `cursor.com/docs/sdk/typescript`, omitting the param means
+ * "use whatever `isDefault` is set on the server today"; pinning the
+ * value at this layer prevents silent shifts across Cursor releases.
+ */
+export const thinkingEffortSchema = z.enum(["low", "high"]);
+export type ThinkingEffort = z.infer<typeof thinkingEffortSchema>;
+
 /** Input to the `ship` tool. Optional fields default in `core`. */
 export const shipInputSchema = z
   .object({
@@ -34,6 +45,12 @@ export const shipInputSchema = z
     baseRef: z.string().min(1).optional(),
     branch: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
+    /**
+     * Override for the Cursor `thinking` model parameter. Omitted →
+     * fall back to the wiring-level default (`"high"` in production).
+     * E2E suites pass `"low"` to downshift cost / latency.
+     */
+    thinking: thinkingEffortSchema.optional(),
   })
   .strict();
 export type ShipInput = z.infer<typeof shipInputSchema>;

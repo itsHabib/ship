@@ -11,7 +11,7 @@ import type {
   CursorRunResult,
   McpServerConfig,
 } from "@ship/cursor-runner";
-import type { ShipInput, ShipOutput } from "@ship/mcp";
+import type { ShipInput, ShipOutput, ThinkingEffort } from "@ship/mcp";
 import type { ListRunsFilter, Store } from "@ship/store";
 import type {
   CursorRunRef,
@@ -195,9 +195,7 @@ async function executeAndFinalize(ctx: ShipContext, prep: PreparedRun): Promise<
     ctx.store.updatePhase(prep.phaseId, { status: "running", startedAt: ctx.clock() });
     ctx.store.updateWorkflowRunStatus(prep.workflowRunId, "running");
 
-    const model: ModelSelection = ctx.input.model
-      ? { id: ctx.input.model }
-      : ctx.config.defaultModel;
+    const model: ModelSelection = resolveModelSelection(ctx.input, ctx.config.defaultModel);
     ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
     const ndjsonRef = ndjson;
 
@@ -465,6 +463,66 @@ function assertTerminalCursorRunRef(
     return { ...ref, status: fallbackStatus };
   }
   return ref as CursorRunRef & { status: TerminalCursorRunStatus };
+}
+
+/**
+ * Resolves the per-run `ModelSelection` from `input` over the wiring
+ * default. Three cases:
+ *
+ * - `input.model` set → fresh selection rooted on that id; carries
+ *   `input.thinking` if provided, else has no `params` (caller
+ *   explicitly overrode the model so we don't graft the wiring's
+ *   `thinking` onto a possibly-incompatible model id).
+ * - `input.thinking` set, `input.model` not → wiring default's id +
+ *   params with `thinking` overwritten by the input value.
+ * - Neither set → wiring default verbatim.
+ */
+function resolveModelSelection(input: ShipInput, defaultModel: ModelSelection): ModelSelection {
+  const { model, thinking } = input;
+
+  if (model !== undefined) {
+    return {
+      id: model,
+      ...(thinking !== undefined && { params: [thinkingParam(thinking)] }),
+    };
+  }
+
+  if (thinking !== undefined) {
+    return {
+      id: defaultModel.id,
+      params: mergeThinkingParam(defaultModel.params, thinking),
+    };
+  }
+
+  return defaultModel;
+}
+
+function thinkingParam(value: ThinkingEffort): { id: "thinking"; value: ThinkingEffort } {
+  return { id: "thinking", value };
+}
+
+/**
+ * Replaces or appends the `thinking` param without disturbing any
+ * other params the wiring already configured. The current wiring
+ * only sets `thinking`, but this keeps the override hygienic if more
+ * defaults grow here later.
+ */
+function mergeThinkingParam(
+  base: ModelSelection["params"],
+  value: ThinkingEffort,
+): NonNullable<ModelSelection["params"]> {
+  const next: NonNullable<ModelSelection["params"]> = [];
+  let replaced = false;
+  for (const p of base ?? []) {
+    if (p.id === "thinking") {
+      next.push(thinkingParam(value));
+      replaced = true;
+    } else {
+      next.push(p);
+    }
+  }
+  if (!replaced) next.push(thinkingParam(value));
+  return next;
 }
 
 /**

@@ -4,6 +4,12 @@
  * exercised via the integration suite in `e2e/integration/`.
  */
 
+import type { ModelSelection } from "@ship/workflow";
+
+import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { createDefaultShipService } from "./default-wiring.js";
@@ -47,4 +53,82 @@ describe("createDefaultShipService", () => {
     });
     expect(typeof factory).toBe("function");
   });
+
+  test("pins the wiring-level Cursor `thinking` param to `high` by default", async () => {
+    const { service, cursor } = setupHarness();
+    cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const { workdir } = makeWorkdir();
+    await service.ship({ workdir, repo: "ship", docPath: "docs.md" });
+
+    expect(cursor.calls[0]?.input.model).toEqual({
+      id: "composer-2",
+      params: [{ id: "thinking", value: "high" }],
+    });
+  });
+
+  test("opts.defaultThinking overrides the wiring-level `thinking` default", async () => {
+    const { service, cursor } = setupHarness({ defaultThinking: "low" });
+    cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const { workdir } = makeWorkdir();
+    await service.ship({ workdir, repo: "ship", docPath: "docs.md" });
+
+    expect(cursor.calls[0]?.input.model).toEqual({
+      id: "composer-2",
+      params: [{ id: "thinking", value: "low" }],
+    });
+  });
+
+  test("opts.defaultModelParams can omit params for custom default model ids", async () => {
+    const { service, cursor } = setupHarness({
+      defaultModelId: "custom-model-without-thinking-grid",
+      defaultModelParams: [],
+    });
+    cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const { workdir } = makeWorkdir();
+    await service.ship({ workdir, repo: "ship", docPath: "docs.md" });
+
+    expect(cursor.calls[0]?.input.model).toEqual({
+      id: "custom-model-without-thinking-grid",
+      params: [],
+    });
+  });
 });
+
+function setupHarness(opts?: {
+  defaultThinking?: "low" | "high";
+  defaultModelId?: string;
+  defaultModelParams?: NonNullable<ModelSelection["params"]>;
+}): {
+  service: ReturnType<ReturnType<typeof createDefaultShipService>>;
+  cursor: FakeCursorRunner;
+} {
+  const tmp = mkdtempSync(join(tmpdir(), "ship-wiring-thinking-"));
+  const cursor = new FakeCursorRunner();
+  const factory = createDefaultShipService({
+    dbPath: ":memory:",
+    runsDir: join(tmp, "runs"),
+    cursor,
+    ...(opts?.defaultThinking !== undefined && { defaultThinking: opts.defaultThinking }),
+    ...(opts?.defaultModelId !== undefined && { defaultModelId: opts.defaultModelId }),
+    ...(opts?.defaultModelParams !== undefined && { defaultModelParams: opts.defaultModelParams }),
+  });
+  return { service: factory(), cursor };
+}
+
+function makeWorkdir(): { workdir: string } {
+  const workdir = mkdtempSync(join(tmpdir(), "ship-wiring-workdir-"));
+  writeFileSync(join(workdir, "docs.md"), "# Task\n\nDo it.\n");
+  return { workdir };
+}

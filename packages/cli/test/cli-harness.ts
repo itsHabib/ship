@@ -32,9 +32,11 @@ export interface CliHarness {
   readonly close: () => void;
 }
 
-export async function createCliHarness(): Promise<CliHarness> {
+export async function createCliHarness(
+  opts: { defaultThinking?: "low" | "high" } = {},
+): Promise<CliHarness> {
   const harness = createHarness();
-  const bundle = createServiceFromHarness(harness);
+  const bundle = createServiceFromHarness(harness, opts);
   await bundle.fs.mkdir(WORKDIR, { recursive: true });
   await bundle.fs.writeFile(`${WORKDIR}/docs.md`, "# Task\n\nDo it.\n");
 

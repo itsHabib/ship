@@ -16,6 +16,8 @@
  */
 
 import type { CursorRunner } from "@ship/cursor-runner";
+import type { ThinkingEffort } from "@ship/mcp";
+import type { ModelSelection } from "@ship/workflow";
 
 import { LocalCursorRunner } from "@ship/cursor-runner";
 import { createStore } from "@ship/store";
@@ -27,6 +29,16 @@ import type { ShipService } from "./service.js";
 import { createNodeShipFs } from "./fs/index.js";
 import { createShipService } from "./service.js";
 
+/**
+ * Wiring-level fallback for the Cursor `thinking` parameter. Cursor's
+ * SDK has no documented default — the server resolves `params: []` to
+ * whichever `ModelVariant.isDefault` is set today, which can shift
+ * silently across releases. Pinning to `"high"` keeps Ship's real
+ * runs at the quality grid we measured against; tests / harnesses
+ * downshift to `"low"` via `defaultThinking`.
+ */
+const PRODUCTION_DEFAULT_THINKING: ThinkingEffort = "high";
+
 /** Construction-time options for the production-wired `ShipService`. */
 export interface DefaultShipServiceOpts {
   /** Absolute path to the SQLite db file, or `:memory:` for ephemeral. */
@@ -35,6 +47,20 @@ export interface DefaultShipServiceOpts {
   readonly runsDir: string;
   /** Default model id when `input.model` is omitted. */
   readonly defaultModelId?: string;
+  /**
+   * Exact default model params. Use `[]` for a custom `defaultModelId`
+   * that does not support Cursor's `thinking` grid. When omitted,
+   * Ship pins `thinking` from `defaultThinking`.
+   */
+  readonly defaultModelParams?: NonNullable<ModelSelection["params"]>;
+  /**
+   * Wiring-level override for the default Cursor `thinking` param.
+   * Applies when a `ship` call omits `input.thinking`. Production
+   * omits this and gets `"high"`; e2e harnesses pass `"low"` to
+   * downshift cost / latency for the whole `ShipService` instance.
+   * Ignored when `defaultModelParams` is provided.
+   */
+  readonly defaultThinking?: ThinkingEffort;
   /**
    * Cursor runner override. Production omits this and gets the real
    * `LocalCursorRunner`; integration tests pass a `FakeCursorRunner`
@@ -69,6 +95,9 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     const store = createStore({ dbPath: opts.dbPath, clock });
     const cursor = opts.cursor ?? new LocalCursorRunner();
     const fs = createNodeShipFs();
+    const defaultModelParams = opts.defaultModelParams ?? [
+      { id: "thinking", value: opts.defaultThinking ?? PRODUCTION_DEFAULT_THINKING },
+    ];
     cached = createShipService({
       store,
       cursor,
@@ -76,7 +105,10 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
       clock,
       config: {
         runsDir: opts.runsDir,
-        defaultModel: { id: opts.defaultModelId ?? "composer-2" },
+        defaultModel: {
+          id: opts.defaultModelId ?? "composer-2",
+          params: defaultModelParams,
+        },
       },
     });
     return cached;

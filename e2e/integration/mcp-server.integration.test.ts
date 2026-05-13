@@ -109,6 +109,16 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     });
     const shipped = parseToolJson(shippedRaw) as ShipOutput;
     expect(shipped.status).toBe("succeeded");
+    // Wiring-level default pins Cursor `thinking` to high. See
+    // `packages/core/src/default-wiring.ts`: no `params` ⇒ Cursor
+    // resolves to whichever `ModelVariant.isDefault` is set today,
+    // which can shift silently across releases. Assert end-to-end
+    // (subprocess + real-disk SQLite) that this default reaches the
+    // synthesized `CursorRunRef.model` the store persists.
+    expect(shipped.cursorRun.model).toEqual({
+      id: "composer-2",
+      params: [{ id: "thinking", value: "high" }],
+    });
 
     const got = await client.readResource({ uri: `ship://runs/${shipped.workflowRunId}` });
     const block = got.contents[0];
@@ -119,6 +129,24 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     const run = JSON.parse(block.text) as { id: string; status: string };
     expect(run.id).toBe(shipped.workflowRunId);
     expect(run.status).toBe("succeeded");
+  });
+
+  test("ship with thinking=low overrides the wiring default on a real run", async () => {
+    const shippedRaw = await client.callTool({
+      name: "ship",
+      arguments: {
+        workdir: cenv.workdir,
+        repo: "ship",
+        docPath: "docs.md",
+        thinking: "low",
+      },
+    });
+    const shipped = parseToolJson(shippedRaw) as ShipOutput;
+    expect(shipped.status).toBe("succeeded");
+    expect(shipped.cursorRun.model).toEqual({
+      id: "composer-2",
+      params: [{ id: "thinking", value: "low" }],
+    });
   });
 });
 

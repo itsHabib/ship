@@ -10,6 +10,7 @@
   "dependencies": {
     "@ship/core": "workspace:*",
     "@ship/cursor-runner": "workspace:*",
+    "@ship/mcp": "workspace:*",
     "@ship/store": "workspace:*",
     "@ship/workflow": "workspace:*",
     "commander": "^12.1.0"

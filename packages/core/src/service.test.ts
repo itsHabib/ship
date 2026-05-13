@@ -50,7 +50,10 @@ interface Harness {
   config: ShipServiceConfig;
 }
 
-async function createHarness(opts?: { defaultModelId?: string }): Promise<Harness> {
+async function createHarness(opts?: {
+  defaultModelId?: string;
+  defaultModelParams?: { id: string; value: string }[];
+}): Promise<Harness> {
   const fs = createMemoryShipFs();
   await fs.mkdir(RUNS_DIR, { recursive: true });
   await fs.mkdir(WORKDIR, { recursive: true });
@@ -63,7 +66,13 @@ async function createHarness(opts?: { defaultModelId?: string }): Promise<Harnes
   const cursor = new FakeCursorRunner();
   const config: ShipServiceConfig = {
     runsDir: RUNS_DIR,
-    defaultModel: { id: opts?.defaultModelId ?? "composer-2" },
+    defaultModel: {
+      id: opts?.defaultModelId ?? "composer-2",
+      // Mirror production wiring so tests assert against the same
+      // shape the real `ShipService` synthesizes. Tests can pass
+      // `defaultModelParams: []` to explicitly drop params.
+      params: opts?.defaultModelParams ?? [{ id: "thinking", value: "high" }],
+    },
   };
 
   const service = createShipService({
@@ -100,7 +109,10 @@ describe("createShipService — dep injection defaults", () => {
       clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
       config: {
         runsDir: RUNS_DIR,
-        defaultModel: { id: "composer-2" },
+        defaultModel: {
+          id: "composer-2",
+          params: [{ id: "thinking", value: "high" }],
+        },
         mcpServers: { foo: { type: "stdio" as const, command: "/bin/foo" } },
       },
       // `ids` deliberately omitted to hit the `deps.ids ?? {...}` fallback.
@@ -197,7 +209,7 @@ describe("ShipService.ship — happy path", () => {
     expect(out.summary).toBeUndefined();
   });
 
-  test("uses config.defaultModel when input.model is omitted", async () => {
+  test("uses config.defaultModel verbatim when input.model and input.thinking are both omitted", async () => {
     h.cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
@@ -209,10 +221,13 @@ describe("ShipService.ship — happy path", () => {
       docPath: "docs.md",
     });
 
-    expect(h.cursor.calls[0]?.input.model).toEqual({ id: "composer-2" });
+    expect(h.cursor.calls[0]?.input.model).toEqual({
+      id: "composer-2",
+      params: [{ id: "thinking", value: "high" }],
+    });
   });
 
-  test("uses input.model when provided", async () => {
+  test("uses input.model when provided; drops wiring params on a fresh model id", async () => {
     h.cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
@@ -225,7 +240,104 @@ describe("ShipService.ship — happy path", () => {
       model: "composer-2-thinking",
     });
 
+    // input.model overrides the wiring's id; the wiring's `params`
+    // are NOT grafted onto the override because the override model
+    // id might not accept the same parameter grid.
     expect(h.cursor.calls[0]?.input.model).toEqual({ id: "composer-2-thinking" });
+  });
+
+  test("input.thinking overrides the wiring default while keeping the wiring model id", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      thinking: "low",
+    });
+
+    expect(h.cursor.calls[0]?.input.model).toEqual({
+      id: "composer-2",
+      params: [{ id: "thinking", value: "low" }],
+    });
+  });
+
+  test("input.thinking + input.model combine: fresh id, params carrying only the override", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      model: "composer-2-thinking",
+      thinking: "high",
+    });
+
+    expect(h.cursor.calls[0]?.input.model).toEqual({
+      id: "composer-2-thinking",
+      params: [{ id: "thinking", value: "high" }],
+    });
+  });
+
+  test("input.thinking preserves other wiring params and overwrites the matching `thinking` entry", async () => {
+    const localHarness = await createHarness({
+      defaultModelParams: [
+        { id: "other", value: "keep-me" },
+        { id: "thinking", value: "high" },
+      ],
+    });
+    localHarness.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    await localHarness.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      thinking: "low",
+    });
+
+    expect(localHarness.cursor.calls[0]?.input.model).toEqual({
+      id: "composer-2",
+      params: [
+        { id: "other", value: "keep-me" },
+        { id: "thinking", value: "low" },
+      ],
+    });
+    localHarness.store.close();
+  });
+
+  test("input.thinking with no `thinking` param in the wiring default appends it", async () => {
+    const localHarness = await createHarness({
+      defaultModelParams: [{ id: "other", value: "keep-me" }],
+    });
+    localHarness.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    await localHarness.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      thinking: "high",
+    });
+
+    expect(localHarness.cursor.calls[0]?.input.model).toEqual({
+      id: "composer-2",
+      params: [
+        { id: "other", value: "keep-me" },
+        { id: "thinking", value: "high" },
+      ],
+    });
+    localHarness.store.close();
   });
 });
 
