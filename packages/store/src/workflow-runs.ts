@@ -129,7 +129,12 @@ export function createWorkflowRunOps(
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     markPhaseRunning: db.prepare(
-      `UPDATE phases SET status = 'running', started_at = ? WHERE id = ?`,
+      // Scoped by (id, workflow_run_id) — without the second clause, a
+      // mismatched pair could mutate a phase from one run while the
+      // workflow UPDATE below targeted a different run, leaving split
+      // state across two rows with no error raised.
+      `UPDATE phases SET status = 'running', started_at = ?
+         WHERE id = ? AND workflow_run_id = ?`,
     ),
     markRunRunning: db.prepare(
       `UPDATE workflow_runs SET status = 'running', updated_at = ? WHERE id = ?`,
@@ -230,7 +235,13 @@ function markRunStarted(
   startedAt: string,
 ): void {
   const txn = deps.db.transaction((): void => {
-    const phaseChanges = deps.stmts.markPhaseRunning.run(startedAt, phaseId).changes;
+    // Phase UPDATE is `(id, workflow_run_id)`-scoped, so a mismatched
+    // pair (phase from run B, workflow id from run A) hits the
+    // zero-rows path here and throws before the workflow UPDATE runs.
+    // `PhaseNotFoundError` is overloaded to mean "no phase with this
+    // id under this run" — the caller's contract is "pass the pair
+    // you got from `appendPhase`," and any other input is malformed.
+    const phaseChanges = deps.stmts.markPhaseRunning.run(startedAt, phaseId, workflowRunId).changes;
     if (phaseChanges === 0) {
       throw new PhaseNotFoundError(phaseId);
     }

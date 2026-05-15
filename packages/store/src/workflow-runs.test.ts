@@ -220,11 +220,13 @@ describe("workflow runs (via createStore)", () => {
     expect(store.getRun(input.id)?.status).toBe<WorkflowStatus>("pending");
   });
 
-  test("markRunStarted: unknown workflow id rolls back the phase write (atomic)", () => {
-    // Build a phase under a real run, then call markRunStarted with a
-    // bogus workflow id. The phase UPDATE applies first, then the
-    // workflow UPDATE 404s; the txn must roll the phase change back
-    // so the row stays at `pending` even though it momentarily flipped.
+  test("markRunStarted: mismatched (workflowRunId, phaseId) throws PhaseNotFoundError; no row mutates", () => {
+    // The phase UPDATE is scoped by `(id, workflow_run_id)`, so passing
+    // a real phase id alongside a bogus workflow id matches zero rows
+    // and throws before the workflow UPDATE ever runs. Without that
+    // scoping, the phase UPDATE would succeed (id matches) while the
+    // workflow UPDATE would 404, leaving split state — the failure mode
+    // codex flagged on cycle 3.
     const input = makeInput();
     store.createWorkflowRun(input);
     const phaseId = newPhaseId();
@@ -232,12 +234,34 @@ describe("workflow runs (via createStore)", () => {
 
     expect(() => {
       store.markRunStarted(newWorkflowRunId(), phaseId, currentNow);
-    }).toThrow(WorkflowRunNotFoundError);
-    // Phase row stays at `pending` thanks to the rollback — confirms
-    // the atomicity guarantee `ShipService.markRunStarted` relies on.
+    }).toThrow(PhaseNotFoundError);
     const row = store.getRun(input.id);
     expect(row?.phases[0]?.status).toBe("pending");
     expect(row?.phases[0]?.startedAt).toBeUndefined();
+  });
+
+  test("markRunStarted: cross-run pair (phase from B, workflow from A) refuses to corrupt either run", () => {
+    // Two real runs each with a phase; call markRunStarted with run A's
+    // id paired with run B's phase id. The `(id, workflow_run_id)`
+    // scoping on the phase UPDATE prevents the silent cross-run mutation
+    // the loose-id contract would otherwise allow.
+    const a = makeInput();
+    const b = makeInput();
+    store.createWorkflowRun(a);
+    store.createWorkflowRun(b);
+    const phaseA = newPhaseId();
+    const phaseB = newPhaseId();
+    store.appendPhase({ id: phaseA, inputJson: "{}", kind: "implement", workflowRunId: a.id });
+    store.appendPhase({ id: phaseB, inputJson: "{}", kind: "implement", workflowRunId: b.id });
+
+    expect(() => {
+      store.markRunStarted(a.id, phaseB, currentNow);
+    }).toThrow(PhaseNotFoundError);
+    // Neither run mutated.
+    expect(store.getRun(a.id)?.status).toBe<WorkflowStatus>("pending");
+    expect(store.getRun(b.id)?.status).toBe<WorkflowStatus>("pending");
+    expect(store.getRun(a.id)?.phases[0]?.status).toBe("pending");
+    expect(store.getRun(b.id)?.phases[0]?.status).toBe("pending");
   });
 
   test("cancelRun does NOT touch already-terminal phases on a non-terminal run", () => {
