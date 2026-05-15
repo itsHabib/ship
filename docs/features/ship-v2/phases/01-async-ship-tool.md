@@ -112,7 +112,7 @@ Specifically:
 
 ```ts
 const start = await prepareRun(ctx);                        // throws ⇒ no row, startShip rejects
-markRunStarted(ctx, start);                 // sync SQLite write; throws ⇒ no
+markRunStarted(ctx, start);                                 // sync SQLite write; throws ⇒ no
                                                             //   activeRuns entry to clean up
 activeRuns.set(start.workflowRunId, ...);                   // register controller AFTER transition
                                                             //   so a failed transition can't leak
