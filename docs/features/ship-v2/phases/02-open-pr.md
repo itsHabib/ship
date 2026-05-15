@@ -141,15 +141,19 @@ export interface OpenPrService {
 }
 ```
 
-`OpenPrServiceConfig` carries the same store + clock + logger surface `ShipServiceConfig` does, plus a new field:
+`OpenPrServiceConfig` carries the same store + clock + logger surface `ShipServiceConfig` does, plus the two new backend interfaces (see ED-6):
 
 ```ts
 export interface OpenPrServiceConfig extends BaseServiceConfig {
   readonly gh: GhClient;
+  readonly git: GitRemote;
+  // V1 ED-2 active-runs registry — shared with ShipService so
+  // cancel_workflow_run can signal an in-flight open_pr phase. See ED-8.
+  readonly activeRuns: ActiveRunsRegistry;
 }
 ```
 
-`GhClient` is a structural interface (ED-6) so unit tests substitute a `FakeGhClient`. The `mcp-server` package's default wiring constructs both `ShipService` and `OpenPrService` from the same store + clock, with `gh: createNodeGhClient()` plugged in.
+`GhClient` and `GitRemote` are structural interfaces so unit tests substitute thin fakes per ED-6. The `mcp-server` package's default wiring constructs both `ShipService` and `OpenPrService` from the same store + clock + active-runs map, with `gh: createNodeGhClient()` + `git: createNodeGitRemote()` plugged in.
 
 Two services rather than one is the point: `mcp-server` imports `OpenPrService` only for the `open_pr` tool handler; `cli` imports both. Code that only consumes `ShipService` doesn't pay typecheck cost for the open_pr surface.
 
@@ -162,43 +166,67 @@ The synchronous step ordering inside `OpenPrService.openPr(input)`:
    - Look up `WorkflowRun` (throws `WorkflowRunNotFoundError` on miss).
    - Confirm implement phase is `succeeded` (throws `ImplementPhaseNotSucceededError`).
    - Confirm workdir is a git checkout (throws `WorkdirNotGitError`).
-   - **Resolve the base branch**: `input.base` ?? `gh.readGitConfig(workdir, "branch.<head>.gh-merge-base")` ?? `gh.readDefaultBranch(workdir)` (resolves `origin/HEAD`). If all three return null/missing, throw a typed `BaseBranchUnresolvedError`. See ED-6 for the two new `GhClient` read methods.
-   - **Idempotency probe**: `gh.listPrsForBranch({ workdir, head, base, state: "open" })`. If a PR exists, **skip ahead** to step 5 with `alreadyExisted: true` (no push, no create — but we still write a `Phase` row in `succeeded` state, see step 5).
+   - **Resolve the base branch**: `input.base` ?? `git.readConfig({ workdir, key: "branch.<head>.gh-merge-base" })` ?? `git.readDefaultBranch({ workdir })`. If all three return null/throw, throw a typed `BaseBranchUnresolvedError`. See ED-6 for the new `GitRemote` read methods (split out from `GhClient` to keep git-side and gh-side ops on separate interfaces).
+   - **Idempotency probe**: `gh.listOpenPrsForBranch({ workdir, head, base })`. If a PR exists, **skip ahead** to step 5 with `alreadyExisted: true` (no push, no create — but we still write a `Phase` row in `succeeded` state, see step 5).
    - If no existing PR, confirm the branch has commits ahead of base (throws `EmptyBranchError`). This check runs *after* idempotency so a retry against a cherry-picked-into-base branch still resolves via the existing PR.
 2. **Persist row**: write `Phase{kind: "open_pr", status: "pending", workflowRunId, createdAt}`. Throws ⇒ same as above (no row), state is consistent because step 1 already returned the data we need.
 3. **Transition**: `phase.status: pending → running` via the existing `@ship/workflow` transition helper.
 4. **Mutate** (skipped on the idempotent path):
-   - **Push** (`gh.pushBranch` or `git push -u origin <branch>` — ED-6): wraps the push in a try/catch that maps `BranchPushFailedError` for known failure modes (force-needed, branch-protected).
+   - **Push** (`git.pushBranch({ workdir, branch })` — ED-6): wraps the push in a try/catch that maps `BranchPushFailedError` for known failure modes (force-needed, branch-protected).
    - **Open PR**: `gh.createPr({ workdir, base, head, title, body, draft })`. Returns `{ number, url }`. Errors map to `GhCreatePrFailedError` with the captured stderr.
 5. **Write `result.json` artifact** with the result shape (including `alreadyExisted`); transition `phase.status → succeeded`; return the output.
 
 Errors during step 4 transition `phase.status → failed` and persist the error in `result.json` (mirroring V1's `finalizeFailure` pattern). The MCP handler maps the typed error to `isError: true` with a structured message.
 
-### ED-3 — Schemas live in `@ship/mcp`
+### ED-3 — Zod schemas live in `@ship/mcp`; `OpenPrInput` / `OpenPrOutput` types live in `@ship/core`
 
-```ts
-export const openPrInputSchema = z.object({
-  workflowRunId: workflowRunIdSchema,
-  base: z.string().min(1).optional(),
-  title: z.string().min(1).optional(),
-  body: z.string().optional(),
-  draft: z.boolean().optional().default(false),
-}).strict();
+This is the one layering subtlety on the new surface. Phase 01 left it implicit; this phase pins it down so the impl PR can't accidentally introduce a `core → mcp` import.
 
-export const openPrOutputSchema = z.object({
-  workflowRunId: workflowRunIdSchema,
-  phaseId: phaseIdSchema,
-  prNumber: z.number().int().positive(),
-  prUrl: z.string().url(),
-  base: z.string().min(1),
-  head: z.string().min(1),
-  alreadyExisted: z.boolean(),
-  status: z.literal("succeeded"),
-}).strict();
+- **Types** (plain TS, no Zod) — defined in `@ship/core` next to `OpenPrService`:
 
-export type OpenPrInput = z.infer<typeof openPrInputSchema>;
-export type OpenPrOutput = z.infer<typeof openPrOutputSchema>;
-```
+  ```ts
+  // packages/core/src/open-pr.ts
+  export interface OpenPrInput { workflowRunId: WorkflowRunId; base?: string; title?: string; body?: string; draft?: boolean }
+  export interface OpenPrOutput { workflowRunId: WorkflowRunId; phaseId: PhaseId; prNumber: number; prUrl: string; base: string; head: string; alreadyExisted: boolean; status: "succeeded" }
+  ```
+
+- **Zod schemas** — defined in `@ship/mcp`, `z.infer<>` is asserted equal to the core types via a structural typecheck:
+
+  ```ts
+  // packages/mcp/src/open-pr.ts
+  import type { OpenPrInput, OpenPrOutput } from "@ship/core";
+
+  export const openPrInputSchema = z.object({
+    workflowRunId: workflowRunIdSchema,
+    base: z.string().min(1).optional(),
+    title: z.string().min(1).optional(),
+    body: z.string().optional(),
+    draft: z.boolean().optional().default(false),
+  }).strict();
+
+  export const openPrOutputSchema = z.object({
+    workflowRunId: workflowRunIdSchema,
+    phaseId: phaseIdSchema,
+    prNumber: z.number().int().positive(),
+    prUrl: z.string().url(),
+    base: z.string().min(1),
+    head: z.string().min(1),
+    alreadyExisted: z.boolean(),
+    status: z.literal("succeeded"),
+  }).strict();
+
+  // Compile-time assertion: the schema's inferred shape must match the
+  // core type. If they drift, this line fails to typecheck.
+  type _InputMatches = z.infer<typeof openPrInputSchema> extends OpenPrInput
+    ? OpenPrInput extends z.infer<typeof openPrInputSchema>
+      ? true
+      : false
+    : false;
+  ```
+
+The dependency arrow stays `mcp → core` (one direction). The MCP layer owns runtime validation; the core layer owns the shape contract. The compile-time `_InputMatches` (and a sibling for output) catches drift without runtime cost.
+
+A V1 follow-up should retro this rule onto `ShipStartOutput` (phase 01 ED-3 leaves the equivalent question implicit — current code happens to work because phase 01's types were never imported back into `@ship/core`, but the convention should be codified). Tracked as an out-of-scope follow-up, not gating this phase.
 
 Both schemas are `.strict()` so the wire payload can't leak unknown fields — same posture as phase 01's `shipStartOutputSchema`. The `status` narrowing to `z.literal("succeeded")` mirrors phase 01 ED-3: a future implementation that accidentally returns a different status fails Zod validation at the boundary, not silently downstream.
 
@@ -217,8 +245,10 @@ The `alreadyExisted` flag on the output distinguishes the two paths so the calle
 When `title` is omitted, the impl derives it as follows:
 
 1. Read the run's recorded `docPath` (relative to `workdir`). Open it.
-2. The first markdown H1 (`# ...`) is the candidate title. If the H1 already has a conventional-commit prefix (`feat:`, `fix:`, `chore:`, etc.), use it verbatim. Otherwise prepend `feat: ` as a default.
-3. If the doc has no H1 (rare, but possible for ad-hoc tasks), fall back to the branch name with `-` → space, e.g. `tower/open-pr-feature` → `feat: open pr feature`.
+2. The first markdown H1 (`# ...`) is the candidate title. If the H1 already has a conventional-commit prefix (`feat:`, `fix:`, `chore:`, etc.), use it verbatim. Otherwise infer the prefix from the branch name's first path segment (`fix/...` → `fix:`, `chore/...` → `chore:`, `docs/...` → `docs:`, `refactor/...` → `refactor:`, `test/...` → `test:`); fall back to `feat:` only when no segment matches a known CC prefix.
+3. If the doc has no H1 (rare, but possible for ad-hoc tasks), fall back to the branch name with `-` → space, applying the same CC-prefix inference above (e.g. `fix/empty-branch` → `fix: empty branch`).
+
+Branch-prefix inference is the lighter touch Claude's cycle-1 review flagged — hard-coding `feat:` for every non-CC H1 would misrepresent bug-fix branches as features in commit history. Caller override via `input.title` bypasses both derivations entirely.
 
 When `body` is omitted, the impl derives it from `git log --format='- %s' <base>..<head>` — one bullet per commit. The result is the standard "Summary / Changes" template with the commit list under "Changes." This matches the human-authored PR style used elsewhere in the repo.
 
@@ -226,22 +256,33 @@ Both derivations happen inside `OpenPrService` (testable unit), not the MCP laye
 
 A future phase could compose richer body content (e.g. diff stats, linked issues). Not in V1.
 
-### ED-6 — `GhClient` interface, `NodeGhClient` default impl
+### ED-6 — Split `GitRemote` + `GhClient` interfaces, with `NodeGitRemote` and `NodeGhClient` default impls
 
-`packages/core/src/gh.ts` (new file) defines:
+The shell-out surface naturally splits along the git/gh seam. Bundling them on one interface conflates two distinct backends — `pushBranch` and `readGitConfig` are local-git operations a future Octokit-based PR backend wouldn't touch, while `listPrsForBranch` and `createPr` are GitHub-API operations a local-git backend wouldn't touch. Splitting also gives unit tests two narrower fakes; the push-failure path can be exercised without wiring a full PR-mock.
+
+`packages/core/src/git-remote.ts` (new file):
+
+```ts
+export interface GitRemote {
+  // Reads the local `branch.<branch>.gh-merge-base` git config value.
+  // Returns `null` if unset. Used by base-branch resolution per ED-2.
+  readConfig(opts: { workdir: string; key: string }): Promise<string | null>;
+  // Returns the branch pointed at by `origin/HEAD`. On most CI checkouts
+  // `origin/HEAD` is set; on shallow clones via `actions/checkout`
+  // without `fetch-depth: 0` it isn't. Impl falls back to
+  // `git remote show origin` (one network round-trip) on the unset path
+  // and surfaces a typed `OriginHeadUnsetError` if both fail. See
+  // Risks → "origin/HEAD unset on CI checkouts."
+  readDefaultBranch(opts: { workdir: string }): Promise<string>;
+  pushBranch(opts: { workdir: string; branch: string }): Promise<void>;
+}
+```
+
+`packages/core/src/gh.ts` (new file):
 
 ```ts
 export interface GhClient {
-  // Reads the local `branch.<branch>.gh-merge-base` git config value.
-  // Returns `null` if unset. Used by base-branch resolution per ED-2 +
-  // the Tradeoffs row.
-  readGitConfig(opts: { workdir: string; key: string }): Promise<string | null>;
-  // Returns the symbolic ref pointed at by `origin/HEAD` (typically
-  // `main` or `master`). Throws if `origin/HEAD` is unset — caller
-  // surfaces `BaseBranchUnresolvedError`.
-  readDefaultBranch(opts: { workdir: string }): Promise<string>;
-  listPrsForBranch(opts: { workdir: string; head: string; base: string }): Promise<GhPrRef[]>;
-  pushBranch(opts: { workdir: string; branch: string }): Promise<void>;
+  listOpenPrsForBranch(opts: { workdir: string; head: string; base: string }): Promise<GhPrRef[]>;
   createPr(opts: { workdir: string; base: string; head: string; title: string; body: string; draft: boolean }): Promise<GhPrRef>;
 }
 
@@ -251,34 +292,47 @@ export interface GhPrRef {
 }
 ```
 
-`createNodeGhClient(): GhClient` lives next to the interface and shells out via `execa` (already a transitive dep through V1's runtime). Stderr is captured and threaded into the typed errors above.
+`listOpenPrsForBranch` bakes the `--state open` filter into the method name (so the filter is visible at every call site), since the only use of this method in V1 is the idempotency check from F5. If a future caller needs other states, add a separate verb rather than parameterizing — keeps each verb's intent unambiguous.
+
+Default impls `createNodeGitRemote(): GitRemote` and `createNodeGhClient(): GhClient` live next to their interfaces; both shell out via `execa`. Stderr is captured and threaded into the typed errors above.
 
 Op-by-op grounding in shell-out terms:
 
-- `readGitConfig` — `git -C <workdir> config --get <key>` (exit 0 → value; exit 1 + no stderr → null per git convention).
-- `readDefaultBranch` — `git -C <workdir> symbolic-ref --short refs/remotes/origin/HEAD` (returns `origin/main` etc. — strip the `origin/` prefix at the boundary).
-- `listPrsForBranch` — `gh pr list --head <head> --base <base> --state open --json number,url` parsed into the narrow `GhPrRef[]`.
-- `pushBranch` — `git -C <workdir> push -u origin <branch>` (not a `gh` call; same interface for one swappable boundary).
-- `createPr` — `gh pr create --base <base> --head <head> --title <title> --body <body> [--draft]` parsed for the resulting PR url + number.
+- `GitRemote.readConfig` — `git -C <workdir> config --get <key>` (exit 0 → value; exit 1 + no stderr → null per git convention).
+- `GitRemote.readDefaultBranch` — `git -C <workdir> symbolic-ref --short refs/remotes/origin/HEAD` first; on miss, `git -C <workdir> remote show origin` and parse the `HEAD branch:` line; on miss, throw `OriginHeadUnsetError`.
+- `GitRemote.pushBranch` — `git -C <workdir> push -u origin <branch>`.
+- `GhClient.listOpenPrsForBranch` — `gh pr list --head <head> --base <base> --state open --json number,url` parsed into the narrow `GhPrRef[]`.
+- `GhClient.createPr` — `gh pr create --base <base> --head <head> --title <title> --body <body> [--draft]` parsed for the resulting PR url + number.
 
 Two notes on the interface shape:
 
-- Everything takes an explicit `workdir`. Implementations that span multiple worktrees in one process (e.g. a future cloud runtime) need to scope each call; not having a `workdir` field would force shared cwd state.
-- `listPrsForBranch` returns `GhPrRef[]` rather than the raw `gh` JSON. The raw JSON has dozens of fields; we narrow to the two we care about and let typescript catch drift.
+- Every method takes an explicit `workdir`. Implementations that span multiple worktrees in one process (e.g. a future cloud runtime) need to scope each call; not having a `workdir` field would force shared cwd state.
+- `GhPrRef` narrows the raw `gh` JSON (dozens of fields) to the two we use. Typescript catches drift on the boundary.
+
+`OpenPrServiceConfig` carries both:
+
+```ts
+export interface OpenPrServiceConfig extends BaseServiceConfig {
+  readonly gh: GhClient;
+  readonly git: GitRemote;
+}
+```
 
 Substitution example for unit tests:
 
 ```ts
-const gh: GhClient = {
-  readGitConfig: vi.fn().mockResolvedValue(null),
+const git: GitRemote = {
+  readConfig: vi.fn().mockResolvedValue(null),
   readDefaultBranch: vi.fn().mockResolvedValue("main"),
-  listPrsForBranch: vi.fn().mockResolvedValue([]),
   pushBranch: vi.fn().mockResolvedValue(undefined),
+};
+const gh: GhClient = {
+  listOpenPrsForBranch: vi.fn().mockResolvedValue([]),
   createPr: vi.fn().mockResolvedValue({ number: 42, url: "https://github.com/.../pull/42" }),
 };
 ```
 
-Future work that's explicitly **not** this phase: a `OctokitGhClient` for environments where `gh` isn't installed. The interface is shaped to admit it (no shell-specific assumptions on the surface) — the git read methods would map to a local git binary or an in-memory ref store; the gh methods would map to Octokit calls.
+Future work explicitly **not** in this phase: an `OctokitGhClient` for environments where `gh` isn't installed. Swapping `GhClient` doesn't touch the `GitRemote` surface — the seam stays clean.
 
 ### ED-7 — CLI mirror: `ship open_pr <workflowRunId>`
 
@@ -286,21 +340,35 @@ Future work that's explicitly **not** this phase: a `OctokitGhClient` for enviro
 
 Error mapping reuses the existing CLI exit-code conventions: typed user errors (missing run, empty branch, gh missing) exit 1; unexpected throws exit 2. The mapping table lives in `packages/cli/src/errors.ts` next to V1's; one new entry per new typed error.
 
-### ED-8 — Cancellation: best-effort signal observation only
+### ED-8 — Cancellation: shared `activeRuns` registry, best-effort signal observation
 
-The V1 `cancel_workflow_run` tool already operates on a `workflowRunId`. When called against a run that currently has an `open_pr` phase in `running` state, the existing `activeRuns` map's `AbortController` is signalled. `OpenPrService.openPr` observes `controller.signal.aborted` at two checkpoints (after the precondition pass, after the push) and throws an `AbortError` mapped to a `cancelled` phase status if asserted. The window is sub-second so it's mostly not testable, but the observation cost is two `if` statements and the semantics stay uniform with V1.
+V1 phase 8 / phase 01 own the `activeRuns: ActiveRunsRegistry` — a `Map<workflowRunId, { controller: AbortController }>` populated by `ShipService` when a run starts and consumed by `cancel_workflow_run` to abort the in-flight cursor invocation. V2 phase 02 reuses the same registry rather than introducing a parallel one.
+
+How an `open_pr` run gets a controller into `activeRuns`:
+
+1. `OpenPrServiceConfig` (ED-1) holds a reference to the shared `activeRuns`.
+2. On `openPr` entry, before step 1's precondition pass, the service constructs a new `AbortController` and calls `activeRuns.set(workflowRunId, { controller })`. If an entry already exists (e.g. left over from a still-active `ship` run on the same workflowRunId — practically impossible at this point because precondition step 2 already verified implement is terminal, but defensively), the call rejects with a `WorkflowRunStillActiveError`. Otherwise we now have a registered controller.
+3. `openPr` observes `controller.signal.aborted` at two checkpoints: after precondition resolution (before the `git.pushBranch` call) and after the push (before `gh.createPr`). If aborted, the service transitions the phase to `cancelled`, writes `result.json` with the abort reason, and throws an `AbortError`.
+4. On normal completion (succeeded path) and failure paths, the service `activeRuns.delete(workflowRunId)` before returning, mirroring V1's `finalizeFailure` cleanup.
+
+`cancel_workflow_run` itself doesn't change. It already finds the controller in `activeRuns` and calls `controller.abort()`. Whether the in-flight phase is `implement` or `open_pr` is opaque to the cancel verb — it signals the registry and the active service consumes the signal.
+
+The observable window is sub-second so most cancels race the completion. Documenting the wiring is the load-bearing part here; the cancel behavior is uniform with V1, and the test fakes register on the same shared `ActiveRunsRegistry` from `@ship/test-harness` to keep the assertion surface identical.
 
 ## Validation plan
 
 ### Unit tests (Vitest)
 
-- `core`: `openPr` happy-path returns `{ ..., status: "succeeded", alreadyExisted: false }`; writes `Phase{kind: "open_pr", status: "succeeded"}` + `result.json`; calls `gh.pushBranch` + `gh.createPr` exactly once.
-- `core`: `openPr` idempotent path — when `listPrsForBranch` returns an existing PR, no push, no create, output has `alreadyExisted: true`, phase row written in `succeeded` directly.
+- `core`: `openPr` happy-path returns `{ ..., status: "succeeded", alreadyExisted: false }`; writes `Phase{kind: "open_pr", status: "succeeded"}` + `result.json`; calls `git.pushBranch` + `gh.createPr` exactly once.
+- `core`: `openPr` idempotent path — when `gh.listOpenPrsForBranch` returns an existing PR, no push, no create, output has `alreadyExisted: true`, phase row written in `succeeded` directly.
 - `core`: **idempotency-before-empty-branch ordering** — branch has zero commits ahead of base AND an existing open PR. Resolves to the existing PR (no `EmptyBranchError`). Mirrors a real cherry-pick scenario; ordering bug would silently regress F5.
 - `core`: preconditions — run-not-found, implement-phase-not-succeeded, workdir-not-git, empty-branch-without-existing-PR, base-branch-unresolved. Each throws the typed error, **no phase row created**.
-- `core`: **base-branch resolution order** — `input.base` wins over both reads; absent that, `branch.<head>.gh-merge-base` from `readGitConfig` wins over `readDefaultBranch`; absent all three, throw `BaseBranchUnresolvedError`. Three scenarios, one per fallback level.
+- `core`: **base-branch resolution order** — `input.base` wins over both `GitRemote` reads; absent that, `branch.<head>.gh-merge-base` from `git.readConfig` wins over `git.readDefaultBranch`; absent all three, throw `BaseBranchUnresolvedError`. Three scenarios, one per fallback level.
+- `core`: **`OriginHeadUnsetError` is recoverable via `readDefaultBranch` fallback** — `symbolic-ref` returns null, `remote show origin` returns "main"; service consumes the fallback and proceeds (covers the CI / shallow-clone path called out in Risks).
+- `core`: **cancellation registers + clears `activeRuns`** — abort signalled mid-precondition vs. mid-push transitions the phase to `cancelled` and removes the workflowRunId from `activeRuns`. Two scenarios, one per checkpoint.
 - `core`: failure paths — push fails, create fails. Phase row transitions `running → failed`; `result.json` contains the error message.
-- `core`: title/body derivation — H1 with conventional-commit prefix, H1 without, no H1 (branch-name fallback), explicit overrides bypass derivation.
+- `core`: title/body derivation — H1 with conventional-commit prefix; H1 without prefix but branch starts with `fix/` (inferred `fix:`); H1 without prefix on an unknown branch prefix (fallback `feat:`); no H1 (branch-name fallback with CC inference); explicit `input.title` override bypasses derivation entirely.
+- `mcp`: schema `_InputMatches` / `_OutputMatches` compile-time assertions confirm `z.infer<typeof schema>` equals the core type. A drift between schema and type breaks the typecheck step of `make check`.
 - `mcp`: `openPrInputSchema` parses valid + rejects invalid; `openPrOutputSchema` likewise. Strict-mode rejection of extraneous fields.
 - `mcp-server`: `open_pr` tool handler returns the success shape on a fake service; returns `isError: true` on a service rejection. Uses `InMemoryTransport` per V1 phase 8.
 - `cli`: `ship open_pr <id>` parses, calls service, prints expected text + `--json` shape; exit codes match the typed-error mapping table.
@@ -336,7 +404,8 @@ Optional. The existing `e2e/scenarios/` live harness gets one new scenario that 
 | Idempotent re-open hits a *closed* PR | We open a second PR; operator now has two PRs referencing the same branch | Working as designed — see F5. The `alreadyExisted` flag in the output covers only the open case; merged/closed PRs are historically valid. Surface the second PR's url as the new authoritative one. |
 | Cancel during open_pr | Sub-second window; cancel may arrive after the push but before the create | ED-8: best-effort observation; document the window as part of the cancel semantics. The state machine transitions to `cancelled` if the signal fires before the `gh.createPr` call returns; otherwise the run completes and the cancel is reported as "race condition, run already completed" through the existing `cancel_workflow_run` response shape. |
 | `result.json` artifact size unbounded if the gh stderr is verbose | Disk fills on a hostile or malformed gh output | Cap the captured stderr at 8 KB in `result.json` (matching the V1 cursor-run capture cap). Excess goes into the run's `events.ndjson` for debugging. |
-| Future SDK swap forces interface revisions | Hard to drop in `OctokitGhClient` later | `GhClient` is shaped around the three operations Ship actually performs (list / push / create) rather than the gh JSON shape. An octokit-backed impl maps the same three to API calls without changing the consumer surface. |
+| Future SDK swap forces interface revisions | Hard to drop in `OctokitGhClient` later | `GhClient` is shaped around the two GitHub-API ops Ship performs (list-open / create); `GitRemote` owns the local-git ops (read-config / read-default-branch / push). An Octokit impl swaps `GhClient` only and leaves `GitRemote` alone, which is what the split in ED-6 buys. |
+| `origin/HEAD` unset on CI checkouts | `actions/checkout` without `fetch-depth: 0` and shallow clones don't initialize `refs/remotes/origin/HEAD`. A direct `symbolic-ref --short refs/remotes/origin/HEAD` returns null and the impl would throw `BaseBranchUnresolvedError` even though `main`/`master` is reachable on the remote. | `GitRemote.readDefaultBranch` (ED-6) falls back to `git remote show origin` and parses the `HEAD branch:` line on the unset path — one network round-trip, ~200ms, runs once per service lifetime. Only throws `OriginHeadUnsetError` after both probes return null. CI authors can also pre-warm with `git remote set-head origin -a` in a setup step if they want the symref path. |
 | Two `open_pr` calls in parallel on the same branch | Race could create two PRs | Lock-acquisition pattern: the `phases` row is written in `pending` *before* the gh list/create, and the V1 transitional helper rejects a second `pending` open_pr phase on the same run. A second concurrent call lands in `running` after the first transitions, by which point the idempotency check sees the just-created PR. Test coverage explicitly forces this race. |
 
 ## Out of scope
@@ -345,7 +414,7 @@ Optional. The existing `e2e/scenarios/` live harness gets one new scenario that 
 - **Closing / merging PRs.** Different verb, different state machine. Phase 04+ territory.
 - **Multi-repo PR opening (e.g. companion PRs in dependent repos).** V1 spec.md § Non-goals already excludes cross-repo coordination; reaffirmed here.
 - **Drafting PRs from a partial implementation phase.** The precondition explicitly requires implement-phase `succeeded`. A future "open as draft from running implementation" is a separate phase if the dogfood need shows up.
-- **Cloud Cursor runtime.** Same as phase 01 — deferred. The `GhClient` interface doesn't care which runtime ran the implement phase; it operates on the recorded workdir + branch.
+- **Cloud Cursor runtime.** Same as phase 01 — deferred. Neither `GhClient` nor `GitRemote` cares which runtime ran the implement phase; both operate on the recorded workdir + branch.
 - **Streaming progress notifications.** Same answer as phase 01 — deferred until the MCP client surface supports it uniformly.
 - **Adding the `alreadyExisted: true` PR's author back to the run as the human-of-record.** Audit trail concerns. Punt to a future phase if needed.
 
@@ -354,7 +423,7 @@ Optional. The existing `e2e/scenarios/` live harness gets one new scenario that 
 1. **Should `open_pr` automatically request reviewers per repo convention?** Default: no — the operator workflow (CLAUDE.md § Shipping Features) handles reviewer requests as a separate explicit step. Auto-requesting would couple this phase to the reviewer convention, which evolves. If a future phase 03 (review-cycle) wants this, it can call `gh pr edit --add-reviewer` after `open_pr` returns.
 2. **Should the input accept an optional `reviewers` list?** Tempting, but it's the same coupling as (1) wearing a different hat. Defer. If demand surfaces in dogfood, add it as a backward-compatible optional field — strict mode admits an additive field through a schema revision.
 3. **What about `assignees` / `labels` / `milestone`?** Same answer — optional fields are cheap to add later. None in V1.
-4. **Should the impl support repos hosted outside GitHub (e.g. GitLab)?** Out of scope for V1 — `GhClient` is GitHub-specific by name. A future `ForgeClient` abstraction could lift this. Defer until the second forge actually shows up.
+4. **Should the impl support repos hosted outside GitHub (e.g. GitLab)?** Out of scope for V1 — `GhClient` is GitHub-specific by name (and `GitRemote`, while git-flavored, currently assumes GitHub-style `origin` semantics). A future `ForgeClient` abstraction could lift this; defer until the second forge actually shows up.
 5. **Should `open_pr` write a top-level `WorkflowRun.prUrl` field for convenience?** Default: no — the `Phase` row's `result.json` carries it. Surfacing it on the top-level row duplicates state and risks drift. Callers read it from the phase. Revisit if the duplication friction becomes real.
 
 ## Implementation plan
@@ -362,12 +431,14 @@ Optional. The existing `e2e/scenarios/` live harness gets one new scenario that 
 After this doc is reviewed and merged:
 
 1. **Extend `Phase.kind` enum in `@ship/workflow`.** Add `"open_pr"` to the zod schema. Add a `PhaseOpenPrResult` shape for `result.json` (number, url, base, head, alreadyExisted, error?). Update the type re-exports.
-2. **Add `openPrInputSchema` + `openPrOutputSchema` to `@ship/mcp`.** Plus `OpenPrInput` / `OpenPrOutput` type exports. Strict mode on both. Mirror the layout of `shipInputSchema` / `shipStartOutputSchema`.
-3. **Add `GhClient` interface + `NodeGhClient` impl in `@ship/core`.** New file `packages/core/src/gh.ts`. The impl shells out via the existing `execa`-style helper. Preflight check (gh installed + authed) lazily on first call. Typed errors (`GhCliMissingError`, `GhAuthError`, `BranchPushFailedError`, `GhCreatePrFailedError`).
-4. **Add typed pre-condition errors in `@ship/core`.** `ImplementPhaseNotSucceededError`, `WorkdirNotGitError`, `EmptyBranchError`. Reuse `WorkflowRunNotFoundError` from V1.
-5. **Add `OpenPrService` interface + `createOpenPrService` impl in `@ship/core`.** New file `packages/core/src/open-pr.ts`. State-machine ordering per ED-2. Title/body derivation per ED-5 (helper functions, unit-tested).
-6. **Wire the MCP tool handler in `@ship/mcp-server`.** New file `packages/mcp-server/src/tools/open-pr.ts`. Mirror the V1 tool-handler pattern from `ship.ts`. Register in `buildServer()`.
-7. **Add the CLI subcommand in `@ship/cli`.** New file `packages/cli/src/commands/open-pr.ts`. Add the typed-error mapping rows to `packages/cli/src/errors.ts`.
-8. **Tests.** Unit tests for `openPr`, the `GhClient` shell-out boundary (with a fake `execa`), the schema, the MCP handler, and the CLI command. One new integration test under `e2e/integration/` using the gh-stub binary (per Validation).
-9. **Wire default service construction.** Extend `packages/core/src/default-wiring.ts` to construct `OpenPrService` alongside `ShipService` so `mcp-server` and `cli` both pick it up via the existing factory pattern.
-10. **Land as one PR.** Estimated weighted budget ~285 LOC — single PR per the V1 sizing rule. If the diff comes in over 500 weighted LOC, the natural split is "core + workflow schema" / "MCP + CLI surfaces + tests."
+2. **Add the `OpenPrInput` / `OpenPrOutput` interfaces to `@ship/core`** (per ED-3). Plain TS, no Zod yet.
+3. **Add `openPrInputSchema` + `openPrOutputSchema` to `@ship/mcp`** with the structural assertions against the core types per ED-3. Strict mode on both.
+4. **Add `GitRemote` interface + `createNodeGitRemote` impl in `@ship/core`** — new file `packages/core/src/git-remote.ts`. Three methods (`readConfig`, `readDefaultBranch`, `pushBranch`); `readDefaultBranch` includes the `git remote show origin` fallback for CI checkouts per Risks. Typed errors: `OriginHeadUnsetError`, `BranchPushFailedError`.
+5. **Add `GhClient` interface + `createNodeGhClient` impl in `@ship/core`** — new file `packages/core/src/gh.ts`. Two methods (`listOpenPrsForBranch`, `createPr`). Preflight check (gh installed + authed) lazily on first call. Typed errors: `GhCliMissingError`, `GhAuthError`, `GhCreatePrFailedError`.
+6. **Add typed pre-condition errors in `@ship/core`.** `ImplementPhaseNotSucceededError`, `WorkdirNotGitError`, `EmptyBranchError`, `BaseBranchUnresolvedError`. Reuse `WorkflowRunNotFoundError` from V1.
+7. **Add `OpenPrService` interface + `createOpenPrService` impl in `@ship/core`** — new file `packages/core/src/open-pr.ts`. State-machine ordering per ED-2 (including the idempotency-before-empty-branch sequence and the shared `activeRuns` registry per ED-8). Title/body derivation per ED-5 (helper functions, unit-tested with branch-prefix CC inference).
+8. **Wire the MCP tool handler in `@ship/mcp-server`.** New file `packages/mcp-server/src/tools/open-pr.ts`. Mirror the V1 tool-handler pattern from `ship.ts`. Register in `buildServer()`.
+9. **Add the CLI subcommand in `@ship/cli`.** New file `packages/cli/src/commands/open-pr.ts`. Add the typed-error mapping rows to `packages/cli/src/errors.ts`.
+10. **Tests.** Unit tests for `openPr`, the two shell-out boundaries (with a fake `execa`), the schema (incl. the compile-time `_InputMatches` / `_OutputMatches` assertions), the MCP handler, and the CLI command. One new integration test under `e2e/integration/` using the gh-stub binary (per Validation).
+11. **Wire default service construction.** Extend `packages/core/src/default-wiring.ts` to construct `OpenPrService` alongside `ShipService` (sharing the `activeRuns` registry) so `mcp-server` and `cli` both pick it up via the existing factory pattern.
+12. **Land as one PR.** Estimated weighted budget ~320 LOC (small bump from the original ~285 to absorb `GitRemote` + the `activeRuns` plumbing) — single PR per the V1 sizing rule. If the diff comes in over 500 weighted LOC, the natural split is "core + workflow schema + GitRemote" / "GhClient + OpenPrService + MCP/CLI/tests."
