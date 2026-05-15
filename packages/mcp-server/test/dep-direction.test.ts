@@ -21,8 +21,12 @@ import { describe, expect, test } from "vitest";
 // `require("...")`, `export ... from "..."` — including subpath
 // specifiers like `@ship/cli/src/foo` or `@ship/cli/test/...`. Bare
 // keyword references in comments don't match (no quoted module
-// specifier follows).
+// specifier follows). The disjunction is intrinsic to the four import
+// forms; splitting it across regexes loses the single-pass property
+// the test relies on. Disabling sonar's 21-vs-20 threshold on the
+// matching line below.
 const CLI_IMPORT_PATTERN =
+  // eslint-disable-next-line sonarjs/regex-complexity
   /\b(?:from\s+|import\s*\(\s*|import\s+|require\s*\(\s*)["']@ship\/cli(?:\/[^"']+)?["']/;
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));

@@ -78,7 +78,7 @@ describe("ship tool", () => {
 
   test("tools/list returns the four tools (ship registered correctly)", async () => {
     const list = await h.client.listTools();
-    const names = list.tools.map((t) => t.name).sort();
+    const names = list.tools.map((t) => t.name).sort((a, b) => a.localeCompare(b));
     expect(names).toEqual([
       "cancel_workflow_run",
       "get_workflow_run",

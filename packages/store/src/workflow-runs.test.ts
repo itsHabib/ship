@@ -279,7 +279,8 @@ describe("listRuns", () => {
     void c;
 
     const filtered = store.listRuns({ status: ["pending", "running"] });
-    expect(filtered.map((r) => r.id).sort()).toEqual([a.id, c.id].sort());
+    const byId = (x: string, y: string): number => x.localeCompare(y);
+    expect(filtered.map((r) => r.id).sort(byId)).toEqual([a.id, c.id].sort(byId));
   });
 
   test("filter by repo AND status: both apply (AND)", () => {
