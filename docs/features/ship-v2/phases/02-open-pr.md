@@ -78,14 +78,15 @@ The `cancelled` transition fires when the run is cancelled via `cancel_workflow_
 
 ### F3 — Preconditions on the workflow run
 
-`openPr` rejects with a typed error when:
+`openPr` rejects with a typed error when, **in this order**:
 
-- `workflowRunId` doesn't resolve to a `WorkflowRun` row → `WorkflowRunNotFoundError` (V1 type, reused).
-- The run's implement phase is not `succeeded` → `ImplementPhaseNotSucceededError` (new). Opening a PR for a run whose implementation failed or was cancelled doesn't make sense in V1 — the branch may have partial commits, or no commits at all. If a later phase needs this (e.g. "open a PR even on partial implementation for a human to inspect"), it composes via a new flag rather than relaxing the precondition here.
-- The run's recorded `workdir` is not a git checkout → `WorkdirNotGitError` (new). Cheap pre-flight; surfaces before any push attempt.
-- The branch recorded on the run has no commits ahead of the resolved base → `EmptyBranchError` (new). Matches what `gh pr create` would do on its own, but we surface a typed error before the shell-out so the caller distinguishes "nothing to PR" from "gh failed."
+1. `workflowRunId` doesn't resolve to a `WorkflowRun` row → `WorkflowRunNotFoundError` (V1 type, reused).
+2. The run's implement phase is not `succeeded` → `ImplementPhaseNotSucceededError` (new). Opening a PR for a run whose implementation failed or was cancelled doesn't make sense in V1 — the branch may have partial commits, or no commits at all. If a later phase needs this (e.g. "open a PR even on partial implementation for a human to inspect"), it composes via a new flag rather than relaxing the precondition here.
+3. The run's recorded `workdir` is not a git checkout → `WorkdirNotGitError` (new). Cheap pre-flight; surfaces before any push attempt.
+4. **Idempotency check runs here** (before the next two errors) — if an open PR already exists for the head/base pair, return it (see F5). Ordering matters: a run whose branch became empty against base (e.g. commits cherry-picked into base) but already has an open PR must still resolve via the idempotent path, not throw `EmptyBranchError`. The check is one `gh pr list` call against the branch + resolved base.
+5. The branch recorded on the run has no commits ahead of the resolved base **and** no existing open PR was found in step 4 → `EmptyBranchError` (new). Matches what `gh pr create` would do on its own, but we surface a typed error before the shell-out so the caller distinguishes "nothing to PR" from "gh failed."
 
-Preconditions are checked **before** the `Phase` row is created (per ED-2). A failed precondition produces no phase row, mirroring V1's "pre-row validation throws cleanly with no row created" rule from phase 01 § F1.
+Preconditions are checked **before** the `Phase` row is created (per ED-2). A failed precondition (steps 1, 2, 3, or 5) produces no phase row, mirroring V1's "pre-row validation throws cleanly with no row created" rule from phase 01 § F1. The idempotency hit in step 4 *does* create a phase row in `succeeded` directly — it's a successful resolution, not a precondition failure.
 
 ### F4 — Sync MCP tool: no async return contract
 
@@ -101,9 +102,11 @@ If a future change makes `open_pr` substantially slower (e.g. multi-repo coordin
 
 If the run's branch already has an **open** PR against the resolved base, `openPr` returns its `prNumber` / `prUrl` with `alreadyExisted: true` and writes a `Phase` row in `succeeded` state. No second PR is opened. This makes the tool safe to retry from an agent that lost track of whether it already called.
 
+The idempotency check fires **before** the empty-branch precondition (F3 step 4 vs step 5). This matters in a real edge case: an agent calls `open_pr`, the PR is opened, and then someone cherry-picks the branch's commits into base. The branch is now "empty" against base in the `git log` sense, but the PR is still open. A second `open_pr` retry must return the existing PR, not throw `EmptyBranchError`. Inverting the order would silently violate the retry-safe contract.
+
 A **closed** or **merged** PR for the same branch does not block opening a new one — that's the V1 behavior of `gh pr create` and it matches operator expectations (re-running `open_pr` after a merged PR opens a fresh PR for new commits on the same branch). The `alreadyExisted` flag covers the "open" case only.
 
-Detection uses `gh pr list --head <branch> --base <base> --state open --json number,url --jq '.[0]'`. The detection is one extra `gh` invocation before the create call; the latency is invisible compared to the create itself.
+Detection uses `gh pr list --head <branch> --base <base> --state open --json number,url --jq '.[0]'`. The detection is one extra `gh` invocation; the latency is invisible compared to the create itself.
 
 ## Non-functional requirements
 
@@ -124,7 +127,7 @@ Detection uses `gh pr list --head <branch> --base <base> --state open --json num
 | Idempotency on existing-open PR | Return the existing PR with `alreadyExisted: true` | Fail with `PrAlreadyExistsError` | Retry-safety for agent callers that lost the prior result (e.g. session reset mid-flight). Failing would push correctness onto every caller; idempotency is cheap (one extra `gh pr list` call). |
 | Cancellation | Best-effort — observe `controller.signal`, but the window is sub-second | Make `open_pr` formally non-cancellable | The signal-observation cost is one `if (signal.aborted) throw` between the push and the create. Practically untestable, but documenting the intent ("we observe cancel, but don't promise to hit a particular point") keeps the cancel contract uniform with V1. |
 | CLI mirror | Yes — `ship open_pr <workflowRunId>` | MCP-only | Human dogfood. Operators driving `ship` from the CLI today land on the same "I need a PR for this branch" step; the CLI mirror saves a `gh pr create` invocation. Per spec.md § ED-2, the CLI mirror is "opportunistic" — open_pr is one of the cases where it pays off. |
-| Base branch resolution | Default to `origin/HEAD` (the repo's default branch) | Hard-code `main` | Some repos use `master`, `trunk`, etc. `origin/HEAD` is what `gh pr create` itself defaults to when `--base` is omitted; matching that contract is principle-of-least-surprise. Caller can override via `base` input. |
+| Base branch resolution | Mirror `gh pr create`'s own resolution order: `input.base` → `branch.<current>.gh-merge-base` (git config) → `origin/HEAD` | Hard-code `main`, or skip the `gh-merge-base` step | `gh pr create` checks the `branch.<name>.gh-merge-base` config before falling back to the repo's default branch (used for release-branch workflows where `main` is the wrong target). Skipping that step would silently retarget PRs in repos that intentionally configured a non-default merge base. Matching gh's full resolution order is the principle-of-least-surprise contract for operators who already use `gh` directly. Caller can override via `base` input. |
 
 ## Engineering decisions
 
@@ -154,15 +157,22 @@ Two services rather than one is the point: `mcp-server` imports `OpenPrService` 
 
 The synchronous step ordering inside `OpenPrService.openPr(input)`:
 
-1. **Pre-row validation** (no DB write yet): `parse(input)` against `openPrInputSchema`; look up `WorkflowRun`; confirm implement phase is `succeeded`; confirm workdir is a git checkout; resolve the base branch (input override → `origin/HEAD` → reject). Throws ⇒ no `Phase` row created.
-2. **Persist row**: write `Phase{kind: "open_pr", status: "pending", workflowRunId, createdAt}`. Throws ⇒ same as above.
+1. **Pre-row validation** (no DB write yet) in F3's documented order:
+   - `parse(input)` against `openPrInputSchema`.
+   - Look up `WorkflowRun` (throws `WorkflowRunNotFoundError` on miss).
+   - Confirm implement phase is `succeeded` (throws `ImplementPhaseNotSucceededError`).
+   - Confirm workdir is a git checkout (throws `WorkdirNotGitError`).
+   - **Resolve the base branch**: `input.base` ?? `gh.readGitConfig(workdir, "branch.<head>.gh-merge-base")` ?? `gh.readDefaultBranch(workdir)` (resolves `origin/HEAD`). If all three return null/missing, throw a typed `BaseBranchUnresolvedError`. See ED-6 for the two new `GhClient` read methods.
+   - **Idempotency probe**: `gh.listPrsForBranch({ workdir, head, base, state: "open" })`. If a PR exists, **skip ahead** to step 5 with `alreadyExisted: true` (no push, no create — but we still write a `Phase` row in `succeeded` state, see step 5).
+   - If no existing PR, confirm the branch has commits ahead of base (throws `EmptyBranchError`). This check runs *after* idempotency so a retry against a cherry-picked-into-base branch still resolves via the existing PR.
+2. **Persist row**: write `Phase{kind: "open_pr", status: "pending", workflowRunId, createdAt}`. Throws ⇒ same as above (no row), state is consistent because step 1 already returned the data we need.
 3. **Transition**: `phase.status: pending → running` via the existing `@ship/workflow` transition helper.
-4. **Idempotency check**: `gh.listPrsForBranch({ head, base, state: "open" })`. If a PR exists, skip steps 5–6 and jump to step 7 with `alreadyExisted: true`.
-5. **Push** (`gh.pushBranch` or `git push -u origin <branch>` — ED-6): wraps the push in a try/catch that maps `BranchPushFailedError` for known failure modes (force-needed, branch-protected).
-6. **Open PR**: `gh.createPr({ base, head, title, body, draft })`. Returns `{ number, url }`. Errors map to `GhCreatePrFailedError` with the captured stderr.
-7. **Write `result.json` artifact** with the result shape; transition `phase.status → succeeded`; return the output.
+4. **Mutate** (skipped on the idempotent path):
+   - **Push** (`gh.pushBranch` or `git push -u origin <branch>` — ED-6): wraps the push in a try/catch that maps `BranchPushFailedError` for known failure modes (force-needed, branch-protected).
+   - **Open PR**: `gh.createPr({ workdir, base, head, title, body, draft })`. Returns `{ number, url }`. Errors map to `GhCreatePrFailedError` with the captured stderr.
+5. **Write `result.json` artifact** with the result shape (including `alreadyExisted`); transition `phase.status → succeeded`; return the output.
 
-Errors at step 5 or 6 transition `phase.status → failed` and persist the error in `result.json` (mirroring V1's `finalizeFailure` pattern). The MCP handler maps the typed error to `isError: true` with a structured message.
+Errors during step 4 transition `phase.status → failed` and persist the error in `result.json` (mirroring V1's `finalizeFailure` pattern). The MCP handler maps the typed error to `isError: true` with a structured message.
 
 ### ED-3 — Schemas live in `@ship/mcp`
 
@@ -222,7 +232,15 @@ A future phase could compose richer body content (e.g. diff stats, linked issues
 
 ```ts
 export interface GhClient {
-  listPrsForBranch(opts: { head: string; base: string }): Promise<GhPrRef[]>;
+  // Reads the local `branch.<branch>.gh-merge-base` git config value.
+  // Returns `null` if unset. Used by base-branch resolution per ED-2 +
+  // the Tradeoffs row.
+  readGitConfig(opts: { workdir: string; key: string }): Promise<string | null>;
+  // Returns the symbolic ref pointed at by `origin/HEAD` (typically
+  // `main` or `master`). Throws if `origin/HEAD` is unset — caller
+  // surfaces `BaseBranchUnresolvedError`.
+  readDefaultBranch(opts: { workdir: string }): Promise<string>;
+  listPrsForBranch(opts: { workdir: string; head: string; base: string }): Promise<GhPrRef[]>;
   pushBranch(opts: { workdir: string; branch: string }): Promise<void>;
   createPr(opts: { workdir: string; base: string; head: string; title: string; body: string; draft: boolean }): Promise<GhPrRef>;
 }
@@ -235,22 +253,32 @@ export interface GhPrRef {
 
 `createNodeGhClient(): GhClient` lives next to the interface and shells out via `execa` (already a transitive dep through V1's runtime). Stderr is captured and threaded into the typed errors above.
 
-Two services-of-Ghclient cases:
+Op-by-op grounding in shell-out terms:
 
-- `pushBranch` is `git push`, not `gh`. Calling it on the same interface keeps both git ops behind one swappable boundary; tests provide one fake for both.
+- `readGitConfig` — `git -C <workdir> config --get <key>` (exit 0 → value; exit 1 + no stderr → null per git convention).
+- `readDefaultBranch` — `git -C <workdir> symbolic-ref --short refs/remotes/origin/HEAD` (returns `origin/main` etc. — strip the `origin/` prefix at the boundary).
+- `listPrsForBranch` — `gh pr list --head <head> --base <base> --state open --json number,url` parsed into the narrow `GhPrRef[]`.
+- `pushBranch` — `git -C <workdir> push -u origin <branch>` (not a `gh` call; same interface for one swappable boundary).
+- `createPr` — `gh pr create --base <base> --head <head> --title <title> --body <body> [--draft]` parsed for the resulting PR url + number.
+
+Two notes on the interface shape:
+
+- Everything takes an explicit `workdir`. Implementations that span multiple worktrees in one process (e.g. a future cloud runtime) need to scope each call; not having a `workdir` field would force shared cwd state.
 - `listPrsForBranch` returns `GhPrRef[]` rather than the raw `gh` JSON. The raw JSON has dozens of fields; we narrow to the two we care about and let typescript catch drift.
 
 Substitution example for unit tests:
 
 ```ts
 const gh: GhClient = {
+  readGitConfig: vi.fn().mockResolvedValue(null),
+  readDefaultBranch: vi.fn().mockResolvedValue("main"),
   listPrsForBranch: vi.fn().mockResolvedValue([]),
   pushBranch: vi.fn().mockResolvedValue(undefined),
   createPr: vi.fn().mockResolvedValue({ number: 42, url: "https://github.com/.../pull/42" }),
 };
 ```
 
-Future work that's explicitly **not** this phase: a `OctokitGhClient` for environments where `gh` isn't installed. The interface is shaped to admit it (no shell-specific assumptions on the surface).
+Future work that's explicitly **not** this phase: a `OctokitGhClient` for environments where `gh` isn't installed. The interface is shaped to admit it (no shell-specific assumptions on the surface) — the git read methods would map to a local git binary or an in-memory ref store; the gh methods would map to Octokit calls.
 
 ### ED-7 — CLI mirror: `ship open_pr <workflowRunId>`
 
@@ -268,7 +296,9 @@ The V1 `cancel_workflow_run` tool already operates on a `workflowRunId`. When ca
 
 - `core`: `openPr` happy-path returns `{ ..., status: "succeeded", alreadyExisted: false }`; writes `Phase{kind: "open_pr", status: "succeeded"}` + `result.json`; calls `gh.pushBranch` + `gh.createPr` exactly once.
 - `core`: `openPr` idempotent path — when `listPrsForBranch` returns an existing PR, no push, no create, output has `alreadyExisted: true`, phase row written in `succeeded` directly.
-- `core`: preconditions — run-not-found, implement-phase-not-succeeded, workdir-not-git, empty-branch. Each throws the typed error, **no phase row created**.
+- `core`: **idempotency-before-empty-branch ordering** — branch has zero commits ahead of base AND an existing open PR. Resolves to the existing PR (no `EmptyBranchError`). Mirrors a real cherry-pick scenario; ordering bug would silently regress F5.
+- `core`: preconditions — run-not-found, implement-phase-not-succeeded, workdir-not-git, empty-branch-without-existing-PR, base-branch-unresolved. Each throws the typed error, **no phase row created**.
+- `core`: **base-branch resolution order** — `input.base` wins over both reads; absent that, `branch.<head>.gh-merge-base` from `readGitConfig` wins over `readDefaultBranch`; absent all three, throw `BaseBranchUnresolvedError`. Three scenarios, one per fallback level.
 - `core`: failure paths — push fails, create fails. Phase row transitions `running → failed`; `result.json` contains the error message.
 - `core`: title/body derivation — H1 with conventional-commit prefix, H1 without, no H1 (branch-name fallback), explicit overrides bypass derivation.
 - `mcp`: `openPrInputSchema` parses valid + rejects invalid; `openPrOutputSchema` likewise. Strict-mode rejection of extraneous fields.
