@@ -288,12 +288,14 @@ async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
   const { ctx, paths, result } = args;
   const endedAt = ctx.clock();
 
-  const writeErr = await tryWriteSuccessArtifacts(ctx, paths, result);
-  if (writeErr !== undefined) {
+  const writeOutcome = await tryWriteSuccessArtifacts(ctx, paths, result);
+  if (!writeOutcome.ok) {
     return finalizeFailure({
       ctx: args.ctx,
       cursorRunId: args.cursorRunId,
-      err: new ArtifactWriteFailedError("failed to persist run artifacts", { cause: writeErr }),
+      err: new ArtifactWriteFailedError("failed to persist run artifacts", {
+        cause: writeOutcome.err,
+      }),
       paths: args.paths,
       phaseId: args.phaseId,
       worktree: args.worktree,
@@ -322,22 +324,28 @@ async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
   });
 }
 
-// Writes `result.json` and `summary.md`. Returns the thrown value on
-// failure so the caller can route to `finalizeFailure` without a try
-// block at this layer.
+// Discriminated outcome — using a tagged success flag (rather than
+// `Error | undefined`) keeps `tryWriteSuccessArtifacts` correct even
+// when a `ShipFs` adapter rejects with `undefined` or another falsy
+// value, which would otherwise alias success.
+type WriteOutcome = { ok: true } | { ok: false; err: unknown };
+
+// Writes `result.json` and `summary.md`. Returns a tagged outcome so the
+// caller can route to `finalizeFailure` without a try block at this
+// layer, and without ambiguity over what counts as "success."
 async function tryWriteSuccessArtifacts(
   ctx: ShipContext,
   paths: RunArtifactPaths,
   result: CursorRunResult,
-): Promise<unknown> {
+): Promise<WriteOutcome> {
   try {
     await ctx.fs.writeFile(paths.result, `${JSON.stringify(result, null, 2)}\n`);
     if (result.summary !== undefined && result.summary !== "") {
       await ctx.fs.writeFile(paths.summary, result.summary);
     }
-    return undefined;
+    return { ok: true };
   } catch (err) {
-    return err;
+    return { ok: false, err };
   }
 }
 
@@ -452,7 +460,8 @@ function persistFailureRows(p: PersistFailureRowsArgs): void {
 }
 
 // Best-effort `result.json` write so the archive carries some forensics
-// even on the failure path. Caller doesn't care if it throws.
+// even on the failure path. Never propagates — errors are swallowed
+// internally.
 async function tryWriteFailureResult(
   ctx: ShipContext,
   path: string,
