@@ -131,10 +131,9 @@ export function createStore(opts: CreateStoreOptions): Store {
         try {
           db.pragma("wal_checkpoint(TRUNCATE)");
         } catch (err: unknown) {
+          const reason = err instanceof Error ? err.message : String(err);
           console.warn(
-            `[@ship/store] wal_checkpoint(TRUNCATE) failed during close(); ` +
-              `the -wal/-shm sidecars may persist until the next clean shutdown: ` +
-              (err instanceof Error ? err.message : String(err)),
+            `[@ship/store] wal_checkpoint(TRUNCATE) failed during close(); the -wal/-shm sidecars may persist until the next clean shutdown: ${reason}`,
           );
         }
         db.close();

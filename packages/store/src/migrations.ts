@@ -47,7 +47,7 @@ export function runMigrations(db: Db, opts: RunMigrationsOptions = {}): void {
 
   const files = readdirSync(dir)
     .filter((f) => f.endsWith(MIGRATION_FILE_SUFFIX))
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
   const insertStmt = db.prepare("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)");
   const selectAppliedStmt = db.prepare<[], MigrationRow>("SELECT name FROM _migrations");
 
