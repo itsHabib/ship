@@ -12,14 +12,17 @@
  * in-memory tests miss.
  */
 
-import type { ListWorkflowRunsOutput, ShipOutput } from "@ship/mcp";
+import type { ListWorkflowRunsOutput, ShipStartOutput } from "@ship/mcp";
+import type { WorkflowRun } from "@ship/workflow";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { isTerminal } from "@ship/workflow";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -102,23 +105,62 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     expect(out.runs).toEqual([]);
   });
 
+  test("ship returns the V2 async start shape in well under 1s wall-clock", async () => {
+    // V2 acceptance criterion (docs/features/ship-v2/phases/01-async-ship-tool.md
+    // § Validation plan): the MCP `ship` tool returns `{ workflowRunId,
+    // status: "running" }` within < 1s, even when the underlying run
+    // would take longer. This subprocess-level test is what guards the
+    // contract against accidental regression to the V1 blocking shape.
+    // Monotonic clock — `Date.now()` is wall-clock and can jump under
+    // NTP / time sync, which would make a "< 1s" budget assertion
+    // flaky (or even produce a negative elapsed).
+    const before = performance.now();
+    const shippedRaw = await client.callTool({
+      name: "ship",
+      arguments: { workdir: cenv.workdir, repo: "ship", docPath: "docs.md" },
+    });
+    const elapsed = performance.now() - before;
+    const shipped = parseToolJson(shippedRaw) as ShipStartOutput;
+
+    expect(shipped.status).toBe("running");
+    expect(shipped.workflowRunId).toMatch(/^wf_/);
+    expect(elapsed).toBeLessThan(1000);
+
+    // `shipStartOutputSchema` is `.strict()`, so the wire payload is
+    // exactly `{ workflowRunId, status }` — no leaked V1 fields.
+    expect(Object.keys(shipped).sort((a, b) => a.localeCompare(b))).toEqual([
+      "status",
+      "workflowRunId",
+    ]);
+
+    const terminal = await waitForTerminalRun(shipped.workflowRunId);
+    expect(terminal.status).toBe("succeeded");
+  });
+
   test("ship + read resource round-trip lands artifacts on real disk", async () => {
     const shippedRaw = await client.callTool({
       name: "ship",
       arguments: { workdir: cenv.workdir, repo: "ship", docPath: "docs.md" },
     });
-    const shipped = parseToolJson(shippedRaw) as ShipOutput;
-    expect(shipped.status).toBe("succeeded");
-    // Wiring-level default pins Cursor `thinking` to high. See
-    // `packages/core/src/default-wiring.ts`: no `params` ⇒ Cursor
-    // resolves to whichever `ModelVariant.isDefault` is set today,
-    // which can shift silently across releases. Assert end-to-end
-    // (subprocess + real-disk SQLite) that this default reaches the
-    // synthesized `CursorRunRef.model` the store persists.
-    expect(shipped.cursorRun.model).toEqual({
-      id: "composer-2",
-      params: [{ id: "thinking", value: "high" }],
-    });
+    const shipped = parseToolJson(shippedRaw) as ShipStartOutput;
+    expect(shipped.status).toBe("running");
+
+    // Poll until terminal so the resource read sees the final
+    // hydrated row.
+    const terminal = await waitForTerminalRun(shipped.workflowRunId);
+    expect(terminal.status).toBe("succeeded");
+    // The implement phase carries an FK to the cursor-run row that
+    // was recorded after the runner returned; presence is the
+    // load-bearing check that the post-runner store writes ran.
+    const cursorRunPhase = terminal.phases[0];
+    expect(cursorRunPhase?.cursorRunId).toBeDefined();
+    // V1 also asserted the wiring-default `thinking: high` propagated
+    // to `shipped.cursorRun.model`. V2's MCP `ship` response no
+    // longer surfaces `CursorRunRef`, and `WorkflowRun` only carries
+    // the phase row's FK — not the embedded ref. Coverage for the
+    // model-resolver path lives at the unit level
+    // (`packages/core/src/service.test.ts` — "uses config.defaultModel
+    // verbatim …" + the thinking-override variants).
 
     const got = await client.readResource({ uri: `ship://runs/${shipped.workflowRunId}` });
     const block = got.contents[0];
@@ -126,7 +168,7 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     if (block === undefined || !("text" in block)) {
       throw new Error(`expected text content block, got: ${JSON.stringify(block)}`);
     }
-    const run = JSON.parse(block.text) as { id: string; status: string };
+    const run = JSON.parse(block.text) as WorkflowRun;
     expect(run.id).toBe(shipped.workflowRunId);
     expect(run.status).toBe("succeeded");
   });
@@ -141,12 +183,15 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
         thinking: "low",
       },
     });
-    const shipped = parseToolJson(shippedRaw) as ShipOutput;
-    expect(shipped.status).toBe("succeeded");
-    expect(shipped.cursorRun.model).toEqual({
-      id: "composer-2",
-      params: [{ id: "thinking", value: "low" }],
-    });
+    const shipped = parseToolJson(shippedRaw) as ShipStartOutput;
+    expect(shipped.status).toBe("running");
+
+    // Same V2 caveat as above — the model assertion that used to live
+    // here on `shipped.cursorRun.model` isn't reachable through the
+    // V2 MCP surface. The override-resolver path is unit-tested in
+    // `packages/core/src/service.test.ts`.
+    const terminal = await waitForTerminalRun(shipped.workflowRunId);
+    expect(terminal.status).toBe("succeeded");
   });
 });
 
@@ -224,4 +269,26 @@ function parseToolJson(result: unknown): unknown {
     throw new Error(`tool returned isError: ${block.text}`);
   }
   return JSON.parse(block.text);
+}
+
+// Polls `get_workflow_run` against the subprocess MCP server until
+// the row reaches a terminal status. V2's `ship` tool returns
+// immediately with `{ status: "running" }`; tests that need the
+// finalized row wait here. 300 × 50ms = 15s ceiling — generous for
+// fake-cursor subprocess timing on a busy CI box.
+async function waitForTerminalRun(workflowRunId: string): Promise<WorkflowRun> {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const raw = await client.callTool({
+      name: "get_workflow_run",
+      arguments: { workflowRunId },
+    });
+    const run = parseToolJson(raw) as WorkflowRun;
+    if (isTerminal(run.status)) {
+      return run;
+    }
+    await new Promise<void>((done) => {
+      setTimeout(done, 50);
+    });
+  }
+  throw new Error(`waitForTerminalRun: timed out waiting for ${workflowRunId} to reach terminal`);
 }

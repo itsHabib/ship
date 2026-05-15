@@ -1,16 +1,19 @@
 /**
  * `ship` MCP tool — start a workflow run from an approved task doc.
- * Maps the validated input to `ShipService.ship(input)` and returns the
- * resulting `ShipOutput` as a single text content block.
+ * Maps the validated input to `ShipService.startShip(input)` and returns
+ * `{ workflowRunId, status: "running" }` immediately after the row + initial
+ * phase row are persisted and transitioned to `running`. The Cursor agent
+ * continues on a background tick; callers poll `get_workflow_run` for the
+ * terminal `WorkflowRun` shape. See `docs/features/ship-v2/phases/01-async-ship-tool.md`.
  *
- * Output validation (`shipOutputSchema.parse`) is defense-in-depth so
+ * Output validation (`shipStartOutputSchema.parse`) is defense-in-depth so
  * service-side schema drift is caught before reaching a client.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ShipServiceFactory } from "@ship/core";
 
-import { shipInputSchema, shipOutputSchema } from "@ship/mcp";
+import { shipInputSchema, shipStartOutputSchema } from "@ship/mcp";
 
 import { mapErrorToMcpError } from "../errors.js";
 
@@ -19,13 +22,14 @@ export function registerShipTool(server: McpServer, factory: ShipServiceFactory)
   server.registerTool(
     "ship",
     {
-      description: "Start a workflow run from an approved task doc.",
+      description:
+        "Start a workflow run from an approved task doc. Returns immediately with { workflowRunId, status: 'running' }; poll get_workflow_run for terminal state.",
       inputSchema: shipInputSchema.shape,
     },
     async (args) => {
       try {
-        const out = await factory().ship(args);
-        const validated = shipOutputSchema.parse(out);
+        const out = await factory().startShip(args);
+        const validated = shipStartOutputSchema.parse(out);
         return { content: [{ type: "text", text: JSON.stringify(validated) }] };
       } catch (err) {
         throw mapErrorToMcpError(err);

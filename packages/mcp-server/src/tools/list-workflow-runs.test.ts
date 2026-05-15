@@ -1,6 +1,6 @@
 /** `list_workflow_runs` tool tests — happy path + filter + over-cap. */
 
-import type { ListWorkflowRunsOutput, ShipOutput } from "@ship/mcp";
+import type { ListWorkflowRunsOutput, ShipStartOutput } from "@ship/mcp";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -11,6 +11,7 @@ import {
   parseToolJson,
   TEST_DOC_PATH,
   TEST_WORKDIR,
+  waitForTerminalRun,
 } from "../../test/mcp-harness.js";
 
 let h: McpHarness;
@@ -31,15 +32,22 @@ describe("list_workflow_runs tool", () => {
   });
 
   test("two runs land in most-recent-first order", async () => {
+    const ids: string[] = [];
     for (let i = 0; i < 2; i++) {
       h.harness.cursor.enqueue({
         events: [],
         result: { status: "succeeded", durationMs: 0, branches: [] },
       });
-      await h.client.callTool({
+      const raw = await h.client.callTool({
         name: "ship",
         arguments: { workdir: TEST_WORKDIR, repo: "ship", docPath: TEST_DOC_PATH },
       });
+      ids.push((parseToolJson(raw) as ShipStartOutput).workflowRunId);
+    }
+    // V2: drain both background continuations so the test sees stable
+    // rows and afterEach's store-close doesn't race a pending write.
+    for (const id of ids) {
+      await waitForTerminalRun(h, id);
     }
     const raw = await h.client.callTool({ name: "list_workflow_runs", arguments: {} });
     const out = parseToolJson(raw) as ListWorkflowRunsOutput;
@@ -57,7 +65,8 @@ describe("list_workflow_runs tool", () => {
       name: "ship",
       arguments: { workdir: TEST_WORKDIR, repo: "ship", docPath: TEST_DOC_PATH },
     });
-    parseToolJson(raw) as ShipOutput;
+    const shipped = parseToolJson(raw) as ShipStartOutput;
+    await waitForTerminalRun(h, shipped.workflowRunId);
 
     const filteredRaw = await h.client.callTool({
       name: "list_workflow_runs",

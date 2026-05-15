@@ -5,7 +5,7 @@ import type { TerminalCursorRunRef, WorkflowRun, WorktreeRef } from "@ship/workf
 import { DEFAULT_WORKFLOW_POLICY } from "@ship/workflow";
 import { describe, expect, test } from "vitest";
 
-import type { ShipInput, ShipOutput } from "./mcp.js";
+import type { ShipInput, ShipOutput, ShipStartOutput } from "./mcp.js";
 
 import {
   cancelWorkflowRunInputSchema,
@@ -17,6 +17,7 @@ import {
   shipArtifactsSchema,
   shipInputSchema,
   shipOutputSchema,
+  shipStartOutputSchema,
   thinkingEffortSchema,
 } from "./mcp.js";
 
@@ -241,6 +242,43 @@ describe("shipOutputSchema", () => {
         }).success,
       ).toBe(true);
     }
+  });
+});
+
+describe("shipStartOutputSchema", () => {
+  const validStart: ShipStartOutput = { workflowRunId: WF_ID, status: "running" };
+
+  test("accepts a valid start output", () => {
+    expect(shipStartOutputSchema.parse(validStart)).toEqual(validStart);
+  });
+
+  test("rejects unknown keys", () => {
+    expect(shipStartOutputSchema.safeParse({ ...validStart, extra: 1 }).success).toBe(false);
+  });
+
+  test("rejects malformed workflowRunId", () => {
+    expect(
+      shipStartOutputSchema.safeParse({ workflowRunId: "wf_short", status: "running" }).success,
+    ).toBe(false);
+    expect(
+      shipStartOutputSchema.safeParse({
+        workflowRunId: "ph_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        status: "running",
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects status other than running (literal-pinned)", () => {
+    for (const s of ["pending", "succeeded", "failed", "cancelled"]) {
+      expect(shipStartOutputSchema.safeParse({ workflowRunId: WF_ID, status: s }).success).toBe(
+        false,
+      );
+    }
+  });
+
+  test("rejects missing fields", () => {
+    expect(shipStartOutputSchema.safeParse({ status: "running" }).success).toBe(false);
+    expect(shipStartOutputSchema.safeParse({ workflowRunId: WF_ID }).success).toBe(false);
   });
 });
 

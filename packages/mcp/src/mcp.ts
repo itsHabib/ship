@@ -88,6 +88,21 @@ export const shipOutputSchema = z
   .strict();
 export type ShipOutput = z.infer<typeof shipOutputSchema>;
 
+// V2 async start-shape — the `ship` MCP tool returns this immediately
+// after the row + initial phase row are persisted and transitioned to
+// `running`. Callers poll `get_workflow_run` for terminal state. The
+// `status` field is narrowed to `z.literal("running")` (not the broader
+// `workflowStatusSchema`) so a future implementation that accidentally
+// returns a different status fails Zod validation at the MCP boundary,
+// not silently in production.
+export const shipStartOutputSchema = z
+  .object({
+    workflowRunId: workflowRunIdSchema,
+    status: z.literal("running"),
+  })
+  .strict();
+export type ShipStartOutput = z.infer<typeof shipStartOutputSchema>;
+
 // =====================================================================
 // get_workflow_run
 // =====================================================================

@@ -1,6 +1,6 @@
 /**
  * `ShipService` — the workflow brain. Owns the state machine, drives
- * the cursor runner, persists artifacts, and exposes the four V1
+ * the cursor runner, persists artifacts, and exposes the five public
  * methods MCP server / CLI consume. Constructed via `createShipService`
  * with all collaborators DI'd (store / cursor / fs / clock / config).
  */
@@ -11,7 +11,7 @@ import type {
   CursorRunResult,
   McpServerConfig,
 } from "@ship/cursor-runner";
-import type { ShipInput, ShipOutput, ThinkingEffort } from "@ship/mcp";
+import type { ShipInput, ShipOutput, ShipStartOutput, ThinkingEffort } from "@ship/mcp";
 import type { ListRunsFilter, Store } from "@ship/store";
 import type {
   CursorRunRef,
@@ -69,6 +69,11 @@ export interface ShipServiceDeps {
 /** Public service surface. CLI + MCP server code against this. */
 export interface ShipService {
   ship(input: ShipInput): Promise<ShipOutput>;
+  // Async kickoff for the MCP `ship` tool — persists the row, transitions
+  // to `running`, schedules the cursor continuation on the next tick, and
+  // resolves with `{ workflowRunId, status: "running" }`. Callers poll
+  // `getRun` for terminal state. CLI keeps using `ship` (blocking).
+  startShip(input: ShipInput): Promise<ShipStartOutput>;
   getRun(workflowRunId: string): Promise<WorkflowRun | null>;
   listRuns(filter: ListRunsFilter): Promise<WorkflowRun[]>;
   cancelRun(workflowRunId: string): Promise<{ workflowRunId: string; status: WorkflowStatus }>;
@@ -87,9 +92,20 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     cursorRun: newCursorRunId,
   };
   const activeRuns = new Map<string, ActiveRun>();
+  const makeCtx = (input: ShipInput): ShipContext => ({
+    activeRuns,
+    clock,
+    config,
+    cursor,
+    fs,
+    ids,
+    input,
+    store,
+  });
 
   return {
-    ship: (input) => shipImpl({ activeRuns, clock, config, cursor, fs, ids, input, store }),
+    ship: (input) => runShip(makeCtx(input)),
+    startShip: (input) => runShipStart(makeCtx(input)),
     getRun: (id) => Promise.resolve(store.getRun(id)),
     listRuns: (filter) => Promise.resolve(store.listRuns(filter)),
     cancelRun: (id) => {
@@ -127,11 +143,76 @@ interface PreparedRun {
   readonly validated: ValidatedDoc;
 }
 
-async function shipImpl(ctx: ShipContext): Promise<ShipOutput> {
+// Sync `ship` body — drives the run end-to-end, blocking the caller
+// until terminal state. Shares the prepareRun → markRunStarted →
+// activeRuns.set scaffolding with `runShipStart`; the only difference
+// is awaiting the continuation through a deferred Promise rather than
+// fire-and-forgetting it. Routing both paths through the same
+// `setImmediate` keeps timing semantics identical, so a future tweak
+// to the kickoff window only has to land in one place.
+async function runShip(ctx: ShipContext): Promise<ShipOutput> {
+  const prep = await prepareRun(ctx);
+  markRunStarted(ctx, prep);
+  const controller = new AbortController();
+  ctx.activeRuns.set(prep.workflowRunId, { controller });
+  return new Promise<ShipOutput>((resolve, reject) => {
+    setImmediate(() => {
+      executeAndFinalize(ctx, prep, controller).then(resolve, reject);
+    });
+  });
+}
+
+// Async kickoff body for the MCP `ship` tool — same scaffolding as
+// `runShip` but the continuation is un-awaited. The safety-net
+// `.catch()` only fires if `finalizeFailure` itself threw (e.g. lost
+// SQLite handle, unwritable artifacts dir). Under normal failures
+// `executeAndFinalize` already routes through `finalizeFailure` and
+// resolves cleanly. See `docs/features/ship-v2/phases/01-async-ship-tool.md` § ED-2.
+async function runShipStart(ctx: ShipContext): Promise<ShipStartOutput> {
+  const prep = await prepareRun(ctx);
+  markRunStarted(ctx, prep);
+  const controller = new AbortController();
+  // Registration happens AFTER `markRunStarted` so a failed transition
+  // can't leave a stale active-runs entry behind. No concurrency
+  // window opens because these three lines are on the same sync stack.
+  ctx.activeRuns.set(prep.workflowRunId, { controller });
+  setImmediate(() => {
+    executeAndFinalize(ctx, prep, controller).catch((err: unknown) => {
+      logBackgroundFailure(prep.workflowRunId, err);
+    });
+  });
+  return { workflowRunId: prep.workflowRunId, status: "running" };
+}
+
+async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
   // Pre-row validation throws cleanly with no row created.
   const validated = await validateWorkdirAndDoc(ctx.fs, ctx.input.workdir, ctx.input.docPath);
-  const prep = persistInitialState(ctx, validated);
-  return executeAndFinalize(ctx, prep);
+  return persistInitialState(ctx, validated);
+}
+
+// Atomic `pending → running` transition for the workflow row + initial
+// phase. Called by both `runShip` and `runShipStart` after `prepareRun`
+// resolves. The store-side method wraps both writes in a single SQLite
+// transaction, so a failure between the two updates rolls back rather
+// than leaving the run wedged at `phase=running, workflow=pending`
+// with no continuation scheduled to repair it. If either write throws,
+// the caller rejects and the rows stay at `pending` — which the next
+// `cancelRun` / startup-sweep call can clean up cleanly.
+function markRunStarted(ctx: ShipContext, prep: PreparedRun): void {
+  ctx.store.markRunStarted(prep.workflowRunId, prep.phaseId, ctx.clock());
+}
+
+// Safety-net logger for `runShipStart`'s un-awaited continuation.
+// Only invoked when `finalizeFailure` itself threw — durable state at
+// that point is whatever finalizeFailure managed to persist before
+// throwing, observable via `getRun`. stderr is the right channel: MCP
+// stdio framing uses stdout for JSON-RPC, so diagnostics belong on
+// stderr to avoid corrupting the wire.
+function logBackgroundFailure(workflowRunId: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  process.stderr.write(
+    `ship-start: background continuation rejected after finalize: workflowRunId=${workflowRunId} err=${message}\n`,
+  );
 }
 
 function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): PreparedRun {
@@ -170,12 +251,17 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
   return { workflowRunId, phaseId, paths, worktree, baseRef, validated };
 }
 
-async function executeAndFinalize(ctx: ShipContext, prep: PreparedRun): Promise<ShipOutput> {
-  // Register the controller BEFORE invoking the runner so an early
-  // cancelRun() arriving during `cursor.run()` startup can abort the
-  // pre-aborted signal — see Phase 6 § ED-2.
-  const controller = new AbortController();
-  ctx.activeRuns.set(prep.workflowRunId, { controller });
+async function executeAndFinalize(
+  ctx: ShipContext,
+  prep: PreparedRun,
+  controller: AbortController,
+): Promise<ShipOutput> {
+  // The controller is registered in `activeRuns` by the caller
+  // (`runShip` / `runShipStart`) BEFORE this runs, so an early
+  // `cancelRun()` arriving during `cursor.run()` startup observes the
+  // entry and aborts the pre-aborted signal. `markRunStarted` has
+  // already flipped the row + phase from `pending → running`; this
+  // function handles fs prep, the cursor call, and finalization.
 
   let cursorRunId: string | undefined;
   let ndjson: EventWriter | undefined;
@@ -185,15 +271,11 @@ async function executeAndFinalize(ctx: ShipContext, prep: PreparedRun): Promise<
 
     // Concurrent `cancelRun()` may have flipped the workflow + phase
     // rows to `cancelled` while we were doing fs work. Bail before
-    // transitioning back to `running` — that would silently re-open
-    // a user-cancelled run and let the runner produce a terminal
-    // succeeded/failed that overwrites the cancellation.
+    // invoking the runner — its terminal status would otherwise
+    // silently overwrite the cancellation.
     if (ctx.store.getRun(prep.workflowRunId)?.status === "cancelled") {
       return finalizeAlreadyCancelled(ctx, prep);
     }
-
-    ctx.store.updatePhase(prep.phaseId, { status: "running", startedAt: ctx.clock() });
-    ctx.store.updateWorkflowRunStatus(prep.workflowRunId, "running");
 
     const model: ModelSelection = resolveModelSelection(ctx.input, ctx.config.defaultModel);
     ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
