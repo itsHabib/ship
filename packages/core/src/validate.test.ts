@@ -1,17 +1,17 @@
-/** Tests for `validateWorkdirAndDoc` against the in-memory fs. */
+/** Tests for `resolveValidatedDoc` against the in-memory fs. */
 
 import { describe, expect, test } from "vitest";
 
 import { DocNotFoundError, DocPathEscapesWorkdirError, WorkdirNotFoundError } from "./errors.js";
 import { createMemoryShipFs } from "./fs/memory.js";
-import { validateWorkdirAndDoc } from "./validate.js";
+import { resolveValidatedDoc } from "./validate.js";
 
-describe("validateWorkdirAndDoc", () => {
+describe("resolveValidatedDoc", () => {
   test("happy path: workdir exists, docPath resolves to a file inside it", async () => {
     const fs = createMemoryShipFs();
     await fs.mkdir("/work/wt", { recursive: true });
     await fs.writeFile("/work/wt/docs.md", "task body");
-    const out = await validateWorkdirAndDoc(fs, "/work/wt", "docs.md");
+    const out = await resolveValidatedDoc(fs, "/work/wt", "docs.md");
     // The returned `absoluteDocPath` is post-realpath: validate.ts
     // composes the doc against the workdir via a small `joinPath`
     // (not `path.resolve`), then resolves it through `ShipFs.realpath`
@@ -23,7 +23,7 @@ describe("validateWorkdirAndDoc", () => {
 
   test("missing workdir → WorkdirNotFoundError", async () => {
     const fs = createMemoryShipFs();
-    await expect(validateWorkdirAndDoc(fs, "/nope", "x.md")).rejects.toBeInstanceOf(
+    await expect(resolveValidatedDoc(fs, "/nope", "x.md")).rejects.toBeInstanceOf(
       WorkdirNotFoundError,
     );
   });
@@ -31,7 +31,7 @@ describe("validateWorkdirAndDoc", () => {
   test("workdir exists but is a file → WorkdirNotFoundError", async () => {
     const fs = createMemoryShipFs();
     await fs.writeFile("/not-a-dir", "x");
-    await expect(validateWorkdirAndDoc(fs, "/not-a-dir", "x.md")).rejects.toBeInstanceOf(
+    await expect(resolveValidatedDoc(fs, "/not-a-dir", "x.md")).rejects.toBeInstanceOf(
       WorkdirNotFoundError,
     );
   });
@@ -39,7 +39,7 @@ describe("validateWorkdirAndDoc", () => {
   test("missing doc → DocNotFoundError", async () => {
     const fs = createMemoryShipFs();
     await fs.mkdir("/work", { recursive: true });
-    await expect(validateWorkdirAndDoc(fs, "/work", "missing.md")).rejects.toBeInstanceOf(
+    await expect(resolveValidatedDoc(fs, "/work", "missing.md")).rejects.toBeInstanceOf(
       DocNotFoundError,
     );
   });
@@ -47,9 +47,7 @@ describe("validateWorkdirAndDoc", () => {
   test("doc path resolves to a directory → DocNotFoundError", async () => {
     const fs = createMemoryShipFs();
     await fs.mkdir("/work/sub", { recursive: true });
-    await expect(validateWorkdirAndDoc(fs, "/work", "sub")).rejects.toBeInstanceOf(
-      DocNotFoundError,
-    );
+    await expect(resolveValidatedDoc(fs, "/work", "sub")).rejects.toBeInstanceOf(DocNotFoundError);
   });
 
   test("docPath that resolves outside workdir → DocPathEscapesWorkdirError", async () => {
@@ -58,7 +56,7 @@ describe("validateWorkdirAndDoc", () => {
     const fs = createMemoryShipFs();
     await fs.mkdir("/work", { recursive: true });
     await fs.writeFile("/elsewhere.md", "x");
-    await expect(validateWorkdirAndDoc(fs, "/work", "/elsewhere.md")).rejects.toBeInstanceOf(
+    await expect(resolveValidatedDoc(fs, "/work", "/elsewhere.md")).rejects.toBeInstanceOf(
       DocPathEscapesWorkdirError,
     );
   });
@@ -67,7 +65,7 @@ describe("validateWorkdirAndDoc", () => {
     const fs = createMemoryShipFs();
     await fs.mkdir("/work/wt", { recursive: true });
     await fs.writeFile("/work/wt/docs.md", "x");
-    const out = await validateWorkdirAndDoc(fs, "/work/wt", "/work/wt/docs.md");
+    const out = await resolveValidatedDoc(fs, "/work/wt", "/work/wt/docs.md");
     expect(out.absoluteDocPath).toBe("/work/wt/docs.md");
   });
 
@@ -77,7 +75,7 @@ describe("validateWorkdirAndDoc", () => {
     await fs.mkdir("/work", { recursive: true });
     await fs.mkdir("/work2", { recursive: true });
     await fs.writeFile("/work2/docs.md", "x");
-    await expect(validateWorkdirAndDoc(fs, "/work", "/work2/docs.md")).rejects.toBeInstanceOf(
+    await expect(resolveValidatedDoc(fs, "/work", "/work2/docs.md")).rejects.toBeInstanceOf(
       DocPathEscapesWorkdirError,
     );
   });

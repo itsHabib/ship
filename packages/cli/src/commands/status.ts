@@ -4,7 +4,7 @@ import type { Command } from "commander";
 
 import type { ServiceFactory } from "../service.js";
 
-import { cliExit, rethrowCliExitOrMap } from "../errors.js";
+import { cliExit, toCliExitCode } from "../errors.js";
 import { formatWorkflowRun } from "../format.js";
 
 export function registerStatusCommand(program: Command, factory: ServiceFactory): void {
@@ -21,7 +21,7 @@ export function registerStatusCommand(program: Command, factory: ServiceFactory)
         }
         process.stdout.write(`${formatWorkflowRun(run, rawOpts.json)}\n`);
       } catch (err) {
-        const code = rethrowCliExitOrMap(err);
+        const code = toCliExitCode(err);
         process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
         cliExit(code);
       }

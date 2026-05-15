@@ -27,7 +27,7 @@ export interface ValidatedDoc {
  * canonical target — closes a small TOCTOU window between the
  * symlink check and the read.
  */
-export async function validateWorkdirAndDoc(
+export async function resolveValidatedDoc(
   fs: ShipFs,
   workdir: string,
   docPath: string,

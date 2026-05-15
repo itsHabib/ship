@@ -59,7 +59,7 @@ export function mapErrorToExitCode(err: unknown): CliExitCode {
  * intentional exit-1 to exit-2. Re-throw `CliExit` directly so its code
  * stays authoritative; map everything else through `mapErrorToExitCode`.
  */
-export function rethrowCliExitOrMap(err: unknown): CliExitCode {
+export function toCliExitCode(err: unknown): CliExitCode {
   if (err instanceof CliExit) throw err;
   return mapErrorToExitCode(err);
 }

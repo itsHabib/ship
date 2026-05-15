@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 
 import type { CliHarness } from "./cli-harness.js";
 
-import { createCliHarness, parseAndCatch, TEST_WORKDIR } from "./cli-harness.js";
+import { createCliHarness, runArgv, TEST_WORKDIR } from "./cli-harness.js";
 
 let h: CliHarness;
 
@@ -32,7 +32,7 @@ async function shipOnce(): Promise<string> {
 test("status existing run → pretty output names the row", async () => {
   const id = await shipOnce();
   h.stdout.length = 0;
-  const { code } = await parseAndCatch(h.program, ["status", id]);
+  const { code } = await runArgv(h.program, ["status", id]);
   expect(code).toBe(0);
   const out = h.stdout.join("");
   expect(out).toContain(`id:        ${id}`);
@@ -42,14 +42,14 @@ test("status existing run → pretty output names the row", async () => {
 test("status --json emits a hydrated WorkflowRun envelope", async () => {
   const id = await shipOnce();
   h.stdout.length = 0;
-  await parseAndCatch(h.program, ["status", id, "--json"]);
+  await runArgv(h.program, ["status", id, "--json"]);
   const parsed = JSON.parse(h.stdout.join("").trim()) as { id: string; status: string };
   expect(parsed.id).toBe(id);
   expect(parsed.status).toBe("succeeded");
 });
 
 test("status unknown id → exit 1; stderr 'not found'", async () => {
-  const { code } = await parseAndCatch(h.program, ["status", "wf_01J0000000000000000000000Z"]);
+  const { code } = await runArgv(h.program, ["status", "wf_01J0000000000000000000000Z"]);
   expect(code).toBe(1);
   expect(h.stderr.join("")).toContain("not found");
 });

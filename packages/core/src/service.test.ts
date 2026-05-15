@@ -741,7 +741,7 @@ describe("ShipService.startShip — async kickoff", () => {
 
   test("failure in the background continuation is captured by finalizeFailure (terminal `failed`)", async () => {
     // No script enqueued — FakeCursorRunner rejects with a clear error
-    // that bubbles up to `executeAndFinalize`'s catch.
+    // that bubbles up to `runToTerminal`'s catch.
     const start = await h.service.startShip({
       workdir: WORKDIR,
       repo: "ship",

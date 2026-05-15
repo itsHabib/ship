@@ -11,7 +11,7 @@ import { resolve as resolvePath } from "node:path";
 
 import type { ServiceFactory } from "../service.js";
 
-import { cliExit, InvalidArgumentError, rethrowCliExitOrMap } from "../errors.js";
+import { cliExit, InvalidArgumentError, toCliExitCode } from "../errors.js";
 import { formatShipOutput } from "../format.js";
 
 interface ShipOpts {
@@ -52,7 +52,7 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
         });
         process.stdout.write(`${formatShipOutput(out, rawOpts.json)}\n`);
       } catch (err) {
-        const code = rethrowCliExitOrMap(err);
+        const code = toCliExitCode(err);
         process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
         cliExit(code);
       }

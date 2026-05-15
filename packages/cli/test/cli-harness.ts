@@ -71,13 +71,13 @@ export async function createCliHarness(
 }
 
 /**
- * Parse argv with the captured streams. Returns the `CliExit` code
- * if any (else 0). Commander's `--help` / `--version` paths throw
- * with `exitCode: 0`; pass it through directly rather than `|| 1`,
- * which would silently flip 0 → 1 (the same regression that was
- * fixed in `bin.ts` during PR #12 cycle-1).
+ * Run the program with the given argv against the captured streams.
+ * Returns the `CliExit` code if any (else 0). Commander's `--help` /
+ * `--version` paths throw with `exitCode: 0`; pass it through directly
+ * rather than `|| 1`, which would silently flip 0 → 1 (the same
+ * regression that was fixed in `bin.ts` during PR #12 cycle-1).
  */
-export async function parseAndCatch(
+export async function runArgv(
   program: Command,
   argv: readonly string[],
 ): Promise<{ code: number; thrown: unknown }> {

@@ -39,7 +39,7 @@ import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import { resolveRunArtifactPaths, type RunArtifactPaths } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
 import { ArtifactWriteFailedError } from "./errors.js";
-import { validateWorkdirAndDoc } from "./validate.js";
+import { resolveValidatedDoc } from "./validate.js";
 
 /** Construction-time configuration for the service. */
 export interface ShipServiceConfig {
@@ -157,7 +157,7 @@ async function runShip(ctx: ShipContext): Promise<ShipOutput> {
   ctx.activeRuns.set(prep.workflowRunId, { controller });
   return new Promise<ShipOutput>((resolve, reject) => {
     setImmediate(() => {
-      executeAndFinalize(ctx, prep, controller).then(resolve, reject);
+      runToTerminal(ctx, prep, controller).then(resolve, reject);
     });
   });
 }
@@ -166,7 +166,7 @@ async function runShip(ctx: ShipContext): Promise<ShipOutput> {
 // `runShip` but the continuation is un-awaited. The safety-net
 // `.catch()` only fires if `finalizeFailure` itself threw (e.g. lost
 // SQLite handle, unwritable artifacts dir). Under normal failures
-// `executeAndFinalize` already routes through `finalizeFailure` and
+// `runToTerminal` already routes through `finalizeFailure` and
 // resolves cleanly. See `docs/features/ship-v2/phases/01-async-ship-tool.md` § ED-2.
 async function runShipStart(ctx: ShipContext): Promise<ShipStartOutput> {
   const prep = await prepareRun(ctx);
@@ -177,7 +177,7 @@ async function runShipStart(ctx: ShipContext): Promise<ShipStartOutput> {
   // window opens because these three lines are on the same sync stack.
   ctx.activeRuns.set(prep.workflowRunId, { controller });
   setImmediate(() => {
-    executeAndFinalize(ctx, prep, controller).catch((err: unknown) => {
+    runToTerminal(ctx, prep, controller).catch((err: unknown) => {
       logBackgroundFailure(prep.workflowRunId, err);
     });
   });
@@ -186,7 +186,7 @@ async function runShipStart(ctx: ShipContext): Promise<ShipStartOutput> {
 
 async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
   // Pre-row validation throws cleanly with no row created.
-  const validated = await validateWorkdirAndDoc(ctx.fs, ctx.input.workdir, ctx.input.docPath);
+  const validated = await resolveValidatedDoc(ctx.fs, ctx.input.workdir, ctx.input.docPath);
   return persistInitialState(ctx, validated);
 }
 
@@ -251,7 +251,7 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
   return { workflowRunId, phaseId, paths, worktree, baseRef, validated };
 }
 
-async function executeAndFinalize(
+async function runToTerminal(
   ctx: ShipContext,
   prep: PreparedRun,
   controller: AbortController,
