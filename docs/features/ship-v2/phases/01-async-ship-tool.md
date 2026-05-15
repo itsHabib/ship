@@ -27,10 +27,10 @@ This is the single smallest unblock for every later V2 phase that needs to call 
 After this phase:
 
 1. The MCP `ship` tool validates input via `shipInputSchema` (unchanged).
-2. The tool handler calls a new `ShipService.startShip(input)` method (see ED-1). The synchronous step ordering inside `startShip` is exact (each step is on the same call stack — no `await` between them — until step 2.e):
-   - **2.a** Pre-row validation: `await validateWorkdirAndDoc(...)`. Throws ⇒ no row, `startShip` rejects.
+2. The tool handler calls a new `ShipService.startShip(input)` method (see ED-1). The synchronous step ordering inside `startShip` is exact. Step 2.a is the one `await`; after it resolves, steps 2.b through 2.e run on the same resumed synchronous call stack with no `await` between them:
+   - **2.a** Pre-row validation: `await validateWorkdirAndDoc(...)`. The only suspension point in `startShip`. Throws ⇒ no row, `startShip` rejects.
    - **2.b** Persist: `persistInitialState(...)` writes the `WorkflowRun` row + initial implement-`Phase` row with V1's default status `pending`. Throws ⇒ same as above plus DB rolls back per V1.
-   - **2.c** Transition: `transitionRowAndPhaseToRunning(...)` — one synchronous SQLite write taking row + phase from `pending → running`. Throws ⇒ row stays `pending`, no `activeRuns` entry exists yet so nothing to clean up.
+   - **2.c** Transition: `markRunStarted(...)` — one synchronous SQLite write taking row + phase from `pending → running`. Throws ⇒ row stays `pending`, no `activeRuns` entry exists yet so nothing to clean up.
    - **2.d** Register controller: `activeRuns.set(workflowRunId, { controller, ... })`. After this point, an incoming `cancelRun(workflowRunId)` can observe the run. Registration happens **after** the transition (per ED-2's revised ordering) so a failed transition doesn't leak a stale active-runs entry; no concurrency window is opened, because steps 2.c → 2.d → 2.e are on the same synchronous call stack.
    - **2.e** Schedule continuation: `setImmediate(() => executeAndFinalize(...).catch(safetyNet))`. Returns control to the caller after the next tick of the event loop is queued.
    - **2.f** Return `ShipStartOutput` of shape `{ workflowRunId, status: "running" }`. The `running` value is by design — see ED-3 for the schema-level pinning.
@@ -77,17 +77,18 @@ No change to `get_workflow_run`. Callers poll it by `workflowRunId` until `isTer
 
 ### ED-1 — Split sync vs async at the `ShipService` layer
 
-`packages/core/src/service.ts` gains `startShip(input): Promise<ShipStartOutput>` alongside the existing `ship(input): Promise<ShipOutput>`. The shared body is the V1 `shipImpl` factored into:
+`packages/core/src/service.ts` gains `startShip(input): Promise<ShipStartOutput>` alongside the existing `ship(input): Promise<ShipOutput>`. The shared body is the V1 `shipImpl` factored into three parts (the middle helper is new in V2; the outer two already exist in V1 in some form):
 
 ```
 shipImpl(ctx)
-  = await prepareRun(ctx)       // validation + persistInitialState (sync at the SQLite layer)
-  → executeAndFinalize(ctx, prep)
+  = await prepareRun(ctx)         // validation + persistInitialState (both → status `pending`)
+  → markRunStarted(ctx, prep)     // sync SQLite write: row + phase `pending → running` (new helper)
+  → executeAndFinalize(ctx, prep) // existing V1 path, with the pending→running step factored out
 ```
 
-`startShip` follows the exact ordering enumerated in F1 step 2: `prepareRun` (validate + persist) → `transitionRowAndPhaseToRunning` → `activeRuns.set` → `setImmediate(executeAndFinalize)` → return. The two synchronous SQLite writes (persist + status-transition) happen on the same call stack before the return, with `activeRuns.set` placed between the transition and the `setImmediate` schedule so a failed transition can't leave a stale active-runs entry behind.
+`startShip` follows the exact ordering enumerated in F1 step 2: `prepareRun` (validate + persist) → `markRunStarted` → `activeRuns.set` → `setImmediate(executeAndFinalize)` → return. The two synchronous SQLite writes (persist + status-transition) happen on the same call stack before the return, with `activeRuns.set` placed between the transition and the `setImmediate` schedule so a failed transition can't leave a stale active-runs entry behind.
 
-`ship` (sync) shares the same factoring: it runs `prepareRun + transitionRowAndPhaseToRunning + activeRuns.set` identically, then awaits the continuation rather than fire-and-forgetting it. The wait is implemented by wrapping `setImmediate` in a deferred Promise:
+`ship` (sync) shares the same factoring: it runs `prepareRun + markRunStarted + activeRuns.set` identically, then awaits the continuation rather than fire-and-forgetting it. The wait is implemented by wrapping `setImmediate` in a deferred Promise:
 
 ```ts
 const result = await new Promise<ShipOutput>((resolve, reject) => {
@@ -111,7 +112,7 @@ Specifically:
 
 ```ts
 const start = await prepareRun(ctx);                        // throws ⇒ no row, startShip rejects
-transitionRowAndPhaseToRunning(ctx, start);                 // sync SQLite write; throws ⇒ no
+markRunStarted(ctx, start);                                 // sync SQLite write; throws ⇒ no
                                                             //   activeRuns entry to clean up
 activeRuns.set(start.workflowRunId, ...);                   // register controller AFTER transition
                                                             //   so a failed transition can't leak
@@ -126,7 +127,7 @@ setImmediate(() => {
 return { workflowRunId: start.workflowRunId, status: "running" };
 ```
 
-Note the registration order vs the V1 sync `ship`: there is no concurrency window between `transitionRowAndPhaseToRunning` and `activeRuns.set` (both run on the same synchronous call stack with no `await` between them), so registering after the transition closes the failure-leak hole without opening any cancel-race hole. A cancel arriving during the `await prepareRun(...)` window finds no row and no activeRuns entry — `cancelRun` reports "not found," which is the V1 behavior. A cancel arriving after `setImmediate` fires the continuation finds both the row (in `running`) and the controller in `activeRuns` — the abort signal is observed by the continuation's call into `cursor.run({ signal, ... })` per V1 ED-2.
+Note the registration order vs the V1 sync `ship`: there is no concurrency window between `markRunStarted` and `activeRuns.set` (both run on the same synchronous call stack with no `await` between them), so registering after the transition closes the failure-leak hole without opening any cancel-race hole. A cancel arriving during the `await prepareRun(...)` window finds no row and no activeRuns entry — `cancelRun` reports "not found," which is the V1 behavior. A cancel arriving after `setImmediate` fires the continuation finds both the row (in `running`) and the controller in `activeRuns` — the abort signal is observed by the continuation's call into `cursor.run({ signal, ... })` per V1 ED-2.
 
 ### ED-3 — `shipStartOutputSchema` is a new `@ship/mcp` export
 
@@ -187,7 +188,7 @@ Optional. The existing `e2e/scenarios/` live harness gets one new scenario that 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Cancel-before-register race | A cancel arriving in the < 1ms between `startShip` returning and the background continuation registering its controller no-ops silently | `activeRuns.set(...)` happens **inside** `startShip` on the same synchronous call stack as the `setImmediate(...)` schedule — there is no async window between them, so the continuation's first observable behavior already has the abort signal attached. Test scenario covers this explicitly. |
-| Stale `activeRuns` entry after a failed transition | If `transitionRowAndPhaseToRunning` threw *after* `activeRuns.set`, the active-runs map would point at a never-fired continuation | Per ED-2's revised ordering, `activeRuns.set` runs **after** the transition. If the transition throws, the map stays clean; if the transition succeeds, registration follows immediately on the same call stack. |
+| Stale `activeRuns` entry after a failed transition | If `markRunStarted` threw *after* `activeRuns.set`, the active-runs map would point at a never-fired continuation | Per ED-2's revised ordering, `activeRuns.set` runs **after** the transition. If the transition throws, the map stays clean; if the transition succeeds, registration follows immediately on the same call stack. |
 | Un-awaited promise leaks an unhandled rejection | Node process logs a confusing error; CI might fail strict-mode | The `.catch()` in ED-2 is the explicit handler. `finalizeFailure` is responsible for durable state; the catch only logs. Unit test asserts no unhandled rejection on a forced failure. |
 | Existing MCP clients (rare) that consumed the sync shape break | Workflow surfaces stop working for them | The break is documented in the impl PR's changelog. The only known consumer pattern is "agent calls `ship`, times out at 60s, polls `get_workflow_run`" — already broken on the response side; this phase makes the timeout go away. Direct-from-Inspector human callers are non-load-bearing. |
 | Background continuation outlives the MCP server process | If the MCP client disconnects mid-run, the run may keep going after stdin closes (V1 chip #7 territory) | Out of scope for this phase. V1 chip "mcp-server stdin-disconnect" is already filed and tracked; the fix for that lands in its own PR and composes cleanly with this one. |
