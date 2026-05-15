@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { CliHarness } from "./cli-harness.js";
 
-import { createCliHarness, parseAndCatch, TEST_WORKDIR } from "./cli-harness.js";
+import { createCliHarness, runArgv, TEST_WORKDIR } from "./cli-harness.js";
 
 let h: CliHarness;
 
@@ -22,7 +22,7 @@ describe("ship ship", () => {
       events: [],
       result: { status: "succeeded", durationMs: 0, summary: "ok", branches: [] },
     });
-    const { code } = await parseAndCatch(h.program, [
+    const { code } = await runArgv(h.program, [
       "ship",
       "docs.md",
       "--workdir",
@@ -43,7 +43,7 @@ describe("ship ship", () => {
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
     });
-    const { code } = await parseAndCatch(h.program, [
+    const { code } = await runArgv(h.program, [
       "ship",
       "docs.md",
       "--workdir",
@@ -58,13 +58,13 @@ describe("ship ship", () => {
   });
 
   test("missing --repo → exit 1; stderr names the missing option", async () => {
-    const { code } = await parseAndCatch(h.program, ["ship", "docs.md", "--workdir", TEST_WORKDIR]);
+    const { code } = await runArgv(h.program, ["ship", "docs.md", "--workdir", TEST_WORKDIR]);
     expect(code).toBe(1);
     expect(h.stderr.join("") + h.stdout.join("")).toMatch(/required.*--repo/i);
   });
 
   test("WorkdirNotFoundError from service → exit 1; stderr names the workdir", async () => {
-    const { code } = await parseAndCatch(h.program, [
+    const { code } = await runArgv(h.program, [
       "ship",
       "docs.md",
       "--workdir",
@@ -81,7 +81,7 @@ describe("ship ship", () => {
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
     });
-    await parseAndCatch(h.program, [
+    await runArgv(h.program, [
       "ship",
       "docs.md",
       "--workdir",
@@ -107,7 +107,7 @@ describe("ship ship", () => {
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
     });
-    const { code } = await parseAndCatch(h.program, [
+    const { code } = await runArgv(h.program, [
       "ship",
       "docs.md",
       "--workdir",
@@ -129,7 +129,7 @@ describe("ship ship", () => {
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
     });
-    const { code } = await parseAndCatch(h.program, [
+    const { code } = await runArgv(h.program, [
       "ship",
       "docs.md",
       "--workdir",
@@ -151,7 +151,7 @@ describe("ship ship", () => {
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
     });
-    const { code } = await parseAndCatch(h.program, [
+    const { code } = await runArgv(h.program, [
       "ship",
       "docs.md",
       "--workdir",
@@ -168,7 +168,7 @@ describe("ship ship", () => {
   });
 
   test("--thinking medium rejected with the standard input-validation message → exit 1", async () => {
-    const { code } = await parseAndCatch(h.program, [
+    const { code } = await runArgv(h.program, [
       "ship",
       "docs.md",
       "--workdir",
@@ -188,7 +188,7 @@ describe("ship ship", () => {
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
     });
-    await parseAndCatch(h.program, [
+    await runArgv(h.program, [
       "ship",
       "docs.md",
       "--workdir",

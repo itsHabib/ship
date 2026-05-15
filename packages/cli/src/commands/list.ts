@@ -6,7 +6,7 @@ import type { Command } from "commander";
 
 import type { ServiceFactory } from "../service.js";
 
-import { cliExit, InvalidArgumentError, rethrowCliExitOrMap } from "../errors.js";
+import { cliExit, InvalidArgumentError, toCliExitCode } from "../errors.js";
 import { formatWorkflowRunList } from "../format.js";
 
 const VALID_STATUSES: ReadonlySet<string> = new Set([
@@ -42,7 +42,7 @@ export function registerListCommand(program: Command, factory: ServiceFactory): 
         const runs = await factory().listRuns(filter);
         process.stdout.write(`${formatWorkflowRunList(runs, rawOpts.json)}\n`);
       } catch (err) {
-        const code = rethrowCliExitOrMap(err);
+        const code = toCliExitCode(err);
         process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
         cliExit(code);
       }

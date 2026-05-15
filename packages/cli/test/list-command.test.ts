@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 
 import type { CliHarness } from "./cli-harness.js";
 
-import { createCliHarness, parseAndCatch, TEST_WORKDIR } from "./cli-harness.js";
+import { createCliHarness, runArgv, TEST_WORKDIR } from "./cli-harness.js";
 
 let h: CliHarness;
 
@@ -27,7 +27,7 @@ async function shipN(n: number): Promise<void> {
 }
 
 test("empty list prints header only and exits 0", async () => {
-  const { code } = await parseAndCatch(h.program, ["list"]);
+  const { code } = await runArgv(h.program, ["list"]);
   expect(code).toBe(0);
   const lines = h.stdout.join("").trim().split("\n");
   expect(lines).toHaveLength(1);
@@ -37,7 +37,7 @@ test("empty list prints header only and exits 0", async () => {
 test("list --json emits { runs: [...] }", async () => {
   await shipN(2);
   h.stdout.length = 0;
-  await parseAndCatch(h.program, ["list", "--json"]);
+  await runArgv(h.program, ["list", "--json"]);
   const parsed = JSON.parse(h.stdout.join("").trim()) as { runs: unknown[] };
   expect(parsed.runs).toHaveLength(2);
 });
@@ -45,7 +45,7 @@ test("list --json emits { runs: [...] }", async () => {
 test("--repo + repeated --status + --limit reach the service", async () => {
   await shipN(1);
   h.stdout.length = 0;
-  const { code } = await parseAndCatch(h.program, [
+  const { code } = await runArgv(h.program, [
     "list",
     "--repo",
     "ship",
@@ -63,31 +63,31 @@ test("--repo + repeated --status + --limit reach the service", async () => {
 });
 
 test("invalid --status value is rejected with exit 1 (InvalidArgumentError → user)", async () => {
-  const { code } = await parseAndCatch(h.program, ["list", "--status", "bogus"]);
+  const { code } = await runArgv(h.program, ["list", "--status", "bogus"]);
   expect(code).toBe(1);
   expect(h.stderr.join("")).toMatch(/invalid --status: bogus/);
 });
 
 test("invalid --limit value is rejected with exit 1", async () => {
-  const { code } = await parseAndCatch(h.program, ["list", "--limit", "nope"]);
+  const { code } = await runArgv(h.program, ["list", "--limit", "nope"]);
   expect(code).toBe(1);
   expect(h.stderr.join("")).toMatch(/invalid --limit: nope/);
 });
 
 test("--limit above 200 cap → exit 1 (RangeError from store → user)", async () => {
-  const { code } = await parseAndCatch(h.program, ["list", "--limit", "99999999"]);
+  const { code } = await runArgv(h.program, ["list", "--limit", "99999999"]);
   expect(code).toBe(1);
   expect(h.stderr.join("")).toMatch(/exceeds the maximum allowed value/);
 });
 
 test("--limit with trailing garbage (e.g. '10abc') is rejected, not silently coerced to 10", async () => {
-  const { code } = await parseAndCatch(h.program, ["list", "--limit", "10abc"]);
+  const { code } = await runArgv(h.program, ["list", "--limit", "10abc"]);
   expect(code).toBe(1);
   expect(h.stderr.join("")).toMatch(/invalid --limit: 10abc/);
 });
 
 test("--limit with a fractional value (e.g. '3.5') is rejected", async () => {
-  const { code } = await parseAndCatch(h.program, ["list", "--limit", "3.5"]);
+  const { code } = await runArgv(h.program, ["list", "--limit", "3.5"]);
   expect(code).toBe(1);
   expect(h.stderr.join("")).toMatch(/invalid --limit: 3.5/);
 });

@@ -28,11 +28,11 @@ After this phase:
 
 1. The MCP `ship` tool validates input via `shipInputSchema` (unchanged).
 2. The tool handler calls a new `ShipService.startShip(input)` method (see ED-1). The synchronous step ordering inside `startShip` is exact. Step 2.a is the one `await`; after it resolves, steps 2.b through 2.e run on the same resumed synchronous call stack with no `await` between them:
-   - **2.a** Pre-row validation: `await validateWorkdirAndDoc(...)`. The only suspension point in `startShip`. Throws ⇒ no row, `startShip` rejects.
+   - **2.a** Pre-row validation: `await resolveValidatedDoc(...)`. The only suspension point in `startShip`. Throws ⇒ no row, `startShip` rejects.
    - **2.b** Persist: `persistInitialState(...)` writes the `WorkflowRun` row + initial implement-`Phase` row with V1's default status `pending`. Throws ⇒ same as above plus DB rolls back per V1.
    - **2.c** Transition: `markRunStarted(...)` — one synchronous SQLite write taking row + phase from `pending → running`. Throws ⇒ row stays `pending`, no `activeRuns` entry exists yet so nothing to clean up.
    - **2.d** Register controller: `activeRuns.set(workflowRunId, { controller, ... })`. After this point, an incoming `cancelRun(workflowRunId)` can observe the run. Registration happens **after** the transition (per ED-2's revised ordering) so a failed transition doesn't leak a stale active-runs entry; no concurrency window is opened, because steps 2.c → 2.d → 2.e are on the same synchronous call stack.
-   - **2.e** Schedule continuation: `setImmediate(() => executeAndFinalize(...).catch(safetyNet))`. Returns control to the caller after the next tick of the event loop is queued.
+   - **2.e** Schedule continuation: `setImmediate(() => runToTerminal(...).catch(safetyNet))`. Returns control to the caller after the next tick of the event loop is queued.
    - **2.f** Return `ShipStartOutput` of shape `{ workflowRunId, status: "running" }`. The `running` value is by design — see ED-3 for the schema-level pinning.
 3. The tool handler validates output against a new `shipStartOutputSchema` and returns it.
 4. The MCP tool **never** blocks waiting on the Cursor agent.
@@ -83,16 +83,16 @@ No change to `get_workflow_run`. Callers poll it by `workflowRunId` until `isTer
 shipImpl(ctx)
   = await prepareRun(ctx)         // validation + persistInitialState (both → status `pending`)
   → markRunStarted(ctx, prep)     // sync SQLite write: row + phase `pending → running` (new helper)
-  → executeAndFinalize(ctx, prep) // existing V1 path, with the pending→running step factored out
+  → runToTerminal(ctx, prep) // existing V1 path, with the pending→running step factored out
 ```
 
-`startShip` follows the exact ordering enumerated in F1 step 2: `prepareRun` (validate + persist) → `markRunStarted` → `activeRuns.set` → `setImmediate(executeAndFinalize)` → return. The two synchronous SQLite writes (persist + status-transition) happen on the same call stack before the return, with `activeRuns.set` placed between the transition and the `setImmediate` schedule so a failed transition can't leave a stale active-runs entry behind.
+`startShip` follows the exact ordering enumerated in F1 step 2: `prepareRun` (validate + persist) → `markRunStarted` → `activeRuns.set` → `setImmediate(runToTerminal)` → return. The two synchronous SQLite writes (persist + status-transition) happen on the same call stack before the return, with `activeRuns.set` placed between the transition and the `setImmediate` schedule so a failed transition can't leave a stale active-runs entry behind.
 
 `ship` (sync) shares the same factoring: it runs `prepareRun + markRunStarted + activeRuns.set` identically, then awaits the continuation rather than fire-and-forgetting it. The wait is implemented by wrapping `setImmediate` in a deferred Promise:
 
 ```ts
 const result = await new Promise<ShipOutput>((resolve, reject) => {
-  setImmediate(() => executeAndFinalize(ctx, prep).then(resolve, reject));
+  setImmediate(() => runToTerminal(ctx, prep).then(resolve, reject));
 });
 ```
 
@@ -104,9 +104,9 @@ Rejected: implementing `ship` as `startShip + waitForTerminal` *as separate call
 
 ### ED-2 — Background-continuation error path is the V1 failure path
 
-V1's `executeAndFinalize` already catches typed run failures internally (via `finalizeFailure`, which updates the row + phase to `failed`, writes `result.json` with the error message, and removes the entry from `activeRuns`) and resolves rather than rejects. The background continuation therefore inherits V1's "errors land as durable `failed` state" guarantee without us re-implementing it.
+V1's `runToTerminal` already catches typed run failures internally (via `finalizeFailure`, which updates the row + phase to `failed`, writes `result.json` with the error message, and removes the entry from `activeRuns`) and resolves rather than rejects. The background continuation therefore inherits V1's "errors land as durable `failed` state" guarantee without us re-implementing it.
 
-The new piece is a top-level `.catch()` on the un-awaited promise as a **safety net only** — it fires solely if `finalizeFailure` itself throws (e.g. the SQLite handle is gone, the artifacts dir is unwritable). Under normal failures the catch never runs because `executeAndFinalize` already resolved. The catch logs at debug level; if it fires, the durable state is whatever `finalizeFailure` managed before it threw — `get_workflow_run` will reflect that. Node's unhandled-rejection guardrails are also satisfied (the implementation plan adds a step to verify `executeAndFinalize` has no early-exit path that skips `finalizeFailure`).
+The new piece is a top-level `.catch()` on the un-awaited promise as a **safety net only** — it fires solely if `finalizeFailure` itself throws (e.g. the SQLite handle is gone, the artifacts dir is unwritable). Under normal failures the catch never runs because `runToTerminal` already resolved. The catch logs at debug level; if it fires, the durable state is whatever `finalizeFailure` managed before it threw — `get_workflow_run` will reflect that. Node's unhandled-rejection guardrails are also satisfied (the implementation plan adds a step to verify `runToTerminal` has no early-exit path that skips `finalizeFailure`).
 
 Specifically:
 
@@ -117,8 +117,8 @@ markRunStarted(ctx, start);                                 // sync SQLite write
 activeRuns.set(start.workflowRunId, ...);                   // register controller AFTER transition
                                                             //   so a failed transition can't leak
 setImmediate(() => {
-  executeAndFinalize(ctx, start).catch((err) => {
-    // executeAndFinalize already runs finalizeFailure for typed errors and resolves.
+  runToTerminal(ctx, start).catch((err) => {
+    // runToTerminal already runs finalizeFailure for typed errors and resolves.
     // This .catch is a safety net for the case where finalizeFailure itself threw
     // (lost SQLite handle, unwritable artifacts dir, etc.). Log + drop.
     logger.debug("ship-start: background continuation rejected after finalize", err);
@@ -215,8 +215,8 @@ Optional. The existing `e2e/scenarios/` live harness gets one new scenario that 
 After this doc is reviewed and merged:
 
 1. **Add `shipStartOutputSchema` to `@ship/mcp`.** Plus exported `ShipStartOutput` type with `status: z.literal("running")` per ED-3.
-2. **Add `startShip` to the `ShipService` interface and implementation in `@ship/core`.** Add the method to the `ShipService` interface (`packages/core/src/service.ts`) so `mcp-server` can call it through the typed contract — without this step the mcp-server import will fail to typecheck. Then factor `shipImpl` into `prepareRun` + the existing `executeAndFinalize`, extracting the `pending → running` transition into its own helper so `startShip` can call it synchronously before yielding. Wire the un-awaited continuation + safety-net `.catch()` per ED-2.
-3. **Verify `executeAndFinalize`'s catch contract.** Before relying on the safety-net wording in ED-2, audit `packages/core/src/service.ts` `executeAndFinalize` (and its call graph into `finalizeFailure`) to confirm there's no early-exit path that returns / throws *before* `finalizeFailure` runs. If one exists, either fix it or update ED-2 to document the exposure. This is a doc-confirmation step, not a code change.
+2. **Add `startShip` to the `ShipService` interface and implementation in `@ship/core`.** Add the method to the `ShipService` interface (`packages/core/src/service.ts`) so `mcp-server` can call it through the typed contract — without this step the mcp-server import will fail to typecheck. Then factor `shipImpl` into `prepareRun` + the existing `runToTerminal`, extracting the `pending → running` transition into its own helper so `startShip` can call it synchronously before yielding. Wire the un-awaited continuation + safety-net `.catch()` per ED-2.
+3. **Verify `runToTerminal`'s catch contract.** Before relying on the safety-net wording in ED-2, audit `packages/core/src/service.ts` `runToTerminal` (and its call graph into `finalizeFailure`) to confirm there's no early-exit path that returns / throws *before* `finalizeFailure` runs. If one exists, either fix it or update ED-2 to document the exposure. This is a doc-confirmation step, not a code change.
 4. **Update the `ship` MCP tool handler in `@ship/mcp-server`.** Call `startShip` instead of `ship`. Validate output with `shipStartOutputSchema`.
 5. **Update unit tests** for the three packages above.
 6. **Add one integration test** under `e2e/integration/` per the Validation section.
