@@ -50,10 +50,8 @@ export default tseslint.config(
       ],
       "perfectionist/sort-named-imports": ["error", { type: "natural", order: "asc" }],
 
-      complexity: ["error", 15],
-      "max-lines-per-function": ["error", { max: 80, skipBlankLines: true, skipComments: true }],
-      "max-statements": ["error", 50],
-      "max-depth": ["error", 4],
+      complexity: ["error", 10],
+      "max-depth": ["error", 3],
       "max-params": ["error", 5],
 
       "@typescript-eslint/consistent-type-imports": [
@@ -71,8 +69,6 @@ export default tseslint.config(
   {
     files: ["**/*.test.ts", "**/test/**", "**/__tests__/**"],
     rules: {
-      "max-lines-per-function": "off",
-      "max-statements": "off",
       // vitest's mocking patterns (vi.mocked, method spies, mock objects
       // satisfying SDK interfaces) routinely require references to methods
       // detached from their host object. The unbound-method rule's

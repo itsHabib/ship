@@ -29,17 +29,26 @@ test("phase failure: phase ends failed; parent updated_at bumped; run transition
   const created = h.store.createWorkflowRun(createSampleWorkflowRunInput(runId));
   const t0 = created.updatedAt;
 
+  // Helper: getRun should never return null mid-test; throw on miss so
+  // subsequent property accesses are non-nullable and don't add lint
+  // complexity via optional chaining.
+  const getRunOrFail = (): NonNullable<ReturnType<typeof h.store.getRun>> => {
+    const r = h.store.getRun(runId);
+    if (r === null) throw new Error("workflow run vanished mid-test");
+    return r;
+  };
+
   // Each subsequent mutator bumps updated_at; capture the trail.
   h.store.updateWorkflowRunStatus(runId, "running");
-  const t1 = h.store.getRun(runId)?.updatedAt;
+  const t1 = getRunOrFail().updatedAt;
   expect(t1).not.toBe(t0);
 
   h.store.appendPhase(createSampleAppendPhaseInput(phaseId, runId));
-  const t2 = h.store.getRun(runId)?.updatedAt;
+  const t2 = getRunOrFail().updatedAt;
   expect(t2).not.toBe(t1);
 
   h.store.updatePhase(phaseId, { startedAt: h.clock(), status: "running" });
-  const t3 = h.store.getRun(runId)?.updatedAt;
+  const t3 = getRunOrFail().updatedAt;
   expect(t3).not.toBe(t2);
 
   h.store.recordCursorRun(createSampleRecordCursorRunInput(cursorRunId, runId));
@@ -60,21 +69,24 @@ test("phase failure: phase ends failed; parent updated_at bumped; run transition
     errorMessage: "agent reported blocker: missing test fixture",
     status: "failed",
   });
-  const t4 = h.store.getRun(runId)?.updatedAt;
+  const t4 = getRunOrFail().updatedAt;
   expect(t4).not.toBe(t3);
 
   // Critical: run status is still `running` until core decides.
   // The store does NOT auto-cascade.
-  expect(h.store.getRun(runId)?.status).toBe("running");
+  expect(getRunOrFail().status).toBe("running");
 
   // Core's explicit move:
   h.store.updateWorkflowRunStatus(runId, "failed");
 
-  const final = h.store.getRun(runId);
-  expect(final?.status).toBe("failed");
-  expect(final?.phases[0]?.status).toBe("failed");
-  expect(final?.phases[0]?.errorMessage).toContain("blocker");
+  const final = getRunOrFail();
+  expect(final.status).toBe("failed");
+  const failedPhase = final.phases[0];
+  if (failedPhase === undefined) throw new Error("expected one phase on terminal run");
+  expect(failedPhase.status).toBe("failed");
+  expect(failedPhase.errorMessage).toContain("blocker");
 
   const cursorRun = h.store.getCursorRun(cursorRunId);
-  expect(cursorRun?.status).toBe("failed");
+  if (cursorRun === null) throw new Error("cursor run row vanished");
+  expect(cursorRun.status).toBe("failed");
 });

@@ -67,19 +67,21 @@ test("happy path: pending → running → succeeded across run + phase + cursor-
 
   // Final assertions: getRun shows the hydrated terminal state.
   const final = h.store.getRun(runId);
-  expect(final).not.toBeNull();
-  expect(final?.status).toBe("succeeded");
-  expect(final?.phases).toHaveLength(1);
-  const phase = final?.phases[0];
-  expect(phase?.status).toBe("succeeded");
-  expect(phase?.cursorRunId).toBe(cursorRunId);
-  expect(phase?.startedAt).toBe(startedAt);
-  expect(phase?.endedAt).toBe(phaseEndedAt);
-  expect(phase?.outputJson).toContain("src/hello.ts");
+  if (final === null) throw new Error("workflow run vanished after terminal write");
+  expect(final.status).toBe("succeeded");
+  expect(final.phases).toHaveLength(1);
+  const phase = final.phases[0];
+  if (phase === undefined) throw new Error("expected one phase on terminal run");
+  expect(phase.status).toBe("succeeded");
+  expect(phase.cursorRunId).toBe(cursorRunId);
+  expect(phase.startedAt).toBe(startedAt);
+  expect(phase.endedAt).toBe(phaseEndedAt);
+  expect(phase.outputJson).toContain("src/hello.ts");
 
   // Cursor-run retrievable independently.
   const cursorRun = h.store.getCursorRun(cursorRunId);
-  expect(cursorRun?.status).toBe("succeeded");
-  expect(cursorRun?.durationMs).toBe(60_000);
-  expect(cursorRun?.endedAt).toBe(cursorEndedAt);
+  if (cursorRun === null) throw new Error("cursor run row vanished");
+  expect(cursorRun.status).toBe("succeeded");
+  expect(cursorRun.durationMs).toBe(60_000);
+  expect(cursorRun.endedAt).toBe(cursorEndedAt);
 });
