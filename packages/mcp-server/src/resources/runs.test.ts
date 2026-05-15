@@ -37,7 +37,7 @@ describe("ship://runs/{id} resource", () => {
     const shipped = parseToolJson(shippedRaw) as ShipStartOutput;
     // V2: poll until terminal before reading the resource so the
     // assertion sees the final hydrated row, not the in-flight one.
-    await waitForTerminalRun(h, shipped.workflowRunId);
+    await waitForTerminalRun(h.client, shipped.workflowRunId);
 
     const got = await h.client.readResource({ uri: `ship://runs/${shipped.workflowRunId}` });
     expect(got.contents).toHaveLength(1);

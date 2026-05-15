@@ -38,7 +38,7 @@ describe("get_workflow_run tool", () => {
     const shipped = parseToolJson(raw) as ShipStartOutput;
     // V2: `ship` returns immediately; wait for the background
     // continuation before asserting on the terminal-state read.
-    await waitForTerminalRun(h, shipped.workflowRunId);
+    await waitForTerminalRun(h.client, shipped.workflowRunId);
 
     const got = await h.client.callTool({
       name: "get_workflow_run",

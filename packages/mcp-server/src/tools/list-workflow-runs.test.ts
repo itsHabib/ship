@@ -47,7 +47,7 @@ describe("list_workflow_runs tool", () => {
     // V2: drain both background continuations so the test sees stable
     // rows and afterEach's store-close doesn't race a pending write.
     for (const id of ids) {
-      await waitForTerminalRun(h, id);
+      await waitForTerminalRun(h.client, id);
     }
     const raw = await h.client.callTool({ name: "list_workflow_runs", arguments: {} });
     const out = parseToolJson(raw) as ListWorkflowRunsOutput;
@@ -66,7 +66,7 @@ describe("list_workflow_runs tool", () => {
       arguments: { workdir: TEST_WORKDIR, repo: "ship", docPath: TEST_DOC_PATH },
     });
     const shipped = parseToolJson(raw) as ShipStartOutput;
-    await waitForTerminalRun(h, shipped.workflowRunId);
+    await waitForTerminalRun(h.client, shipped.workflowRunId);
 
     const filteredRaw = await h.client.callTool({
       name: "list_workflow_runs",

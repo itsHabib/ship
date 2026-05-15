@@ -37,7 +37,7 @@ describe("cancel_workflow_run tool", () => {
     const shipped = parseToolJson(shippedRaw) as ShipStartOutput;
     // V2: wait for the background continuation to land terminal
     // before cancelling, otherwise the cancel pre-empts the run.
-    await waitForTerminalRun(h, shipped.workflowRunId);
+    await waitForTerminalRun(h.client, shipped.workflowRunId);
 
     const raw = await h.client.callTool({
       name: "cancel_workflow_run",

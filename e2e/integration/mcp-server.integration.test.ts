@@ -17,7 +17,7 @@ import type { WorkflowRun } from "@ship/workflow";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { isTerminal } from "@ship/workflow";
+import { waitForTerminalRun } from "@ship/test-harness";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -133,7 +133,7 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
       "workflowRunId",
     ]);
 
-    const terminal = await waitForTerminalRun(shipped.workflowRunId);
+    const terminal = await waitForTerminalRun(client, shipped.workflowRunId, INT_POLL);
     expect(terminal.status).toBe("succeeded");
   });
 
@@ -147,7 +147,7 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
 
     // Poll until terminal so the resource read sees the final
     // hydrated row.
-    const terminal = await waitForTerminalRun(shipped.workflowRunId);
+    const terminal = await waitForTerminalRun(client, shipped.workflowRunId, INT_POLL);
     expect(terminal.status).toBe("succeeded");
     // The implement phase carries an FK to the cursor-run row that
     // was recorded after the runner returned; presence is the
@@ -190,7 +190,7 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     // here on `shipped.cursorRun.model` isn't reachable through the
     // V2 MCP surface. The override-resolver path is unit-tested in
     // `packages/core/src/service.test.ts`.
-    const terminal = await waitForTerminalRun(shipped.workflowRunId);
+    const terminal = await waitForTerminalRun(client, shipped.workflowRunId, INT_POLL);
     expect(terminal.status).toBe("succeeded");
   });
 });
@@ -271,24 +271,8 @@ function parseToolJson(result: unknown): unknown {
   return JSON.parse(block.text);
 }
 
-// Polls `get_workflow_run` against the subprocess MCP server until
-// the row reaches a terminal status. V2's `ship` tool returns
-// immediately with `{ status: "running" }`; tests that need the
-// finalized row wait here. 300 × 50ms = 15s ceiling — generous for
-// fake-cursor subprocess timing on a busy CI box.
-async function waitForTerminalRun(workflowRunId: string): Promise<WorkflowRun> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
-    const raw = await client.callTool({
-      name: "get_workflow_run",
-      arguments: { workflowRunId },
-    });
-    const run = parseToolJson(raw) as WorkflowRun;
-    if (isTerminal(run.status)) {
-      return run;
-    }
-    await new Promise<void>((done) => {
-      setTimeout(done, 50);
-    });
-  }
-  throw new Error(`waitForTerminalRun: timed out waiting for ${workflowRunId} to reach terminal`);
-}
+// Wider poll budget than the in-process unit harness defaults
+// (200 × 10ms = 2s). The fake-cursor child can be slow to settle on a
+// busy CI box; 300 × 50ms = 15s gives subprocess-mode tests enough
+// headroom without masking a real hang.
+const INT_POLL = { maxAttempts: 300, intervalMs: 50 } as const;
