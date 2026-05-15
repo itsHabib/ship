@@ -11,7 +11,7 @@ import { workflowRunSchema } from "@ship/workflow";
 import type { Db } from "./db.js";
 import type { PhaseOps } from "./phases.js";
 
-import { StoreSchemaError, WorkflowRunNotFoundError } from "./errors.js";
+import { PhaseNotFoundError, StoreSchemaError, WorkflowRunNotFoundError } from "./errors.js";
 
 /** Default `listRuns` row cap when the caller doesn't pass one. */
 const DEFAULT_LIMIT = 50;
@@ -54,6 +54,14 @@ export interface WorkflowRunOps {
   list: (filter: ListRunsFilter) => WorkflowRun[];
   /** Idempotent cancel; terminal rows return as-is, non-terminal flip in one transaction. */
   cancel: (id: string) => WorkflowRun;
+  // Atomic `pending → running` for the workflow row + a specific phase
+  // row. Both updates happen inside a single SQLite transaction; if
+  // either side throws (FK violation, row missing) the txn rolls back
+  // and neither row mutates. Used by `ShipService`'s V2 kickoff path
+  // where the two writes must succeed or fail together — otherwise an
+  // in-flight workflow could end up with `phase=running, workflow=pending`
+  // and no continuation scheduled to repair it.
+  markRunStarted: (workflowRunId: string, phaseId: string, startedAt: string) => void;
 }
 
 interface WorkflowRunRow {
@@ -81,6 +89,15 @@ interface WorkflowRunStmts {
    * happened so a concurrent terminal write is never overwritten.
    */
   conditionalCancel: Statement;
+  // `markRunStarted`'s two writes — co-located with the rest of the
+  // workflow_runs prepared statements so the txn body in `markRunStarted`
+  // doesn't reach across modules. The phase update is the only
+  // phases-table statement workflow-runs.ts owns; it lives here because
+  // it's load-bearing for `markRunStarted`'s atomicity guarantee and
+  // splitting it across files would re-introduce the order-of-writes
+  // hazard this method exists to close.
+  markRunRunning: Statement;
+  markPhaseRunning: Statement;
 }
 
 /** Bundle threaded into helpers to stay under the eslint param cap. */
@@ -111,6 +128,12 @@ export function createWorkflowRunOps(
       `INSERT INTO workflow_runs (id, repo, doc_path, status, base_ref, worktree_json, policy_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
+    markPhaseRunning: db.prepare(
+      `UPDATE phases SET status = 'running', started_at = ? WHERE id = ?`,
+    ),
+    markRunRunning: db.prepare(
+      `UPDATE workflow_runs SET status = 'running', updated_at = ? WHERE id = ?`,
+    ),
     selectById: db.prepare<[string], WorkflowRunRow>(
       `SELECT ${WORKFLOW_RUN_COLUMNS} FROM workflow_runs WHERE id = ?`,
     ),
@@ -123,6 +146,9 @@ export function createWorkflowRunOps(
     create: (input) => createRun(deps, input),
     get: (id) => getRun(deps, id),
     list: (filter) => listRunsImpl(deps, filter),
+    markRunStarted: (workflowRunId, phaseId, startedAt) => {
+      markRunStarted(deps, workflowRunId, phaseId, startedAt);
+    },
     updateStatus: (id, status) => updateRunStatus(deps, id, status),
   };
 }
@@ -184,6 +210,36 @@ function listRunsImpl(deps: WorkflowRunDeps, filter: ListRunsFilter): WorkflowRu
   if (rows.length === 0) return [];
   const grouped = deps.phases.listByRunIds(rows.map((r) => r.id));
   return rows.map((row) => parseRun(row, grouped.get(row.id) ?? []));
+}
+
+// Atomic `pending → running` for both the workflow row and a specific
+// phase row. `ShipService` calls this once per kickoff (V2 `startShip`
+// + V1 sync `ship` both route through it). Wrapping both writes in a
+// single transaction closes the window where the workflow update could
+// throw after the phase update succeeded, leaving the run wedged at
+// `phase=running, workflow=pending` with no continuation to fix it.
+//
+// The `selectById` reads inside the txn are present so the function
+// can throw a typed `WorkflowRunNotFoundError` / `PhaseNotFoundError`
+// rather than letting a silent zero-rows-affected UPDATE return
+// success. UPDATE in SQLite doesn't fail on a missing WHERE match.
+function markRunStarted(
+  deps: WorkflowRunDeps,
+  workflowRunId: string,
+  phaseId: string,
+  startedAt: string,
+): void {
+  const txn = deps.db.transaction((): void => {
+    const phaseChanges = deps.stmts.markPhaseRunning.run(startedAt, phaseId).changes;
+    if (phaseChanges === 0) {
+      throw new PhaseNotFoundError(phaseId);
+    }
+    const runChanges = deps.stmts.markRunRunning.run(startedAt, workflowRunId).changes;
+    if (runChanges === 0) {
+      throw new WorkflowRunNotFoundError(workflowRunId);
+    }
+  });
+  txn();
 }
 
 /**

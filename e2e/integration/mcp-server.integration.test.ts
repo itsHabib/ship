@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -110,12 +111,15 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     // status: "running" }` within < 1s, even when the underlying run
     // would take longer. This subprocess-level test is what guards the
     // contract against accidental regression to the V1 blocking shape.
-    const before = Date.now();
+    // Monotonic clock — `Date.now()` is wall-clock and can jump under
+    // NTP / time sync, which would make a "< 1s" budget assertion
+    // flaky (or even produce a negative elapsed).
+    const before = performance.now();
     const shippedRaw = await client.callTool({
       name: "ship",
       arguments: { workdir: cenv.workdir, repo: "ship", docPath: "docs.md" },
     });
-    const elapsed = Date.now() - before;
+    const elapsed = performance.now() - before;
     const shipped = parseToolJson(shippedRaw) as ShipStartOutput;
 
     expect(shipped.status).toBe("running");

@@ -10,7 +10,7 @@ import type { Db } from "./db.js";
 import type { Store } from "./store.js";
 import type { CreateWorkflowRunInput } from "./workflow-runs.js";
 
-import { StoreSchemaError, WorkflowRunNotFoundError } from "./errors.js";
+import { PhaseNotFoundError, StoreSchemaError, WorkflowRunNotFoundError } from "./errors.js";
 import { runMigrations } from "./migrations.js";
 import { createPhaseOps } from "./phases.js";
 import { createStore } from "./store.js";
@@ -189,6 +189,55 @@ describe("workflow runs (via createStore)", () => {
     const cancelledPhase = cancelled.phases[0];
     expect(cancelledPhase?.status).toBe("cancelled");
     expect(cancelledPhase?.endedAt).toBe("2026-05-08T00:10:00.000Z");
+  });
+
+  test("markRunStarted: flips both rows pending → running atomically; bumps run updated_at", () => {
+    const input = makeInput();
+    store.createWorkflowRun(input);
+    const phaseId = newPhaseId();
+    store.appendPhase({ id: phaseId, inputJson: "{}", kind: "implement", workflowRunId: input.id });
+
+    const startedAt = "2026-05-08T00:01:00.000Z";
+    currentNow = startedAt;
+    store.markRunStarted(input.id, phaseId, startedAt);
+
+    const row = store.getRun(input.id);
+    expect(row?.status).toBe<WorkflowStatus>("running");
+    expect(row?.updatedAt).toBe(startedAt);
+    expect(row?.phases).toHaveLength(1);
+    expect(row?.phases[0]?.status).toBe("running");
+    expect(row?.phases[0]?.startedAt).toBe(startedAt);
+  });
+
+  test("markRunStarted: unknown phase id throws PhaseNotFoundError and leaves both rows untouched", () => {
+    const input = makeInput();
+    store.createWorkflowRun(input);
+
+    expect(() => {
+      store.markRunStarted(input.id, newPhaseId(), currentNow);
+    }).toThrow(PhaseNotFoundError);
+    // Workflow row stays pending — the txn rolled back before reaching the run UPDATE.
+    expect(store.getRun(input.id)?.status).toBe<WorkflowStatus>("pending");
+  });
+
+  test("markRunStarted: unknown workflow id rolls back the phase write (atomic)", () => {
+    // Build a phase under a real run, then call markRunStarted with a
+    // bogus workflow id. The phase UPDATE applies first, then the
+    // workflow UPDATE 404s; the txn must roll the phase change back
+    // so the row stays at `pending` even though it momentarily flipped.
+    const input = makeInput();
+    store.createWorkflowRun(input);
+    const phaseId = newPhaseId();
+    store.appendPhase({ id: phaseId, inputJson: "{}", kind: "implement", workflowRunId: input.id });
+
+    expect(() => {
+      store.markRunStarted(newWorkflowRunId(), phaseId, currentNow);
+    }).toThrow(WorkflowRunNotFoundError);
+    // Phase row stays at `pending` thanks to the rollback — confirms
+    // the atomicity guarantee `ShipService.markRunStarted` relies on.
+    const row = store.getRun(input.id);
+    expect(row?.phases[0]?.status).toBe("pending");
+    expect(row?.phases[0]?.startedAt).toBeUndefined();
   });
 
   test("cancelRun does NOT touch already-terminal phases on a non-terminal run", () => {

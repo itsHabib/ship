@@ -10,6 +10,7 @@
 
 import type { ShipStartOutput } from "@ship/mcp";
 
+import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
@@ -39,12 +40,14 @@ describe("ship tool", () => {
       result: { status: "succeeded", durationMs: 0, summary: "shipped", branches: [] },
     });
 
-    const before = Date.now();
+    // Monotonic clock — `Date.now()` can jump under NTP and trip the
+    // "< 1s" timing budget below with a negative or stale delta.
+    const before = performance.now();
     const raw = await h.client.callTool({
       name: "ship",
       arguments: { workdir: TEST_WORKDIR, repo: "ship", docPath: TEST_DOC_PATH },
     });
-    const elapsed = Date.now() - before;
+    const elapsed = performance.now() - before;
     const start = parseToolJson(raw) as ShipStartOutput;
 
     // V2 contract: immediate return with `{ workflowRunId, status: "running" }`.

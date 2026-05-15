@@ -190,20 +190,16 @@ async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
   return persistInitialState(ctx, validated);
 }
 
-// Sync SQLite write transitioning the workflow row + initial phase
-// from `pending → running`. Called by both `runShip` and
-// `runShipStart` after `prepareRun` resolves. The two writes are
-// independent statements (no transaction); if the workflow-row write
-// throws after the phase write succeeded, the caller rejects without
-// scheduling `executeAndFinalize`, so the row state is left
-// inconsistent (phase=running, workflow=pending) until the next
-// process touches it. That's deliberate — failures here are
-// SQLite-handle-dead territory where there is no clean recovery
-// path; wrapping in a txn for an edge case that already implies the
-// store is unusable buys nothing.
+// Atomic `pending → running` transition for the workflow row + initial
+// phase. Called by both `runShip` and `runShipStart` after `prepareRun`
+// resolves. The store-side method wraps both writes in a single SQLite
+// transaction, so a failure between the two updates rolls back rather
+// than leaving the run wedged at `phase=running, workflow=pending`
+// with no continuation scheduled to repair it. If either write throws,
+// the caller rejects and the rows stay at `pending` — which the next
+// `cancelRun` / startup-sweep call can clean up cleanly.
 function markRunStarted(ctx: ShipContext, prep: PreparedRun): void {
-  ctx.store.updatePhase(prep.phaseId, { status: "running", startedAt: ctx.clock() });
-  ctx.store.updateWorkflowRunStatus(prep.workflowRunId, "running");
+  ctx.store.markRunStarted(prep.workflowRunId, prep.phaseId, ctx.clock());
 }
 
 // Safety-net logger for `runShipStart`'s un-awaited continuation.

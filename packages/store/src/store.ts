@@ -50,6 +50,15 @@ export interface Store {
    */
   updateWorkflowRunStatus: (id: string, status: WorkflowStatus) => WorkflowRun;
   /**
+   * Atomic `pending → running` transition for both the workflow row and a
+   * specific phase row, wrapped in a single SQLite transaction. Throws
+   * `WorkflowRunNotFoundError` / `PhaseNotFoundError` on missing rows; the
+   * txn rolls back so neither side mutates on the failure path. Used by
+   * `ShipService`'s kickoff to keep the two writes from leaving the run
+   * stranded at `phase=running, workflow=pending`.
+   */
+  markRunStarted: (workflowRunId: string, phaseId: string, startedAt: string) => void;
+  /**
    * Insert a phase with `status = 'pending'`; bumps the parent run's
    * `updated_at` in the same transaction. Throws `WorkflowRunNotFoundError`
    * if the parent doesn't exist (FK violation translated).
@@ -142,6 +151,7 @@ export function createStore(opts: CreateStoreOptions): Store {
       getCursorRun: cursorRunOps.get,
       getRun: workflowRunOps.get,
       listRuns: workflowRunOps.list,
+      markRunStarted: workflowRunOps.markRunStarted,
       recordCursorRun: cursorRunOps.record,
       updateCursorRunStatus: cursorRunOps.updateStatus,
       updatePhase: phaseOps.update,

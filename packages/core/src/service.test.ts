@@ -10,6 +10,7 @@ import type { WorkflowRun } from "@ship/workflow";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore } from "@ship/store";
 import { isTerminal } from "@ship/workflow";
+import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { DocNotFoundError, WorkdirNotFoundError } from "./errors.js";
@@ -697,13 +698,13 @@ describe("ShipService.startShip — async kickoff", () => {
       result: { status: "succeeded", durationMs: 0, branches: [] },
     });
 
-    const before = Date.now();
+    const before = performance.now();
     const start = await h.service.startShip({
       workdir: WORKDIR,
       repo: "ship",
       docPath: "docs.md",
     });
-    const elapsed = Date.now() - before;
+    const elapsed = performance.now() - before;
 
     expect(start.status).toBe("running");
     expect(start.workflowRunId).toMatch(/^wf_\d{26}$/);
