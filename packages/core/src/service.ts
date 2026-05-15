@@ -288,16 +288,12 @@ async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
   const { ctx, paths, result } = args;
   const endedAt = ctx.clock();
 
-  try {
-    await ctx.fs.writeFile(paths.result, `${JSON.stringify(result, null, 2)}\n`);
-    if (result.summary !== undefined && result.summary !== "") {
-      await ctx.fs.writeFile(paths.summary, result.summary);
-    }
-  } catch (err) {
-    return await finalizeFailure({
+  const writeErr = await tryWriteSuccessArtifacts(ctx, paths, result);
+  if (writeErr !== undefined) {
+    return finalizeFailure({
       ctx: args.ctx,
       cursorRunId: args.cursorRunId,
-      err: new ArtifactWriteFailedError("failed to persist run artifacts", { cause: err }),
+      err: new ArtifactWriteFailedError("failed to persist run artifacts", { cause: writeErr }),
       paths: args.paths,
       phaseId: args.phaseId,
       worktree: args.worktree,
@@ -309,36 +305,66 @@ async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
   // flipped the workflow row to `cancelled` isn't overwritten by the
   // runner's terminal status. Phase + cursor-run rows still reflect the
   // run's actual outcome — they're internal-consistency markers.
-  const currentRun = ctx.store.getRun(args.workflowRunId);
-  const isCancelled = currentRun?.status === "cancelled";
-  const cursorTerminal: TerminalCursorRunStatus = isCancelled ? "cancelled" : result.status;
-  const finalStatus: TerminalWorkflowStatus = isCancelled ? "cancelled" : result.status;
+  const isCancelled = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
+  const terminal: TerminalWorkflowStatus = isCancelled ? "cancelled" : result.status;
 
-  const phasePatch: { status: TerminalWorkflowStatus; endedAt: string; errorMessage?: string } = {
-    status: cursorTerminal,
-    endedAt,
-  };
-  if (result.errorMessage !== undefined) phasePatch.errorMessage = result.errorMessage;
-  ctx.store.updatePhase(args.phaseId, phasePatch);
-  ctx.store.updateCursorRunStatus(args.cursorRunId, {
-    status: cursorTerminal,
-    endedAt,
-    durationMs: result.durationMs,
-  });
-  if (!isCancelled) {
-    ctx.store.updateWorkflowRunStatus(args.workflowRunId, result.status);
-  }
+  persistSuccessRows(ctx, args, terminal, endedAt, isCancelled);
 
   const updatedRun = ctx.store.getRun(args.workflowRunId);
   const cursorRunRef = ctx.store.getCursorRun(args.cursorRunId);
   return buildShipOutput({
     workflowRunId: args.workflowRunId,
-    status: finalStatus,
+    status: terminal,
     worktree: updatedRun?.worktree ?? args.worktree,
-    cursorRun: assertTerminalCursorRunRef(cursorRunRef, cursorTerminal),
+    cursorRun: assertTerminalCursorRunRef(cursorRunRef, terminal),
     paths,
     summary: result.summary,
   });
+}
+
+// Writes `result.json` and `summary.md`. Returns the thrown value on
+// failure so the caller can route to `finalizeFailure` without a try
+// block at this layer.
+async function tryWriteSuccessArtifacts(
+  ctx: ShipContext,
+  paths: RunArtifactPaths,
+  result: CursorRunResult,
+): Promise<unknown> {
+  try {
+    await ctx.fs.writeFile(paths.result, `${JSON.stringify(result, null, 2)}\n`);
+    if (result.summary !== undefined && result.summary !== "") {
+      await ctx.fs.writeFile(paths.summary, result.summary);
+    }
+    return undefined;
+  } catch (err) {
+    return err;
+  }
+}
+
+// Phase + cursor-run + workflow-run row updates on the success path.
+// `isCancelled` is true when a concurrent `cancelRun()` already flipped
+// the workflow row mid-flight; we keep the cursor + phase rows aligned
+// with the runner's actual outcome but leave the workflow row at
+// `cancelled` so the user's cancel intent isn't silently overwritten.
+function persistSuccessRows(
+  ctx: ShipContext,
+  args: FinalizeSuccessArgs,
+  terminal: TerminalWorkflowStatus,
+  endedAt: string,
+  isCancelled: boolean,
+): void {
+  const phasePatch: { status: TerminalWorkflowStatus; endedAt: string; errorMessage?: string } = {
+    status: terminal,
+    endedAt,
+  };
+  if (args.result.errorMessage !== undefined) phasePatch.errorMessage = args.result.errorMessage;
+  ctx.store.updatePhase(args.phaseId, phasePatch);
+  ctx.store.updateCursorRunStatus(args.cursorRunId, {
+    status: terminal,
+    endedAt,
+    durationMs: args.result.durationMs,
+  });
+  if (!isCancelled) ctx.store.updateWorkflowRunStatus(args.workflowRunId, args.result.status);
 }
 
 /**
@@ -377,56 +403,80 @@ async function finalizeFailure(args: FinalizeFailureArgs): Promise<ShipOutput> {
   const endedAt = ctx.clock();
   const errorMessage = args.err instanceof Error ? args.err.message : String(args.err);
 
-  const currentRun = ctx.store.getRun(args.workflowRunId);
-  const isCancelled = currentRun?.status === "cancelled";
-  const finalStatus: TerminalWorkflowStatus = isCancelled ? "cancelled" : "failed";
+  const isCancelled = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
+  const terminal: TerminalWorkflowStatus = isCancelled ? "cancelled" : "failed";
 
+  persistFailureRows({ ctx, args, terminal, endedAt, errorMessage, isCancelled });
+  await tryWriteFailureResult(ctx, args.paths.result, terminal, errorMessage);
+
+  const updatedRun = ctx.store.getRun(args.workflowRunId);
+  return buildShipOutput({
+    workflowRunId: args.workflowRunId,
+    status: terminal,
+    worktree: updatedRun?.worktree ?? args.worktree,
+    cursorRun: resolveFailureCursorRunRef(ctx, args, terminal),
+    paths: args.paths,
+    summary: undefined,
+  });
+}
+
+interface PersistFailureRowsArgs {
+  readonly ctx: ShipContext;
+  readonly args: FinalizeFailureArgs;
+  readonly terminal: TerminalWorkflowStatus;
+  readonly endedAt: string;
+  readonly errorMessage: string;
+  readonly isCancelled: boolean;
+}
+
+// Phase + (optional) cursor-run + workflow-run row updates on failure.
+// `isCancelled` keeps the workflow row at `cancelled` if the user
+// already cancelled mid-flight; phase + cursor-run rows align with the
+// actual failure for internal consistency.
+function persistFailureRows(p: PersistFailureRowsArgs): void {
+  const { ctx, args, terminal, endedAt, errorMessage, isCancelled } = p;
   const phasePatch: { status: TerminalWorkflowStatus; endedAt: string; errorMessage?: string } = {
-    status: finalStatus,
+    status: terminal,
     endedAt,
   };
   if (!isCancelled) phasePatch.errorMessage = errorMessage;
   ctx.store.updatePhase(args.phaseId, phasePatch);
   if (args.cursorRunId !== undefined) {
     try {
-      ctx.store.updateCursorRunStatus(args.cursorRunId, {
-        status: finalStatus,
-        endedAt,
-      });
+      ctx.store.updateCursorRunStatus(args.cursorRunId, { status: terminal, endedAt });
     } catch {
-      /* swallow — best-effort cleanup */
+      // swallow — best-effort cleanup
     }
   }
-  if (!isCancelled) {
-    ctx.store.updateWorkflowRunStatus(args.workflowRunId, "failed");
-  }
+  if (!isCancelled) ctx.store.updateWorkflowRunStatus(args.workflowRunId, "failed");
+}
 
-  const updatedRun = ctx.store.getRun(args.workflowRunId);
-  const cursorRunRef =
-    args.cursorRunId !== undefined ? ctx.store.getCursorRun(args.cursorRunId) : null;
-
-  // Best-effort: write a truncated result.json with the error so the
-  // archive carries some forensics. If even that fails, swallow.
+// Best-effort `result.json` write so the archive carries some forensics
+// even on the failure path. Caller doesn't care if it throws.
+async function tryWriteFailureResult(
+  ctx: ShipContext,
+  path: string,
+  status: TerminalWorkflowStatus,
+  errorMessage: string,
+): Promise<void> {
   try {
-    await ctx.fs.writeFile(
-      args.paths.result,
-      `${JSON.stringify({ status: finalStatus, errorMessage }, null, 2)}\n`,
-    );
+    await ctx.fs.writeFile(path, `${JSON.stringify({ status, errorMessage }, null, 2)}\n`);
   } catch {
-    /* swallow */
+    // swallow
   }
+}
 
-  return buildShipOutput({
-    workflowRunId: args.workflowRunId,
-    status: finalStatus,
-    worktree: updatedRun?.worktree ?? args.worktree,
-    cursorRun:
-      cursorRunRef !== null
-        ? assertTerminalCursorRunRef(cursorRunRef, finalStatus)
-        : synthesizeFailedCursorRun(args.workflowRunId, args.paths.dir, ctx.clock(), finalStatus),
-    paths: args.paths,
-    summary: undefined,
-  });
+// Picks the cursor-run ref for `ShipOutput`: the persisted row when
+// available, a synthesized one when we never recorded the cursor run
+// (e.g. cursor.run() rejected before returning a handle).
+function resolveFailureCursorRunRef(
+  ctx: ShipContext,
+  args: FinalizeFailureArgs,
+  terminal: TerminalCursorRunStatus,
+): CursorRunRef & { status: TerminalCursorRunStatus } {
+  const ref = args.cursorRunId !== undefined ? ctx.store.getCursorRun(args.cursorRunId) : null;
+  if (ref !== null) return assertTerminalCursorRunRef(ref, terminal);
+  return synthesizeFailedCursorRun(args.workflowRunId, args.paths.dir, ctx.clock(), terminal);
 }
 
 interface BuildShipOutputArgs {

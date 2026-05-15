@@ -51,16 +51,25 @@ function walkTsFiles(root: string): string[] {
     const dir = stack.pop();
     if (dir === undefined) break;
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name)) continue;
-        stack.push(full);
-      } else if (entry.isFile() && entry.name.endsWith(".ts")) {
-        out.push(full);
-      }
+      handleDirent(entry, join(dir, entry.name), stack, out);
     }
   }
   return out;
+}
+
+// Stack-pushing branch for one readdir entry. Lifted out of walkTsFiles
+// so the directory loop stays at max-depth 3 under strict lint.
+function handleDirent(
+  entry: { isDirectory(): boolean; isFile(): boolean; name: string },
+  full: string,
+  stack: string[],
+  out: string[],
+): void {
+  if (entry.isDirectory()) {
+    if (!SKIP_DIRS.has(entry.name)) stack.push(full);
+    return;
+  }
+  if (entry.isFile() && entry.name.endsWith(".ts")) out.push(full);
 }
 
 function findHits(filePath: string): Hit[] {

@@ -238,31 +238,28 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
 
 /** Maps `RunResult` (SDK vocab) to `CursorRunResult` (Ship vocab) per ED-3. */
 function mapRunResult(result: RunResult, input: CursorRunInput): CursorRunResult {
-  const branches = result.git?.branches ?? [];
-  const durationMs = result.durationMs ?? 0;
+  if (result.status === "finished") return mapTerminalResult(result, "succeeded");
+  if (result.status === "cancelled") return mapTerminalResult(result, "cancelled");
+  return mapErrorResult(result, input);
+}
 
-  if (result.status === "finished") {
-    return {
-      branches,
-      durationMs,
-      ...(result.model !== undefined && { model: result.model }),
-      status: "succeeded",
-      ...(result.result !== undefined && { summary: result.result }),
-    };
-  }
-  if (result.status === "cancelled") {
-    return {
-      branches,
-      durationMs,
-      ...(result.model !== undefined && { model: result.model }),
-      status: "cancelled",
-      ...(result.result !== undefined && { summary: result.result }),
-    };
-  }
-  // status === "error"
+// Shared shape for finished / cancelled — same field set, different status tag.
+function mapTerminalResult(result: RunResult, status: "succeeded" | "cancelled"): CursorRunResult {
   return {
-    branches,
-    durationMs,
+    branches: result.git?.branches ?? [],
+    durationMs: result.durationMs ?? 0,
+    ...(result.model !== undefined && { model: result.model }),
+    status,
+    ...(result.result !== undefined && { summary: result.result }),
+  };
+}
+
+// Failed runs carry an errorMessage; the SDK's `result` is the agent's
+// last text, used as the message when present.
+function mapErrorResult(result: RunResult, input: CursorRunInput): CursorRunResult {
+  return {
+    branches: result.git?.branches ?? [],
+    durationMs: result.durationMs ?? 0,
     model: result.model ?? input.model,
     errorMessage: result.result ?? "Cursor SDK reported error without a message",
     status: "failed",
