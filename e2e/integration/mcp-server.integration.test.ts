@@ -142,17 +142,21 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     expect(shipped.status).toBe("running");
 
     // Poll until terminal so the resource read sees the final
-    // hydrated row + artifacts.
+    // hydrated row.
     const terminal = await waitForTerminalRun(shipped.workflowRunId);
     expect(terminal.status).toBe("succeeded");
-    // Wiring-level default pins Cursor `thinking` to high. See
-    // `packages/core/src/default-wiring.ts`: no `params` ⇒ Cursor
-    // resolves to whichever `ModelVariant.isDefault` is set today,
-    // which can shift silently across releases. Assert end-to-end
-    // (subprocess + real-disk SQLite) that this default reaches the
-    // synthesized `CursorRunRef.model` the store persists.
+    // The implement phase carries an FK to the cursor-run row that
+    // was recorded after the runner returned; presence is the
+    // load-bearing check that the post-runner store writes ran.
     const cursorRunPhase = terminal.phases[0];
     expect(cursorRunPhase?.cursorRunId).toBeDefined();
+    // V1 also asserted the wiring-default `thinking: high` propagated
+    // to `shipped.cursorRun.model`. V2's MCP `ship` response no
+    // longer surfaces `CursorRunRef`, and `WorkflowRun` only carries
+    // the phase row's FK — not the embedded ref. Coverage for the
+    // model-resolver path lives at the unit level
+    // (`packages/core/src/service.test.ts` — "uses config.defaultModel
+    // verbatim …" + the thinking-override variants).
 
     const got = await client.readResource({ uri: `ship://runs/${shipped.workflowRunId}` });
     const block = got.contents[0];
@@ -178,6 +182,10 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     const shipped = parseToolJson(shippedRaw) as ShipStartOutput;
     expect(shipped.status).toBe("running");
 
+    // Same V2 caveat as above — the model assertion that used to live
+    // here on `shipped.cursorRun.model` isn't reachable through the
+    // V2 MCP surface. The override-resolver path is unit-tested in
+    // `packages/core/src/service.test.ts`.
     const terminal = await waitForTerminalRun(shipped.workflowRunId);
     expect(terminal.status).toBe("succeeded");
   });
