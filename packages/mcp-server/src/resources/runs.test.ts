@@ -1,6 +1,6 @@
 /** `ship://runs/{id}` resource tests — happy path + unknown-id + listResourceTemplates. */
 
-import type { ShipOutput } from "@ship/mcp";
+import type { ShipStartOutput } from "@ship/mcp";
 import type { WorkflowRun } from "@ship/workflow";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -11,6 +11,7 @@ import {
   parseToolJson,
   TEST_DOC_PATH,
   TEST_WORKDIR,
+  waitForTerminalRun,
 } from "../../test/mcp-harness.js";
 
 let h: McpHarness;
@@ -33,7 +34,10 @@ describe("ship://runs/{id} resource", () => {
       name: "ship",
       arguments: { workdir: TEST_WORKDIR, repo: "ship", docPath: TEST_DOC_PATH },
     });
-    const shipped = parseToolJson(shippedRaw) as ShipOutput;
+    const shipped = parseToolJson(shippedRaw) as ShipStartOutput;
+    // V2: poll until terminal before reading the resource so the
+    // assertion sees the final hydrated row, not the in-flight one.
+    await waitForTerminalRun(h, shipped.workflowRunId);
 
     const got = await h.client.readResource({ uri: `ship://runs/${shipped.workflowRunId}` });
     expect(got.contents).toHaveLength(1);

@@ -12,10 +12,12 @@
 
 import type { ShipService, ShipServiceFactory } from "@ship/core";
 import type { Harness, ServiceBundle } from "@ship/test-harness";
+import type { WorkflowRun } from "@ship/workflow";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createHarness, createServiceFromHarness } from "@ship/test-harness";
+import { isTerminal } from "@ship/workflow";
 
 import { buildServer } from "../src/server.js";
 
@@ -103,4 +105,34 @@ export function expectToolError(result: unknown): { text: string } {
   const block = r.content?.[0];
   const text = typeof block?.text === "string" ? block.text : "";
   return { text };
+}
+
+// Polls `get_workflow_run` for the given id until the row hits a
+// terminal status (`succeeded` | `failed` | `cancelled`). The MCP
+// `ship` tool became async in V2 — it returns `{ status: "running" }`
+// after persisting the row + initial phase, and the background
+// continuation completes on a later tick. Tests that previously read
+// terminal state directly off the `ship` response now wait here.
+//
+// The retry loop is generous (200 × 10ms = 2s) because vitest can
+// schedule lots of timers concurrently on a busy box; the fake-cursor
+// path itself usually resolves on the first poll.
+export async function waitForTerminalRun(
+  h: McpHarness,
+  workflowRunId: string,
+): Promise<WorkflowRun> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const raw = await h.client.callTool({
+      name: "get_workflow_run",
+      arguments: { workflowRunId },
+    });
+    const run = parseToolJson(raw) as WorkflowRun;
+    if (isTerminal(run.status)) {
+      return run;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 10);
+    });
+  }
+  throw new Error(`waitForTerminalRun: timed out waiting for ${workflowRunId} to reach terminal`);
 }

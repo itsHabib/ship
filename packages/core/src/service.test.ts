@@ -1,13 +1,15 @@
 /**
- * Unit tests for `ShipService` — workdir/doc validation, the four
+ * Unit tests for `ShipService` — workdir/doc validation, the five
  * methods, the state machine. Backed by a real `@ship/store`
  * (:memory:), the in-memory `ShipFs`, and `FakeCursorRunner`.
  */
 
 import type { Store } from "@ship/store";
+import type { WorkflowRun } from "@ship/workflow";
 
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore } from "@ship/store";
+import { isTerminal } from "@ship/workflow";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { DocNotFoundError, WorkdirNotFoundError } from "./errors.js";
@@ -16,6 +18,23 @@ import { createShipService, type ShipService, type ShipServiceConfig } from "./s
 
 const RUNS_DIR = "/state/runs";
 const WORKDIR = "/work/wt/feat";
+
+// Polls `service.getRun` for the given id until the row reaches a
+// terminal status. Used by the V2 `startShip` tests — the kickoff
+// returns immediately, so terminal assertions wait here. Also called
+// from each test's drain step so the store isn't closed mid-write.
+async function waitForRunTerminal(service: ShipService, id: string): Promise<WorkflowRun> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    const row = await service.getRun(id);
+    if (row !== null && isTerminal(row.status)) {
+      return row;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 5);
+    });
+  }
+  throw new Error(`waitForRunTerminal: timed out waiting for ${id} to reach terminal`);
+}
 
 function deterministicClock(start: string, stepMs = 1): () => string {
   let t = new Date(start).getTime();
@@ -647,6 +666,194 @@ describe("ShipService.cancelRun", () => {
 
     const out = await shipPromise;
     expect(out.status).toBe("cancelled");
+  });
+});
+
+describe("ShipService.startShip — async kickoff", () => {
+  let h: Harness;
+
+  beforeEach(async () => {
+    h = await createHarness();
+  });
+
+  afterEach(async () => {
+    // Drain any in-flight runs before closing the store so the
+    // background continuation isn't writing to a closed DB.
+    const inFlight = h.store.listRuns({ limit: 100 }).filter((r) => !isTerminal(r.status));
+    for (const r of inFlight) {
+      try {
+        await h.service.cancelRun(r.id);
+      } catch {
+        // ignore: run may have already finished between filter + cancel
+      }
+      await waitForRunTerminal(h.service, r.id).catch(() => undefined);
+    }
+    h.store.close();
+  });
+
+  test("returns immediately with { workflowRunId, status: 'running' }", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const before = Date.now();
+    const start = await h.service.startShip({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    const elapsed = Date.now() - before;
+
+    expect(start.status).toBe("running");
+    expect(start.workflowRunId).toMatch(/^wf_\d{26}$/);
+    // The kickoff is a few SQLite writes — far below the V2 budget of < 1s.
+    expect(elapsed).toBeLessThan(500);
+
+    await waitForRunTerminal(h.service, start.workflowRunId);
+  });
+
+  test("row is in `running` immediately after return; background continuation drives it to terminal", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", summary: "ok", durationMs: 0, branches: [] },
+    });
+
+    const start = await h.service.startShip({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    // Sync-after-return read: `markRunStarted` happened on the same
+    // call stack as the kickoff response, so the row is `running` and
+    // the phase is `running` with `startedAt` set.
+    const initial = await h.service.getRun(start.workflowRunId);
+    expect(initial?.status).toBe("running");
+    expect(initial?.phases[0]?.status).toBe("running");
+    expect(initial?.phases[0]?.startedAt).toBeDefined();
+
+    const terminal = await waitForRunTerminal(h.service, start.workflowRunId);
+    expect(terminal.status).toBe("succeeded");
+    expect(terminal.phases[0]?.status).toBe("succeeded");
+  });
+
+  test("failure in the background continuation is captured by finalizeFailure (terminal `failed`)", async () => {
+    // No script enqueued — FakeCursorRunner rejects with a clear error
+    // that bubbles up to `executeAndFinalize`'s catch.
+    const start = await h.service.startShip({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    expect(start.status).toBe("running");
+
+    const terminal = await waitForRunTerminal(h.service, start.workflowRunId);
+    expect(terminal.status).toBe("failed");
+    expect(terminal.phases[0]?.errorMessage).toMatch(/no script enqueued/i);
+  });
+
+  test("activeRuns is populated before return — cancel immediately after startShip resolves still aborts", async () => {
+    // Use a delayed event stream so the background continuation is
+    // mid-flight when cancel arrives; without spacing, the run
+    // resolves before cancel can interleave.
+    const evt = {
+      type: "assistant" as const,
+      agent_id: "x",
+      run_id: "y",
+      message: { role: "assistant" as const, content: [] },
+    };
+    h.cursor.enqueue({
+      events: [evt, evt] as never,
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+      cancelBehavior: "complete",
+      delayMsBetweenEvents: 100,
+    });
+
+    const start = await h.service.startShip({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    // Cancel on the same microtask as the kickoff return — activeRuns
+    // is populated synchronously, so this triggers the abort signal
+    // path even before the `setImmediate` continuation fires.
+    const cancelOut = await h.service.cancelRun(start.workflowRunId);
+    expect(cancelOut.status).toBe("cancelled");
+
+    const terminal = await waitForRunTerminal(h.service, start.workflowRunId);
+    expect(terminal.status).toBe("cancelled");
+  });
+
+  test("cancel arriving ~50ms after startShip resolves reaches the SDK run", async () => {
+    const evt = {
+      type: "assistant" as const,
+      agent_id: "x",
+      run_id: "y",
+      message: { role: "assistant" as const, content: [] },
+    };
+    h.cursor.enqueue({
+      events: [evt, evt, evt] as never,
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+      cancelBehavior: "complete",
+      delayMsBetweenEvents: 100,
+    });
+
+    const start = await h.service.startShip({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 50);
+    });
+
+    const cancelOut = await h.service.cancelRun(start.workflowRunId);
+    expect(cancelOut.status).toBe("cancelled");
+
+    const terminal = await waitForRunTerminal(h.service, start.workflowRunId);
+    expect(terminal.status).toBe("cancelled");
+  });
+
+  test("cancel arriving mid-run during the cursor.run event stream is honored", async () => {
+    const evt = {
+      type: "assistant" as const,
+      agent_id: "x",
+      run_id: "y",
+      message: { role: "assistant" as const, content: [] },
+    };
+    h.cursor.enqueue({
+      events: [evt, evt, evt, evt, evt] as never,
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+      cancelBehavior: "complete",
+      delayMsBetweenEvents: 100,
+    });
+
+    const start = await h.service.startShip({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    // Wait long enough for the run to be deep into the event stream.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 150);
+    });
+
+    const cancelOut = await h.service.cancelRun(start.workflowRunId);
+    expect(cancelOut.status).toBe("cancelled");
+
+    const terminal = await waitForRunTerminal(h.service, start.workflowRunId);
+    expect(terminal.status).toBe("cancelled");
+  });
+
+  test("workdir doesn't exist → startShip rejects pre-row (no row created)", async () => {
+    await expect(
+      h.service.startShip({ workdir: "/nope", repo: "ship", docPath: "docs.md" }),
+    ).rejects.toBeInstanceOf(WorkdirNotFoundError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
   });
 });
 

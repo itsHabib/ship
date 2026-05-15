@@ -2,9 +2,13 @@
  * `ship` tool tests — happy path + each error path. Uses the
  * in-memory MCP harness (test/mcp-harness.ts) so the request/response
  * dispatch path runs through the actual SDK, not direct method calls.
+ *
+ * V2: the tool returns `{ workflowRunId, status: "running" }` once the
+ * row + initial phase row are persisted. Tests that need terminal
+ * state poll via `waitForTerminalRun`.
  */
 
-import type { ShipOutput } from "@ship/mcp";
+import type { ShipStartOutput } from "@ship/mcp";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -15,6 +19,7 @@ import {
   parseToolJson,
   TEST_DOC_PATH,
   TEST_WORKDIR,
+  waitForTerminalRun,
 } from "../../test/mcp-harness.js";
 
 let h: McpHarness;
@@ -28,22 +33,53 @@ afterEach(async () => {
 });
 
 describe("ship tool", () => {
-  test("happy path: succeeded run returns a ShipOutput with terminal status", async () => {
+  test("returns the async start shape immediately; background continuation reaches terminal", async () => {
     h.harness.cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, summary: "shipped", branches: [] },
+    });
+
+    const before = Date.now();
+    const raw = await h.client.callTool({
+      name: "ship",
+      arguments: { workdir: TEST_WORKDIR, repo: "ship", docPath: TEST_DOC_PATH },
+    });
+    const elapsed = Date.now() - before;
+    const start = parseToolJson(raw) as ShipStartOutput;
+
+    // V2 contract: immediate return with `{ workflowRunId, status: "running" }`.
+    expect(start.status).toBe("running");
+    expect(start.workflowRunId).toMatch(/^wf_/);
+    // Generous bound — the in-memory transport + fake cursor make
+    // this trivially fast in practice. The integration test asserts
+    // the real < 1s budget through the subprocess.
+    expect(elapsed).toBeLessThan(1000);
+
+    const terminal = await waitForTerminalRun(h, start.workflowRunId);
+    expect(terminal.status).toBe("succeeded");
+    expect(terminal.phases).toHaveLength(1);
+    expect(terminal.phases[0]?.status).toBe("succeeded");
+  });
+
+  test("returns the start shape strictly (extra fields would fail the boundary schema)", async () => {
+    h.harness.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
     });
 
     const raw = await h.client.callTool({
       name: "ship",
       arguments: { workdir: TEST_WORKDIR, repo: "ship", docPath: TEST_DOC_PATH },
     });
-    const out = parseToolJson(raw) as ShipOutput;
-    expect(out.status).toBe("succeeded");
-    expect(out.workflowRunId).toMatch(/^wf_/);
-    expect(out.cursorRun.status).toBe("succeeded");
-    expect(out.summary).toBe("shipped");
-    expect(out.artifacts.promptPath).toContain(out.workflowRunId);
+    const start = parseToolJson(raw) as ShipStartOutput;
+    // `shipStartOutputSchema` is `.strict()` + `z.literal("running")`,
+    // so the wire payload has exactly these two keys.
+    expect(Object.keys(start).sort((a, b) => a.localeCompare(b))).toEqual([
+      "status",
+      "workflowRunId",
+    ]);
+
+    await waitForTerminalRun(h, start.workflowRunId);
   });
 
   test("malformed input (missing required field) → isError tool result", async () => {

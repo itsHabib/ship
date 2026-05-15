@@ -1,6 +1,6 @@
 /** `cancel_workflow_run` tool tests — idempotence + unknown-id. */
 
-import type { CancelWorkflowRunOutput, ShipOutput } from "@ship/mcp";
+import type { CancelWorkflowRunOutput, ShipStartOutput } from "@ship/mcp";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -11,6 +11,7 @@ import {
   parseToolJson,
   TEST_DOC_PATH,
   TEST_WORKDIR,
+  waitForTerminalRun,
 } from "../../test/mcp-harness.js";
 
 let h: McpHarness;
@@ -33,7 +34,10 @@ describe("cancel_workflow_run tool", () => {
       name: "ship",
       arguments: { workdir: TEST_WORKDIR, repo: "ship", docPath: TEST_DOC_PATH },
     });
-    const shipped = parseToolJson(shippedRaw) as ShipOutput;
+    const shipped = parseToolJson(shippedRaw) as ShipStartOutput;
+    // V2: wait for the background continuation to land terminal
+    // before cancelling, otherwise the cancel pre-empts the run.
+    await waitForTerminalRun(h, shipped.workflowRunId);
 
     const raw = await h.client.callTool({
       name: "cancel_workflow_run",
