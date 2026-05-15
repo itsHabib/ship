@@ -15,14 +15,14 @@ function fakeClient(responses: readonly { text: string; isError?: boolean }[]): 
   calls: { name: string; arguments?: Record<string, unknown> }[];
 } {
   const calls: { name: string; arguments?: Record<string, unknown> }[] = [];
-  const callTool = vi.fn(async (req: { name: string; arguments?: Record<string, unknown> }) => {
+  const callTool = vi.fn((req: { name: string; arguments?: Record<string, unknown> }) => {
     calls.push(req);
     const idx = Math.min(calls.length - 1, responses.length - 1);
     const r = responses[idx]!;
-    return {
+    return Promise.resolve({
       content: [{ type: "text", text: r.text }],
       isError: r.isError ?? false,
-    };
+    });
   });
   return { client: { callTool }, calls };
 }
@@ -68,37 +68,43 @@ describe("waitForTerminalRun", () => {
   });
 
   test("propagates an isError tool response with workflowRunId prefix", async () => {
-    const { client } = fakeClient([
-      { text: "workflow run not found: wf_missing", isError: true },
-    ]);
+    const { client } = fakeClient([{ text: "workflow run not found: wf_missing", isError: true }]);
 
-    await expect(
-      waitForTerminalRun(client, "wf_missing", { intervalMs: 1 }),
-    ).rejects.toThrow(/waitForTerminalRun\(wf_missing\): poll failed —.*not found/);
+    await expect(waitForTerminalRun(client, "wf_missing", { intervalMs: 1 })).rejects.toThrow(
+      /waitForTerminalRun\(wf_missing\): poll failed —.*not found/,
+    );
   });
 
   test("propagates a malformed-shape response with workflowRunId prefix", async () => {
     // `content[0].type` isn't "text" → parseWorkflowRunResult throws,
     // and the outer catch rewraps with the workflowRunId.
     const client: ToolCaller = {
-      callTool: vi.fn(async () => ({ content: [{ type: "image", data: "..." }], isError: false })),
+      callTool: vi.fn(() =>
+        Promise.resolve({ content: [{ type: "image", data: "..." }], isError: false }),
+      ),
     };
 
-    await expect(
-      waitForTerminalRun(client, "wf_bad", { intervalMs: 1 }),
-    ).rejects.toThrow(/waitForTerminalRun\(wf_bad\): poll failed — unexpected tool response shape/);
+    await expect(waitForTerminalRun(client, "wf_bad", { intervalMs: 1 })).rejects.toThrow(
+      /waitForTerminalRun\(wf_bad\): poll failed — unexpected tool response shape/,
+    );
   });
 
   test("propagates a non-Error throwable with String() coercion", async () => {
+    // Intentionally reject with a non-Error value to exercise the
+    // helper's `String(err)` fallback in the catch block. Lint rules
+    // `prefer-promise-reject-errors` and `only-throw-error` both
+    // forbid the production-code pattern; the test must escape both
+    // to assert the runtime behavior on that exact input.
     const client: ToolCaller = {
-      callTool: vi.fn(async () => {
-        throw "raw string failure";
-      }),
+      callTool: vi.fn(() =>
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        Promise.reject("raw string failure"),
+      ),
     };
 
-    await expect(
-      waitForTerminalRun(client, "wf_str", { intervalMs: 1 }),
-    ).rejects.toThrow(/waitForTerminalRun\(wf_str\): poll failed — raw string failure/);
+    await expect(waitForTerminalRun(client, "wf_str", { intervalMs: 1 })).rejects.toThrow(
+      /waitForTerminalRun\(wf_str\): poll failed — raw string failure/,
+    );
   });
 
   test("honors custom maxAttempts and intervalMs", async () => {
