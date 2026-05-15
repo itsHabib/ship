@@ -34,6 +34,18 @@ interface MigrationRow {
   name: string;
 }
 
+// Locale-independent string comparator. Migrations apply in this order
+// on every host regardless of `LANG` / collation settings.
+function byteCompare(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
+
 /**
  * Applies any pending migrations in lexicographic filename order. Throws
  * `MigrationError` (with original SQLite error as `cause`) on failure;
@@ -45,9 +57,13 @@ export function runMigrations(db: Db, opts: RunMigrationsOptions = {}): void {
 
   ensureBookkeepingTable(db);
 
+  // Byte-wise comparator — migrations need deterministic ordering across
+  // hosts. `localeCompare` would let host locale (e.g. de-DE vs en-US)
+  // reorder filenames containing non-ASCII characters; sticking to UTF-16
+  // code-unit comparison keeps the apply sequence stable everywhere.
   const files = readdirSync(dir)
     .filter((f) => f.endsWith(MIGRATION_FILE_SUFFIX))
-    .sort((a, b) => a.localeCompare(b));
+    .sort(byteCompare);
   const insertStmt = db.prepare("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)");
   const selectAppliedStmt = db.prepare<[], MigrationRow>("SELECT name FROM _migrations");
 
