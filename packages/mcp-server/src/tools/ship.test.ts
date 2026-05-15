@@ -58,7 +58,7 @@ describe("ship tool", () => {
     // the real < 1s budget through the subprocess.
     expect(elapsed).toBeLessThan(1000);
 
-    const terminal = await waitForTerminalRun(h, start.workflowRunId);
+    const terminal = await waitForTerminalRun(h.client, start.workflowRunId);
     expect(terminal.status).toBe("succeeded");
     expect(terminal.phases).toHaveLength(1);
     expect(terminal.phases[0]?.status).toBe("succeeded");
@@ -82,7 +82,7 @@ describe("ship tool", () => {
       "workflowRunId",
     ]);
 
-    await waitForTerminalRun(h, start.workflowRunId);
+    await waitForTerminalRun(h.client, start.workflowRunId);
   });
 
   test("malformed input (missing required field) → isError tool result", async () => {

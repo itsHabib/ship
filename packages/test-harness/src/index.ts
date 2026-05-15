@@ -25,3 +25,7 @@ export {
   sampleTaskDoc,
   sampleWorktree,
 } from "./fixtures.js";
+
+// --- mcp.ts ---
+export type { ToolCaller, WaitForTerminalRunOptions } from "./mcp.js";
+export { waitForTerminalRun } from "./mcp.js";
