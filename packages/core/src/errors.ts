@@ -172,16 +172,16 @@ export class GhAuthError extends Error {
   }
 }
 
-// `octokit.pulls.create` returned non-success for a reason other than
-// auth. Chains the underlying Octokit error as `cause` so the full
-// response body (validation errors, rate-limit headers, etc.) is
-// accessible via `err.cause` for debugging.
+// Octokit returned non-success for a reason other than auth. Class
+// name is historical (created for `pulls.create`) but the type now
+// covers any non-auth Octokit failure from `OpenPrService` — callers
+// pass an already-operation-qualified message (e.g. "pulls.list
+// failed: ...") so the constructor stays a thin pass-through to
+// `Error(message, options)` — `options.cause` is forwarded by the
+// builtin and surfaces the original Octokit `RequestError` (with
+// `response.data.errors[]`) for debugging.
 export class GhCreatePrFailedError extends Error {
   override readonly name = "GhCreatePrFailedError";
-
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(`pulls.create failed: ${message}`, options);
-  }
 }
 
 // Defensive: an `open_pr` call landed on a workflowRunId already

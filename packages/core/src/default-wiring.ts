@@ -90,8 +90,9 @@ export interface DefaultOpenPrServiceOpts {
   readonly dbPath: string;
   /**
    * `GhClient` override. Production omits this and gets a
-   * `createNodeGhClient()` that shells out to the system `gh`.
-   * Integration tests inject a stub that returns canned JSON.
+   * `createNodeGhClient()` (Octokit) that reads `GITHUB_TOKEN` /
+   * `GH_TOKEN` from the environment. Integration tests inject a
+   * stub or a pre-built Octokit pointing at a localhost mock.
    */
   readonly gh?: GhClient;
   /** `GitRemote` override. Production gets `createNodeGitRemote()`. */

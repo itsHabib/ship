@@ -137,19 +137,23 @@ export function createNodeGhClient(opts: NodeGhClientOpts = {}): GhClient {
 
 // Maps any Octokit `RequestError`-shaped throw to a typed Ship error.
 // 401/403 → `GhAuthError` so the MCP/CLI mapper routes it as a user
-// error ("re-auth"); everything else → `GhCreatePrFailedError` named
-// for the operation it was performing. Both chain `cause: err` so the
-// full Octokit response body (validation errors, rate-limit headers)
-// survives on the stack trace.
+// error ("re-auth"); everything else → `GhCreatePrFailedError`. The
+// operation name (`pulls.list` / `pulls.create`) is woven into the
+// message so the operator can tell which call failed; the class name
+// is historical and kept stable for `isUserError`'s instanceof
+// identity. Both chain `cause: err` so the full Octokit response
+// body (validation errors, rate-limit headers) survives.
 function wrapOctokitError(err: unknown, op: string): Error {
   if (typeof err !== "object" || err === null) {
-    return new GhCreatePrFailedError(`${op}: ${String(err)}`);
+    return new GhCreatePrFailedError(`${op} failed: ${String(err)}`);
   }
   const status = (err as { status?: unknown }).status;
   const message =
     typeof (err as { message?: unknown }).message === "string"
       ? (err as { message: string }).message
       : "unknown error";
-  if (status === 401 || status === 403) return new GhAuthError(message, { cause: err });
-  return new GhCreatePrFailedError(`${op}: ${message}`, { cause: err });
+  if (status === 401 || status === 403) {
+    return new GhAuthError(`${op}: ${message}`, { cause: err });
+  }
+  return new GhCreatePrFailedError(`${op} failed: ${message}`, { cause: err });
 }

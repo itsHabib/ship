@@ -460,11 +460,12 @@ function branchAsTitleTail(branch: string): string {
 
 function deriveBody(ctx: OpenPrCtx, prep: PreparedOpenPr): string {
   if (ctx.input.body !== undefined) return ctx.input.body;
+  // By the time we reach this function `prep.subjects.length > 0` is
+  // guaranteed: the existing-PR path returns early in
+  // `driveOpenPrPhase`, and the no-subjects-no-existing-PR path
+  // throws `EmptyBranchError` from `resolvePrep` before this is
+  // reached. So we always have at least one subject to render.
   const lines = ["## Summary", "", `Open PR for run ${ctx.input.workflowRunId}.`, "", "## Changes"];
-  if (prep.subjects.length === 0) {
-    lines.push("- (no commit subjects available)");
-  } else {
-    for (const s of prep.subjects) lines.push(`- ${s}`);
-  }
+  for (const s of prep.subjects) lines.push(`- ${s}`);
   return `${lines.join("\n")}\n`;
 }
