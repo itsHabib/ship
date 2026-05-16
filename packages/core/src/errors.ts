@@ -93,16 +93,19 @@ export class EmptyBranchError extends Error {
 
 // Pre-condition: none of the three base-branch sources resolved
 // (input.base, `branch.<head>.gh-merge-base` git config,
-// `origin/HEAD`). Caller can pass `--base` to bypass.
+// `origin/HEAD`). Caller can pass `--base` to bypass. Accepts an
+// optional `cause` so the underlying `OriginHeadUnsetError` (with
+// its remediation hint) survives on the chain.
 export class BaseBranchUnresolvedError extends Error {
   override readonly name = "BaseBranchUnresolvedError";
   readonly workdir: string;
   readonly head: string;
 
-  constructor(workdir: string, head: string) {
+  constructor(workdir: string, head: string, options?: { cause?: unknown }) {
     super(
       `could not resolve base branch for head=${head} in workdir=${workdir} ` +
         `(no input override, no branch.${head}.gh-merge-base config, no origin/HEAD)`,
+      options,
     );
     this.workdir = workdir;
     this.head = head;

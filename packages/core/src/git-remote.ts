@@ -149,27 +149,62 @@ async function readOriginRepo(bin: string, workdir: string): Promise<ReadOriginR
   }
 }
 
-// Exported for unit testing. Accepts the two URL forms `git remote
-// get-url` emits for GitHub remotes — `https://github.com/<owner>/<repo>(.git)?`
-// and `git@github.com:<owner>/<repo>(.git)?` — and returns the parsed
-// pair. Other hosts / unrecognized shapes return null so the caller
-// can surface a typed `OriginRepoUnresolvedError`.
+// Exported for unit testing. Accepts the three URL forms `git remote
+// get-url` emits for GitHub remotes:
+//   - scp-style SSH:  `git@github.com:<owner>/<repo>(.git)?`
+//   - SSH URI:        `ssh://git@github.com/<owner>/<repo>(.git)?`
+//   - HTTP(S):        `http(s)://github.com/<owner>/<repo>(.git)?`
+// Returns null for any other shape (non-GitHub host, unrecognized
+// scheme, missing owner/repo) so the caller can surface a typed
+// `OriginRepoUnresolvedError`. Host filter is deliberately strict —
+// without it a `gitlab.com` remote would silently get treated as a
+// GitHub slug and dispatch to GitHub's API with the wrong repo.
 export function parseOriginRepoFromUrl(url: string): { owner: string; repo: string } | null {
   if (url === "") return null;
-  // SSH form: git@host:owner/repo(.git)
-  const sshIdx = url.indexOf(":");
-  if (url.startsWith("git@") && sshIdx > 0) {
-    const tail = url.slice(sshIdx + 1);
-    return splitOwnerRepo(tail);
-  }
-  // HTTPS form: https://host/owner/repo(.git) (or http://)
-  if (url.startsWith("http://") || url.startsWith("https://")) {
-    const afterScheme = url.slice(url.indexOf("://") + 3);
-    const firstSlash = afterScheme.indexOf("/");
-    if (firstSlash < 0) return null;
-    return splitOwnerRepo(afterScheme.slice(firstSlash + 1));
-  }
-  return null;
+  const scp = parseScpStyleSsh(url);
+  if (scp !== undefined) return scp;
+  return parseUriStyle(url);
+}
+
+// scp-style SSH: `git@host:tail` (colon, not `://`). Returns
+// `undefined` if the URL isn't in this form so the caller falls through
+// to URI parsing; `null` if the form matches but is malformed.
+function parseScpStyleSsh(url: string): { owner: string; repo: string } | null | undefined {
+  if (!url.startsWith("git@") || url.startsWith("git@://")) return undefined;
+  const colonIdx = url.indexOf(":");
+  if (colonIdx <= "git@".length) return null;
+  const host = url.slice("git@".length, colonIdx);
+  if (!isGithubHost(host)) return null;
+  return splitOwnerRepo(url.slice(colonIdx + 1));
+}
+
+// URI-scheme forms: ssh://, https://, http://. All share the
+// `scheme://[user@]host/path` layout, so factoring extraction here
+// keeps the schemes from drifting.
+function parseUriStyle(url: string): { owner: string; repo: string } | null {
+  const schemeIdx = url.indexOf("://");
+  if (schemeIdx < 0) return null;
+  const scheme = url.slice(0, schemeIdx);
+  if (scheme !== "ssh" && scheme !== "https" && scheme !== "http") return null;
+  const authorityAndPath = url.slice(schemeIdx + 3);
+  const firstSlash = authorityAndPath.indexOf("/");
+  if (firstSlash < 0) return null;
+  const authority = authorityAndPath.slice(0, firstSlash);
+  // Strip optional `user@` prefix from the authority (the `ssh://`
+  // form typically carries `git@`; HTTPS may carry tokens).
+  const atIdx = authority.lastIndexOf("@");
+  const host = atIdx < 0 ? authority : authority.slice(atIdx + 1);
+  if (!isGithubHost(host)) return null;
+  return splitOwnerRepo(authorityAndPath.slice(firstSlash + 1));
+}
+
+// Recognized GitHub hosts. `github.com` is the public host; the
+// optional Enterprise carve-out is intentionally narrow — operators
+// can lift this with a config knob if/when needed. Wildcard subdomain
+// matches keep `api.github.com` and similar out (different API base).
+function isGithubHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === "github.com" || normalized === "www.github.com";
 }
 
 function splitOwnerRepo(tail: string): { owner: string; repo: string } | null {
@@ -221,10 +256,15 @@ async function listCommitSubjects(
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line !== "");
-  } catch {
-    // `git log` errors on unknown ref typically mean base or head
-    // hasn't been pushed yet — treat that as "no commits" so the
-    // empty-branch precondition fires instead of leaking a git error.
+  } catch (err) {
+    // Distinguish "unknown ref" (exit 128) from "no commits matched"
+    // — the former should propagate so an operator passing a typo
+    // via `--base` gets a real diagnostic, not a misleading
+    // EmptyBranchError. The latter naturally yields stdout="" and
+    // never throws.
+    if (isExitCode(err, 128)) {
+      throw wrapAsGitError(err, `git log ${base}..${head}`);
+    }
     return [];
   }
 }

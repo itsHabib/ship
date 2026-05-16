@@ -102,14 +102,18 @@ export function createNodeGhClient(opts: NodeGhClientOpts = {}): GhClient {
   return {
     listOpenPrsForBranch: async ({ owner, repo, head, base }) => {
       const client = getOctokit();
-      const { data } = await client.pulls.list({
-        owner,
-        repo,
-        head: `${owner}:${head}`,
-        base,
-        state: "open",
-      });
-      return data.map((pr) => ({ number: pr.number, url: pr.html_url }));
+      try {
+        const { data } = await client.pulls.list({
+          owner,
+          repo,
+          head: `${owner}:${head}`,
+          base,
+          state: "open",
+        });
+        return data.map((pr) => ({ number: pr.number, url: pr.html_url }));
+      } catch (err) {
+        throw wrapOctokitError(err, "pulls.list");
+      }
     },
     createPr: async ({ owner, repo, base, head, title, body, draft }) => {
       const client = getOctokit();
@@ -125,24 +129,27 @@ export function createNodeGhClient(opts: NodeGhClientOpts = {}): GhClient {
         });
         return { number: data.number, url: data.html_url };
       } catch (err) {
-        throw wrapCreatePrError(err);
+        throw wrapOctokitError(err, "pulls.create");
       }
     },
   };
 }
 
-function wrapCreatePrError(err: unknown): Error {
+// Maps any Octokit `RequestError`-shaped throw to a typed Ship error.
+// 401/403 → `GhAuthError` so the MCP/CLI mapper routes it as a user
+// error ("re-auth"); everything else → `GhCreatePrFailedError` named
+// for the operation it was performing. Both chain `cause: err` so the
+// full Octokit response body (validation errors, rate-limit headers)
+// survives on the stack trace.
+function wrapOctokitError(err: unknown, op: string): Error {
   if (typeof err !== "object" || err === null) {
-    return new GhCreatePrFailedError(String(err));
+    return new GhCreatePrFailedError(`${op}: ${String(err)}`);
   }
   const status = (err as { status?: unknown }).status;
   const message =
     typeof (err as { message?: unknown }).message === "string"
       ? (err as { message: string }).message
       : "unknown error";
-  // Chain the Octokit RequestError as `cause` so callers can inspect
-  // `err.cause.response.data.errors[]` for the structured GitHub
-  // validation detail (rate-limit headers, per-field errors, etc.).
   if (status === 401 || status === 403) return new GhAuthError(message, { cause: err });
-  return new GhCreatePrFailedError(message, { cause: err });
+  return new GhCreatePrFailedError(`${op}: ${message}`, { cause: err });
 }

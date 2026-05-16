@@ -145,6 +145,19 @@ describe("createNodeGhClient — listOpenPrsForBranch", () => {
     });
     expect(prs).toEqual([]);
   });
+
+  test("maps 401 to GhAuthError (idempotency probe must surface auth failures)", async () => {
+    routes.push({
+      method: "GET",
+      pathStartsWith: "/repos/x/y/pulls",
+      status: 401,
+      body: { message: "Bad credentials" },
+    });
+    const client = createNodeGhClient({ token: "ghp_x", baseUrl });
+    await expect(
+      client.listOpenPrsForBranch({ owner: "x", repo: "y", head: "feat", base: "main" }),
+    ).rejects.toBeInstanceOf(GhAuthError);
+  });
 });
 
 describe("createNodeGhClient — createPr", () => {

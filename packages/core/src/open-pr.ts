@@ -253,8 +253,12 @@ async function resolveBase(ctx: OpenPrCtx, workdir: string, head: string): Promi
   if (fromConfig !== null) return fromConfig;
   try {
     return await ctx.git.readDefaultBranch({ workdir });
-  } catch {
-    throw new BaseBranchUnresolvedError(workdir, head);
+  } catch (err) {
+    // Chain the original error (typically `OriginHeadUnsetError`,
+    // which carries the `git remote set-head origin -a` remediation
+    // hint) so the operator sees the actionable root cause via
+    // `err.cause` instead of losing it to the wrapper.
+    throw new BaseBranchUnresolvedError(workdir, head, { cause: err });
   }
 }
 

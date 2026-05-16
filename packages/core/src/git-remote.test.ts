@@ -58,6 +58,36 @@ describe("parseOriginRepoFromUrl", () => {
     });
   });
 
+  test("parses ssh:// URI form (with userinfo)", () => {
+    expect(parseOriginRepoFromUrl("ssh://git@github.com/itsHabib/ship.git")).toEqual({
+      owner: "itsHabib",
+      repo: "ship",
+    });
+  });
+
+  test("parses ssh:// URI form (without userinfo)", () => {
+    expect(parseOriginRepoFromUrl("ssh://github.com/itsHabib/ship.git")).toEqual({
+      owner: "itsHabib",
+      repo: "ship",
+    });
+  });
+
+  test("rejects non-GitHub https host (gitlab.com)", () => {
+    expect(parseOriginRepoFromUrl("https://gitlab.com/owner/repo.git")).toBeNull();
+  });
+
+  test("rejects non-GitHub scp-SSH host", () => {
+    expect(parseOriginRepoFromUrl("git@gitlab.com:owner/repo.git")).toBeNull();
+  });
+
+  test("rejects non-GitHub ssh:// URI host", () => {
+    expect(parseOriginRepoFromUrl("ssh://git@gitlab.com/owner/repo.git")).toBeNull();
+  });
+
+  test("rejects api.github.com (different API base, not a repo host)", () => {
+    expect(parseOriginRepoFromUrl("https://api.github.com/owner/repo.git")).toBeNull();
+  });
+
   test("parses http:// (insecure) form", () => {
     // eslint-disable-next-line sonarjs/no-clear-text-protocols -- exercising the parser's http scheme branch
     expect(parseOriginRepoFromUrl("http://github.com/owner/repo.git")).toEqual({
