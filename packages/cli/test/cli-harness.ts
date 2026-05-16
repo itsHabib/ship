@@ -8,11 +8,21 @@
  * glob (`src/**`) doesn't count this helper as production code.
  */
 
-import type { ShipService } from "@ship/core";
-import type { Harness, ServiceBundle } from "@ship/test-harness";
+import type { OpenPrService, ShipService } from "@ship/core";
+import type {
+  FakeGhClient,
+  FakeGitRemote,
+  Harness,
+  OpenPrServiceBundle,
+  ServiceBundle,
+} from "@ship/test-harness";
 import type { Command } from "commander";
 
-import { createHarness, createServiceFromHarness } from "@ship/test-harness";
+import {
+  createHarness,
+  createOpenPrServiceFromHarness,
+  createServiceFromHarness,
+} from "@ship/test-harness";
 import { resolve as resolvePath } from "node:path";
 
 import { CliExit } from "../src/errors.js";
@@ -25,7 +35,11 @@ const WORKDIR = resolvePath("/work/wt/feat");
 export interface CliHarness {
   readonly program: Command;
   readonly service: ShipService;
+  readonly openPrService: OpenPrService;
   readonly bundle: ServiceBundle;
+  readonly openPrBundle: OpenPrServiceBundle;
+  readonly gh: FakeGhClient;
+  readonly git: FakeGitRemote;
   readonly harness: Harness;
   readonly stdout: string[];
   readonly stderr: string[];
@@ -37,10 +51,14 @@ export async function createCliHarness(
 ): Promise<CliHarness> {
   const harness = createHarness();
   const bundle = createServiceFromHarness(harness, opts);
+  const openPrBundle = createOpenPrServiceFromHarness(harness);
   await bundle.fs.mkdir(WORKDIR, { recursive: true });
   await bundle.fs.writeFile(`${WORKDIR}/docs.md`, "# Task\n\nDo it.\n");
 
-  const program = buildProgram(() => bundle.service);
+  const program = buildProgram(
+    () => bundle.service,
+    () => openPrBundle.service,
+  );
   const stdout: string[] = [];
   const stderr: string[] = [];
   // Capture via process.stdout/process.stderr without spawning child procs.
@@ -58,7 +76,11 @@ export async function createCliHarness(
   return {
     program,
     service: bundle.service,
+    openPrService: openPrBundle.service,
     bundle,
+    openPrBundle,
+    gh: openPrBundle.gh,
+    git: openPrBundle.git,
     harness,
     stdout,
     stderr,

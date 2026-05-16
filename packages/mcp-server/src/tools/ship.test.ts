@@ -115,13 +115,14 @@ describe("ship tool", () => {
     expect(expectToolError(raw).text).toMatch(/passwd|escape|not found/i);
   });
 
-  test("tools/list returns the four tools (ship registered correctly)", async () => {
+  test("tools/list returns the V1 tools + the V2 open_pr tool", async () => {
     const list = await h.client.listTools();
     const names = list.tools.map((t) => t.name).sort((a, b) => a.localeCompare(b));
     expect(names).toEqual([
       "cancel_workflow_run",
       "get_workflow_run",
       "list_workflow_runs",
+      "open_pr",
       "ship",
     ]);
   });

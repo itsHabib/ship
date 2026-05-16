@@ -8,7 +8,7 @@
  * `StdioServerTransport`.
  */
 
-import type { ShipServiceFactory } from "@ship/core";
+import type { OpenPrServiceFactory, ShipServiceFactory } from "@ship/core";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -16,6 +16,7 @@ import { registerRunsResource } from "./resources/runs.js";
 import { registerCancelWorkflowRunTool } from "./tools/cancel-workflow-run.js";
 import { registerGetWorkflowRunTool } from "./tools/get-workflow-run.js";
 import { registerListWorkflowRunsTool } from "./tools/list-workflow-runs.js";
+import { registerOpenPrTool } from "./tools/open-pr.js";
 import { registerShipTool } from "./tools/ship.js";
 
 /** Server name reported via the MCP `initialize` handshake. */
@@ -31,17 +32,27 @@ const SERVER_NAME = "ship";
 const SERVER_VERSION = "0.0.0";
 
 /**
- * Constructs an `McpServer` with all four V1 tools and the runs
- * resource registered. Tools/resources auto-register `tools.listChanged`
- * and `resources.listChanged` capabilities through the SDK's high-level
+ * Constructs an `McpServer` with every Ship tool + the runs resource
+ * registered. Tools/resources auto-register `tools.listChanged` and
+ * `resources.listChanged` capabilities through the SDK's high-level
  * `McpServer` class — no manual capability block needed.
+ *
+ * Two factories so consumers that only need `ShipService` (or only
+ * need `OpenPrService`) don't pay typecheck cost for the other; the
+ * production wiring in `@ship/core/src/default-wiring.ts` shares the
+ * underlying store + activeRuns when both factories are constructed
+ * against the same `dbPath`.
  */
-export function buildServer(factory: ShipServiceFactory): McpServer {
+export function buildServer(
+  shipFactory: ShipServiceFactory,
+  openPrFactory: OpenPrServiceFactory,
+): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-  registerShipTool(server, factory);
-  registerGetWorkflowRunTool(server, factory);
-  registerListWorkflowRunsTool(server, factory);
-  registerCancelWorkflowRunTool(server, factory);
-  registerRunsResource(server, factory);
+  registerShipTool(server, shipFactory);
+  registerGetWorkflowRunTool(server, shipFactory);
+  registerListWorkflowRunsTool(server, shipFactory);
+  registerCancelWorkflowRunTool(server, shipFactory);
+  registerOpenPrTool(server, openPrFactory);
+  registerRunsResource(server, shipFactory);
   return server;
 }

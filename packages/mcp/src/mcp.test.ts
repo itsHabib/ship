@@ -14,6 +14,9 @@ import {
   getWorkflowRunOutputSchema,
   listWorkflowRunsInputSchema,
   listWorkflowRunsOutputSchema,
+  openPrInputSchema,
+  openPrOutputSchema,
+  phaseIdSchema,
   shipArtifactsSchema,
   shipInputSchema,
   shipOutputSchema,
@@ -435,5 +438,98 @@ describe("cancelWorkflowRunOutputSchema", () => {
         extra: 1,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("openPrInputSchema", () => {
+  test("accepts a workflowRunId only", () => {
+    const parsed = openPrInputSchema.parse({ workflowRunId: WF_ID });
+    expect(parsed.workflowRunId).toBe(WF_ID);
+    expect(parsed.draft).toBeUndefined();
+  });
+
+  test("rejects unknown keys", () => {
+    expect(openPrInputSchema.safeParse({ workflowRunId: WF_ID, surprise: true }).success).toBe(
+      false,
+    );
+  });
+
+  test("rejects malformed workflowRunId", () => {
+    expect(openPrInputSchema.safeParse({ workflowRunId: "bad-id" }).success).toBe(false);
+  });
+
+  test("accepts all overrides", () => {
+    const parsed = openPrInputSchema.parse({
+      workflowRunId: WF_ID,
+      base: "main",
+      title: "feat: x",
+      body: "body",
+      draft: true,
+    });
+    expect(parsed.draft).toBe(true);
+    expect(parsed.title).toBe("feat: x");
+  });
+
+  test("rejects empty base / title", () => {
+    expect(openPrInputSchema.safeParse({ workflowRunId: WF_ID, base: "" }).success).toBe(false);
+    expect(openPrInputSchema.safeParse({ workflowRunId: WF_ID, title: "" }).success).toBe(false);
+  });
+});
+
+describe("openPrOutputSchema", () => {
+  const validOutput = {
+    workflowRunId: WF_ID,
+    phaseId: "ph_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    prNumber: 42,
+    prUrl: "https://github.com/owner/repo/pull/42",
+    base: "main",
+    head: "tower/x",
+    alreadyExisted: false,
+    status: "succeeded" as const,
+  };
+
+  test("accepts a valid output shape", () => {
+    expect(openPrOutputSchema.parse(validOutput)).toEqual(validOutput);
+  });
+
+  test("rejects status other than succeeded (literal narrowing)", () => {
+    expect(openPrOutputSchema.safeParse({ ...validOutput, status: "running" }).success).toBe(false);
+    expect(openPrOutputSchema.safeParse({ ...validOutput, status: "failed" }).success).toBe(false);
+  });
+
+  test("rejects malformed phaseId", () => {
+    expect(openPrOutputSchema.safeParse({ ...validOutput, phaseId: "wf_bad" }).success).toBe(false);
+  });
+
+  test("rejects non-URL prUrl", () => {
+    expect(openPrOutputSchema.safeParse({ ...validOutput, prUrl: "not a url" }).success).toBe(
+      false,
+    );
+  });
+
+  test("rejects non-positive prNumber", () => {
+    expect(openPrOutputSchema.safeParse({ ...validOutput, prNumber: 0 }).success).toBe(false);
+    expect(openPrOutputSchema.safeParse({ ...validOutput, prNumber: -1 }).success).toBe(false);
+  });
+
+  test("rejects unknown keys (strict mode)", () => {
+    expect(openPrOutputSchema.safeParse({ ...validOutput, extra: 1 }).success).toBe(false);
+  });
+});
+
+describe("phaseIdSchema", () => {
+  test("accepts canonical ph_<ulid>", () => {
+    expect(phaseIdSchema.parse("ph_01ARZ3NDEKTSV4RRFFQ69G5FAV")).toBe(
+      "ph_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    );
+  });
+
+  test("rejects wf_ / cr_ prefix", () => {
+    expect(phaseIdSchema.safeParse("wf_01ARZ3NDEKTSV4RRFFQ69G5FAV").success).toBe(false);
+    expect(phaseIdSchema.safeParse("cr_01ARZ3NDEKTSV4RRFFQ69G5FAV").success).toBe(false);
+  });
+
+  test("rejects bare ULID without prefix", () => {
+    expect(phaseIdSchema.safeParse("01ARZ3NDEKTSV4RRFFQ69G5FAV").success).toBe(false);
   });
 });

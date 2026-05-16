@@ -82,13 +82,14 @@ afterEach(async () => {
 });
 
 describe("ship-mcp-server binary — subprocess smoke", () => {
-  test("listTools returns the four V1 tools", async () => {
+  test("listTools returns every registered tool", async () => {
     const list = await client.listTools();
     const names = list.tools.map((t) => t.name).sort((a, b) => a.localeCompare(b));
     expect(names).toEqual([
       "cancel_workflow_run",
       "get_workflow_run",
       "list_workflow_runs",
+      "open_pr",
       "ship",
     ]);
   });

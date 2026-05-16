@@ -100,9 +100,13 @@ describe("phaseKindSchema", () => {
     expect(phaseKindSchema.parse("implement")).toBe("implement");
   });
 
-  test("rejects V2-only kinds", () => {
+  test("accepts the V2 open_pr kind", () => {
+    expect(phaseKindSchema.parse("open_pr")).toBe("open_pr");
+  });
+
+  test("rejects unknown kinds", () => {
     expect(phaseKindSchema.safeParse("review").success).toBe(false);
-    expect(phaseKindSchema.safeParse("open_pr").success).toBe(false);
+    expect(phaseKindSchema.safeParse("ci_fix").success).toBe(false);
   });
 });
 

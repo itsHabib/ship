@@ -16,5 +16,8 @@ describe("@ship/mcp barrel export (index.ts)", () => {
     expect(typeof mcp.cancelWorkflowRunInputSchema.parse).toBe("function");
     expect(typeof mcp.cancelWorkflowRunOutputSchema.parse).toBe("function");
     expect(typeof mcp.thinkingEffortSchema.parse).toBe("function");
+    expect(typeof mcp.openPrInputSchema.parse).toBe("function");
+    expect(typeof mcp.openPrOutputSchema.parse).toBe("function");
+    expect(typeof mcp.phaseIdSchema.parse).toBe("function");
   });
 });
