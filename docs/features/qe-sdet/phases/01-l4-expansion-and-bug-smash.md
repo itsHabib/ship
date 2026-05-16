@@ -14,9 +14,9 @@ Date: 2026-05-16
 |---|---|---|
 | 5 new `*.e2e.test.ts` files under `e2e/scenarios/` | 0.5× × ~500 LOC = 250 | core deliverable |
 | Shared `event-tailer.ts` extraction from `hello-world.e2e.test.ts` | 0.5× × ~30 LOC = 15 | helper for the 5 scenarios |
-| `e2e/fixtures/open-pr-sandbox/` tree (task docs + `.gitignore`) | 0× (fixtures count as docs per CLAUDE.md PR sizing) | setup |
+| `e2e/fixtures/open-pr-sandbox/` tree (task docs + `.gitignore`) | 0.5× × ~80 LOC = 40 | fixtures are 0.5× per CLAUDE.md PR sizing |
 | `e2e/README.md` setup checklist | 0× | docs |
-| **Total weighted** | | **~265 LOC** |
+| **Total weighted** | | **~305 LOC** |
 
 Comfortably under the < 500 "amazing" band. The doc PR itself is 0× (docs).
 
@@ -96,7 +96,7 @@ Per `../spec.md` § ED-4, L4 fixtures are co-located under `e2e/`; this phase ad
 Each new scenario reuses three conventions from `hello-world.e2e.test.ts`:
 
 - **Isolated env via `HOME` / `APPDATA` / `USERPROFILE` overrides** so the CLI's config dir resolves inside the tmpdir, not the operator's real config.
-- **Event tailer** (`startEventTailer`) for visibility during a 30–90s live run. Extract the tailer from `hello-world.e2e.test.ts:140–186` into `e2e/scenarios/event-tailer.ts` (shared helper) since 5 scenarios will use it. The existing implementation's multi-byte UTF-8 boundary handling stays — see the JSDoc on `position` for why.
+- **Event tailer** (`startEventTailer`) for visibility during a 30–90s live run. Extract the tailer from `hello-world.e2e.test.ts:140–222` (both `startEventTailer` and the `findEventsNdjson` helper it depends on) into `e2e/scenarios/event-tailer.ts` (shared helper) since 5 scenarios will use it. The existing implementation's multi-byte UTF-8 boundary handling stays — see the JSDoc on `position` for why.
 - **`test.skip` on missing env vars** so the gate fails loud at the suite level, not silent at each assertion.
 
 ## Non-functional requirements
@@ -128,15 +128,20 @@ Each L4 scenario reads `SHIP_E2E_SANDBOX_REPO` (e.g. `itsHabib/ship-live-sandbox
 
 ### ED-2 — One `git remote add origin` per scenario, no persistent worktree
 
-Each scenario's tmp tree gets its own `git init` + `git remote add origin git@github.com:<sandbox>.git`. The tmp tree is destroyed in `afterAll`. No persistent worktree across runs — keeps state clean, makes scenarios independently runnable.
+Each scenario's tmp tree gets its own `git init` + `git remote add origin https://x-access-token:${GITHUB_TOKEN}@github.com/<sandbox>.git`. HTTPS-with-token over SSH because `GITHUB_TOKEN` is already required by ED-1 and works uniformly across CI, local dev, and any environment without an SSH agent; using `git@github.com:...` would silently fail on CI. The tmp tree is destroyed in `afterAll`. No persistent worktree across runs — keeps state clean, makes scenarios independently runnable.
 
 ### ED-3 — Branch naming: `tower/live-e2e-<workflowRunId>`
 
-Branches pushed during L4 use `tower/live-e2e-<workflowRunId>` so they're identifiable and disposable. The `tower/<name>` convention is from the chip-worktree memory; the `live-e2e-` prefix lets a periodic cleanup script filter (`gh api repos/<sandbox>/branches --jq '.[].name' | grep '^tower/live-e2e-' | xargs ...`).
+Branches pushed during L4 use `tower/live-e2e-<workflowRunId>` so they're identifiable and disposable. The `tower/<name>` convention is the repo-wide branch-naming standard (used across Ship; see [CLAUDE.md](../../../../CLAUDE.md) § Development workbench → tower). The `live-e2e-` prefix lets a periodic cleanup script filter (`gh api repos/<sandbox>/branches --jq '.[].name' | grep '^tower/live-e2e-' | xargs ...`).
 
 ### ED-4 — Failure-path scenario uses pre-existing remote state
 
-`open-pr-failure-paths.e2e.test.ts` § "push reject" needs a branch on the sandbox repo with commits the local tmp tree doesn't have. The scenario sets this up programmatically in `beforeEach`: push an unrelated commit to a target branch directly via `gh api PATCH repos/<sandbox>/git/refs/heads/<branch>`, then run ship + `open_pr` against the same branch → expect `BranchPushFailedError`. Cleanup in `afterEach` resets the branch.
+`open-pr-failure-paths.e2e.test.ts` § "push reject" needs a branch on the sandbox repo with commits the local tmp tree doesn't have. The scenario sets this up programmatically in `beforeEach` using plain git rather than `gh api`:
+
+1. In a separate tmp clone of the sandbox: `git clone https://x-access-token:${GITHUB_TOKEN}@github.com/<sandbox>.git`, `git checkout -b <target-branch>`, `echo "diverge" > diverge.txt`, `git add . && git commit -m "diverge"`, `git push -f origin <target-branch>`.
+2. The scenario's main tmp tree then runs ship + `open_pr` against `<target-branch>` → expect `BranchPushFailedError`.
+
+`afterEach` deletes the target branch via `git push origin --delete <target-branch>`. Using git directly avoids the `gh api PATCH /git/refs` 404-on-missing-ref pitfall, and the auth model uses the already-required `GITHUB_TOKEN` rather than introducing a REST-API code path.
 
 ### ED-5 — Live cancellation scenario uses a long-running fixture doc
 
@@ -203,7 +208,7 @@ Run each scenario 3× consecutively against the sandbox repo. No flakes; if a fl
 After this doc + `../spec.md` are reviewed and merged:
 
 1. **One-time setup.** Operator creates `itsHabib/ship-live-sandbox`; turns off branch protection on `main`; disables GitHub Actions on the repo; documents the setup in `e2e/README.md`. (One-time, not in scope of any implementation PR.)
-2. **Add `e2e/fixtures/open-pr-sandbox/`** with `README.md`, `docs/features/sandbox.md`, `docs/features/long.md`, `.gitignore`. ~50 LOC, 0× weight.
+2. **Add `e2e/fixtures/open-pr-sandbox/`** with `README.md`, `docs/features/sandbox.md`, `docs/features/long.md`, `.gitignore`. ~80 LOC × 0.5 = ~40 weighted (fixtures are 0.5× per CLAUDE.md PR sizing).
 3. **Extract `event-tailer.ts`** from `hello-world.e2e.test.ts:140–186` into `e2e/scenarios/event-tailer.ts`; update `hello-world.e2e.test.ts` to import it. ~100 LOC moved, ~15 weighted.
 4. **A1 — `open-pr.e2e.test.ts`.** ~100 LOC × 0.5 = 50 weighted.
 5. **A2 — `ship-then-open-pr.e2e.test.ts`.** ~120 LOC × 0.5 = 60 weighted.
@@ -211,9 +216,10 @@ After this doc + `../spec.md` are reviewed and merged:
 7. **A4 — `open-pr-failure-paths.e2e.test.ts`.** ~140 LOC × 0.5 = 70 weighted.
 8. **A5 — `idempotent-open-pr.e2e.test.ts`.** ~80 LOC × 0.5 = 40 weighted.
 9. **Update `e2e/README.md`** with the sandbox-repo + token checklist + per-scenario quota table. 0× weight.
-10. **Run locally 3× per scenario** against the sandbox repo. Outcome captured in this phase's "Outcome" section.
+10. **Update `CLAUDE.md` § Docs layout** with a one-liner link to `docs/features/qe-sdet/spec.md` § Test-layer taxonomy. Closes spec.md Open Q 2 (taxonomy lives in this feature folder, linked from CLAUDE.md rather than inlined). 0× weight (docs).
+11. **Run locally 3× per scenario** against the sandbox repo. Outcome captured in this phase's "Outcome" section.
 
-Total weighted LOC: **~265** (under "amazing"). Wall time: ~3–4h.
+Total weighted LOC: **~305** (under "amazing"). Wall time: ~3–4h.
 
 ## Outcome
 
