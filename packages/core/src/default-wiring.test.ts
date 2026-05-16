@@ -146,7 +146,11 @@ describe("createDefaultOpenPrService", () => {
         readConfig: () => Promise.resolve(null),
         readDefaultBranch: () => Promise.resolve("main"),
         readCurrentBranch: () => Promise.resolve(null),
-        readOriginRepo: () => Promise.resolve({ owner: "test", repo: "test" }),
+        readOriginRepo: () =>
+          Promise.resolve({
+            slug: { owner: "test", repo: "test" },
+            rawUrl: "https://github.com/test/test.git",
+          }),
         listCommitSubjects: () => Promise.resolve([]),
         pushBranch: () => Promise.resolve(),
       },

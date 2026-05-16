@@ -18,10 +18,10 @@ interface OpenPrOpts {
 export function registerOpenPrCommand(program: Command, factory: OpenPrServiceFactory): void {
   program
     .command("open-pr <workflowRunId>")
-    .description("push the run's branch and open a PR via gh")
+    .description("push the run's branch and open a PR via the GitHub REST API")
     .option(
       "--base <ref>",
-      "override the PR's base branch (default: resolved from gh config / origin/HEAD)",
+      "override the PR's base branch (default: resolved from git config / origin/HEAD)",
     )
     .option("--title <text>", "override the derived PR title")
     .option("--body <text>", "override the derived PR body")
@@ -29,12 +29,16 @@ export function registerOpenPrCommand(program: Command, factory: OpenPrServiceFa
     .option("--json", "emit machine-readable JSON instead of pretty output")
     .action(async (workflowRunId: string, rawOpts: OpenPrOpts) => {
       try {
+        // `--draft` defaults to false at commander's level so
+        // `rawOpts.draft` is always a boolean. The other optionals
+        // stay conditional so the service's own defaults apply when
+        // the flag was absent.
         const out = await factory().openPr({
           workflowRunId,
+          draft: rawOpts.draft ?? false,
           ...(rawOpts.base !== undefined && { base: rawOpts.base }),
           ...(rawOpts.title !== undefined && { title: rawOpts.title }),
           ...(rawOpts.body !== undefined && { body: rawOpts.body }),
-          ...(rawOpts.draft !== undefined && { draft: rawOpts.draft }),
         });
         process.stdout.write(`${formatOpenPrOutput(out, rawOpts.json)}\n`);
       } catch (err) {

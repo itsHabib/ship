@@ -112,11 +112,20 @@ describe("createFakeGitRemote", () => {
   test("readOriginRepo defaults to test/test; setOriginRepo(null) returns null", async () => {
     const git = createFakeGitRemote();
     expect(await git.readOriginRepo({ workdir: "/w" })).toEqual({
-      owner: "test",
-      repo: "test",
+      slug: { owner: "test", repo: "test" },
+      rawUrl: "https://github.com/test/test.git",
     });
     git.setOriginRepo(null);
     expect(await git.readOriginRepo({ workdir: "/w" })).toBeNull();
+  });
+
+  test("setOriginRepo({ rawUrl }) → { slug: null, rawUrl }", async () => {
+    const git = createFakeGitRemote();
+    git.setOriginRepo({ rawUrl: "ftp://example.com/owner/repo" });
+    expect(await git.readOriginRepo({ workdir: "/w" })).toEqual({
+      slug: null,
+      rawUrl: "ftp://example.com/owner/repo",
+    });
   });
 
   test("listCommitSubjects honors setCommitSubjects", async () => {

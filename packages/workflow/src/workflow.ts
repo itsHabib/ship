@@ -30,8 +30,9 @@ export type PhaseKind = z.infer<typeof phaseKindSchema>;
 
 /**
  * Shape persisted in `Phase.outputJson` for a successful `open_pr` phase.
- * `errorMessage` is set when the phase transitions to `failed` (e.g. push
- * rejected, gh create errored) so the row carries forensics inline.
+ * Failure-path forensics go in the `error_message` column on the phase row
+ * (via `Store.updatePhase({ errorMessage })`), not in `outputJson` — the
+ * success-only shape keeps the schema honest about what the JSON contains.
  */
 export const phaseOpenPrResultSchema = z
   .object({
@@ -40,7 +41,6 @@ export const phaseOpenPrResultSchema = z
     base: z.string().min(1),
     head: z.string().min(1),
     alreadyExisted: z.boolean(),
-    errorMessage: z.string().min(1).optional(),
   })
   .strict();
 export type PhaseOpenPrResult = z.infer<typeof phaseOpenPrResultSchema>;

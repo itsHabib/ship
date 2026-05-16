@@ -88,23 +88,34 @@ export type FakeGitCall =
     }
   | { readonly kind: "pushBranch"; readonly workdir: string; readonly branch: string };
 
-/** `GitRemote` stub with assertion-friendly call log + per-method seeds. */
+/**
+ * `GitRemote` stub with assertion-friendly call log + per-method seeds.
+ *
+ * `setOriginRepo` accepts three shapes:
+ * - `{ owner, repo }` — happy path, fake returns `{ slug: ..., rawUrl }`.
+ * - `null` — `git remote get-url origin` itself failed (no remote, no
+ *   repo); the fake returns `null` directly.
+ * - `{ rawUrl }` — the URL was returned but unparseable; the fake
+ *   returns `{ slug: null, rawUrl }`.
+ */
 export interface FakeGitRemote extends GitRemote {
   readonly calls: readonly FakeGitCall[];
   setConfigValue(value: string | null): void;
   setDefaultBranch(branch: string | Error): void;
   setCurrentBranch(branch: string | null): void;
-  setOriginRepo(slug: { owner: string; repo: string } | null): void;
+  setOriginRepo(value: { owner: string; repo: string } | { rawUrl: string } | null): void;
   setCommitSubjects(subjects: string[]): void;
   setPushError(err: Error | null): void;
 }
+
+type FakeOriginSeed = { owner: string; repo: string } | { rawUrl: string } | null;
 
 export function createFakeGitRemote(): FakeGitRemote {
   const calls: FakeGitCall[] = [];
   let configValue: string | null = null;
   let defaultBranch: string | Error = "main";
   let currentBranch: string | null = null;
-  let originRepo: { owner: string; repo: string } | null = { owner: "test", repo: "test" };
+  let originSeed: FakeOriginSeed = { owner: "test", repo: "test" };
   let commitSubjects: string[] = ["initial commit on feature branch"];
   let pushError: Error | null = null;
   return {
@@ -119,7 +130,7 @@ export function createFakeGitRemote(): FakeGitRemote {
       currentBranch = b;
     },
     setOriginRepo: (s) => {
-      originRepo = s;
+      originSeed = s;
     },
     setCommitSubjects: (s) => {
       commitSubjects = s.slice();
@@ -143,7 +154,14 @@ export function createFakeGitRemote(): FakeGitRemote {
     },
     readOriginRepo: ({ workdir }) => {
       calls.push({ kind: "readOriginRepo", workdir });
-      return Promise.resolve(originRepo);
+      if (originSeed === null) return Promise.resolve(null);
+      if ("rawUrl" in originSeed) {
+        return Promise.resolve({ slug: null, rawUrl: originSeed.rawUrl });
+      }
+      return Promise.resolve({
+        slug: originSeed,
+        rawUrl: `https://github.com/${originSeed.owner}/${originSeed.repo}.git`,
+      });
     },
     listCommitSubjects: ({ workdir, head, base }) => {
       calls.push({ kind: "listCommitSubjects", workdir, head, base });

@@ -89,7 +89,11 @@ export function createNodeGhClient(opts: NodeGhClientOpts = {}): GhClient {
       );
     }
     const octokitOpts: OctokitOpts = { auth: token };
-    const baseUrl = opts.baseUrl ?? process.env["SHIP_OCTOKIT_BASE_URL"];
+    // Env-var override is test-scoped on purpose: the `SHIP_TEST_`
+    // prefix mirrors `SHIP_TEST_FAKE_CURSOR` and makes the intent
+    // visible to operators (an accidentally-set var would otherwise
+    // silently redirect every GitHub call to a mock host).
+    const baseUrl = opts.baseUrl ?? process.env["SHIP_TEST_OCTOKIT_BASE_URL"];
     if (baseUrl !== undefined && baseUrl !== "") octokitOpts.baseUrl = baseUrl;
     octokit = new Octokit(octokitOpts);
     return octokit;
@@ -136,6 +140,9 @@ function wrapCreatePrError(err: unknown): Error {
     typeof (err as { message?: unknown }).message === "string"
       ? (err as { message: string }).message
       : "unknown error";
-  if (status === 401 || status === 403) return new GhAuthError(message);
-  return new GhCreatePrFailedError(message);
+  // Chain the Octokit RequestError as `cause` so callers can inspect
+  // `err.cause.response.data.errors[]` for the structured GitHub
+  // validation detail (rate-limit headers, per-field errors, etc.).
+  if (status === 401 || status === 403) return new GhAuthError(message, { cause: err });
+  return new GhCreatePrFailedError(message, { cause: err });
 }

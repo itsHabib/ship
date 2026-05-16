@@ -208,6 +208,15 @@ describe("openPr — preconditions (no phase row created on failure)", () => {
     );
     expect(openPrPhaseCount(h.store, run.id)).toBe(0);
   });
+
+  test("origin URL present but unparseable → OriginRepoUnresolvedError quotes the URL", async () => {
+    const run = seedRun();
+    b.git.setOriginRepo({ rawUrl: "ftp://example.com/owner/repo" });
+    await expect(b.service.openPr({ workflowRunId: run.id })).rejects.toThrow(
+      /ftp:\/\/example\.com\/owner\/repo/,
+    );
+    expect(openPrPhaseCount(h.store, run.id)).toBe(0);
+  });
 });
 
 describe("openPr — base-branch resolution order (Validation §)", () => {

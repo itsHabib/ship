@@ -10,8 +10,8 @@
 // `@ship/mcp-server` binary. Spawns `tsx src/bin.ts`, connects an
 // MCP `Client`, seeds a workflow run in the real on-disk SQLite,
 // stands up a localhost HTTP server pretending to be GitHub
-// (Octokit's `SHIP_OCTOKIT_BASE_URL` env var points at it), and
-// drives the `open_pr` tool end-to-end. The same flow tests the
+// (Octokit's `SHIP_TEST_OCTOKIT_BASE_URL` env var points at it),
+// and drives the `open_pr` tool end-to-end. The same flow tests the
 // idempotent branch (second `open_pr` against the same run).
 
 import type { OpenPrOutput } from "@ship/mcp";
@@ -214,7 +214,7 @@ function buildChildEnv(): ChildEnv {
   env["SHIP_DB_PATH"] = dbPath;
   env["SHIP_RUNS_DIR"] = runsDir;
   env["GITHUB_TOKEN"] = "ghp_integration_test";
-  env["SHIP_OCTOKIT_BASE_URL"] = mock.baseUrl;
+  env["SHIP_TEST_OCTOKIT_BASE_URL"] = mock.baseUrl;
   return { tmp, dbPath, runsDir, workdir, env };
 }
 

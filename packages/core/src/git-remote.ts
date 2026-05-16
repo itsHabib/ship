@@ -10,6 +10,15 @@ import { BranchPushFailedError, OriginHeadUnsetError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
 
+// Discriminator-bearing result for `readOriginRepo`. `slug` is null
+// when `git remote get-url origin` returned a URL we couldn't parse;
+// `rawUrl` is always present so the caller's typed error can quote it
+// back to the operator.
+export interface ReadOriginRepoResult {
+  readonly slug: { owner: string; repo: string } | null;
+  readonly rawUrl: string;
+}
+
 export interface GitRemote {
   // Reads a local git config value. Returns null when unset
   // (git's "exit 1 + no stdout" convention).
@@ -28,11 +37,14 @@ export interface GitRemote {
   // `ship` caller didn't supply one.
   readCurrentBranch(opts: { workdir: string }): Promise<string | null>;
 
-  // Parses `git remote get-url origin` into `{ owner, repo }`. Returns
-  // null when the URL isn't a recognizable GitHub form (ssh or https).
-  // Octokit needs both fields explicitly — the gh CLI auto-resolved
-  // them, but the SDK doesn't.
-  readOriginRepo(opts: { workdir: string }): Promise<{ owner: string; repo: string } | null>;
+  // Parses `git remote get-url origin` into `{ owner, repo, rawUrl }`.
+  // Returns null only when `git` itself failed (no origin remote, not
+  // a git repo); when the URL is present but not a recognizable
+  // GitHub form, the result has `owner === null` and the caller surfaces
+  // a typed error with the unparseable URL on the hint. Octokit needs
+  // both fields explicitly — the gh CLI auto-resolved them, but the
+  // SDK doesn't.
+  readOriginRepo(opts: { workdir: string }): Promise<ReadOriginRepoResult | null>;
 
   // Returns commit subjects on `head` that are not on `base`, oldest-
   // first. Empty array → branch is empty against base. Used both for
@@ -127,13 +139,11 @@ export function parseHeadBranchFromRemoteShow(stdout: string): string | null {
   return null;
 }
 
-async function readOriginRepo(
-  bin: string,
-  workdir: string,
-): Promise<{ owner: string; repo: string } | null> {
+async function readOriginRepo(bin: string, workdir: string): Promise<ReadOriginRepoResult | null> {
   try {
     const { stdout } = await execFileAsync(bin, ["-C", workdir, "remote", "get-url", "origin"]);
-    return parseOriginRepoFromUrl(stdout.trim());
+    const rawUrl = stdout.trim();
+    return { slug: parseOriginRepoFromUrl(rawUrl), rawUrl };
   } catch {
     return null;
   }

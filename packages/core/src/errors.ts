@@ -159,22 +159,25 @@ export class BranchPushFailedError extends Error {
 // GitHub rejected auth — missing `GITHUB_TOKEN`, expired token, or
 // 401/403 from the API. The operator's next step is to set or refresh
 // the token; the surface stays generic so it covers both cases.
+// Accepts an optional `cause` so the original Octokit `RequestError`
+// (with `response.data.errors[]`) is preserved on the stack trace.
 export class GhAuthError extends Error {
   override readonly name = "GhAuthError";
 
-  constructor(message: string) {
-    super(`GitHub auth failed: ${message}`);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(`GitHub auth failed: ${message}`, options);
   }
 }
 
 // `octokit.pulls.create` returned non-success for a reason other than
-// auth. Preserves the API's message inline; the structured detail is
-// available on `cause` via Octokit's `RequestError`.
+// auth. Chains the underlying Octokit error as `cause` so the full
+// response body (validation errors, rate-limit headers, etc.) is
+// accessible via `err.cause` for debugging.
 export class GhCreatePrFailedError extends Error {
   override readonly name = "GhCreatePrFailedError";
 
-  constructor(message: string) {
-    super(`pulls.create failed: ${message}`);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(`pulls.create failed: ${message}`, options);
   }
 }
 

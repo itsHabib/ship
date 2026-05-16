@@ -176,13 +176,21 @@ async function resolvePrep(ctx: OpenPrCtx): Promise<PreparedOpenPr> {
   assertImplementPhaseSucceeded(run);
   await assertWorkdirIsGit(ctx.fs, run.worktree.path);
 
-  const slug = await ctx.git.readOriginRepo({ workdir: run.worktree.path });
-  if (slug === null) {
+  const origin = await ctx.git.readOriginRepo({ workdir: run.worktree.path });
+  if (origin === null) {
+    // `git remote get-url origin` itself failed — no remote, not a repo.
     throw new OriginRepoUnresolvedError(run.worktree.path);
   }
+  if (origin.slug === null) {
+    // We got a URL back, but couldn't parse it. Surface the URL so
+    // the operator sees exactly what failed (e.g. a GitLab remote, a
+    // bare path, a typo).
+    throw new OriginRepoUnresolvedError(run.worktree.path, `origin url: ${origin.rawUrl}`);
+  }
+  const slug = origin.slug;
 
-  const head = await resolveHead(ctx, run.worktree.branch);
-  const base = await resolveBase(ctx, head);
+  const head = await resolveHead(ctx, run.worktree);
+  const base = await resolveBase(ctx, run.worktree.path, head);
   const existingPr = await probeExistingPr(ctx, slug, head, base);
   // Idempotency probe runs BEFORE the empty-branch check (§ F5 +
   // Validation §). A cherry-picked-into-base branch that still has
@@ -224,21 +232,20 @@ async function assertWorkdirIsGit(fs: ShipFs, workdir: string): Promise<void> {
   }
 }
 
-async function resolveHead(ctx: OpenPrCtx, recordedBranch: string): Promise<string> {
-  if (recordedBranch !== "" && recordedBranch !== "(unknown)") return recordedBranch;
-  const run = ctx.store.getRun(ctx.input.workflowRunId);
-  const current = run ? await ctx.git.readCurrentBranch({ workdir: run.worktree.path }) : null;
+async function resolveHead(
+  ctx: OpenPrCtx,
+  worktree: { branch: string; path: string },
+): Promise<string> {
+  if (worktree.branch !== "" && worktree.branch !== "(unknown)") return worktree.branch;
+  const current = await ctx.git.readCurrentBranch({ workdir: worktree.path });
   if (current === null || current === "") {
     throw new EmptyBranchError("(unknown)", ctx.input.base ?? "(unknown)");
   }
   return current;
 }
 
-async function resolveBase(ctx: OpenPrCtx, head: string): Promise<string> {
+async function resolveBase(ctx: OpenPrCtx, workdir: string, head: string): Promise<string> {
   if (ctx.input.base !== undefined) return ctx.input.base;
-  const run = ctx.store.getRun(ctx.input.workflowRunId);
-  if (run === null) throw new WorkflowRunNotFoundError(ctx.input.workflowRunId);
-  const workdir = run.worktree.path;
   const fromConfig = await ctx.git.readConfig({
     workdir,
     key: `branch.${head}.gh-merge-base`,
