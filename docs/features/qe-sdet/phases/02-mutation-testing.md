@@ -18,7 +18,7 @@ Date: 2026-05-16
 | `packages/core/README.md` mutation-testing section | 0× | ~20 LOC docs |
 | **Total weighted** | | **~0 LOC** |
 
-Pure config + workflow + docs. No production source touched. No new tests rewritten — surviving mutants become chips per `spec.md` § "Bug-smash is a continuous practice".
+Pure config + workflow + docs. No production source touched. No new tests rewritten — surviving mutants become chips per `spec.md` § "Bug-smash cadence" (current default: continuous).
 
 **Time budget:** ~2h impl + ~30min validation + ~1h first-nightly review.
 
@@ -146,7 +146,7 @@ Stryker is the only actively-maintained TypeScript-aware mutation tool. The runn
 
 ### ED-3 — Surviving mutant → chip, not in-tree fix
 
-Per `spec.md` § Philosophy ("continuous practice"), feedback flows through the chip queue. Each surviving mutant that's a real gap becomes a `mcp__ccd_session__spawn_task` chip; the chip's PR adds the missing test. The mutation workflow itself never modifies production code or tests — decouples "find gaps" (mutation) from "fix gaps" (chip → test PR).
+Per `spec.md` § "Bug-smash cadence" (current default: continuous), feedback flows through the chip queue. Each surviving mutant that's a real gap becomes a `mcp__ccd_session__spawn_task` chip; the chip's PR adds the missing test. The mutation workflow itself never modifies production code or tests — decouples "find gaps" (mutation) from "fix gaps" (chip → test PR).
 
 ### ED-4 — `@stryker-disable` comments are review-gated
 

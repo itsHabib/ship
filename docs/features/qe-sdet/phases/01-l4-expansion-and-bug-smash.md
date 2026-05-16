@@ -4,7 +4,7 @@ Status: design draft, revision 1 (2026-05-16). Awaiting review before implementa
 Owner: itsHabib
 Date: 2026-05-16
 
-> **Companion docs.** [../spec.md](../spec.md) defines the test-layer taxonomy + philosophy this phase operates inside (including § "Bug-smash is a continuous practice"). Predecessors: [ship-v1/phases/04-qe-sdet.md](../../ship-v1/phases/04-qe-sdet.md) (test-harness + 4-layer skeleton) and [ship-v1/phases/09-bug-smash.md](../../ship-v1/phases/09-bug-smash.md) (the older dedicated bug-smash model — superseded by continuous practice per spec.md). The surface under expansion is [ship-v2/phases/02-open-pr.md](../../ship-v2/phases/02-open-pr.md). The PR-sizing rule in [CLAUDE.md](../../../../CLAUDE.md) governs the budget below.
+> **Companion docs.** [../spec.md](../spec.md) defines the test-layer taxonomy + philosophy this phase operates inside (including § "Bug-smash cadence"). Predecessors: [ship-v1/phases/04-qe-sdet.md](../../ship-v1/phases/04-qe-sdet.md) (test-harness + 4-layer skeleton) and [ship-v1/phases/09-bug-smash.md](../../ship-v1/phases/09-bug-smash.md) (the dedicated bug-smash model — paused for now per spec.md § "Bug-smash cadence" but still valid; returns later for major surfaces). The surface under expansion is [ship-v2/phases/02-open-pr.md](../../ship-v2/phases/02-open-pr.md). The PR-sizing rule in [CLAUDE.md](../../../../CLAUDE.md) governs the budget below.
 
 ## Scope
 
@@ -20,7 +20,7 @@ Date: 2026-05-16
 
 Comfortably under the < 500 "amazing" band. The doc PR itself is 0× (docs).
 
-Bug-smash output (chips that surface during implementation) is governed by `spec.md` § "Bug-smash is a continuous practice" — chips file as friction is encountered, in their own task docs + PRs, not part of this phase's budget.
+Bug-smash output (chips that surface during implementation) is governed by `spec.md` § "Bug-smash cadence" — current default is continuous, so chips file as friction is encountered, in their own task docs + PRs, not part of this phase's budget.
 
 **Time budget:** ~3–4h impl once the design lands.
 
@@ -36,7 +36,7 @@ This phase closes the L4 gap. 5 new live-e2e scenarios under `e2e/scenarios/`:
 - **A4** — Failure paths (missing `GITHUB_TOKEN`, malformed doc, push reject).
 - **A5** — Idempotent re-open returns the existing PR.
 
-Real Cursor + real GitHub; `SHIP_LIVE=1`-gated. Per `spec.md` § "Bug-smash is a continuous practice", any friction surfaced during implementation is chipped in real time — no dedicated bug-smash track in this phase.
+Real Cursor + real GitHub; `SHIP_LIVE=1`-gated. Per `spec.md` § "Bug-smash cadence" (current default: continuous), any friction surfaced during implementation is chipped in real time — no dedicated bug-smash track in this phase. Dedicated smash returns later for major surfaces if the operator picks it.
 
 ## Functional requirements
 
@@ -114,7 +114,7 @@ Each new scenario reuses three conventions from `hello-world.e2e.test.ts`:
 |---|---|---|---|
 | Sandbox repo vs ephemeral repo per run | Single dedicated sandbox repo | `gh repo create` per run | Single repo: lower quota, simpler env wiring, faster local re-run. Ephemeral: zero shared state but adds quota + permissions ceremony. L4 isn't aiming for parallel CI yet — single repo suffices. |
 | Force-push on each run | Yes (operator-owned sandbox repo) | Branch-per-run, never reuse | Force-push: predictable cleanup. Branch-per-run avoids force-push but the sandbox repo accumulates a branch graveyard. Force-push wins given the repo is throwaway. |
-| Bug-smash as a sibling track in this phase | No (continuous practice instead) | Bundle a "Track B — bug-smash" alongside L4 work | Per `spec.md` § Philosophy, bug-smash is continuous. Bundling it into a dedicated phase track produces lumpy feedback; surfacing chips as the implementation hits friction is the new default. |
+| Bug-smash as a sibling track in this phase | No (continuous for now) | Bundle a "Track B — bug-smash" alongside L4 work | Operator preference (session 2026-05-16): for now, lean on L4 + chips filed during normal work rather than carve out a dedicated smash session. Dedicated bug-smash returns later for major surfaces — see `spec.md` § "Bug-smash cadence". |
 | New scenarios under `e2e/scenarios/` (flat) vs subfolder | Flat | `e2e/scenarios/open-pr/` subfolder | Flat namespace, easy `find e2e/scenarios -name '*.e2e.test.ts'`. Subfolders premature at 5 scenarios; revisit if the count grows past ~10. |
 | Extract `event-tailer.ts` vs duplicate inline | Extract | Inline copy in each file | DRY at 5 use sites; one helper keeps the multi-byte UTF-8 boundary fix in one place. |
 | Sub-tests in `open-pr-failure-paths.e2e.test.ts` | One file, three `test()` calls | Three separate files | The three failure modes share fixture setup; bundling halves the fixture overhead. Independent within the file via `describe` blocks. |
@@ -160,7 +160,7 @@ Each scenario, when run with `SHIP_LIVE=1 CURSOR_API_KEY=... GITHUB_TOKEN=... SH
 - A4 (`failure-paths`): each sub-test asserts the typed error class + post-condition (no PR / no phase / failed phase) per its description.
 - A5 (`idempotent-open-pr`): second call returns the same `prUrl` with `alreadyExisted: true`; no second PR created on the sandbox repo.
 
-Run each scenario 3× consecutively against the sandbox repo. No flakes; if a flake surfaces, it's a chip (per the continuous-bug-smash practice).
+Run each scenario 3× consecutively against the sandbox repo. No flakes; if a flake surfaces, it's a chip (per `spec.md` § "Bug-smash cadence" — continuous chip-filing).
 
 ### Phase acceptance
 
@@ -217,4 +217,4 @@ Total weighted LOC: **~265** (under "amazing"). Wall time: ~3–4h.
 
 ## Outcome
 
-*Populated when the phase closes — per-scenario run table (mirroring phase 9's L3 results table) + any chips filed during implementation per `spec.md` § "Bug-smash is a continuous practice".*
+*Populated when the phase closes — per-scenario run table (mirroring phase 9's L3 results table) + any chips filed during implementation per `spec.md` § "Bug-smash cadence".*

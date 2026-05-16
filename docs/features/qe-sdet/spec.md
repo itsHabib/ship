@@ -61,19 +61,18 @@ Per-package coverage thresholds (phase 4 § F4) gate against regression: deletin
 
 L4 burns Cursor quota, hits real GitHub, and takes minutes. Each new L4 scenario must justify its existence over an L3 equivalent. Default for a new feature: "add an L3 integration test using a fake/stub; add an L4 only when the failure mode is invisible at L3" — e.g. SDK-specific stream shapes, real-network rate-limit handling, third-party state changes (GitHub PRs, branch protection).
 
-### Bug-smash is a continuous practice
+### Bug-smash cadence
 
-The phase-9 model — a dedicated hostile-reviewer pass + adversarial-input matrix + live dogfood as its own phase + PR — produced feedback in lumpy, lagging batches. The continuous model flips that: every feature's implementation is itself a bug-smash opportunity. The agent (or human) encounters real friction as it uses Ship/Tower/Dossier to ship a feature; each friction point becomes a chip filed via `mcp__ccd_session__spawn_task` in real time, in the same session that's doing the implementation.
+Two valid bug-smash models coexist:
 
-Concretely:
+- **Continuous** — implementers file chips via `mcp__ccd_session__spawn_task` as they encounter friction during normal phase work. No dedicated session; the chips ARE the smash output.
+- **Dedicated** — a hostile-reviewer pass + adversarial-input matrix + live dogfood as its own phase + PR (the phase-9 model).
 
-- Implementers file chips during normal phase work, not in a separate session.
-- A phase doc doesn't carve out a "bug-smash track"; the smash is implicit in the implementation.
-- The chip queue's 8-cap from phase 9 ED-3 still applies. If it grows past 8 mid-feature, that's signal for a structural review doc, not "skip filing."
-- Phase 9's chip quality bar (ED-1 reproducer-or-precise-codepath + ED-2 prompt checklist: symptom / reproducer / expected vs actual / suggested approach / out of scope) applies to every chip filed under this model.
-- The dedicated phase-9 model is still valid for one case: a major surface that's been live a while without intensive agent use. That's the exception; continuous is the default.
+**Current default: continuous.** While the toolchain is moving fast, dedicated smash sessions produce lumpy, time-expensive feedback. For now, lean on L4 expansion (live testing) + the chip queue to surface friction naturally — the agent uses Ship/Tower/Dossier to ship features, friction surfaces in real time, chips file in the same session that's doing the work.
 
-The goal is to drive feedback into the development lifecycle. Using the toolchain on every feature produces the feedback automatically; scheduling a bug-smash session produces it only when scheduled.
+**Dedicated bug-smash will return** for major surfaces as the toolchain stabilizes. A `review` or `ci_fix` phase that's been live a while without intensive use is the right candidate for a fresh phase-9-style smash doc. Operator picks per-feature when the trade-off shifts.
+
+Either way, the chip-quality bar is unchanged: phase 9's ED-1 (reproducer-or-precise-codepath) + ED-2 (prompt checklist: symptom / reproducer / expected vs actual / suggested approach / out of scope), and the 8-cap on the P2/P3 queue.
 
 ### Tests are first-class code
 
