@@ -64,7 +64,20 @@ export interface ShipServiceDeps {
     phase: () => string;
     cursorRun: () => string;
   };
+  // Shared `activeRuns` registry. When provided, the same Map is used
+  // for in-flight `ship` runs and `open_pr` runs so `cancelRun` can
+  // signal whichever service holds the controller. Omitted → service
+  // creates its own private map.
+  readonly activeRuns?: ActiveRunsRegistry;
 }
+
+// Shared registry of in-flight runs. Each entry carries an
+// `AbortController` whose `signal` the running service observes; the
+// optional `handle` is `ShipService`-specific (it lets `cancelRun`
+// abort an in-flight cursor SDK call). `OpenPrService` populates an
+// entry without a handle. Exported so default wiring can construct a
+// single Map and pass it to both services.
+export type ActiveRunsRegistry = Map<string, ActiveRun>;
 
 /** Public service surface. CLI + MCP server code against this. */
 export interface ShipService {
@@ -79,7 +92,9 @@ export interface ShipService {
   cancelRun(workflowRunId: string): Promise<{ workflowRunId: string; status: WorkflowStatus }>;
 }
 
-interface ActiveRun {
+// Per-run entry stored in the shared `ActiveRunsRegistry`. `handle` is
+// `ShipService`-specific; `OpenPrService` populates an entry without one.
+export interface ActiveRun {
   readonly controller: AbortController;
   handle?: CursorRunHandle;
 }
@@ -91,7 +106,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     phase: newPhaseId,
     cursorRun: newCursorRunId,
   };
-  const activeRuns = new Map<string, ActiveRun>();
+  const activeRuns: ActiveRunsRegistry = deps.activeRuns ?? new Map<string, ActiveRun>();
   const makeCtx = (input: ShipInput): ShipContext => ({
     activeRuns,
     clock,
@@ -124,7 +139,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
 }
 
 interface ShipContext {
-  readonly activeRuns: Map<string, ActiveRun>;
+  readonly activeRuns: ActiveRunsRegistry;
   readonly clock: () => string;
   readonly config: ShipServiceConfig;
   readonly cursor: CursorRunner;

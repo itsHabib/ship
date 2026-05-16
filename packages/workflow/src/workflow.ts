@@ -24,9 +24,26 @@ export type WorkflowStatus = z.infer<typeof workflowStatusSchema>;
 export const phaseStatusSchema = z.enum(["pending", "running", "succeeded", "failed", "cancelled"]);
 export type PhaseStatus = z.infer<typeof phaseStatusSchema>;
 
-/** Discriminator for what kind of work a `Phase` represents. V1 ships only `"implement"`. */
-export const phaseKindSchema = z.enum(["implement"]);
+/** Discriminator for what kind of work a `Phase` represents. */
+export const phaseKindSchema = z.enum(["implement", "open_pr"]);
 export type PhaseKind = z.infer<typeof phaseKindSchema>;
+
+/**
+ * Shape persisted in `Phase.outputJson` for a successful `open_pr` phase.
+ * `errorMessage` is set when the phase transitions to `failed` (e.g. push
+ * rejected, gh create errored) so the row carries forensics inline.
+ */
+export const phaseOpenPrResultSchema = z
+  .object({
+    prNumber: z.number().int().positive(),
+    prUrl: z.string().url(),
+    base: z.string().min(1),
+    head: z.string().min(1),
+    alreadyExisted: z.boolean(),
+    errorMessage: z.string().min(1).optional(),
+  })
+  .strict();
+export type PhaseOpenPrResult = z.infer<typeof phaseOpenPrResultSchema>;
 
 /**
  * Lifecycle states the underlying Cursor SDK run can be in. No `pending`:

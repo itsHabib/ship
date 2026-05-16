@@ -15,9 +15,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@octokit/rest": "^21.0.2",
     "@ship/cursor-runner": "workspace:*",
     "@ship/mcp": "workspace:*",
     "@ship/store": "workspace:*",
     "@ship/workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@ship/test-harness": "workspace:*"
   }
 }

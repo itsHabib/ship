@@ -8,23 +8,28 @@
 
 import { Command } from "commander";
 
-import type { ServiceFactory } from "./service.js";
+import type { OpenPrServiceFactory, ServiceFactory } from "./service.js";
 
 import { registerCancelCommand } from "./commands/cancel.js";
 import { registerListCommand } from "./commands/list.js";
+import { registerOpenPrCommand } from "./commands/open-pr.js";
 import { registerShipCommand } from "./commands/ship.js";
 import { registerStatusCommand } from "./commands/status.js";
 
-export function buildProgram(factory: ServiceFactory): Command {
+export function buildProgram(
+  factory: ServiceFactory,
+  openPrFactory: OpenPrServiceFactory,
+): Command {
   const program = new Command()
     .name("ship")
-    .description("Ship V1 — drive ShipService from the terminal")
+    .description("Ship — drive ShipService + OpenPrService from the terminal")
     .exitOverride();
 
   registerShipCommand(program, factory);
   registerStatusCommand(program, factory);
   registerListCommand(program, factory);
   registerCancelCommand(program, factory);
+  registerOpenPrCommand(program, openPrFactory);
 
   return program;
 }

@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { buildProgram } from "../../packages/cli/src/program.js";
-import { createCliService } from "../../packages/cli/src/service.js";
+import { createCliOpenPrService, createCliService } from "../../packages/cli/src/service.js";
 
 interface IntHarness {
   program: Command;
@@ -39,7 +39,8 @@ function createIntHarness(): IntHarness {
   const workdir = join(tmp, "work");
   const cursor = new FakeCursorRunner();
   const factory = createCliService({ dbPath, runsDir, cursor });
-  const program = buildProgram(factory);
+  const openPrFactory = createCliOpenPrService({ dbPath });
+  const program = buildProgram(factory, openPrFactory);
   return { program, cursor, workdir, dbPath, runsDir };
 }
 

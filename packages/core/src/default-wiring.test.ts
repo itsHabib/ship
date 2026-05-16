@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { createDefaultShipService } from "./default-wiring.js";
+import { createDefaultOpenPrService, createDefaultShipService } from "./default-wiring.js";
 
 describe("createDefaultShipService", () => {
   test("returns a memoizing factory: two calls yield the same service", () => {
@@ -103,6 +103,55 @@ describe("createDefaultShipService", () => {
       id: "custom-model-without-thinking-grid",
       params: [],
     });
+  });
+});
+
+describe("createDefaultOpenPrService", () => {
+  // The shared-infra cache is keyed by dbPath string, but the dbPath
+  // is also passed verbatim to better-sqlite3 — `:memory:` is the only
+  // sentinel that opens an in-process db. To get distinct cache
+  // entries per test without colliding the in-process db across tests
+  // (and to avoid the test-file ordering coupling that follows), each
+  // test uses its own tmpdir SQLite file.
+  function freshDbPath(label: string): string {
+    const tmp = mkdtempSync(join(tmpdir(), `ship-wiring-${label}-`));
+    return join(tmp, "state.db");
+  }
+
+  test("returns a memoizing factory: two calls yield the same service", () => {
+    const factory = createDefaultOpenPrService({ dbPath: freshDbPath("memo") });
+    const first = factory();
+    const second = factory();
+    expect(first).toBe(second);
+    expect(typeof first.openPr).toBe("function");
+  });
+
+  test("shares the activeRuns + store with createDefaultShipService for the same dbPath", () => {
+    const dbPath = freshDbPath("shared");
+    const tmp = mkdtempSync(join(tmpdir(), "ship-shared-runs-"));
+    const shipFactory = createDefaultShipService({ dbPath, runsDir: join(tmp, "runs") });
+    const openPrFactory = createDefaultOpenPrService({ dbPath });
+    expect(() => shipFactory()).not.toThrow();
+    expect(() => openPrFactory()).not.toThrow();
+  });
+
+  test("explicit gh / git overrides bypass the production-default impls", () => {
+    const factory = createDefaultOpenPrService({
+      dbPath: freshDbPath("overrides"),
+      gh: {
+        listOpenPrsForBranch: () => Promise.resolve([]),
+        createPr: () => Promise.resolve({ number: 1, url: "https://github.com/test/test/pull/1" }),
+      },
+      git: {
+        readConfig: () => Promise.resolve(null),
+        readDefaultBranch: () => Promise.resolve("main"),
+        readCurrentBranch: () => Promise.resolve(null),
+        readOriginRepo: () => Promise.resolve({ owner: "test", repo: "test" }),
+        listCommitSubjects: () => Promise.resolve([]),
+        pushBranch: () => Promise.resolve(),
+      },
+    });
+    expect(typeof factory().openPr).toBe("function");
   });
 });
 

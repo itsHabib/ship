@@ -10,14 +10,21 @@ import { CommanderError } from "commander";
 
 import { CliExit } from "./errors.js";
 import { buildProgram } from "./program.js";
-import { createCliService, resolveDbPath, resolveRunsDir } from "./service.js";
+import {
+  createCliOpenPrService,
+  createCliService,
+  resolveDbPath,
+  resolveRunsDir,
+} from "./service.js";
 
 async function main(): Promise<void> {
+  const dbPath = resolveDbPath();
   const factory = createCliService({
-    dbPath: resolveDbPath(),
+    dbPath,
     runsDir: resolveRunsDir(),
   });
-  const program = buildProgram(factory);
+  const openPrFactory = createCliOpenPrService({ dbPath });
+  const program = buildProgram(factory, openPrFactory);
   await program.parseAsync(process.argv);
 }
 
