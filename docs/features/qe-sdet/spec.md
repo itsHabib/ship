@@ -24,7 +24,7 @@ The shape is intended to be templatable — the four-layer taxonomy + the doc st
 ## Non-goals
 
 - Replace phase 4's `@ship/test-harness` package. It's still the home for the `Harness` class + scenario helpers; this feature builds on it.
-- Replace phase 9's bug-smash methodology. Phase 9's ED-1 validation bar + ED-2 chip checklist remain the bar. This feature's bug-smash phases re-run the methodology against new surfaces; they don't redefine it.
+- Replace phase 9's chip quality bar. ED-1 (reproducer-or-precise-codepath) + ED-2 (chip prompt checklist) remain the bar for every chip, whether filed continuously during a phase or in a rare dedicated smash session.
 - Define coverage thresholds. Those live per-package in each package's `vitest.config.ts` (phase 4 § F4). This feature observes them, doesn't move them.
 - Define the e2e fixture-repo shape. `e2e/fixtures/test-repo/` is the existing convention; new phases add sibling fixture trees rather than rearrange.
 - Migrate the phase 4 / phase 9 doc content here. Cross-link, don't move — see Open question 1.
@@ -61,9 +61,19 @@ Per-package coverage thresholds (phase 4 § F4) gate against regression: deletin
 
 L4 burns Cursor quota, hits real GitHub, and takes minutes. Each new L4 scenario must justify its existence over an L3 equivalent. Default for a new feature: "add an L3 integration test using a fake/stub; add an L4 only when the failure mode is invisible at L3" — e.g. SDK-specific stream shapes, real-network rate-limit handling, third-party state changes (GitHub PRs, branch protection).
 
-### Bug-smash is a phase, not a footnote
+### Bug-smash is a continuous practice
 
-Per phase 9, a hostile-reviewer pass + adversarial-input matrix + live dogfood is its own phase with its own PR. New surfaces (`open_pr`, future `review`, `ci_fix`) re-run the same methodology — fresh phase doc, fresh chip queue, same ED-1 validation bar. Bundling bug-smash into a feature's implementation PR loses the design-time review.
+The phase-9 model — a dedicated hostile-reviewer pass + adversarial-input matrix + live dogfood as its own phase + PR — produced feedback in lumpy, lagging batches. The continuous model flips that: every feature's implementation is itself a bug-smash opportunity. The agent (or human) encounters real friction as it uses Ship/Tower/Dossier to ship a feature; each friction point becomes a chip filed via `mcp__ccd_session__spawn_task` in real time, in the same session that's doing the implementation.
+
+Concretely:
+
+- Implementers file chips during normal phase work, not in a separate session.
+- A phase doc doesn't carve out a "bug-smash track"; the smash is implicit in the implementation.
+- The chip queue's 8-cap from phase 9 ED-3 still applies. If it grows past 8 mid-feature, that's signal for a structural review doc, not "skip filing."
+- Phase 9's chip quality bar (ED-1 reproducer-or-precise-codepath + ED-2 prompt checklist: symptom / reproducer / expected vs actual / suggested approach / out of scope) applies to every chip filed under this model.
+- The dedicated phase-9 model is still valid for one case: a major surface that's been live a while without intensive agent use. That's the exception; continuous is the default.
+
+The goal is to drive feedback into the development lifecycle. Using the toolchain on every feature produces the feedback automatically; scheduling a bug-smash session produces it only when scheduled.
 
 ### Tests are first-class code
 
@@ -77,7 +87,7 @@ Mutation testing, property-based testing, contract testing, fuzz testing — eac
 
 Each gets its own `phases/NN-...md` doc, reviewed and merged before implementation lands. Phase ordering reflects sequencing constraints, not priority.
 
-1. **[01 — L4 expansion + `open_pr` bug-smash](phases/01-l4-expansion-and-bug-smash.md).** Two tracks in one phase. Track A expands the L4 suite from one scenario (hello-world ship) to cover the `open_pr` surface end-to-end against a sandbox repo + a `ship → open_pr` chain + cancellation against the real SDK + failure paths + idempotency. Track B re-runs phase 9's bug-smash methodology against `open_pr` (CLI + MCP). Output: code (Track A) + chips (Track B).
+1. **[01 — L4 expansion: `open_pr` coverage](phases/01-l4-expansion-and-bug-smash.md).** Build out the live-e2e suite from one scenario (hello-world ship) to cover the `open_pr` surface end-to-end against a sandbox repo + a `ship → open_pr` chain + cancellation against the real SDK + failure paths + idempotency. Bug-smashing happens continuously as the suite is built (per § Philosophy above); chips file in real time, not in a dedicated session.
 2. **02 — Mutation testing (planned).** Wire `@stryker-mutator/core` + `@stryker-mutator/vitest-runner` against `@ship/core` (workflow state machine + ship service) as a nightly-only CI step. Surviving mutants become chips per phase 9's ED-2 checklist. Out of scope: rewriting tests to kill mutants — that's the work each chip's PR does.
 3. **03 — Property-based state-machine tests (planned).** Wire `fast-check` against `@ship/workflow`'s `Phase.kind × status` transition graph. Each valid/invalid transition becomes a property; invariants over the state graph (e.g. "every terminal status sets `endedAt`", "no `pending` row has an `endedAt`") are exhaustively checked. Replaces or supplements the hand-written transition tests in `packages/workflow/`.
 
