@@ -9,5 +9,6 @@
   "thresholds": { "high": 80, "low": 60, "break": null },
   "concurrency": 4,
   "timeoutMS": 60000,
-  "logLevel": "info"
+  "logLevel": "info",
+  "inPlace": true
 }
