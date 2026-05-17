@@ -1,6 +1,6 @@
 # Phase 03 — subagent passthrough
 
-Status: design draft, revision 1 (2026-05-16). Awaiting inline review per `feedback_design_doc_inline.md`.
+Status: design draft, revision 2 (2026-05-17). Cycle-1 review addressed; awaiting merge.
 Owner: itsHabib
 Date: 2026-05-16
 
@@ -97,6 +97,8 @@ Whether subagent invocations surface in `events.ndjson` as `tool_call` events (o
 `local.settingSources: ["project"]` activates two file-based loaders in one switch: subagents AND MCP servers (`.cursor/mcp.json`). Both come for free with the same line.
 
 This closes [docs/cursor-sdk-leverage.md § Tier 1 #1](../../../cursor-sdk-leverage.md) — the unpopulated `mcpServers` hook — without a separate phase. A workdir with `.cursor/mcp.json` will now have its servers passed through. Ship does not curate or seed `.cursor/mcp.json` for users; that's repo-level config.
+
+**Precedence** between inline `CursorRunInput.mcpServers` and file-based `.cursor/mcp.json` follows the SDK's documented rule: inline overrides file-based at any colliding server-name key (per [docs/cursor-sdk-typescript.md § MCP servers § Local loading precedence](../../../cursor-sdk-typescript.md)). The behavior is symmetric with F2's `agents` rule — same inline-wins semantics, just one switch (`settingSources: ["project"]`) flips both file-based loaders on.
 
 ## Non-functional requirements
 
@@ -224,7 +226,7 @@ The L3 test is the **load-bearing validation** for this phase. F4's chip path fi
 | Subagent invocations don't surface in `events.ndjson` | Driver loses visibility into what the parent delegated; review-the-review becomes opaque | F4: file a chip with the observed gap. Phase ships anyway — prompt-level review still helps. Future phase can enrich `events.ndjson` capture if it matters. |
 | `local.settingSources: ["project"]` unconditional change surprises a workdir with stale `.cursor/agents/` | A repo with old / wrong subagent definitions silently changes parent-agent behavior | Documented in the impl PR's changelog. Workdirs that don't intentionally maintain `.cursor/agents/` simply don't have files to load — no surprise. |
 | Subagent SDK invocations cost extra tokens / time per run | Ship-on-Ship runs become measurably slower / more expensive | One subagent (`code-reviewer`) initially keeps the cost bounded. The leverage doc Tier 1 #2 (token-usage tracking via `onDelta`) lands separately and gives us the data to budget against. |
-| Cancellation during subagent execution leaves a partial state | Subagent's partial output / state could leak | SDK propagates cancel to subagents per the reference. No special-case in `LocalCursorRunner`. If dogfood surfaces a real bug here, file a chip and extend the L3 cancel scenario. |
+| Cancellation during subagent execution leaves a partial state | Subagent may leave uncommitted edits in the worktree if cancel lands mid-execution; the parent run completes (or fails) without the subagent's changes being committed, so an operator inspecting the workdir post-cancel sees stale edits with no PR trail | SDK propagates cancel to subagents per the reference. No special-case in `LocalCursorRunner`. If dogfood surfaces a real bug here, file a chip and extend the L3 cancel scenario. |
 | Inline `agents` API drifts when SDK adds new `AgentDefinition` fields | Type re-export stays accurate, but runtime behavior could shift | `AgentDefinition` is type-only re-exported — SDK changes propagate at compile time. Runtime field additions are non-breaking for current callers; new fields require explicit opt-in. |
 | `.cursor/mcp.json` auto-loading from F5 surprises a workdir | A repo with a stale `.cursor/mcp.json` silently changes the agent's MCP server set | Same mitigation as the `settingSources` risk above — documented + repo-controlled. Ship is forwarding the SDK's existing convention; no new ground claimed. |
 
@@ -243,7 +245,9 @@ The L3 test is the **load-bearing validation** for this phase. F4's chip path fi
 1. **Should the impl PR commit only `code-reviewer.md`, or also `pr-budgeter.md`?** Default: only `code-reviewer.md`. Smaller PR; second one validates the multi-subagent path with real evidence rather than speculation. Reconsider if Tier 2 #4's seed list is judged ship-ready as a unit.
 2. **Should `settingSources` also include `"user"` behind an opt-in flag?** Default: no. The "every run is replayable from the recorded inputs" posture rules out non-checked-in config affecting runs. Operators who want user-level agents can symlink them into a repo's `.cursor/agents/` if they really need it.
 3. **What's the exact `tool_call` event shape when the parent invokes a subagent?** Unknown; F4 says the L3 test answers this empirically. The phase doesn't gate on a specific shape — it gates on the run succeeding with subagents configured.
-4. **Should the impl PR's L3 test be gated on `SHIP_LIVE=1` only, or also wired into the nightly CI matrix?** Default: opt-in only this phase. Promoting to nightly couples Ship's CI cost to subagent SDK billing. Revisit after qe-sdet phase 02 (mutation testing) lands its own nightly-only model.
+4. **Do subagents inherit the parent's tool set, or do they need an explicit `tools` declaration to read files / inspect diffs?** SDK reference is silent on this point. The F3 frontmatter snippet declares only `description` / `prompt` / `model` — if subagents need an explicit `tools` grant to be useful, that draft produces hollow reviews. L3 test should empirically observe the review's content quality; if hollow, the snippet grows a `tools` field and the SDK's actual schema is captured in the impl PR's changelog.
+5. **Does the SDK error hard, or warning-and-skip, on a malformed `.cursor/agents/*.md` file?** F1 claims clean no-op on absent files, but the malformed case is unverified. If hard-error, the unconditional `settingSources: ["project"]` change could break Ship runs in repos with any `.cursor/` cruft. L3 test should include one malformed-agent fixture to observe the SDK's posture; if it hard-errors, F1 needs a recoverable-error story and Risks gains a row.
+6. **Should the impl PR's L3 test be gated on `SHIP_LIVE=1` only, or also wired into the nightly CI matrix?** Default: opt-in only this phase. Promoting to nightly couples Ship's CI cost to subagent SDK billing. Revisit after qe-sdet phase 02 (mutation testing) lands its own nightly-only model.
 
 ## Implementation plan
 

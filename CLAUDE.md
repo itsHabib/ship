@@ -107,10 +107,10 @@ When to use what during a feature session — extends "The loop" above:
 
 - **Design phase (no Ship).** When the phase doc IS the deliverable (design-only PR), Ship doesn't fire — the doc is written in chat / by hand inside the worktree and reviewed inline per `feedback_design_doc_inline.md`. Standalone design-PR ceremony (formal reviewer cycles) is skipped; one PR with light review expectations.
 - **Impl phase (Ship in the loop).** When the phase doc is the INPUT — `ship.ship { workdir, docPath, repo, branch }` produces the implementation. Cursor doesn't auto-commit; the driver inspects the working tree, commits with trailers, pushes, opens the PR, requests reviewers per "Shipping Features" below.
-- **Multi-stream impl (parallel-driver skill).** When ≥2 independent impl tasks share a phase, invoke `/parallel-driver` (or follow its steps inline at `pers/parallel-driver.md`). Pre-flight every worktree to `origin/main` first — local main is often stale across sessions.
+- **Multi-stream impl (parallel-driver skill).** When ≥2 independent impl tasks share a phase, invoke `/parallel-driver` (or follow its steps inline at `pers/parallel-driver.md` if you maintain that corpus). Fast-forward or rebase each worktree to `origin/main` first — local main is often stale across sessions.
 - **One-off fixes (skip the workbench).** A typo, doc-drift, quick chip — direct commit on a short-lived branch. No Dossier, no Ship.
 
-After every parallel-driver session, append at least one entry to `pers/parallel-driver.md § Friction log` for anything that surprised you. The friction log is the source corpus for skill iteration and `pers/mcp-workstation/` tool POCs.
+If you maintain a parallel-driver friction log (operator-specific corpus, e.g. `pers/parallel-driver.md` outside this repo), append at least one entry per session. The log is the source corpus for skill iteration and `pers/mcp-workstation/` tool POCs; contributors without that corpus can skip this step.
 
 ## Shipping Features
 Follow this general workflow for implementing a feature
