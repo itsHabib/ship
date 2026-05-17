@@ -14,7 +14,7 @@ Follow-up implementation PR's preliminary budget: ~25 src (`CursorRunInput` fiel
 
 ## Summary
 
-The V2 spec originally planned phase 03 as a "review-cycle phase" — a new `Phase.kind = "review"` driving a separate review agent against an open PR. The qe-sdet parallel-driver session ([friction log § #13](../../../../pers/parallel-driver.md), referenced via memory pointers) surfaced that the costly part of the review loop isn't running another AI reviewer — bot reviewers (Codex / Claude / Copilot) already do that for free — it's the driver thrashing context across N PRs during cycle-1 fixes.
+The V2 spec originally planned phase 03 as a "review-cycle phase" — a new `Phase.kind = "review"` driving a separate review agent against an open PR. The qe-sdet parallel-driver session (friction #13 in the operator's parallel-driver corpus — kept outside this repo, summarized inline below) surfaced that the costly part of the review loop isn't running another AI reviewer — bot reviewers (Codex / Claude / Copilot) already do that for free — it's the driver thrashing context across N PRs during cycle-1 fixes.
 
 Cursor's SDK already exposes the primitive that addresses the actual gap: **subagents**. A parent agent can delegate `code-reviewer` / `test-writer` / etc. inside the implement phase via the built-in `Agent` tool, catching issues *before* the PR opens. Ship's `LocalCursorRunner` doesn't currently pass `agents` or `local.settingSources` to `Agent.create`, so the primitive is inaccessible to anyone running through Ship.
 

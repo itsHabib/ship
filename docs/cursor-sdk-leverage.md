@@ -142,6 +142,8 @@ Hooks plumbed but unused at runtime: `mcpServers`, `agentName`. Both wire from `
 
 Restated for emphasis. The SDK's subagent system isn't just "another feature we could use" — it's a fork in V2's design. Resolve before phase 03's spec starts; otherwise we ship the outer-loop shape by default and only retrofit subagents later.
 
+→ **Resolved** by [docs/features/ship-v2/phases/03-subagent-passthrough.md](features/ship-v2/phases/03-subagent-passthrough.md). Phase 03 chose the subagent passthrough shape over an outer-loop AI-reviewer phase; the original "review-cycle phase" plan is dissolved.
+
 ### `mcpServers` config source (Tier 1 #1)
 
 Three places config could live: env var, dedicated config file, `.cursor/mcp.json` in the worktree. The latter aligns with the SDK's own loading precedence and future-proofs against `Agent.resume`. Probably the right call but worth an explicit decision.
