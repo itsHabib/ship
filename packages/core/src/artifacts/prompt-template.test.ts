@@ -34,6 +34,10 @@ describe("renderImplementationPrompt", () => {
     }
     expect(out).toContain("Do NOT open a pull request");
     expect(out).toContain("Before your final summary, commit your work");
+    // Rule 7 must be conditional on actual file changes — a clean
+    // working tree (e.g. a blocker run per rule 5) must not trip
+    // `git commit` on an empty diff. Pin the guard wording.
+    expect(out).toContain("skip this step entirely on a clean working tree");
     expect(out).toContain("Co-authored-by: Cursor <cursoragent@cursor.com>");
     expect(out).toContain("structured summary");
   });
