@@ -56,10 +56,11 @@ describe.skipIf(!LIVE)("L4 live e2e — A5 idempotent open_pr", () => {
     expect(again.prUrl).toBe(opened.prUrl);
     expect(again.prNumber).toBe(opened.prNumber);
 
-    const { owner } = parseSandboxSlug(slug);
+    // `gh pr list --head` takes a branch name only — the `owner:branch`
+    // form is for `gh pr view` cross-fork lookups. Pass `again.head`.
     const list2 = spawnSync(
       "gh",
-      ["pr", "list", "--repo", slug, "--head", `${owner}:${again.head}`, "--json", "number"],
+      ["pr", "list", "--repo", slug, "--head", again.head, "--json", "number"],
       { encoding: "utf-8" },
     );
     expect(list2.status).toBe(0);

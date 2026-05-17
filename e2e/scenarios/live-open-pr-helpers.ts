@@ -257,14 +257,21 @@ export function spawnShipChild(args: SpawnShipArgs): ShipChildHandle {
     process.stderr.write(`[ship-stderr] ${c}`);
   });
   const tailer = startEventTailer(args.homeRoot, child);
+  // Eagerly register the close listener — the child may exit before
+  // `waitForClose()` is called (notably in A2, where `pollUntilTerminal`
+  // awaits workflow-terminal status, which means the child has already
+  // exited and the `close` event has already fired). Lazy registration
+  // would attach a listener after-the-fact and hang forever.
+  const closePromise = new Promise<{ readonly exitCode: number; readonly stdout: string }>(
+    (res) => {
+      child.on("close", (c) => {
+        res({ exitCode: c ?? -1, stdout });
+      });
+    },
+  );
   return {
     child,
-    waitForClose: async () =>
-      new Promise<{ readonly exitCode: number; readonly stdout: string }>((res) => {
-        child.on("close", (c) => {
-          res({ exitCode: c ?? -1, stdout });
-        });
-      }),
+    waitForClose: () => closePromise,
     stop: () => {
       tailer.stop();
     },

@@ -22,7 +22,6 @@ import {
   hasOpenPrLiveEnv,
   mkLiveTmp,
   originHttpsUrl,
-  parseSandboxSlug,
   parseWorkflowRun,
   runCli,
   runCliSync,
@@ -63,10 +62,11 @@ describe.skipIf(!LIVE)("L4 live e2e — A4 open_pr failure paths", () => {
       /* Gh auth fails during idempotency probe before the phase row is persisted. */
       expect(openPrPhases.length).toBe(0);
 
-      const { owner } = parseSandboxSlug(slug);
+      // `gh pr list --head` takes a branch name only — the `owner:branch`
+      // form is for `gh pr view` cross-fork lookups. Pass `branch`.
       const list = spawnSync(
         "gh",
-        ["pr", "list", "--repo", slug, "--head", `${owner}:${branch}`, "--json", "number"],
+        ["pr", "list", "--repo", slug, "--head", branch, "--json", "number"],
         { encoding: "utf-8" },
       );
       expect(list.status).toBe(0);
