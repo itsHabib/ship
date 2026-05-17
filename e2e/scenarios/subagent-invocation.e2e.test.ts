@@ -6,9 +6,15 @@
  * Builds a temp worktree with `.cursor/agents/code-reviewer.md` copied from
  * the repo template and a minimal task doc instructing the parent to invoke
  * the subagent. Assertions:
- * - `ship ship` exits 0 and status is `succeeded` (minimum bar).
- * - If `events.ndjson` contains `code-reviewer`, logs optimistic shape;
- *   otherwise logs degraded observability (F4) — run still passes.
+ * - `ship ship` exits 0 and status is `succeeded`.
+ * - `events.ndjson` contains a `code-reviewer` reference (catches the
+ *   regression where `settingSources` is silently broken and the subagent
+ *   never registers). Per F4, the test is permissive on event SHAPE — it
+ *   only asserts that the string appears somewhere in the events stream.
+ *   Known limitation: a substring match can false-positive when the task
+ *   doc itself mentions the subagent name (which the prompt echo carries
+ *   into events). Acceptable for cycle 1; first live run informs whether
+ *   to tighten via a canary subagent or ndjson-aware parsing (Open Q #3).
  */
 
 import { spawn } from "node:child_process";
@@ -40,7 +46,10 @@ function eventsMentionCodeReviewer(eventsPath: string): boolean {
 }
 
 describe.skipIf(!HAS_KEY || !LIVE)("Phase 03 L3 — subagent invocation (live)", () => {
-  test("ship loads project subagents; run succeeds; events may reference code-reviewer", async () => {
+  test(
+    "ship loads project subagents; run succeeds; events reference code-reviewer",
+    { timeout: 5 * 60_000 },
+    async () => {
     const tmp = mkdtempSync(join(tmpdir(), "ship-subagent-live-"));
     const workdir = join(tmp, "wt");
     cpSync(FIXTURE, workdir, { recursive: true });
@@ -129,15 +138,25 @@ describe.skipIf(!HAS_KEY || !LIVE)("Phase 03 L3 — subagent invocation (live)",
       expect(parsed.status).toBe("succeeded");
       expect(statSync(parsed.artifacts.resultPath).isFile()).toBe(true);
 
-      if (eventsMentionCodeReviewer(parsed.artifacts.eventsPath)) {
+      const found = eventsMentionCodeReviewer(parsed.artifacts.eventsPath);
+      if (found) {
         process.stdout.write(
-          "[e2e] events.ndjson references code-reviewer (observed subagent signal)\n",
+          "[e2e] events.ndjson references code-reviewer (subagent registration / invocation signal)\n",
         );
       } else {
         process.stdout.write(
-          "[e2e] events.ndjson has no code-reviewer reference (degraded observability; F4)\n",
+          `[e2e] events.ndjson at ${parsed.artifacts.eventsPath} contains NO code-reviewer reference; subagent likely did not load via settingSources\n`,
         );
       }
+      // Hard assertion: catches the regression where `settingSources`
+      // is silently broken and the subagent never registers. False-
+      // positive risk on task-doc echo is acknowledged in the file
+      // header; tighten via a canary subagent or ndjson-aware parsing
+      // once Open Q #3 surfaces the actual event shape.
+      expect(
+        found,
+        "events.ndjson must reference code-reviewer (subagent-loading regression check)",
+      ).toBe(true);
     } finally {
       tailer.stop();
     }
