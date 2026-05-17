@@ -5,7 +5,7 @@
  * types via this file's re-exports.
  */
 
-import type { McpServerConfig, SDKMessage } from "@cursor/sdk";
+import type { AgentDefinition, McpServerConfig, SDKMessage } from "@cursor/sdk";
 import type { ModelSelection } from "@ship/workflow";
 
 /** Input required to start a single Cursor run. Constructed by `core` per workflow run. */
@@ -18,6 +18,11 @@ export interface CursorRunInput {
   readonly model: ModelSelection;
   /** Optional MCP servers wired into the agent at create time. */
   readonly mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * Optional inline subagent definitions; passed through to `Agent.create`.
+   * Same-named keys override file-based `.cursor/agents/*.md` (SDK precedence).
+   */
+  readonly agents?: Record<string, AgentDefinition>;
   /** Human-readable label for `Agent.list` filtering (conventionally `ship/<workflowRunId>`). */
   readonly agentName?: string;
   /** Aborting this signal cancels the SDK run via `run.cancel()`. */

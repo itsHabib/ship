@@ -3,7 +3,14 @@
  * so tests run without `CURSOR_API_KEY` or network.
  */
 
-import type { Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
+import type {
+  AgentDefinition,
+  AgentOptions,
+  Run,
+  RunResult,
+  SDKAgent,
+  SDKMessage,
+} from "@cursor/sdk";
 
 import { Agent } from "@cursor/sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -558,6 +565,21 @@ describe("LocalCursorRunner — agent disposal", () => {
 });
 
 describe("LocalCursorRunner — SDK options forwarding", () => {
+  test('always passes local.settingSources: ["project"]', async () => {
+    const { run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new LocalCursorRunner();
+    await runner.run(baseInput());
+
+    expect(Agent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        local: { cwd: "/tmp/test-workdir", settingSources: ["project"] },
+      }),
+    );
+  });
+
   test("apiKey forwarded from env; cwd / model / mcpServers / agentName forwarded from input", async () => {
     const { run } = makeMockRun({});
     const { agent } = makeMockAgent({ run });
@@ -576,11 +598,28 @@ describe("LocalCursorRunner — SDK options forwarding", () => {
 
     expect(Agent.create).toHaveBeenCalledWith({
       apiKey: "test-key-abc123",
-      local: { cwd: "/abs/work" },
+      local: { cwd: "/abs/work", settingSources: ["project"] },
       mcpServers,
       model: { id: "composer-2", params: [{ id: "thinking", value: "high" }] },
       name: "ship/wf-123",
     });
+  });
+
+  test("passes agents through to Agent.create when input.agents is set", async () => {
+    const { run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const agents: Record<string, AgentDefinition> = {
+      "code-reviewer": { description: "d", prompt: "p" },
+    };
+    const runner = new LocalCursorRunner();
+    await runner.run(baseInput({ agents }));
+
+    const createArg = vi.mocked(Agent.create).mock.calls[0]?.[0] as AgentOptions | undefined;
+    expect(createArg?.agents).toBe(agents);
+    expect(createArg?.local?.settingSources).toEqual(["project"]);
+    expect(createArg?.local?.cwd).toBe("/tmp/test-workdir");
   });
 
   test("optional fields omitted from Agent.create when not provided (no undefined leakage)", async () => {
@@ -589,12 +628,13 @@ describe("LocalCursorRunner — SDK options forwarding", () => {
     vi.mocked(Agent.create).mockResolvedValue(agent);
 
     const runner = new LocalCursorRunner();
-    await runner.run(baseInput()); // no agentName, no mcpServers
+    await runner.run(baseInput()); // no agentName, no mcpServers, no agents
 
-    const call = vi.mocked(Agent.create).mock.calls[0]?.[0];
+    const call = vi.mocked(Agent.create).mock.calls[0]?.[0] as AgentOptions | undefined;
     expect(call).toBeDefined();
     expect(call).not.toHaveProperty("name");
     expect(call).not.toHaveProperty("mcpServers");
+    expect(call).not.toHaveProperty("agents");
   });
 });
 
