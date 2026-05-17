@@ -16,13 +16,15 @@ import {
   phaseStatusSchema,
 } from "./workflow.js";
 
-const ITER = Number.isFinite(Number(process.env["SHIP_PROP_ITER"]))
-  ? Number(process.env["SHIP_PROP_ITER"])
-  : 100;
+function readPositiveIntEnv(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
-const PROP_SEED = Number.isFinite(Number(process.env["SHIP_PROP_SEED"]))
-  ? Number(process.env["SHIP_PROP_SEED"])
-  : 0x2fed12f;
+const ITER = readPositiveIntEnv("SHIP_PROP_ITER", 100);
+const PROP_SEED = readPositiveIntEnv("SHIP_PROP_SEED", 0x2fed12f);
 
 fc.configureGlobal({ seed: PROP_SEED });
 
@@ -112,10 +114,9 @@ function transitionPhase(phase: Phase, to: PhaseStatus): Phase {
 }
 
 describe("transition properties (fast-check)", () => {
-  test.prop([kindArbitrary, statusArbitrary, statusArbitrary], { numRuns: ITER })(
-    "I1: canTransition matches documented next-set for every (kind, from, to)",
-    (kind, from, to) => {
-      void kind;
+  test.prop([statusArbitrary, statusArbitrary], { numRuns: ITER })(
+    "I1: canTransition matches documented next-set for every (from, to)",
+    (from, to) => {
       const documented = DOCUMENTED_NEXT[from as WorkflowStatus];
       expect(canTransition(from as WorkflowStatus, to as WorkflowStatus)).toBe(
         documented.includes(to as WorkflowStatus),
