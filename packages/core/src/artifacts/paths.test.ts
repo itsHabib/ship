@@ -1,6 +1,6 @@
 /** Tests for the per-run artifact path resolver. */
 
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { ARTIFACT_FILES, resolveRunArtifactPaths, resolveRunArtifactsDir } from "./paths.js";
@@ -22,6 +22,11 @@ describe("resolveRunArtifactPaths", () => {
     expect(p.events.endsWith(ARTIFACT_FILES.events)).toBe(true);
     expect(p.result.endsWith(ARTIFACT_FILES.result)).toBe(true);
     expect(p.summary.endsWith(ARTIFACT_FILES.summary)).toBe(true);
+  });
+
+  test("events path resolves to a file named events.ndjson directly", () => {
+    const p = resolveRunArtifactPaths("/runs", "wf_basename");
+    expect(basename(p.events)).toBe("events.ndjson");
   });
 
   test("the file constants match spec.md § ED-4", () => {
