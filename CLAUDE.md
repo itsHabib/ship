@@ -108,10 +108,10 @@ Not every flow uses all three. A one-off CLI fix can skip Dossier; an existing-c
 When to use what during a feature session — extends "The loop" above:
 
 - **Design phase (no Ship).** When the phase doc IS the deliverable (design-only PR), Ship doesn't fire — the doc is written in chat / by hand inside the worktree and reviewed inline (per the operator's `feedback_design_doc_inline.md` memory entry: design docs skip the formal reviewer-cycle ceremony of impl PRs). One PR with light review expectations.
-- **Impl phase (work-driver pattern).** When the phase doc is the INPUT — `ship.ship { workdir, docPath, repo, branch }` produces the implementation. The same driver pattern handles one stream or N parallel: fast-forward or rebase each worktree to `origin/main`, fire `ship.ship` per stream, poll terminal, commit + push (cursor doesn't auto-commit), open PR, coordinate review cycles per "Shipping Features" below, merge in dep order. Invoke `/parallel-driver` to load the codified steps (skill name reflects historical framing; the pattern is a *work* driver, not parallel-only — single-stream runs use the same loop with the merge-order step trivially no-op).
+- **Impl phase (work-driver pattern).** When the phase doc is the INPUT — `ship.ship { workdir, docPath, repo, branch }` produces the implementation. The same driver pattern handles one stream or N parallel: fast-forward or rebase each worktree to `origin/main`, fire `ship.ship` per stream, poll terminal, commit + push (cursor doesn't auto-commit), open PR, coordinate review cycles per "Shipping Features" below, merge in dep order. Invoke `/work-driver` to load the codified steps — single-stream runs use the same loop with the merge-order step trivially no-op.
 - **One-off fixes (skip the workbench).** A typo, doc-drift, quick chip — direct commit on a short-lived branch. No Dossier, no Ship.
 
-If you maintain a parallel-driver friction log (operator-specific corpus, e.g. `pers/parallel-driver.md` outside this repo), append at least one entry per session. The log is the source corpus for skill iteration and `pers/mcp-workstation/` tool POCs; contributors without that corpus can skip this step.
+If you maintain a work-driver friction log (operator-specific corpus, e.g. `pers/work-driver.md` outside this repo), append at least one entry per session. The log is the source corpus for skill iteration and `pers/mcp-workstation/` tool POCs; contributors without that corpus can skip this step.
 
 ## Shipping Features
 Follow this general workflow for implementing a feature
