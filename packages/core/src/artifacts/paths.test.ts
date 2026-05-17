@@ -24,6 +24,11 @@ describe("resolveRunArtifactPaths", () => {
     expect(p.summary.endsWith(ARTIFACT_FILES.summary)).toBe(true);
   });
 
+  test("events path resolves to a file named events.ndjson directly", () => {
+    const p = resolveRunArtifactPaths("/runs", "wf_basename");
+    expect(p.events.split(/[\\/]/).pop()).toBe("events.ndjson");
+  });
+
   test("the file constants match spec.md § ED-4", () => {
     // Locked names. If you change one, audit spec.md and the design doc.
     expect(ARTIFACT_FILES).toEqual({
