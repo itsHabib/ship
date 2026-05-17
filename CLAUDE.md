@@ -94,7 +94,7 @@ Most features go through all three in order:
 2. **Tower** — `tower.register_repo` (once per repo), then `tower.add_worktree` per task. Branch = `tower/<name>`, path = `<repo>/.worktrees/<name>`.
 3. **Task doc** — write `docs/features/<feature>/phases/<NN>-<slug>.md` inside the worktree (Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation-plan). Commit + push.
 4. **Ship** — `ship.ship` against the worktree + doc. Poll `get_workflow_run` if the MCP request times out. Inspect the diff; iterate or accept.
-5. **PR** — push, open, request reviewers (Copilot via `gh pr edit --add-reviewer copilot-swe-agent`; `@codex review`; `@claude review`).
+5. **PR** — push, open, request reviewers (Copilot via `gh api -X POST repos/<owner>/<repo>/pulls/<n>/requested_reviewers -f 'reviewers[]=Copilot'`; `@codex review`; `@claude review`).
 6. **Dossier (close)** — `task.complete { id, note }` + `artifact.link` to bind the merged PR url back to the task.
 
 ### Why three MCPs and not one
@@ -118,7 +118,7 @@ Follow this general workflow for implementing a feature
 - implement said feature
 - create a branch if you haven't already
 - create a PR
-- request Copilot as reviewer via REST: `gh api -X POST repos/<owner>/<repo>/pulls/<n>/requested_reviewers -f 'reviewers[]=Copilot'` (do NOT use `gh pr edit --add-reviewer copilot-swe-agent` — it silently no-ops). Verify with `gh pr view <n> --json reviewRequests`; if it's empty even though REST returned 201, the Copilot Code Review GitHub App isn't installed on the repo and the endpoint dropped the request.
+- request Copilot as reviewer via REST: `gh api -X POST repos/<owner>/<repo>/pulls/<n>/requested_reviewers -f 'reviewers[]=Copilot'` — expect HTTP 201 (do NOT use `gh pr edit --add-reviewer copilot-swe-agent` — it silently no-ops). `gh pr view <n> --json reviewRequests` may be `[]` immediately — Copilot clears `requested_reviewers` on accept and account-level auto-review can do the same; empty does **not** mean the app is missing or the request was dropped. Confirm with `gh api repos/<owner>/<repo>/issues/<n>/timeline --jq '.[] | select(.event == "review_requested" or .event == "copilot_work_started")'` or, after a couple of minutes, `gh api repos/<owner>/<repo>/pulls/<n>/reviews --jq '.[] | select(.user.login == "copilot-pull-request-reviewer")'`. Nuance: `feedback_copilot_reviewer.md` (memory).
 - comment "@codex review"
 - comment "@claude review"
 - ensure CI is green
