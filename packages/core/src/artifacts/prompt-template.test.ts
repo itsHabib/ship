@@ -27,12 +27,18 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("Branch: ship/feat-hello");
     expect(out).toContain("Base ref: main");
     expect(out).toContain("Rules:");
-    // The seven rule lines must all appear; the agent's contract depends
-    // on rule #6 (no PR opening) and rule #7 (structured summary).
-    for (let n = 1; n <= 7; n += 1) {
+    // Rule numbers #1–#8 must appear; contract covers #6/#8 (no PR), #7 (commit),
+    // and structured summary.
+    for (let n = 1; n <= 8; n += 1) {
       expect(out).toContain(`${String(n)}.`);
     }
     expect(out).toContain("Do NOT open a pull request");
+    expect(out).toContain("Before your final summary, commit your work");
+    // Rule 7 must be conditional on actual file changes — a clean
+    // working tree (e.g. a blocker run per rule 5) must not trip
+    // `git commit` on an empty diff. Pin the guard wording.
+    expect(out).toContain("skip this step entirely on a clean working tree");
+    expect(out).toContain("Co-authored-by: Cursor <cursoragent@cursor.com>");
     expect(out).toContain("structured summary");
   });
 
