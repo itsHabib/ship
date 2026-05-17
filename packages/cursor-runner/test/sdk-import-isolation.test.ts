@@ -118,6 +118,26 @@ describe("ED-2 — @cursor/sdk is imported in @ship/cursor-runner only", () => {
     expect(ownHits.length).toBeGreaterThan(0);
   });
 
+  test("cursor-runner src/index.ts only type-re-exports the allowlisted @cursor/sdk names", () => {
+    const indexPath = join(PACKAGES_DIR, ALLOWED_PACKAGE, "src", "index.ts");
+    const content = readFileSync(indexPath, "utf-8");
+    if (/export\s+(?!type\s)\{[^}]+\}\s*from\s*["']@cursor\/sdk["']/.test(content)) {
+      throw new Error("ED-3 violated: value re-exports from @cursor/sdk are forbidden in index.ts");
+    }
+    const names: string[] = [];
+    const typeExportRe = /export\s+type\s*\{([^}]+)\}\s*from\s*["']@cursor\/sdk["']/g;
+    let m: RegExpExecArray | null;
+    while ((m = typeExportRe.exec(content)) !== null) {
+      const chunk = m[1] ?? "";
+      for (const part of chunk.split(",")) {
+        const name = part.trim().split(/\s+/)[0];
+        if (name !== undefined && name.length > 0) names.push(name);
+      }
+    }
+    const allowed = new Set(["AgentDefinition", "McpServerConfig", "SDKMessage"]);
+    expect(new Set(names)).toEqual(allowed);
+  });
+
   test("regex catches every import form (static / type-only / side-effect / dynamic / require / export-from)", () => {
     const samples: { line: string; shouldMatch: boolean }[] = [
       { line: `import { Agent } from "@cursor/sdk";`, shouldMatch: true },

@@ -48,7 +48,8 @@ export class LocalCursorRunner implements CursorRunner {
           id: input.model.id,
           ...(input.model.params !== undefined && { params: input.model.params }),
         },
-        local: { cwd: input.cwd },
+        local: { cwd: input.cwd, settingSources: ["project"] },
+        ...(input.agents !== undefined && { agents: input.agents }),
         ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
         ...(input.agentName !== undefined && { name: input.agentName }),
       });

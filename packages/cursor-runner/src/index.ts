@@ -16,4 +16,4 @@ export { LocalCursorRunner } from "./local-runner.js";
 export { CursorRunFailedError, MissingApiKeyError } from "./errors.js";
 
 // --- @cursor/sdk re-exports ---
-export type { McpServerConfig, SDKMessage } from "@cursor/sdk";
+export type { AgentDefinition, McpServerConfig, SDKMessage } from "@cursor/sdk";

@@ -21,6 +21,8 @@ make check          # typecheck + lint + format-check + test
 
 CI on `.github/workflows/ci.yml` runs the same `make check` matrix on ubuntu + windows. Lint/format/test rules live in `eslint.config.js`, `.prettierrc`, `vitest.config.ts`. TS strict knobs in `tsconfig.base.json`.
 
+Subagents live in `.cursor/agents/`. See [docs/features/ship-v2/phases/03-subagent-passthrough.md](docs/features/ship-v2/phases/03-subagent-passthrough.md) for the rationale.
+
 ## How Ship fits
 
 - `../tower` owns repos, worktrees, PR/CI/review snapshots. Ship calls it; Ship doesn't reimplement it.
