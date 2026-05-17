@@ -4,11 +4,7 @@
   "appendPlugins": ["@stryker-mutator/vitest-runner"],
   "testRunner": "vitest",
   "vitest": { "configFile": "vitest.config.ts" },
-  "mutate": [
-    "src/**/*.ts",
-    "!src/**/*.test.ts",
-    "!src/**/*.d.ts"
-  ],
+  "mutate": ["src/**/*.ts", "!src/**/*.test.ts", "!src/**/*.d.ts"],
   "reporters": ["html", "json", "clear-text"],
   "thresholds": { "high": 80, "low": 60, "break": null },
   "concurrency": 4,

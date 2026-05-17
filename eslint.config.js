@@ -14,6 +14,10 @@ export default tseslint.config(
       "spike/**",
       "**/*.config.js",
       "**/*.config.ts",
+      // Stryker generates per-mutant source sandboxes locally that should
+      // not be linted (and are already gitignored).
+      "**/.stryker-tmp/**",
+      "**/reports/mutation*",
     ],
   },
 
