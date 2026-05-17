@@ -97,6 +97,12 @@ export async function createMcpHarness(): Promise<McpHarness> {
     close: async () => {
       await client.close();
       await server.close();
+      // Drain any in-flight `startShip` continuations BEFORE closing
+      // the store. Without this, a setImmediate continuation that
+      // races past `harness.close()` hits a closed SQLite handle and
+      // leaks "background continuation rejected after finalize" to
+      // stderr.
+      await bundle.service.drainBackground();
       harness.close();
     },
   };

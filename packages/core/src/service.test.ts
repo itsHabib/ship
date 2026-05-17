@@ -678,18 +678,28 @@ describe("ShipService.startShip — async kickoff", () => {
   });
 
   afterEach(async () => {
-    // Drain any in-flight runs before closing the store so the
-    // background continuation isn't writing to a closed DB.
-    const inFlight = h.store.listRuns({ limit: 100 }).filter((r) => !isTerminal(r.status));
-    for (const r of inFlight) {
-      try {
-        await h.service.cancelRun(r.id);
-      } catch {
-        // ignore: run may have already finished between filter + cancel
+    // Cancel any in-flight runs first so the background continuation
+    // resolves promptly via the abort signal instead of running to
+    // natural completion. Then `drainBackground` waits on the actual
+    // setImmediate-wrapped Promise to settle — deterministic where
+    // the previous polling-on-row-status drain had a microtask race
+    // between `updateWorkflowRunStatus` and the continuation Promise
+    // resolving. The drain + close live in `finally` so a busted
+    // `listRuns` (e.g. store wedged from a prior test) doesn't skip
+    // them and leak a half-closed handle.
+    try {
+      for (const r of h.store.listRuns({ limit: 100 })) {
+        if (isTerminal(r.status)) continue;
+        try {
+          await h.service.cancelRun(r.id);
+        } catch {
+          // ignore: run may have already finished between filter + cancel
+        }
       }
-      await waitForRunTerminal(h.service, r.id).catch(() => undefined);
+    } finally {
+      await h.service.drainBackground();
+      h.store.close();
     }
-    h.store.close();
   });
 
   test("returns immediately with { workflowRunId, status: 'running' }", async () => {
@@ -855,6 +865,104 @@ describe("ShipService.startShip — async kickoff", () => {
       h.service.startShip({ workdir: "/nope", repo: "ship", docPath: "docs.md" }),
     ).rejects.toBeInstanceOf(WorkdirNotFoundError);
     expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
+  });
+
+  test("drainBackground awaits the background continuation deterministically", async () => {
+    // Delayed-event script keeps the continuation in-flight long
+    // enough that the row is observably `running` between the
+    // startShip return and the drainBackground await. Without drain,
+    // the row would stay running for the lifetime of the delays.
+    const evt = {
+      type: "assistant" as const,
+      agent_id: "x",
+      run_id: "y",
+      message: { role: "assistant" as const, content: [] },
+    };
+    h.cursor.enqueue({
+      events: [evt, evt, evt] as never,
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+      delayMsBetweenEvents: 50,
+    });
+
+    const start = await h.service.startShip({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    // Synchronous read right after kickoff: row is still `running`
+    // because the cursor stream has barely begun emitting events.
+    expect((await h.service.getRun(start.workflowRunId))?.status).toBe("running");
+
+    await h.service.drainBackground();
+
+    // Post-drain: the setImmediate-wrapped continuation has fully
+    // settled, including the finalizeSuccess row update.
+    const row = await h.service.getRun(start.workflowRunId);
+    expect(row?.status).toBe("succeeded");
+    expect(isTerminal(row?.status ?? "pending")).toBe(true);
+  });
+
+  test("drainBackground resolves immediately when nothing is in flight", async () => {
+    // No startShip called. Sanity that the no-op path doesn't hang or
+    // throw on a fresh service.
+    await h.service.drainBackground();
+  });
+});
+
+describe("ShipService.drainBackground — regression for stderr leak", () => {
+  // No shared beforeEach harness — each test creates its own so the
+  // store can be closed inside the test body and the global stderr
+  // capture is scoped to exactly that window.
+
+  test("drain → store.close → setImmediate flush does not write the safety-net log", async () => {
+    const local = await createHarness();
+    const evt = {
+      type: "assistant" as const,
+      agent_id: "x",
+      run_id: "y",
+      message: { role: "assistant" as const, content: [] },
+    };
+    local.cursor.enqueue({
+      events: [evt, evt] as never,
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+      delayMsBetweenEvents: 50,
+    });
+
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const captured: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      captured.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8"));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const start = await local.service.startShip({
+        workdir: WORKDIR,
+        repo: "ship",
+        docPath: "docs.md",
+      });
+      expect(start.status).toBe("running");
+
+      await local.service.drainBackground();
+      local.store.close();
+
+      // Two setImmediate yields — a broken drainBackground would let
+      // a still-queued continuation run on one of these, hit the
+      // closed handle, and write the safety-net log. With a working
+      // drainBackground the continuation has already settled, so
+      // these yields are no-ops.
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+
+      expect(captured.join("")).not.toContain("background continuation rejected after finalize");
+    } finally {
+      process.stderr.write = originalWrite;
+    }
   });
 });
 
