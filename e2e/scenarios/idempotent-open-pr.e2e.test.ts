@@ -7,23 +7,20 @@
 
 /* eslint-disable sonarjs/no-os-command-from-path -- exercises `gh`. */
 
-import type { OpenPrOutput, ShipOutput } from "@ship/mcp";
+import type { OpenPrOutput } from "@ship/mcp";
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { describe, expect, test } from "vitest";
 
-import { startEventTailer } from "./event-tailer.js";
 import {
   bootstrapFixtureMainOnSandbox,
-  CLI_BIN,
-  CLI_PKG,
   Env,
   hasOpenPrLiveEnv,
-  isolatedHomeEnv,
   mkLiveTmp,
   parseSandboxSlug,
   runCli,
+  runShipExpectingSuccess,
 } from "./live-open-pr-helpers.js";
 
 const LIVE = hasOpenPrLiveEnv();
@@ -39,76 +36,38 @@ describe.skipIf(!LIVE)("L4 live e2e — A5 idempotent open_pr", () => {
 
     bootstrapFixtureMainOnSandbox({ workdir, token: Env.github, sandboxSlug: slug });
 
-    const env = isolatedHomeEnv(homeRoot);
-    const child = spawn(
-      process.execPath,
-      [
-        "--import",
-        "tsx/esm",
-        CLI_BIN,
-        "ship",
-        "docs/features/sandbox.md",
-        "--workdir",
-        workdir,
-        "--repo",
-        repoLabel,
-        "--branch",
-        branch,
-        "--json",
-        "--thinking",
-        "low",
-      ],
-      {
-        cwd: CLI_PKG,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
+    const { workflowRunId: wfId } = await runShipExpectingSuccess({
+      homeRoot,
+      workdir,
+      repoLabel,
+      branch,
+      docRel: "docs/features/sandbox.md",
+    });
+
+    const first = await runCli(homeRoot, ["open-pr", wfId, "--json"]);
+    expect(first.code).toBe(0);
+    const opened = JSON.parse(first.stdout.trim()) as OpenPrOutput;
+    expect(opened.alreadyExisted).toBe(false);
+
+    const second = await runCli(homeRoot, ["open-pr", wfId, "--json"]);
+    expect(second.code).toBe(0);
+    const again = JSON.parse(second.stdout.trim()) as OpenPrOutput;
+    expect(again.alreadyExisted).toBe(true);
+    expect(again.prUrl).toBe(opened.prUrl);
+    expect(again.prNumber).toBe(opened.prNumber);
+
+    const { owner } = parseSandboxSlug(slug);
+    const list2 = spawnSync(
+      "gh",
+      ["pr", "list", "--repo", slug, "--head", `${owner}:${again.head}`, "--json", "number"],
+      { encoding: "utf-8" },
     );
-    let stdout = "";
-    child.stdout.setEncoding("utf-8");
-    child.stderr.setEncoding("utf-8");
-    child.stdout.on("data", (c: string) => {
-      stdout += c;
-      process.stdout.write(c);
-    });
-    child.stderr.on("data", (c: string) => {
-      process.stderr.write(`[ship-stderr] ${c}`);
-    });
-    const tailer = startEventTailer(homeRoot, child);
-    try {
-      const exitCode = await new Promise<number>((res) => {
-        child.on("close", (c) => {
-          res(c ?? -1);
-        });
-      });
-      expect(exitCode).toBe(0);
-      const shipped = JSON.parse(stdout.trim()) as ShipOutput;
-      expect(shipped.status).toBe("succeeded");
-      const wfId = shipped.workflowRunId;
-
-      const first = await runCli(homeRoot, ["open-pr", wfId, "--json"]);
-      expect(first.code).toBe(0);
-      const opened = JSON.parse(first.stdout.trim()) as OpenPrOutput;
-      expect(opened.alreadyExisted).toBe(false);
-
-      const second = await runCli(homeRoot, ["open-pr", wfId, "--json"]);
-      expect(second.code).toBe(0);
-      const again = JSON.parse(second.stdout.trim()) as OpenPrOutput;
-      expect(again.alreadyExisted).toBe(true);
-      expect(again.prUrl).toBe(opened.prUrl);
-      expect(again.prNumber).toBe(opened.prNumber);
-
-      const { owner } = parseSandboxSlug(slug);
-      const list2 = spawnSync(
-        "gh",
-        ["pr", "list", "--repo", slug, "--head", `${owner}:${again.head}`, "--json", "number"],
-        { encoding: "utf-8" },
-      );
-      expect(list2.status).toBe(0);
-      const prs = JSON.parse(list2.stdout) as { number: number }[];
-      expect(prs.length).toBe(1);
-    } finally {
-      tailer.stop();
-    }
+    expect(list2.status).toBe(0);
+    const prs = JSON.parse(list2.stdout) as { number: number }[];
+    // Tighter than `length: 1` — verify the listed PR is the SAME one the
+    // first open-pr returned. Catches a hypothetical regression where
+    // open_pr closes + reopens (would pass `length: 1` but `number` would
+    // differ).
+    expect(prs[0]?.number).toBe(opened.prNumber);
   });
 });

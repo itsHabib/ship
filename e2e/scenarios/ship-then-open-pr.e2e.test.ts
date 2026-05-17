@@ -11,22 +11,19 @@
 
 import type { OpenPrOutput, ShipOutput } from "@ship/mcp";
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { describe, expect, test } from "vitest";
 
-import { startEventTailer } from "./event-tailer.js";
 import {
   bootstrapFixtureMainOnSandbox,
-  CLI_BIN,
-  CLI_PKG,
   Env,
   hasOpenPrLiveEnv,
-  isolatedHomeEnv,
   mkLiveTmp,
   parseSandboxSlug,
   pollUntilTerminal,
   runCli,
+  spawnShipChild,
   waitForWorkflowRowId,
 } from "./live-open-pr-helpers.js";
 
@@ -43,54 +40,21 @@ describe.skipIf(!LIVE)("L4 live e2e — A2 ship then open_pr (poll chain)", () =
 
     bootstrapFixtureMainOnSandbox({ workdir, token: Env.github, sandboxSlug: slug });
 
-    const env = isolatedHomeEnv(homeRoot);
-    const child = spawn(
-      process.execPath,
-      [
-        "--import",
-        "tsx/esm",
-        CLI_BIN,
-        "ship",
-        "docs/features/sandbox.md",
-        "--workdir",
-        workdir,
-        "--repo",
-        repoLabel,
-        "--branch",
-        branch,
-        "--json",
-        "--thinking",
-        "low",
-      ],
-      {
-        cwd: CLI_PKG,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    let shipStdout = "";
-    child.stdout.setEncoding("utf-8");
-    child.stderr.setEncoding("utf-8");
-    child.stdout.on("data", (c: string) => {
-      shipStdout += c;
-      process.stdout.write(c);
+    const s = spawnShipChild({
+      homeRoot,
+      workdir,
+      repoLabel,
+      branch,
+      docRel: "docs/features/sandbox.md",
     });
-    child.stderr.on("data", (c: string) => {
-      process.stderr.write(`[ship-stderr] ${c}`);
-    });
-    const tailer = startEventTailer(homeRoot, child);
     try {
       const wfId = await waitForWorkflowRowId(homeRoot, repoLabel);
       const terminal = await pollUntilTerminal(homeRoot, wfId);
       expect(terminal.status).toBe("succeeded");
 
-      const exitCode = await new Promise<number>((res) => {
-        child.on("close", (c) => {
-          res(c ?? -1);
-        });
-      });
+      const { exitCode, stdout } = await s.waitForClose();
       expect(exitCode).toBe(0);
-      const shipped = JSON.parse(shipStdout.trim()) as ShipOutput;
+      const shipped = JSON.parse(stdout.trim()) as ShipOutput;
       expect(shipped.workflowRunId).toBe(wfId);
       expect(shipped.status).toBe("succeeded");
 
@@ -108,7 +72,7 @@ describe.skipIf(!LIVE)("L4 live e2e — A2 ship then open_pr (poll chain)", () =
       const filesBody = JSON.parse(filesProbe.stdout) as { files?: { path: string }[] };
       expect(filesBody.files?.length ?? 0).toBeGreaterThan(0);
     } finally {
-      tailer.stop();
+      s.stop();
     }
   });
 });

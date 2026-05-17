@@ -2,13 +2,17 @@
  * Shared subprocess + git helpers for `open_pr` L4 scenarios (test-side only).
  */
 
+import type { ShipOutput } from "@ship/mcp";
 import type { WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { expect } from "vitest";
+
+import { startEventTailer } from "./event-tailer.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const OPEN_PR_FIXTURE = resolve(HERE, "..", "fixtures", "open-pr-sandbox");
@@ -174,7 +178,9 @@ export async function pollUntilTerminal(
   workflowRunId: string,
 ): Promise<WorkflowRun> {
   const terminal: ReadonlySet<WorkflowStatus> = new Set(["succeeded", "failed", "cancelled"]);
-  const deadline = Date.now() + 5 * 60_000;
+  // Deadline below vitest's 5-min testTimeout so we throw a clean
+  // "timed out waiting for terminal status" before the test runner kills us.
+  const deadline = Date.now() + 4.5 * 60_000;
   while (Date.now() < deadline) {
     const r = runCliSync(homeRoot, ["status", workflowRunId, "--json"]);
     if (r.code !== 0) {
@@ -190,6 +196,100 @@ export async function pollUntilTerminal(
 
 export async function sleep(ms: number): Promise<void> {
   await new Promise<void>((r) => setTimeout(r, ms));
+}
+
+export interface ShipChildHandle {
+  readonly child: ChildProcess;
+  readonly waitForClose: () => Promise<{ readonly exitCode: number; readonly stdout: string }>;
+  readonly stop: () => void;
+}
+
+export interface SpawnShipArgs {
+  readonly homeRoot: string;
+  readonly workdir: string;
+  readonly repoLabel: string;
+  readonly branch: string;
+  readonly docRel: string;
+  readonly thinking?: "low" | "high";
+}
+
+/**
+ * Spawns `ship` against the CLI binary with a per-scenario isolated home tree,
+ * a streaming event-tailer for human visibility, and a captured stdout
+ * buffer for the post-run JSON parse. Returns a handle the caller drives
+ * (close-the-child, stop-the-tailer). Replaces 4 near-identical spawn
+ * blocks previously inlined across A1, A2, A3, A4, A5.
+ */
+export function spawnShipChild(args: SpawnShipArgs): ShipChildHandle {
+  const env = isolatedHomeEnv(args.homeRoot);
+  const child = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx/esm",
+      CLI_BIN,
+      "ship",
+      args.docRel,
+      "--workdir",
+      args.workdir,
+      "--repo",
+      args.repoLabel,
+      "--branch",
+      args.branch,
+      "--json",
+      "--thinking",
+      args.thinking ?? "low",
+    ],
+    {
+      cwd: CLI_PKG,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  let stdout = "";
+  child.stdout.setEncoding("utf-8");
+  child.stderr.setEncoding("utf-8");
+  child.stdout.on("data", (c: string) => {
+    stdout += c;
+    process.stdout.write(c);
+  });
+  child.stderr.on("data", (c: string) => {
+    process.stderr.write(`[ship-stderr] ${c}`);
+  });
+  const tailer = startEventTailer(args.homeRoot, child);
+  return {
+    child,
+    waitForClose: async () =>
+      new Promise<{ readonly exitCode: number; readonly stdout: string }>((res) => {
+        child.on("close", (c) => {
+          res({ exitCode: c ?? -1, stdout });
+        });
+      }),
+    stop: () => {
+      tailer.stop();
+    },
+  };
+}
+
+/**
+ * Convenience wrapper: spawn ship, wait for close, assert exit 0 +
+ * `status: succeeded`, return parsed output. Used by happy-path scenarios
+ * (A1, A4 subtests, A5). A2 uses spawnShipChild directly (polls separately);
+ * A3 uses spawnShipChild directly (cancels mid-flight).
+ */
+export async function runShipExpectingSuccess(
+  args: SpawnShipArgs,
+): Promise<{ readonly workflowRunId: string; readonly output: ShipOutput }> {
+  const s = spawnShipChild(args);
+  try {
+    const { exitCode, stdout } = await s.waitForClose();
+    expect(exitCode).toBe(0);
+    const shipped = JSON.parse(stdout.trim()) as ShipOutput;
+    expect(shipped.status).toBe("succeeded");
+    return { workflowRunId: shipped.workflowRunId, output: shipped };
+  } finally {
+    s.stop();
+  }
 }
 
 /** Event-driven gate for cancellation (ED-6) — assistant / tool traffic only. */

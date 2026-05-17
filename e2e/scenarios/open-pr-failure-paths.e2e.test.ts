@@ -7,29 +7,26 @@
 
 /* eslint-disable sonarjs/no-os-command-from-path -- `gh` + `git` in failure scenarios. */
 
-import type { OpenPrOutput, ShipOutput } from "@ship/mcp";
+import type { OpenPrOutput } from "@ship/mcp";
 
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { startEventTailer } from "./event-tailer.js";
 import {
   bootstrapFixtureMainOnSandbox,
-  CLI_BIN,
-  CLI_PKG,
   Env,
   hasOpenPrLiveEnv,
-  isolatedHomeEnv,
   mkLiveTmp,
   originHttpsUrl,
   parseSandboxSlug,
   parseWorkflowRun,
   runCli,
   runCliSync,
+  runShipExpectingSuccess,
 } from "./live-open-pr-helpers.js";
 
 const LIVE = hasOpenPrLiveEnv();
@@ -45,14 +42,15 @@ describe.skipIf(!LIVE)("L4 live e2e — A4 open_pr failure paths", () => {
 
       bootstrapFixtureMainOnSandbox({ workdir, token: Env.github, sandboxSlug: slug });
 
-      const wfId = await runShipToSucceeded(
+      const { workflowRunId: wfId } = await runShipExpectingSuccess({
         homeRoot,
         workdir,
         repoLabel,
         branch,
-        "docs/features/sandbox.md",
-      );
+        docRel: "docs/features/sandbox.md",
+      });
 
+      // Auth subtest: re-run the open-pr command with GITHUB_TOKEN omitted.
       const bad = await runCli(homeRoot, ["open-pr", wfId, "--json"], {
         omitEnv: ["GITHUB_TOKEN", "GH_TOKEN"],
       });
@@ -86,13 +84,13 @@ describe.skipIf(!LIVE)("L4 live e2e — A4 open_pr failure paths", () => {
 
       bootstrapFixtureMainOnSandbox({ workdir, token: Env.github, sandboxSlug: slug });
 
-      const wfId = await runShipToSucceeded(
+      const { workflowRunId: wfId } = await runShipExpectingSuccess({
         homeRoot,
         workdir,
         repoLabel,
         branch,
-        "docs/features/no-h1.md",
-      );
+        docRel: "docs/features/no-h1.md",
+      });
 
       const prR = await runCli(homeRoot, ["open-pr", wfId, "--json"]);
       expect(prR.code).toBe(0);
@@ -128,13 +126,13 @@ describe.skipIf(!LIVE)("L4 live e2e — A4 open_pr failure paths", () => {
         execFileSync("git", ["-C", side, "commit", "-m", "diverge for pushreject"]);
         execFileSync("git", ["-C", side, "push", "-u", "origin", divergeBranch]);
 
-        const wfId = await runShipToSucceeded(
+        const { workflowRunId: wfId } = await runShipExpectingSuccess({
           homeRoot,
           workdir,
           repoLabel,
-          divergeBranch,
-          "docs/features/sandbox.md",
-        );
+          branch: divergeBranch,
+          docRel: "docs/features/sandbox.md",
+        });
 
         const prR = await runCli(homeRoot, ["open-pr", wfId, "--json"]);
         expect(prR.code).toBe(1);
@@ -151,65 +149,8 @@ describe.skipIf(!LIVE)("L4 live e2e — A4 open_pr failure paths", () => {
         } catch {
           process.stderr.write(`[e2e] warning: could not delete ${divergeBranch}\n`);
         }
+        rmSync(side, { recursive: true, force: true });
       }
     });
   });
 });
-
-async function runShipToSucceeded(
-  homeRoot: string,
-  workdir: string,
-  repoLabel: string,
-  branch: string,
-  docRel: string,
-): Promise<string> {
-  const env = isolatedHomeEnv(homeRoot);
-  const child = spawn(
-    process.execPath,
-    [
-      "--import",
-      "tsx/esm",
-      CLI_BIN,
-      "ship",
-      docRel,
-      "--workdir",
-      workdir,
-      "--repo",
-      repoLabel,
-      "--branch",
-      branch,
-      "--json",
-      "--thinking",
-      "low",
-    ],
-    {
-      cwd: CLI_PKG,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  let stdout = "";
-  child.stdout.setEncoding("utf-8");
-  child.stderr.setEncoding("utf-8");
-  child.stdout.on("data", (c: string) => {
-    stdout += c;
-    process.stdout.write(c);
-  });
-  child.stderr.on("data", (c: string) => {
-    process.stderr.write(`[ship-stderr] ${c}`);
-  });
-  const tailer = startEventTailer(homeRoot, child);
-  try {
-    const code = await new Promise<number>((res) => {
-      child.on("close", (c) => {
-        res(c ?? -1);
-      });
-    });
-    expect(code).toBe(0);
-    const shipped = JSON.parse(stdout.trim()) as ShipOutput;
-    expect(shipped.status).toBe("succeeded");
-    return shipped.workflowRunId;
-  } finally {
-    tailer.stop();
-  }
-}
