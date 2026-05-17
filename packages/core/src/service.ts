@@ -77,6 +77,13 @@ export interface ShipService {
   getRun(workflowRunId: string): Promise<WorkflowRun | null>;
   listRuns(filter: ListRunsFilter): Promise<WorkflowRun[]>;
   cancelRun(workflowRunId: string): Promise<{ workflowRunId: string; status: WorkflowStatus }>;
+  // Awaits every in-flight `startShip` background continuation to fully
+  // settle (success, failure, or safety-net stderr log). Use this before
+  // closing the store in tests / long-lived host processes — otherwise
+  // a setImmediate continuation can race past `store.close()` and crash
+  // with "database connection is not open" against the closed handle.
+  // Resolves immediately if nothing is in flight.
+  drainBackground(): Promise<void>;
 }
 
 interface ActiveRun {
@@ -92,6 +99,13 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     cursorRun: newCursorRunId,
   };
   const activeRuns = new Map<string, ActiveRun>();
+  // Tracks the un-awaited `setImmediate`-wrapped continuation Promise
+  // from each `runShipStart` call. Distinct from `activeRuns`, which is
+  // cleared in `runToTerminal`'s `finally` BEFORE the outer Promise
+  // resolves — so `activeRuns.size` reaching 0 doesn't mean the
+  // continuation is safe from a closing store. Entries auto-remove on
+  // settle so a long-lived service doesn't grow this set unbounded.
+  const bgPending = new Set<Promise<void>>();
   const makeCtx = (input: ShipInput): ShipContext => ({
     activeRuns,
     clock,
@@ -105,7 +119,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
 
   return {
     ship: (input) => runShip(makeCtx(input)),
-    startShip: (input) => runShipStart(makeCtx(input)),
+    startShip: (input) => runShipStart(makeCtx(input), bgPending),
     getRun: (id) => Promise.resolve(store.getRun(id)),
     listRuns: (filter) => Promise.resolve(store.listRuns(filter)),
     cancelRun: (id) => {
@@ -119,6 +133,13 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
       } catch (err) {
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
+    },
+    drainBackground: async () => {
+      // Snapshot first — a continuation that completes while we await
+      // can call into `bgPending.delete`, which is fine, but iterating
+      // a mutating Set isn't. `allSettled` because we don't want one
+      // rejection to mask the rest still in flight.
+      await Promise.allSettled([...bgPending]);
     },
   };
 }
@@ -168,7 +189,16 @@ async function runShip(ctx: ShipContext): Promise<ShipOutput> {
 // SQLite handle, unwritable artifacts dir). Under normal failures
 // `runToTerminal` already routes through `finalizeFailure` and
 // resolves cleanly. See `docs/features/ship-v2/phases/01-async-ship-tool.md` § ED-2.
-async function runShipStart(ctx: ShipContext): Promise<ShipStartOutput> {
+//
+// The continuation is wrapped in a tracked `bg` Promise stored in
+// `bgPending` so callers can `drainBackground()` before disposing the
+// store. The `bg` resolves AFTER the catch fires, which means a
+// drainer's await still completes cleanly even if the safety net
+// triggered — drain semantics are "settled," not "succeeded."
+async function runShipStart(
+  ctx: ShipContext,
+  bgPending: Set<Promise<void>>,
+): Promise<ShipStartOutput> {
   const prep = await prepareRun(ctx);
   markRunStarted(ctx, prep);
   const controller = new AbortController();
@@ -176,10 +206,20 @@ async function runShipStart(ctx: ShipContext): Promise<ShipStartOutput> {
   // can't leave a stale active-runs entry behind. No concurrency
   // window opens because these three lines are on the same sync stack.
   ctx.activeRuns.set(prep.workflowRunId, { controller });
-  setImmediate(() => {
-    runToTerminal(ctx, prep, controller).catch((err: unknown) => {
-      logBackgroundFailure(prep.workflowRunId, err);
+  const bg = new Promise<void>((resolve) => {
+    setImmediate(() => {
+      runToTerminal(ctx, prep, controller)
+        .catch((err: unknown) => {
+          logBackgroundFailure(prep.workflowRunId, err);
+        })
+        .finally(() => {
+          resolve();
+        });
     });
+  });
+  bgPending.add(bg);
+  void bg.finally(() => {
+    bgPending.delete(bg);
   });
   return { workflowRunId: prep.workflowRunId, status: "running" };
 }
