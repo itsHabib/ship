@@ -45,7 +45,7 @@ export function renderImplementationPrompt(input: RenderImplementationPromptInpu
     "   - Commit with a Conventional Commit subject derived from the task (e.g. `feat(...)`, `fix(...)`, `test(...)`, `docs(...)`, `refactor(...)`).",
     "   - Include `Co-authored-by: Cursor <cursoragent@cursor.com>` in the commit message body.",
     "   - Do NOT push and do NOT open a pull request (the driver owns those).",
-    "8. After committing (rule 7), consider invoking the repo's registered subagents via your `task` tool. Skip this rule entirely on a clean working tree. Natural dispatch points, only if the `task` tool lists the subagent_type as available:",
+    "8. After committing (rule 7), consider invoking the repo's registered subagents via your `task` tool. Skip this rule entirely if rule 7 was skipped (no changes were committed). Natural dispatch points, only if the `task` tool lists the subagent_type as available:",
     "   - `task` with subagent_type `code-reviewer` — pass the diff for a P0/P1/P2/P3 review against the repo's conventions.",
     "   - `task` with subagent_type `scope-tracker` — verify the diff stays inside the task doc's Scope section.",
     "   - `task` with subagent_type `test-author` — only if you added new exported code without matching tests.",

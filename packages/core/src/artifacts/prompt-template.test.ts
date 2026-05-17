@@ -49,6 +49,11 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("subagent_type `scope-tracker`");
     expect(out).toContain("subagent_type `test-author`");
     expect(out).toContain("subagent_type `validator`");
+    // Rule 8's skip guard must reference rule 7's outcome, not the
+    // post-commit working-tree state — `git commit` makes the tree
+    // clean by definition, so a "skip on clean tree" guard would
+    // neuter the rule in its intended success path.
+    expect(out).toContain("Skip this rule entirely if rule 7 was skipped");
     expect(out).toContain("task-error: <verbatim error message>");
     expect(out).toContain("structured summary");
   });
