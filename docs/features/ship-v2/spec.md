@@ -18,7 +18,7 @@ V2 phase 01 fixes that single thing. Subsequent V2 phases compose on top.
 
 - Make the MCP `ship` tool callable from a driver agent without falling out of the request budget.
 - Keep V1's persistence and durability guarantees untouched. Runs are still recorded under one `WorkflowRun` row; cancellation still works; nothing about the substrate-agnostic runner changes.
-- Add PR opening, review-cycle execution, and CI repair as new phases composing on the V1 `WorkflowRun` / `Phase` schema. Phases 02–04 each introduce one new `Phase.kind` value + one new MCP tool. Phase 01 is the odd one out: it changes the existing `ship` tool's return contract without adding a new `Phase.kind`.
+- Add PR opening, agent-side self-review (via subagent passthrough), and CI repair as new phases composing on the V1 `WorkflowRun` / `Phase` schema. Phase 01 changes `ship`'s return contract without adding a new `Phase.kind`. Phases 02 and 04 each introduce one new `Phase.kind` value + one new MCP tool (`open_pr`, `ci_fix`). Phase 03 (subagent passthrough) is the second odd one out — it adds neither a `Phase.kind` nor a new MCP tool, only plumbs the SDK's subagent surface through `LocalCursorRunner`.
 - Preserve the workspace-agnostic posture from V1 ED-3. V2 does not introduce a hard dependency on Tower or any specific workspace provider.
 
 ## Non-goals (V2)
@@ -35,8 +35,8 @@ Each gets its own `phases/NN-...md` doc, reviewed and merged before implementati
 
 1. **[01 — async ship tool](phases/01-async-ship-tool.md).** Change the `ship` MCP tool's return contract so it returns `{ workflowRunId, status }` immediately after the run is persisted, instead of awaiting the terminal state. CLI behavior is unchanged. This is the only V2 phase that strictly precedes the others — every later phase calls `ship` from an agent.
 2. **02 — open_pr phase (planned).** New `Phase.kind = "open_pr"`. New MCP tool (likely `open_pr`) that pushes the branch and opens a PR via `gh pr create`. Composes on V1's `Phase` row; no schema migration. Out of scope for phase 01.
-3. **03 — review-cycle phase (planned).** New `Phase.kind = "review"`. Drives a review agent against an open PR; persists the review run alongside the implement run.
-4. **04 — CI-repair phase (planned).** New `Phase.kind = "ci_fix"`. Composes on PR + review; reacts to red CI by spawning a fix run, capped at N cycles.
+3. **[03 — subagent passthrough](phases/03-subagent-passthrough.md).** Reframes the originally-planned "review-cycle phase." No new `Phase.kind`, no new MCP tool. `LocalCursorRunner` passes `local.settingSources: ["project"]` and an optional inline `agents` field to `Agent.create`, exposing Cursor SDK's subagent primitive end-to-end. The Ship repo dogfoods `.cursor/agents/code-reviewer.md`. Inner-loop review (catching issues before the PR opens) moves into the implement phase; outer-loop bot-reviewer coordination stays in the `parallel-driver` skill + `CLAUDE.md § Shipping Features`. The original AI-reviewer-phase idea is dissolved — see [phase 03 § Summary](phases/03-subagent-passthrough.md) for the reasoning.
+4. **04 — CI-repair phase (planned).** New `Phase.kind = "ci_fix"`. Composes on PR + review; reacts to red CI by spawning a fix run, capped at N cycles. Shape may revisit further once subagent-driven self-review lands and shows what's left for outer-loop CI repair.
 
 Phase 01 is the only one in design today. Each later phase lands when its predecessor is reviewed + merged, not before.
 
@@ -53,11 +53,11 @@ Phase 01 is the only one in design today. Each later phase lands when its predec
 
 ### ED-1 — V2 phases compose on V1's `Phase` row, no schema migration
 
-The V1 `phases` table already admits new `kind` values without ALTER. Every V2 surface (open_pr, review, ci_fix) adds a new `Phase` row to an existing `WorkflowRun`, not a new top-level entity. The state-machine helpers in `@ship/workflow` grow new transitions; the SQL schema doesn't.
+The V1 `phases` table already admits new `kind` values without ALTER. V2 surfaces that introduce new state (`open_pr`, `ci_fix`) add a new `Phase` row to an existing `WorkflowRun`, not a new top-level entity. The state-machine helpers in `@ship/workflow` grow new transitions; the SQL schema doesn't. Phase 03 (subagent passthrough) is an exception: it fires inside the existing implement phase via SDK plumbing, so no new state machine and no new row.
 
 ### ED-2 — MCP tool surface grows; CLI mirrors selectively
 
-Each V2 phase adds or modifies at most one MCP tool. (Phase 01 modifies `ship`'s return contract without adding a new tool; phases 02–04 each add one new tool — `open_pr`, `review`, `ci_fix`.) The CLI mirrors only the surfaces that make sense for a human (e.g. `ship open_pr <run_id>` is plausible; `ship review` probably isn't). The MCP / CLI symmetry from V1 is not a constraint — V2 surfaces are agent-driven first; CLI parity is opportunistic.
+Each V2 phase adds or modifies at most one MCP tool. (Phase 01 modifies `ship`'s return contract without adding a new tool; phase 03 adds none — it plumbs the SDK's subagent surface inside the existing implement phase; phases 02 and 04 each add one new tool — `open_pr`, `ci_fix`.) The CLI mirrors only the surfaces that make sense for a human (e.g. `ship open_pr <run_id>` is plausible; `ship ci_fix` probably isn't). The MCP / CLI symmetry from V1 is not a constraint — V2 surfaces are agent-driven first; CLI parity is opportunistic.
 
 ### ED-3 — V1 contracts stay backward-compatible at the data layer, not at the MCP tool layer
 
