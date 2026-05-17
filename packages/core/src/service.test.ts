@@ -684,17 +684,22 @@ describe("ShipService.startShip — async kickoff", () => {
     // setImmediate-wrapped Promise to settle — deterministic where
     // the previous polling-on-row-status drain had a microtask race
     // between `updateWorkflowRunStatus` and the continuation Promise
-    // resolving.
-    for (const r of h.store.listRuns({ limit: 100 })) {
-      if (isTerminal(r.status)) continue;
-      try {
-        await h.service.cancelRun(r.id);
-      } catch {
-        // ignore: run may have already finished between filter + cancel
+    // resolving. The drain + close live in `finally` so a busted
+    // `listRuns` (e.g. store wedged from a prior test) doesn't skip
+    // them and leak a half-closed handle.
+    try {
+      for (const r of h.store.listRuns({ limit: 100 })) {
+        if (isTerminal(r.status)) continue;
+        try {
+          await h.service.cancelRun(r.id);
+        } catch {
+          // ignore: run may have already finished between filter + cancel
+        }
       }
+    } finally {
+      await h.service.drainBackground();
+      h.store.close();
     }
-    await h.service.drainBackground();
-    h.store.close();
   });
 
   test("returns immediately with { workflowRunId, status: 'running' }", async () => {
