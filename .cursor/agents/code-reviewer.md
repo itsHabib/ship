@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Pre-PR self-review. Catches what @claude/@codex/Copilot would flag in cycle 1.
+description: Use this AFTER writing code AND BEFORE declaring an implementation done. Reviews the diff for bugs, security issues, edge cases, naming, and adherence to CLAUDE.md + operator conventions. Returns P0-P3 findings the parent should address inline (P0/P1) or surface in the summary (P2/P3).
 model: inherit
 ---
 

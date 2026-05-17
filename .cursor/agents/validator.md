@@ -1,6 +1,6 @@
 ---
 name: validator
-description: Runs the relevant checks (`make check`, e2e suites, package tests) for the current change and reports failures with diagnosis. Invoke before declaring done.
+description: Use this BEFORE declaring an implementation done. Runs `make check` (typecheck + lint + format + unit tests) plus any relevant e2e suites and diagnoses failures as real impl issues, environment issues (stale dist, lockfile drift, Windows long-path), or flaky/network. Returns a green / red verdict the parent must act on before producing the structured summary.
 model: inherit
 ---
 

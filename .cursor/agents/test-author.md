@@ -1,6 +1,6 @@
 ---
 name: test-author
-description: Writes vitest-style tests for new or modified production code in the current diff. Invoke when the parent has added code without matching tests.
+description: Use this AFTER writing new production code AND BEFORE declaring done, when the diff has new or modified exports without matching tests. Drafts vitest-style tests alongside source; reuses the repo's existing harness / fakes; references the design's F1-Fn so tests encode the documented contract.
 model: inherit
 ---
 

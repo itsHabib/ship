@@ -1,6 +1,6 @@
 ---
 name: scope-tracker
-description: Verifies the current diff stays inside the task doc's Scope and Out-of-scope sections. Invoke before declaring done; flags out-of-bound edits with severity.
+description: Use this BEFORE declaring an implementation done. Walks the diff and classifies each touched file as in-scope / adjacent / out-of-scope against the task doc's Scope + Out-of-scope sections. Returns severity-flagged (P0/P1/P2) out-of-scope edits the parent should revert or justify before the PR opens.
 model: inherit
 ---
 
