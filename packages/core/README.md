@@ -16,7 +16,7 @@ Reports are written under `reports/mutation/` (open `mutation.html` in a browser
 
 Stryker’s default `@stryker-mutator/*` plugin glob does not resolve `@stryker-mutator/vitest-runner` under pnpm’s layout, so `stryker.conf.json` uses `appendPlugins` to load it explicitly.
 
-**CI:** (pending follow-up PR) A nightly GitHub Actions workflow (`Mutation testing`) is specified in the Phase 02 design doc (F2 YAML) but not landed yet — operator deferred the workflow file to a separate PR. When it ships, it will run the same command on a schedule (07:00 UTC) and on manual dispatch, upload the report as a workflow artifact (`stryker-report-core`, 30-day retention), and stay advisory (`thresholds.break` unset so the job doesn't fail on surviving mutants).
+**CI:** Mutation testing runs on every push + PR as part of the standard `CI` workflow (`.github/workflows/ci.yml`), ubuntu-only (one OS is enough signal at this cost). Surviving mutants do NOT fail the build — `stryker.conf.json` sets `thresholds.break: null` so mutation runs are informational. Real test gaps surface in the HTML report and become chips per the protocol below.
 
 **Follow-up:** Review surviving mutants in the HTML report. Real gaps become work items (chips) with reproducer (mutator name + line). Deliberately ignored cases use `// @stryker-disable-next-line <mutator>` plus a `// reason:` line per repo comment convention.
 

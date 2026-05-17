@@ -54,3 +54,11 @@ jobs:
 
       - name: Coverage gates
         run: pnpm run coverage
+
+      - name: Mutation testing (@ship/core)
+        # Ubuntu-only — Stryker's ~5-10 min on a 4-vCPU runner is enough on
+        # one OS; running on both ubuntu + windows would double-charge for
+        # the same signal. `break: null` in stryker.conf.json keeps this
+        # informational (surviving mutants → chips, not CI failures).
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm --filter @ship/core exec stryker run
