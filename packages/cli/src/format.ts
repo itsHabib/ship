@@ -4,7 +4,7 @@
  * (no ANSI colors in V1) so test snapshots are stable across terminals.
  */
 
-import type { ShipOutput } from "@ship/core";
+import type { OpenPrOutput, ShipOutput } from "@ship/core";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
 /** Renders a `ShipOutput` for the `ship ship` subcommand. */
@@ -62,6 +62,22 @@ export function formatCancelOutput(
 ): string {
   if (json) return jsonStringify(out);
   return `status: ${out.status}\nworkflowRunId: ${out.workflowRunId}`;
+}
+
+/** Renders an `OpenPrOutput` for the `ship open-pr` subcommand. */
+export function formatOpenPrOutput(out: OpenPrOutput, json: boolean): string {
+  if (json) return jsonStringify(out);
+  const lines = [
+    `status:        ${out.status}`,
+    `workflowRunId: ${out.workflowRunId}`,
+    `phaseId:       ${out.phaseId}`,
+    `prNumber:      ${String(out.prNumber)}`,
+    `prUrl:         ${out.prUrl}`,
+    `base:          ${out.base}`,
+    `head:          ${out.head}`,
+    `alreadyExisted: ${String(out.alreadyExisted)}`,
+  ];
+  return lines.join("\n");
 }
 
 /** Pretty-prints a terminal cursor-run summary; used by `ship ship` in pretty mode. */

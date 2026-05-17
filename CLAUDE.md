@@ -8,6 +8,8 @@ A repo-native dev-workflow MCP toolkit. **V1 feature-complete on `main`** as of 
 - `docs/features/<feature>/spec.md` — design spec for that feature.
 - `docs/features/<feature>/plan.md` — execution plan with phase checkboxes for that feature.
 
+QE SDET test-layer taxonomy (L1–L4, bug-smash cadence) lives in [`docs/features/qe-sdet/spec.md`](docs/features/qe-sdet/spec.md) — linked here so contributors find the harness philosophy without duplicating it into this file.
+
 Start with the active feature's `spec.md`, then its `plan.md`. The plan tracks what's done and what's next.
 
 ## Develop

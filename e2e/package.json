@@ -13,9 +13,11 @@
     "@ship/store": "workspace:*",
     "@ship/test-harness": "workspace:*",
     "@ship/workflow": "workspace:*",
+    "better-sqlite3": "^12.0.0",
     "commander": "^12.1.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0"
   }

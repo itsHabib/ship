@@ -18,6 +18,13 @@ import { z } from "zod";
 const WORKFLOW_RUN_ID_PATTERN = /^wf_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const workflowRunIdSchema = z.string().regex(WORKFLOW_RUN_ID_PATTERN);
 
+// Same canonical-ULID shape as workflowRunIdSchema, prefixed `ph_`. Exposed
+// at the MCP boundary so tools whose output references a phase id (e.g.
+// `open_pr`) can pin the shape that `@ship/workflow`'s `newPhaseId`
+// produces.
+const PHASE_ID_PATTERN = /^ph_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+export const phaseIdSchema = z.string().regex(PHASE_ID_PATTERN);
+
 // =====================================================================
 // ship
 // =====================================================================
@@ -175,3 +182,42 @@ export const cancelWorkflowRunOutputSchema = z
   })
   .strict();
 export type CancelWorkflowRunOutput = z.infer<typeof cancelWorkflowRunOutputSchema>;
+
+// =====================================================================
+// open_pr (V2 phase 02)
+// =====================================================================
+
+/** Input to the `open_pr` tool. Anchors to an existing workflow run; all other fields are optional overrides. */
+export const openPrInputSchema = z
+  .object({
+    workflowRunId: workflowRunIdSchema,
+    base: z.string().min(1).optional(),
+    title: z.string().min(1).optional(),
+    body: z.string().optional(),
+    // Optional with no schema-side default — the service treats absent
+    // as `false`. Matches the `ShipInput.thinking?: ThinkingEffort`
+    // pattern from V1 (service owns the fallback, not the schema).
+    draft: z.boolean().optional(),
+  })
+  .strict();
+export type OpenPrInput = z.infer<typeof openPrInputSchema>;
+
+/**
+ * Output of the `open_pr` tool — terminal-only by construction. The
+ * `status` literal narrows so a future impl that accidentally returns a
+ * different value fails Zod at the boundary, not silently downstream
+ * (mirrors `shipStartOutputSchema`).
+ */
+export const openPrOutputSchema = z
+  .object({
+    workflowRunId: workflowRunIdSchema,
+    phaseId: phaseIdSchema,
+    prNumber: z.number().int().positive(),
+    prUrl: z.string().url(),
+    base: z.string().min(1),
+    head: z.string().min(1),
+    alreadyExisted: z.boolean(),
+    status: z.literal("succeeded"),
+  })
+  .strict();
+export type OpenPrOutput = z.infer<typeof openPrOutputSchema>;

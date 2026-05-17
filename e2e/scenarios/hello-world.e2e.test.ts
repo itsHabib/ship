@@ -22,11 +22,13 @@
  */
 
 import { spawn } from "node:child_process";
-import { cpSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { cpSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+
+import { startEventTailer } from "./event-tailer.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolve(HERE, "..", "fixtures", "test-repo");
@@ -122,101 +124,3 @@ describe.skipIf(!HAS_KEY)("Phase 9 live e2e — ship the hello-world fixture", (
     }
   });
 });
-
-interface EventTailer {
-  stop(): void;
-}
-
-/**
- * Polls `tmp` recursively for any `events.ndjson` file. Once found,
- * keeps polling its size and prints each newly-appended NDJSON line's
- * `type` to stdout. Pure interval-based — no `watchFile`, so the
- * process exits cleanly when `stop()` runs (which it always does, in
- * the test's `finally`).
- *
- * Cheap: each poll is a stat + slice of the file from the last
- * position. 250ms cadence is fine for human-watchable progress.
- */
-function startEventTailer(tmp: string, _child: { kill?: () => void }): EventTailer {
-  const POLL_MS = 250;
-  let eventsPath: string | undefined;
-  // Byte offset into the file. SDK events can include non-ASCII text
-  // (assistant messages with smart quotes / emoji), so we slice at the
-  // byte level on a Buffer rather than at the string level — string
-  // indices are UTF-16 code units, which can split a multi-byte
-  // sequence at the boundary and produce invalid UTF-8 for `JSON.parse`.
-  let position = 0;
-
-  const interval = setInterval(() => {
-    if (eventsPath === undefined) {
-      eventsPath = findEventsNdjson(tmp);
-      if (eventsPath !== undefined) {
-        process.stdout.write(`[e2e] tailing ${eventsPath}\n`);
-      }
-      return;
-    }
-    let size: number;
-    try {
-      size = statSync(eventsPath).size;
-    } catch {
-      return;
-    }
-    if (size <= position) return;
-    let chunk: string;
-    try {
-      // Read the whole file as a Buffer, slice in bytes, decode to
-      // UTF-8. For V1 sizes (hundreds of KB) this is fine; keeps the
-      // tailer dependency-free and avoids the multi-byte split bug.
-      const buf = readFileSync(eventsPath);
-      chunk = buf.subarray(position, size).toString("utf-8");
-    } catch {
-      return;
-    }
-    position = size;
-    for (const line of chunk.split("\n").filter((l) => l.length > 0)) {
-      try {
-        const ev = JSON.parse(line) as { type?: string };
-        process.stdout.write(`[ship-event] ${ev.type ?? "?"}\n`);
-      } catch {
-        process.stdout.write(`[ship-event] (unparseable: ${line.slice(0, 60)}…)\n`);
-      }
-    }
-  }, POLL_MS);
-
-  return {
-    stop: () => {
-      clearInterval(interval);
-    },
-  };
-}
-
-/**
- * Recursively walks `root` looking for the first `events.ndjson`
- * file. Returns the absolute path if found, `undefined` otherwise.
- * Used to discover the CLI's runs dir without hardcoding its layout
- * (which varies across platforms because `<UserConfigDir>` does).
- */
-function findEventsNdjson(root: string): string | undefined {
-  let entries: string[];
-  try {
-    entries = readdirSync(root);
-  } catch {
-    return undefined;
-  }
-  for (const name of entries) {
-    const child = join(root, name);
-    let isDir = false;
-    try {
-      isDir = statSync(child).isDirectory();
-    } catch {
-      continue;
-    }
-    if (!isDir) {
-      if (name === "events.ndjson") return child;
-      continue;
-    }
-    const found = findEventsNdjson(child);
-    if (found !== undefined) return found;
-  }
-  return undefined;
-}

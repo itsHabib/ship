@@ -14,6 +14,10 @@ export default tseslint.config(
       "spike/**",
       "**/*.config.js",
       "**/*.config.ts",
+      // Stryker generates per-mutant source sandboxes locally that should
+      // not be linted (and are already gitignored).
+      "**/.stryker-tmp/**",
+      "**/reports/mutation*",
     ],
   },
 
@@ -114,6 +118,14 @@ export default tseslint.config(
       // Our repo-wide `^_` prefix already conveys "intentionally
       // unused"; sonar's own no-unused-vars doesn't honor that pattern.
       "sonarjs/no-unused-vars": "off",
+    },
+  },
+
+  {
+    files: ["**/transitions.properties.test.ts"],
+    rules: {
+      // `test.prop` from `@fast-check/vitest` is not counted as a test by SonarJS.
+      "sonarjs/no-empty-test-file": "off",
     },
   },
 

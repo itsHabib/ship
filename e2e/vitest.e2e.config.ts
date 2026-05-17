@@ -15,9 +15,9 @@ import { defineConfig } from "vitest/config";
  *     in-memory `ShipFs` scenario tests can't see. Runs unconditionally.
  *
  *   - L4 LIVE E2E (`scenarios/**\/*.e2e.test.ts`): real `LocalCursorRunner`
- *     against the real Cursor SDK + a real workdir. Gated on
- *     `SHIP_LIVE=1` (requires `CURSOR_API_KEY`). Burns API quota and is
- *     slow, so it only runs explicitly.
+ *     against the real Cursor SDK + real workdir + real GitHub (needs
+ *     `CURSOR_API_KEY`, `GITHUB_TOKEN`, `SHIP_E2E_SANDBOX_REPO`). Gated on
+ *     `SHIP_LIVE=1` only; burns quota and is slow.
  *
  * `test.root` is pinned to this config file's directory so the
  * relative globs resolve regardless of where vitest is invoked.

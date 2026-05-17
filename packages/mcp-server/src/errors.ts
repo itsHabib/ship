@@ -11,8 +11,47 @@
  */
 
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { DocNotFoundError, DocPathEscapesWorkdirError, WorkdirNotFoundError } from "@ship/core";
+import {
+  BaseBranchUnresolvedError,
+  BranchPushFailedError,
+  DocNotFoundError,
+  DocPathEscapesWorkdirError,
+  EmptyBranchError,
+  GhAuthError,
+  GhCreatePrFailedError,
+  ImplementPhaseNotSucceededError,
+  OriginHeadUnsetError,
+  OriginRepoUnresolvedError,
+  WorkdirNotFoundError,
+  WorkdirNotGitError,
+  WorkflowRunStillActiveError,
+} from "@ship/core";
 import { WorkflowRunNotFoundError } from "@ship/store";
+
+// Caller-actionable typed errors: pre-row validation from `@ship/core`,
+// store resource-not-found, and open_pr environment / integration
+// errors. Single source of truth for the user-vs-internal split —
+// mirrors the CLI's `USER_ERROR_CLASSES` so the two consumers stay
+// aligned without duplicate per-class `if` branches.
+const USER_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
+  // ship pre-conditions.
+  WorkdirNotFoundError,
+  DocNotFoundError,
+  DocPathEscapesWorkdirError,
+  WorkflowRunNotFoundError,
+  // open_pr pre-conditions.
+  ImplementPhaseNotSucceededError,
+  WorkdirNotGitError,
+  EmptyBranchError,
+  BaseBranchUnresolvedError,
+  OriginHeadUnsetError,
+  OriginRepoUnresolvedError,
+  WorkflowRunStillActiveError,
+  // open_pr integration failures (git + GitHub).
+  GhAuthError,
+  BranchPushFailedError,
+  GhCreatePrFailedError,
+];
 
 /**
  * True when the error is caller-induced (bad payload, missing
@@ -20,19 +59,13 @@ import { WorkflowRunNotFoundError } from "@ship/store";
  * predicate so the two consumers split user-vs-internal the same way.
  */
 export function isUserError(err: unknown): boolean {
-  // Pre-row validation throws from `@ship/core`.
-  if (err instanceof WorkdirNotFoundError) return true;
-  if (err instanceof DocNotFoundError) return true;
-  if (err instanceof DocPathEscapesWorkdirError) return true;
-  // Resource-not-found surfaced by `@ship/store`.
-  if (err instanceof WorkflowRunNotFoundError) return true;
+  if (USER_ERROR_CLASSES.some((c) => err instanceof c)) return true;
   // Built-in "value out of range" — e.g. listRuns limit cap exceeded.
   if (err instanceof RangeError) return true;
   // Boundary schema rejections from Zod (the SDK runs `inputSchema`
   // before the handler, but defensive output `.parse()` calls in our
   // handlers can also throw — both should map to invalid-params).
-  if (err instanceof Error && err.name === "ZodError") return true;
-  return false;
+  return err instanceof Error && err.name === "ZodError";
 }
 
 /**

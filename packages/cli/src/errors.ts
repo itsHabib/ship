@@ -5,7 +5,21 @@
  * uniform; tests pin the mapping per error type.
  */
 
-import { DocNotFoundError, DocPathEscapesWorkdirError, WorkdirNotFoundError } from "@ship/core";
+import {
+  BaseBranchUnresolvedError,
+  BranchPushFailedError,
+  DocNotFoundError,
+  DocPathEscapesWorkdirError,
+  EmptyBranchError,
+  GhAuthError,
+  GhCreatePrFailedError,
+  ImplementPhaseNotSucceededError,
+  OriginHeadUnsetError,
+  OriginRepoUnresolvedError,
+  WorkdirNotFoundError,
+  WorkdirNotGitError,
+  WorkflowRunStillActiveError,
+} from "@ship/core";
 import { WorkflowRunNotFoundError } from "@ship/store";
 
 /** Per spec.md § "Internal interfaces". Exit code 0 is the absence of error. */
@@ -33,6 +47,17 @@ const USER_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   WorkflowRunNotFoundError,
   InvalidArgumentError,
   RangeError,
+  // open_pr pre-conditions + integration failures.
+  ImplementPhaseNotSucceededError,
+  WorkdirNotGitError,
+  EmptyBranchError,
+  BaseBranchUnresolvedError,
+  OriginHeadUnsetError,
+  OriginRepoUnresolvedError,
+  WorkflowRunStillActiveError,
+  GhAuthError,
+  BranchPushFailedError,
+  GhCreatePrFailedError,
 ];
 
 // Commander argv errors arrive as plain `Error` with these phrases.
