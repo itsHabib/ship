@@ -124,6 +124,15 @@ describe("transition properties (fast-check)", () => {
     },
   );
 
+  // I2 NOTE: `phaseArbitrary` pre-enforces the endedAt-iff-terminal invariant
+  // at generation time (see lines 58-59), so this property checks the
+  // generator's self-consistency rather than production code. The real
+  // workflow invariant — that `transitionPhase` to a terminal status SETS
+  // endedAt — is covered by I3, which chains transitions and asserts
+  // `satisfiesEndedAtInvariant` at each step. If `transitionPhase` ever
+  // becomes a production export, I2 should be replaced with a test that
+  // starts from a non-terminal phase and validates the transition writes
+  // endedAt correctly.
   test.prop([phaseArbitrary], { numRuns: ITER })(
     "I2: terminal phase rows have endedAt; non-terminal have endedAt unset",
     (phase) => {
