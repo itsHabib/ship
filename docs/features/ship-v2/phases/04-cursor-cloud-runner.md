@@ -27,14 +27,14 @@ Three substrate-shaped follow-ons this phase deliberately *defers* to their own 
 
 - **Agent resume across phases** ([cursor-sdk-leverage.md § Tier 3 #6](../../../cursor-sdk-leverage.md)) — cloud agents survive process restart, so `Agent.resume` becomes meaningful. The current `CursorRunHandle` shape doesn't model resume; redesigning that is its own phase.
 - **Artifact pickup** (`agent.listArtifacts` / `downloadArtifact`) — cloud-only feature with no existing Ship surface. Defer to a follow-up "cloud artifacts" phase if dogfood proves the need.
-- **`autoCreatePR` as the default cloud path** — cloud *can* open PRs itself. Phase 02's `open_pr` already exists and handles the local path; rather than fork the flow, cloud runs default to `autoCreatePR: false` and call `open_pr` like local runs. Opt-in to `autoCreatePR: true` is supported (see F4) but the canonical path stays uniform.
+- **`cloud + explicit open_pr` flow** — cloud runs default to `autoCreatePR: true` and the cloud VM opens its own PR. Callers who want `cloud + autoCreatePR: false + open_pr` (e.g. to inspect the diff locally before opening) cannot use that combination this phase; `open_pr.resolveHead` is local-only today. The symmetric "cloud + explicit `open_pr`" flow needs a `cursor_runs.branches_json` column + runtime-aware `resolveHead` + L3 scenarios — filed as a follow-up phase. See F4 + Out-of-scope.
 
 What this phase explicitly **does not** do:
 
 - It does not deprecate `LocalCursorRunner`. Both runners coexist; the caller picks per run.
 - It does not change the `CursorRunner` interface shape. Existing methods, existing return types. Only the input grows two optional discriminator fields (see F2 / ED-2).
 - It does not introduce a provider-agnostic substrate (Claude SDK, etc.). That's V3 candidate territory tracked separately as `tsk_01KRVAJVYJDT9Z7Q6A7H53RYWC`. Cloud cursor stays inside `@ship/cursor-runner`.
-- It does not change the SQL schema. Cloud runs persist into the same `cursor_runs` table; `branches` was always part of the run record (V1).
+- It does not change the SQL schema. Cloud runs persist into the same `cursor_runs` table (V1 schema). `CursorRunResult.branches` is an in-memory shape, not a persisted column — cloud branch info flows through `events.ndjson` this phase; structured persistence lands with the follow-up "open_pr cloud-aware" phase.
 
 ## Functional requirements
 
@@ -385,7 +385,7 @@ The double gate (`SHIP_LIVE=1` + `SHIP_CLOUD=1`) is intentional — cloud runs c
 | Cloud agent leaks (created but never terminated) on a crashed Ship process | Orphan agents accumulate on the Cursor side; operator's `Agent.list` clutter; possible quota impact | Existing `agent[Symbol.asyncDispose]()` in the runner pipeline handles graceful exit. For ungraceful exits, document the cleanup recipe (`Agent.list({ runtime: "cloud" })` + `Agent.archive` / `delete`) in the impl PR's "Troubleshooting" section. A future "cloud agent reconciliation" task could automate this — out of scope here. |
 | `EXPIRED` mapping to `cancelled` confuses operators expecting `failed` | Monitoring dashboards / alerting rules mis-classify expired runs | ED-5 captures the rationale; the impl PR's changelog calls out the mapping explicitly. If operationally confusing, a follow-up adds `cursor_runs.terminal_reason` without changing the `status` field. |
 | Cancellation during cloud CREATING phase behaves differently than RUNNING | Cancel signal lost; cloud agent runs to completion despite user intent | Validation L3 scenario (3) exercises this; if SDK behavior is broken, file a chip + document the gap in this doc; ship the feature anyway (cancellation during RUNNING is the common case). |
-| `autoCreatePR: true` opens a PR before the operator wants it (e.g. work in progress) | Premature PR notification spam; CI fires on incomplete work | Default `autoCreatePR: false`. Document in the impl PR that opt-in to `true` is for known-complete runs only. |
+| `autoCreatePR: true` (the cloud default) opens a PR before the operator wants it (e.g. work in progress) | Premature PR notification spam; CI fires on incomplete work | Cloud callers expecting the work to be incomplete pass `autoCreatePR: false` explicitly (the SDK then produces just the branch, no PR). Document the opt-out in the impl PR's changelog. Note: until the follow-up `open_pr cloud-aware` phase lands, `autoCreatePR: false + open_pr` is not a usable flow — callers should default to `autoCreatePR: true` unless they're specifically iterating without producing a PR. |
 | Cloud-specific event types break a downstream events.ndjson reader | Reader code assumes only `assistant` / `thinking` / `tool_call` / `status` event types (per V1 spike findings) | F7 says events stream unchanged. Any reader treating events.ndjson as opaque NDJSON is unaffected. Readers that switch on event type need to handle new types gracefully (per V1 ED-5 — events are forward-additive). |
 
 ## Out of scope
@@ -409,9 +409,9 @@ These should be resolved in the operator's inline review before the impl PR star
 4. ~~**Where does `CURSOR_API_KEY` come from for cloud runs in the mcp-server context?**~~ **Resolved:** cloud and local both read `process.env.CURSOR_API_KEY`. For mcp-server processes run as a service, env injection is operator-side. No Ship-side change; impl PR's changelog documents the requirement.
 5. ~~**Should cloud runs default to `skipReviewerRequest: true`?**~~ **Resolved:** `skipReviewerRequest` defaults to `autoCreatePR === true` (skip when Ship-flagged auto-PR is on, since Ship's caller already knows about the PR they triggered). When `autoCreatePR === false` (the canonical flow), `skipReviewerRequest` defaults to `false` and is moot — `open_pr`'s own reviewer-request behavior governs. F2 JSDoc reflects the conditional default.
 6. **What's the dogfood plan?** Once impl lands, the natural first cloud run is `ship.ship` against the Ship repo itself for a small phase task (e.g. one of the V3 backlog items in `tsk_01KRVAJVYJDT9Z7Q6A7H53RYWC`'s body). Confirms F1–F8 end-to-end and produces real PR + branch evidence.
-6. ~~**Is the `EXPIRED → cancelled` mapping the right call, or should it be its own terminal state?**~~ **Resolved:** `cancelled` per ED-5 (platform-side termination, not agent-side error). If monitoring needs to distinguish expired-vs-cancelled with different alerts, a separate `cursor_runs.terminal_reason` column lands as a follow-up — escape hatch is in ED-5.
+7. ~~**Is the `EXPIRED → cancelled` mapping the right call, or should it be its own terminal state?**~~ **Resolved:** `cancelled` per ED-5 (platform-side termination, not agent-side error). If monitoring needs to distinguish expired-vs-cancelled with different alerts, a separate `cursor_runs.terminal_reason` column lands as a follow-up — escape hatch is in ED-5.
 
-7. **`cloud + explicit open_pr` flow** — confirmed deferred to a follow-up phase per F4 + Out-of-scope. No operator decision required this phase, but flag here for visibility: callers who want `cloud + autoCreatePR: false + open_pr` cannot use that combination until the follow-up lands.
+8. **`cloud + explicit open_pr` flow** — confirmed deferred to a follow-up phase per F4 + Out-of-scope. No operator decision required this phase, but flag here for visibility: callers who want `cloud + autoCreatePR: false + open_pr` cannot use that combination until the follow-up lands.
 
 ## Implementation plan
 
