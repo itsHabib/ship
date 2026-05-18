@@ -75,11 +75,13 @@ export class CloudCursorRunner implements CursorRunner {
       throw new MissingCloudSpecError();
     }
     // Runtime guard for non-TS callers; `repos` is typed as a 1-tuple for normal TS usage.
-    // Reject both empty and multi-repo arrays — the single-repo contract is enforced
-    // explicitly here so out-of-scope multi-repo inputs don't silently reach the SDK.
-    const reposLength = (input.cloud.repos as readonly unknown[]).length;
-    if (reposLength !== 1) {
-      throw new InvalidCloudReposError(reposLength);
+    // Reject anything that isn't a single-element array — covers JSON callers passing
+    // `{ cloud: {} }` (undefined), `{ cloud: { repos: null } }`, `{ repos: [] }`, and
+    // multi-repo arrays. Reaching `.length` on a non-array would throw a generic
+    // TypeError; we want the typed `InvalidCloudReposError` at every entry point.
+    const repos = (input.cloud as { repos?: unknown }).repos;
+    if (!Array.isArray(repos) || repos.length !== 1) {
+      throw new InvalidCloudReposError(Array.isArray(repos) ? repos.length : 0);
     }
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {

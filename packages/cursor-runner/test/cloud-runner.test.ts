@@ -194,6 +194,21 @@ describe("CloudCursorRunner — runtime guards", () => {
     expect(Agent.create).not.toHaveBeenCalled();
   });
 
+  test("throws InvalidCloudReposError when cloud.repos is missing entirely (non-array)", async () => {
+    const runner = new CloudCursorRunner();
+    await expect(
+      runner.run({
+        cwd: "/x",
+        model: { id: "composer-2" },
+        onEvent: vi.fn(),
+        prompt: "x",
+        runtime: "cloud",
+        cloud: {} as unknown as CloudRunSpec, // simulate JSON caller with malformed cloud spec
+      }),
+    ).rejects.toBeInstanceOf(InvalidCloudReposError);
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
   test("throws InvalidCloudReposError when cloud.repos has more than one entry", async () => {
     const runner = new CloudCursorRunner();
     await expect(
