@@ -36,9 +36,12 @@ You always verify CI against the PR's **current** head ref. There is no way to p
      ```
      # Failure-bucket states cover more than FAILURE alone — TIMED_OUT, STALE,
      # ACTION_REQUIRED, and STARTUP_FAILURE are all `fail` in `gh pr checks`'s
-     # bucket view and need run-id extraction here too.
+     # bucket view and need run-id extraction here too. Capture `.state` into
+     # `$s` BEFORE the pipe: inside the array literal, `.` rebinds to the
+     # array, so a naive `... | index(.state)` resolves `.state` to null and
+     # the selector silently matches zero items.
      gh pr checks <N> --repo <owner>/<repo> --json name,state,link \
-       | jq -r '.[] | select(["FAILURE", "TIMED_OUT", "STALE", "ACTION_REQUIRED", "STARTUP_FAILURE"] | index(.state)) | .link' \
+       | jq -r '.[] | select(.state as $s | ["FAILURE", "TIMED_OUT", "STALE", "ACTION_REQUIRED", "STARTUP_FAILURE"] | index($s) != null) | .link' \
        | sed -E 's|.*/runs/([0-9]+)/.*|\1|'
      ```
    - Fetch the failing log: `gh run view --log-failed <run-id> --repo <owner>/<repo>`.
