@@ -27,6 +27,7 @@ import { mapRunResult, mapTerminalResult } from "./_shared.js";
 import {
   CursorCloudIntegrationError,
   CursorRunFailedError,
+  EmptyCloudReposError,
   MissingApiKeyError,
   MissingCloudSpecError,
   WrongRunnerError,
@@ -58,7 +59,7 @@ function cloudAgentOptions(spec: CloudRunSpec): CloudAgentOptions {
 
 function mapCloudRunResult(result: RunResult, input: CursorRunInput): CursorRunResult {
   // `@cursor/sdk` RunResult typings omit "expired" as of 1.0.x; cloud may still surface it.
-  if ((result.status as string) === "expired") {
+  if (((result.status as string | undefined) ?? "").toLowerCase() === "expired") {
     return mapTerminalResult(result, "cancelled");
   }
   return mapRunResult(result, input);
@@ -72,6 +73,10 @@ export class CloudCursorRunner implements CursorRunner {
     }
     if (input.cloud === undefined) {
       throw new MissingCloudSpecError();
+    }
+    // Runtime guard for non-TS callers; `repos` is typed as a 1-tuple for normal TS usage.
+    if ((input.cloud.repos as readonly unknown[]).length === 0) {
+      throw new EmptyCloudReposError();
     }
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {

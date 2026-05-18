@@ -32,6 +32,15 @@ export class MissingCloudSpecError extends CursorRunFailedError {
   }
 }
 
+/** Cloud inputs passed to {@link CloudCursorRunner} with an empty `cloud.repos` array. */
+export class EmptyCloudReposError extends CursorRunFailedError {
+  override readonly name: string = "EmptyCloudReposError";
+
+  constructor() {
+    super("cloud.repos must contain exactly one repo entry; received an empty array");
+  }
+}
+
 /** SCM integration is not connected for the target repo (SDK pre-run failure). */
 export class CursorCloudIntegrationError extends CursorRunFailedError {
   override readonly name: string = "CursorCloudIntegrationError";
