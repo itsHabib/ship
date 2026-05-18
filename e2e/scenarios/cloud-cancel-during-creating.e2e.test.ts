@@ -176,9 +176,21 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — cancel during CREATING", (
       }
 
       const matches = await cloudAgentRecordsForId(shipOut.cursorRun.agentId);
-      const running = matches.filter((m) => m.status === "running");
+      // Cycle-2 codex P2: filter only catches non-terminal states, normalized to
+      // lowercase. SDK doc shapes are split — `Run.status` is lowercase
+      // (`"running" | "finished" | "error" | "cancelled"`) and stream
+      // `SDKStatusMessage.status` is uppercase. `SDKAgentInfo.status` from
+      // `Agent.list` isn't called out explicitly; the cursor-runner mock at
+      // `cloud-runner.test.ts:89` uses lowercase. Normalize defensively and
+      // assert against the **terminal** allow-list rather than the running
+      // single-literal — otherwise an agent stuck in `CREATING` after a
+      // cancel race wouldn't be flagged.
+      const TERMINAL_STATES = new Set(["finished", "error", "cancelled", "expired"]);
+      const nonTerminal = matches.filter(
+        (m) => !TERMINAL_STATES.has((m.status ?? "").toLowerCase()),
+      );
       try {
-        expect(running.length).toBe(0);
+        expect(nonTerminal.length).toBe(0);
       } catch (err) {
         process.stderr.write(
           `[cloud-l3-cancel] TODO(cloud-spec): assertion failed (${String(err)}); agent list matches: ${JSON.stringify(matches)}\n`,

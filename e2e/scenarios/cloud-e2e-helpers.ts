@@ -1,7 +1,7 @@
 /**
- * Shared bits for the three `cloud-*.e2e.test.ts` L3 scenarios. Lifted out
- * after cycle-1 review on PR #54 — `stripDotGit`, `sandboxSlugFromUrl`, the
- * gate constant, and the sandbox URL were copy-pasted across all three.
+ * Shared bits for the three `cloud-*.e2e.test.ts` L3 scenarios:
+ * `stripDotGit`, `sandboxSlugFromUrl`, the gate constant, the sandbox URL,
+ * and the best-effort cleanup helper.
  *
  * Lives next to the scenarios under `e2e/scenarios/` rather than promoted
  * to `live-open-pr-helpers.ts` because these are cloud-specific (the URL,
