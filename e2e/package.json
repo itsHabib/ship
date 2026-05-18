@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "dependencies": {
+    "@cursor/sdk": "1.0.12",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@ship/cli": "workspace:*",
     "@ship/core": "workspace:*",
