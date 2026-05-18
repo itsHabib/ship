@@ -96,6 +96,23 @@ describe("ship tool", () => {
     expect(expectToolError(raw).text).toMatch(/repo|docPath/i);
   });
 
+  test("runtime 'cloud' without cloud spec → isError (handler-side .superRefine)", async () => {
+    // The SDK's pre-handler validator is rebuilt from the inner ZodObject
+    // shape and skips the cross-field `.superRefine`. The handler re-parses
+    // with the full `shipInputSchema` so this invariant fires at the MCP
+    // boundary — before persistence — rather than deep in the runner.
+    const raw = await h.client.callTool({
+      name: "ship",
+      arguments: {
+        workdir: TEST_WORKDIR,
+        repo: "ship",
+        docPath: TEST_DOC_PATH,
+        runtime: "cloud",
+      },
+    });
+    expect(expectToolError(raw).text).toMatch(/cloud config is required when runtime is 'cloud'/i);
+  });
+
   test("workdir doesn't exist → isError 'workdir not found'", async () => {
     const raw = await h.client.callTool({
       name: "ship",
