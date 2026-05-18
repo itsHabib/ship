@@ -69,7 +69,7 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
       try {
         const thinking = parseThinking(rawOpts.thinking);
         const runtime = parseRuntime(rawOpts.runtime);
-        const cloud = await resolveCloudSpec(rawOpts);
+        const cloud = await resolveCloudSpec(rawOpts, runtime);
         const out = await factory().ship({
           workdir: resolvePath(rawOpts.workdir),
           repo: rawOpts.repo,
@@ -121,16 +121,12 @@ function hasCloudFieldFlags(opts: ShipOpts): boolean {
 }
 
 function parseCloudEnvPair(raw: string): [string, string] {
+  // `idx <= 0` rejects both no-`=` (-1) and empty key (0) in one check.
   const idx = raw.indexOf("=");
   if (idx <= 0) {
     throw new InvalidArgumentError(`invalid --cloud-env-var: ${raw} (expected KEY=VAL)`);
   }
-  const key = raw.slice(0, idx);
-  const val = raw.slice(idx + 1);
-  if (key.length === 0) {
-    throw new InvalidArgumentError(`invalid --cloud-env-var: ${raw} (expected KEY=VAL)`);
-  }
-  return [key, val];
+  return [raw.slice(0, idx), raw.slice(idx + 1)];
 }
 
 function buildCloudRunSpecFromFlags(opts: ShipOpts): ShipCloud {
@@ -174,7 +170,23 @@ async function loadCloudRunSpecFromFile(pathArg: string): Promise<ShipCloud> {
   return cloudRunSpecSchema.parse(parsed);
 }
 
-async function resolveCloudSpec(opts: ShipOpts): Promise<ShipCloud | undefined> {
+async function resolveCloudSpec(
+  opts: ShipOpts,
+  runtime: "local" | "cloud" | undefined,
+): Promise<ShipCloud | undefined> {
+  const spec = await resolveCloudSpecRaw(opts);
+  // CLI is the validation boundary for direct service callers — the
+  // mcp-server handler re-parses against shipInputSchema's .superRefine
+  // for its callers, but the CLI bypasses that path. Without this guard
+  // a missing cloud spec would surface as a runner-layer
+  // MissingCloudSpecError after the workflow run row was persisted.
+  if (runtime === "cloud" && spec === undefined) {
+    throw new InvalidArgumentError("--runtime cloud requires --cloud-repo or --cloud <path>");
+  }
+  return spec;
+}
+
+async function resolveCloudSpecRaw(opts: ShipOpts): Promise<ShipCloud | undefined> {
   if (opts.cloud !== undefined) {
     return await loadCloudRunSpecFromFile(opts.cloud);
   }

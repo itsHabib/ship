@@ -253,8 +253,30 @@ describe("ship ship", () => {
       "--cloud-repo",
       "https://github.com/o/r",
     ]);
+    // CLI passes `{ runtime: "local", cloud: { repos: [...] } }` to the
+    // service — the CLI doesn't pre-strip cloud-flag input when runtime is
+    // local. The service's local-routing path then drops the cloud field
+    // before invoking the runner, which is why the runner sees cloud
+    // undefined here. This test asserts the end-to-end behavior; the
+    // CLI-to-service contract is covered by the cloud-routed test above.
     expect(h.harness.cursor.calls[0]?.input.runtime).toBe("local");
     expect(h.harness.cursor.calls[0]?.input.cloud).toBeUndefined();
+  });
+
+  test("--runtime cloud without cloud spec → exit 1; stderr names cloud-repo", async () => {
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--runtime",
+      "cloud",
+    ]);
+    expect(code).toBe(1);
+    expect(h.stderr.join("")).toMatch(/--cloud-repo|--cloud </);
+    expect(h.harness.cursor.calls).toHaveLength(0);
   });
 
   test("--runtime omitted → runner input has no runtime field (service default)", async () => {
