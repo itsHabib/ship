@@ -11,6 +11,7 @@ describe("newWorkflowRunId", () => {
   test("emits wf_<ulid>", () => {
     const id = newWorkflowRunId();
     expect(id.startsWith("wf_")).toBe(true);
+    expect(id.length).toBe(29);
     expect(id.slice("wf_".length)).toMatch(ULID_BODY);
   });
 
@@ -26,6 +27,7 @@ describe("newPhaseId", () => {
   test("emits ph_<ulid>", () => {
     const id = newPhaseId();
     expect(id.startsWith("ph_")).toBe(true);
+    expect(id.length).toBe(29);
     expect(id.slice("ph_".length)).toMatch(ULID_BODY);
   });
 
@@ -41,6 +43,7 @@ describe("newCursorRunId", () => {
   test("emits cr_<ulid>", () => {
     const id = newCursorRunId();
     expect(id.startsWith("cr_")).toBe(true);
+    expect(id.length).toBe(29);
     expect(id.slice("cr_".length)).toMatch(ULID_BODY);
   });
 
