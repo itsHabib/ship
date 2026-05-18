@@ -91,13 +91,24 @@ export const shipInputSchema = z
     /**
      * Runtime selector. Defaults to `"local"` when omitted. `"cloud"` routes
      * to the configured `CloudCursorRunner`; `cloud` field below is required
-     * when this is set to `"cloud"`.
+     * when this is set to `"cloud"` (enforced by the cross-field refinement
+     * below, so MCP callers get a clean schema error instead of a runner-layer
+     * `MissingCloudSpecError` after persistence).
      */
     runtime: z.enum(["local", "cloud"]).optional(),
     /** Cloud-specific config; required when `runtime === "cloud"`, ignored otherwise. */
     cloud: cloudRunSpecSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    if (data.runtime === "cloud" && data.cloud === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["cloud"],
+        message: "cloud config is required when runtime is 'cloud'",
+      });
+    }
+  });
 export type ShipInput = z.infer<typeof shipInputSchema>;
 
 /**

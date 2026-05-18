@@ -6,6 +6,7 @@
  */
 
 import type {
+  CloudRunSpec,
   CursorRunHandle,
   CursorRunInput,
   CursorRunner,
@@ -182,6 +183,20 @@ interface ShipContext {
   readonly store: Store;
 }
 
+// Drift assertion: keys of `ShipInput["cloud"]` (inferred from `cloudRunSpecSchema`
+// in `@ship/mcp`) must match keys of `CloudRunSpec` (in `@ship/cursor-runner`).
+// Catches renames or removed fields at compile time. A deeper structural check
+// is blocked by readonly variance between Zod's tuple infer and the runner's
+// interface; the runtime guard in `CloudCursorRunner` catches field-type drift
+// at run time. mcp can't depend on cursor-runner (sibling packages); the drift
+// check lives in core, which already imports both.
+type _CloudKeysMatch = keyof NonNullable<ShipInput["cloud"]> extends keyof CloudRunSpec
+  ? keyof CloudRunSpec extends keyof NonNullable<ShipInput["cloud"]>
+    ? true
+    : false
+  : false;
+const _cloudKeysMatch: _CloudKeysMatch = true;
+
 function resolvePersistedRuntime(input: ShipInput): CursorRunRuntime {
   return input.runtime === "cloud" ? "cloud" : "local";
 }
@@ -207,23 +222,7 @@ interface BuildCursorRunInputArgs {
 
 function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput {
   const { ctx, prep, prompt, model, controller, onEvent } = args;
-  const resolvedRt = ctx.input.runtime ?? "local";
-  if (resolvedRt === "cloud") {
-    return {
-      cwd: ctx.input.workdir,
-      prompt,
-      model,
-      ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
-      agentName: `ship/${prep.workflowRunId}`,
-      signal: controller.signal,
-      onEvent,
-      runtime: "cloud",
-      ...(ctx.input.cloud !== undefined && {
-        cloud: ctx.input.cloud as NonNullable<CursorRunInput["cloud"]>,
-      }),
-    };
-  }
-  return {
+  const base = {
     cwd: ctx.input.workdir,
     prompt,
     model,
@@ -231,8 +230,24 @@ function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput 
     agentName: `ship/${prep.workflowRunId}`,
     signal: controller.signal,
     onEvent,
-    ...(ctx.input.runtime === "local" ? { runtime: "local" as const } : {}),
-  };
+  } as const;
+  if (ctx.input.runtime === "cloud") {
+    return {
+      ...base,
+      runtime: "cloud",
+      ...(ctx.input.cloud !== undefined && {
+        cloud: ctx.input.cloud as NonNullable<CursorRunInput["cloud"]>,
+      }),
+    };
+  }
+  // Forward `runtime` through unconditionally when set; LocalCursorRunner's
+  // guard rejects malformed values (e.g. "Cloud", "remote", null) at the
+  // runner boundary. Dropping the field for non-"local" values would silently
+  // promote a malformed input to local execution — the opposite of intent.
+  if (ctx.input.runtime !== undefined) {
+    return { ...base, runtime: ctx.input.runtime };
+  }
+  return base;
 }
 
 interface PreparedRun {

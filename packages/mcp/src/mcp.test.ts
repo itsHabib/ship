@@ -110,6 +110,21 @@ describe("shipInputSchema", () => {
     expect(cloud.cloud?.repos[0]?.url).toBe("https://github.com/o/r");
   });
 
+  test("rejects runtime: 'cloud' without a cloud spec (cross-field refinement)", () => {
+    const result = shipInputSchema.safeParse({
+      workdir: "/w",
+      repo: "ship",
+      docPath: "x",
+      runtime: "cloud",
+      // cloud omitted
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find((i) => i.path.join(".") === "cloud");
+      expect(issue?.message).toMatch(/cloud config is required/);
+    }
+  });
+
   test("accepts thinking=low and thinking=high; omits when undefined", () => {
     for (const t of ["low", "high"] as const) {
       const parsed = shipInputSchema.parse({

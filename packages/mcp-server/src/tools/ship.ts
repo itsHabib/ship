@@ -24,7 +24,11 @@ export function registerShipTool(server: McpServer, factory: ShipServiceFactory)
     {
       description:
         "Start a workflow run from an approved task doc. Returns immediately with { workflowRunId, status: 'running' }; poll get_workflow_run for terminal state.",
-      inputSchema: shipInputSchema.shape,
+      // `shipInputSchema` is wrapped in a `.superRefine()` (ZodEffects) for the
+      // cross-field `runtime === "cloud" ⇒ cloud required` check, so `.shape`
+      // lives on the inner ZodObject. Cross-field validation runs on `.parse()`
+      // but doesn't surface in the JSONSchema-shaped tool input descriptor.
+      inputSchema: shipInputSchema.innerType().shape,
     },
     async (args) => {
       try {
