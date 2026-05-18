@@ -4,6 +4,15 @@
  * resolve `ship()` with `ShipOutput.status === "failed"` instead.
  */
 
+/** Constructed without `cloudCursor` when `input.runtime === "cloud"`. */
+export class CloudRunnerNotConfiguredError extends Error {
+  override readonly name = "CloudRunnerNotConfiguredError";
+
+  constructor() {
+    super("ShipService was constructed without cloudCursor; runtime: 'cloud' cannot be dispatched");
+  }
+}
+
 export class WorkdirNotFoundError extends Error {
   override readonly name = "WorkdirNotFoundError";
   readonly workdir: string;

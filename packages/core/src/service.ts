@@ -6,7 +6,9 @@
  */
 
 import type {
+  CloudRunSpec,
   CursorRunHandle,
+  CursorRunInput,
   CursorRunner,
   CursorRunResult,
   McpServerConfig,
@@ -15,6 +17,7 @@ import type { ShipInput, ShipOutput, ShipStartOutput, ThinkingEffort } from "@sh
 import type { ListRunsFilter, Store } from "@ship/store";
 import type {
   CursorRunRef,
+  CursorRunRuntime,
   ModelSelection,
   TerminalCursorRunStatus,
   TerminalWorkflowStatus,
@@ -38,7 +41,7 @@ import type { ValidatedDoc } from "./validate.js";
 import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import { resolveRunArtifactPaths, type RunArtifactPaths } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
-import { ArtifactWriteFailedError } from "./errors.js";
+import { ArtifactWriteFailedError, CloudRunnerNotConfiguredError } from "./errors.js";
 import { resolveValidatedDoc } from "./validate.js";
 
 /** Construction-time configuration for the service. */
@@ -49,12 +52,15 @@ export interface ShipServiceConfig {
   readonly defaultModel: ModelSelection;
   /** Optional MCP servers passed through to every `cursor.run()` call. */
   readonly mcpServers?: Record<string, McpServerConfig>;
+  /** Local/desktop runner; used when `input.runtime` is `"local"` or omitted. */
+  readonly cursor: CursorRunner;
+  /** Optional cloud runner; required at dispatch time only for `runtime: "cloud"`. */
+  readonly cloudCursor?: CursorRunner;
 }
 
 /** All collaborators the service needs. Injected at construction time. */
 export interface ShipServiceDeps {
   readonly store: Store;
-  readonly cursor: CursorRunner;
   readonly fs: ShipFs;
   readonly clock: () => string;
   readonly config: ShipServiceConfig;
@@ -107,7 +113,7 @@ export interface ActiveRun {
 }
 
 export function createShipService(deps: ShipServiceDeps): ShipService {
-  const { clock, config, cursor, fs, store } = deps;
+  const { clock, config, fs, store } = deps;
   const ids = deps.ids ?? {
     workflowRun: newWorkflowRunId,
     phase: newPhaseId,
@@ -129,10 +135,11 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     activeRuns,
     clock,
     config,
-    cursor,
     fs,
     ids,
     input,
+    resolvedCursorRuntime: resolvePersistedRuntime(input),
+    runner: selectRunner(config, input),
     store,
   });
 
@@ -167,11 +174,80 @@ interface ShipContext {
   readonly activeRuns: ActiveRunsRegistry;
   readonly clock: () => string;
   readonly config: ShipServiceConfig;
-  readonly cursor: CursorRunner;
   readonly fs: ShipFs;
   readonly ids: NonNullable<ShipServiceDeps["ids"]>;
   readonly input: ShipInput;
+  /** Value persisted to `cursor_runs.runtime` for this invocation. */
+  readonly resolvedCursorRuntime: CursorRunRuntime;
+  readonly runner: CursorRunner;
   readonly store: Store;
+}
+
+// Drift assertion: keys of `ShipInput["cloud"]` (inferred from `cloudRunSpecSchema`
+// in `@ship/mcp`) must match keys of `CloudRunSpec` (in `@ship/cursor-runner`).
+// Catches renames or removed fields at compile time. A deeper structural check
+// is blocked by readonly variance between Zod's tuple infer and the runner's
+// interface; the runtime guard in `CloudCursorRunner` catches field-type drift
+// at run time. mcp can't depend on cursor-runner (sibling packages); the drift
+// check lives in core, which already imports both.
+type _CloudKeysMatch = keyof NonNullable<ShipInput["cloud"]> extends keyof CloudRunSpec
+  ? keyof CloudRunSpec extends keyof NonNullable<ShipInput["cloud"]>
+    ? true
+    : false
+  : false;
+const _cloudKeysMatch: _CloudKeysMatch = true;
+
+function resolvePersistedRuntime(input: ShipInput): CursorRunRuntime {
+  return input.runtime === "cloud" ? "cloud" : "local";
+}
+
+function selectRunner(config: ShipServiceConfig, input: ShipInput): CursorRunner {
+  if (input.runtime === "cloud") {
+    if (config.cloudCursor === undefined) {
+      throw new CloudRunnerNotConfiguredError();
+    }
+    return config.cloudCursor;
+  }
+  return config.cursor;
+}
+
+interface BuildCursorRunInputArgs {
+  readonly ctx: ShipContext;
+  readonly prep: PreparedRun;
+  readonly prompt: string;
+  readonly model: ModelSelection;
+  readonly controller: AbortController;
+  readonly onEvent: CursorRunInput["onEvent"];
+}
+
+function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput {
+  const { ctx, prep, prompt, model, controller, onEvent } = args;
+  const base = {
+    cwd: ctx.input.workdir,
+    prompt,
+    model,
+    ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
+    agentName: `ship/${prep.workflowRunId}`,
+    signal: controller.signal,
+    onEvent,
+  } as const;
+  if (ctx.input.runtime === "cloud") {
+    return {
+      ...base,
+      runtime: "cloud",
+      ...(ctx.input.cloud !== undefined && {
+        cloud: ctx.input.cloud as NonNullable<CursorRunInput["cloud"]>,
+      }),
+    };
+  }
+  // Forward `runtime` through unconditionally when set; LocalCursorRunner's
+  // guard rejects malformed values (e.g. "Cloud", "remote", null) at the
+  // runner boundary. Dropping the field for non-"local" values would silently
+  // promote a malformed input to local execution — the opposite of intent.
+  if (ctx.input.runtime !== undefined) {
+    return { ...base, runtime: ctx.input.runtime };
+  }
+  return base;
 }
 
 interface PreparedRun {
@@ -340,24 +416,25 @@ async function runToTerminal(
     ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
     const ndjsonRef = ndjson;
 
-    const handle = await ctx.cursor.run({
-      cwd: ctx.input.workdir,
+    const runInput = buildShipCursorRunInput({
+      ctx,
+      prep,
       prompt,
       model,
-      ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
-      agentName: `ship/${prep.workflowRunId}`,
-      signal: controller.signal,
+      controller,
       onEvent: (ev) => {
         ndjsonRef.write(ev);
       },
     });
+
+    const handle = await ctx.runner.run(runInput);
 
     cursorRunId = ctx.ids.cursorRun();
     ctx.store.recordCursorRun({
       id: cursorRunId,
       workflowRunId: prep.workflowRunId,
       agentId: handle.agentId,
-      runtime: "local",
+      runtime: ctx.resolvedCursorRuntime,
       model,
       artifactsDir: prep.paths.dir,
     });
@@ -531,7 +608,13 @@ function finalizeAlreadyCancelled(ctx: ShipContext, prep: PreparedRun): ShipOutp
     workflowRunId: prep.workflowRunId,
     status: "cancelled",
     worktree: updatedRun?.worktree ?? prep.worktree,
-    cursorRun: synthesizeFailedCursorRun(prep.workflowRunId, prep.paths.dir, endedAt, "cancelled"),
+    cursorRun: synthesizeFailedCursorRun(
+      prep.workflowRunId,
+      prep.paths.dir,
+      endedAt,
+      "cancelled",
+      ctx.resolvedCursorRuntime,
+    ),
     paths: prep.paths,
     summary: undefined,
   });
@@ -626,7 +709,13 @@ function resolveFailureCursorRunRef(
 ): CursorRunRef & { status: TerminalCursorRunStatus } {
   const ref = args.cursorRunId !== undefined ? ctx.store.getCursorRun(args.cursorRunId) : null;
   if (ref !== null) return assertTerminalCursorRunRef(ref, terminal);
-  return synthesizeFailedCursorRun(args.workflowRunId, args.paths.dir, ctx.clock(), terminal);
+  return synthesizeFailedCursorRun(
+    args.workflowRunId,
+    args.paths.dir,
+    ctx.clock(),
+    terminal,
+    ctx.resolvedCursorRuntime,
+  );
 }
 
 interface BuildShipOutputArgs {
@@ -735,11 +824,12 @@ function synthesizeFailedCursorRun(
   artifactsDir: string,
   endedAt: string,
   status: TerminalCursorRunStatus,
+  runtime: CursorRunRuntime,
 ): CursorRunRef & { status: TerminalCursorRunStatus } {
   return {
     id: `cr_synthetic_${workflowRunId}`,
     agentId: "agent-not-created",
-    runtime: "local",
+    runtime,
     status,
     startedAt: endedAt,
     endedAt,

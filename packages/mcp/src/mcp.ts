@@ -40,6 +40,36 @@ export const phaseIdSchema = z.string().regex(PHASE_ID_PATTERN);
 export const thinkingEffortSchema = z.enum(["low", "high"]);
 export type ThinkingEffort = z.infer<typeof thinkingEffortSchema>;
 
+/**
+ * Cloud-agent config — structural twin of `CloudRunSpec` in `@ship/cursor-runner`.
+ * Single-repo this phase (single-element tuple); multi-repo is a follow-up phase
+ * per phase 04 § Out of scope. The runner re-validates shape with a runtime guard.
+ */
+const cloudRunSpecSchema = z
+  .object({
+    repos: z.tuple([
+      z
+        .object({
+          url: z.string().min(1),
+          startingRef: z.string().min(1).optional(),
+          prUrl: z.string().min(1).optional(),
+        })
+        .strict(),
+    ]),
+    workOnCurrentBranch: z.boolean().optional(),
+    autoCreatePR: z.boolean().optional(),
+    skipReviewerRequest: z.boolean().optional(),
+    envVars: z.record(z.string()).optional(),
+    env: z
+      .object({
+        type: z.enum(["cloud", "pool", "machine"]),
+        name: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 /** Input to the `ship` tool. Optional fields default in `core`. */
 export const shipInputSchema = z
   .object({
@@ -58,8 +88,27 @@ export const shipInputSchema = z
      * E2E suites pass `"low"` to downshift cost / latency.
      */
     thinking: thinkingEffortSchema.optional(),
+    /**
+     * Runtime selector. Defaults to `"local"` when omitted. `"cloud"` routes
+     * to the configured `CloudCursorRunner`; `cloud` field below is required
+     * when this is set to `"cloud"` (enforced by the cross-field refinement
+     * below, so MCP callers get a clean schema error instead of a runner-layer
+     * `MissingCloudSpecError` after persistence).
+     */
+    runtime: z.enum(["local", "cloud"]).optional(),
+    /** Cloud-specific config; required when `runtime === "cloud"`, ignored otherwise. */
+    cloud: cloudRunSpecSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    if (data.runtime === "cloud" && data.cloud === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["cloud"],
+        message: "cloud config is required when runtime is 'cloud'",
+      });
+    }
+  });
 export type ShipInput = z.infer<typeof shipInputSchema>;
 
 /**

@@ -63,8 +63,8 @@ export type TerminalWorkflowStatus = z.infer<typeof terminalWorkflowStatusSchema
 export const terminalCursorRunStatusSchema = z.enum(["succeeded", "failed", "cancelled"]);
 export type TerminalCursorRunStatus = z.infer<typeof terminalCursorRunStatusSchema>;
 
-/** Where the underlying Cursor agent ran. V1 ships only `"local"`. */
-export const cursorRunRuntimeSchema = z.enum(["local"]);
+/** Where the underlying Cursor agent ran. Local disk vs Cursor cloud VM. */
+export const cursorRunRuntimeSchema = z.enum(["local", "cloud"]);
 export type CursorRunRuntime = z.infer<typeof cursorRunRuntimeSchema>;
 
 /** One element of `ModelSelection.params`. Internal; not re-exported. */
@@ -121,7 +121,7 @@ const isoDateTime = z.string().datetime({ offset: true });
  * - `id`           — run identifier; whether this is Ship's `cr_<ulid>` or
  *                    the SDK's run ID is settled in Phase 5 (cursor-runner).
  * - `agentId`      — the SDK's agent ID (`Agent.id`).
- * - `runtime`      — `"local"` for V1.
+ * - `runtime`      — `"local"` or `"cloud"` (where the agent executed).
  * - `model`        — model + params actually used; may be absent on resume
  *                    (SDK leaves it undefined after resume).
  * - `startedAt`    — set when `agent.send()` resolves.

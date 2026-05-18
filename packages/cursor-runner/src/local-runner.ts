@@ -20,9 +20,9 @@ const API_KEY_ENV = "CURSOR_API_KEY";
 /** Construct once, reuse across runs. The runner holds no per-run state. */
 export class LocalCursorRunner implements CursorRunner {
   async run(input: CursorRunInput): Promise<CursorRunHandle> {
-    if (input.runtime === "cloud") {
+    if (input.runtime !== undefined && input.runtime !== "local") {
       throw new WrongRunnerError(
-        'LocalCursorRunner cannot run cloud runtime; use CloudCursorRunner with runtime: "cloud"',
+        `LocalCursorRunner accepts runtime: "local" or undefined; received: ${JSON.stringify(input.runtime)}`,
       );
     }
     const apiKey = process.env[API_KEY_ENV];

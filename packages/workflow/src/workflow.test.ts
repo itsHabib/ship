@@ -123,12 +123,17 @@ describe("cursorRunStatusSchema", () => {
 });
 
 describe("cursorRunRuntimeSchema", () => {
-  test("accepts the V1 runtime", () => {
+  test("accepts local runtime", () => {
     expect(cursorRunRuntimeSchema.parse("local")).toBe("local");
   });
 
-  test("rejects V2-only runtimes", () => {
-    expect(cursorRunRuntimeSchema.safeParse("cloud").success).toBe(false);
+  test("accepts cloud runtime (V2 phase 04)", () => {
+    expect(cursorRunRuntimeSchema.parse("cloud")).toBe("cloud");
+  });
+
+  test("rejects unknown runtime values", () => {
+    expect(cursorRunRuntimeSchema.safeParse("remote").success).toBe(false);
+    expect(cursorRunRuntimeSchema.safeParse("Cloud").success).toBe(false);
   });
 });
 

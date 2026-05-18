@@ -24,13 +24,21 @@ export function registerShipTool(server: McpServer, factory: ShipServiceFactory)
     {
       description:
         "Start a workflow run from an approved task doc. Returns immediately with { workflowRunId, status: 'running' }; poll get_workflow_run for terminal state.",
-      inputSchema: shipInputSchema.shape,
+      // `shipInputSchema` is wrapped in `.superRefine()` (ZodEffects) so `.shape`
+      // lives on the inner ZodObject. The SDK rebuilds a `ZodObject` from this
+      // shape for pre-handler validation — that path only checks field-level
+      // types, never the cross-field refinement. The handler re-parses with the
+      // full schema below so the `runtime === "cloud" ⇒ cloud required`
+      // invariant fires at the MCP boundary instead of deep in the runner after
+      // workflow state has been persisted.
+      inputSchema: shipInputSchema.innerType().shape,
     },
     async (args) => {
       try {
-        const out = await factory().startShip(args);
-        const validated = shipStartOutputSchema.parse(out);
-        return { content: [{ type: "text", text: JSON.stringify(validated) }] };
+        const validated = shipInputSchema.parse(args);
+        const out = await factory().startShip(validated);
+        const validatedOut = shipStartOutputSchema.parse(out);
+        return { content: [{ type: "text", text: JSON.stringify(validatedOut) }] };
       } catch (err) {
         throw mapErrorToMcpError(err);
       }

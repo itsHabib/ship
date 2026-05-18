@@ -91,6 +91,8 @@ export interface CreateServiceFromHarnessOptions {
   runsDir?: string;
   /** Optional override `CursorRunner`. Defaults to the harness's `FakeCursorRunner`. */
   cursor?: CursorRunner;
+  /** Optional cloud runner; forwarded into `ShipService` config when set. */
+  cloudCursor?: CursorRunner;
 }
 
 /** Bundle returned by `createServiceFromHarness` — convenient for scenario assertions. */
@@ -120,10 +122,11 @@ export function createServiceFromHarness(
         params: [{ id: "thinking", value: opts.defaultThinking }],
       }),
     },
+    cursor: opts.cursor ?? h.cursor,
+    ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
   };
   const service = createShipService({
     store: h.store,
-    cursor: opts.cursor ?? h.cursor,
     fs,
     clock: h.clock,
     config,
