@@ -4,6 +4,7 @@
  * (:memory:), the in-memory `ShipFs`, and `FakeCursorRunner`.
  */
 
+import type { ShipInput } from "@ship/mcp";
 import type { Store } from "@ship/store";
 import type { WorkflowRun } from "@ship/workflow";
 
@@ -13,7 +14,7 @@ import { isTerminal } from "@ship/workflow";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { DocNotFoundError, WorkdirNotFoundError } from "./errors.js";
+import { CloudRunnerNotConfiguredError, DocNotFoundError, WorkdirNotFoundError } from "./errors.js";
 import { createMemoryShipFs, type MemoryShipFs } from "./fs/memory.js";
 import { createShipService, type ShipService, type ShipServiceConfig } from "./service.js";
 
@@ -66,13 +67,16 @@ interface Harness {
   service: ShipService;
   fs: MemoryShipFs;
   store: Store;
+  /** Fake local runner — historical name `cursor` for existing tests. */
   cursor: FakeCursorRunner;
+  cloudCursor: FakeCursorRunner;
   config: ShipServiceConfig;
 }
 
 async function createHarness(opts?: {
   defaultModelId?: string;
   defaultModelParams?: { id: string; value: string }[];
+  omitCloudCursor?: boolean;
 }): Promise<Harness> {
   const fs = createMemoryShipFs();
   await fs.mkdir(RUNS_DIR, { recursive: true });
@@ -84,6 +88,7 @@ async function createHarness(opts?: {
     clock: deterministicClock("2026-05-09T00:00:00.000Z"),
   });
   const cursor = new FakeCursorRunner();
+  const cloudCursor = new FakeCursorRunner();
   const config: ShipServiceConfig = {
     runsDir: RUNS_DIR,
     defaultModel: {
@@ -93,18 +98,19 @@ async function createHarness(opts?: {
       // `defaultModelParams: []` to explicitly drop params.
       params: opts?.defaultModelParams ?? [{ id: "thinking", value: "high" }],
     },
+    cursor,
+    ...(opts?.omitCloudCursor ? {} : { cloudCursor }),
   };
 
   const service = createShipService({
     store,
-    cursor,
     fs,
     clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
     config,
     ids: deterministicIds(),
   });
 
-  return { service, fs, store, cursor, config };
+  return { service, fs, store, cursor, cloudCursor, config };
 }
 
 describe("createShipService — dep injection defaults", () => {
@@ -124,7 +130,6 @@ describe("createShipService — dep injection defaults", () => {
     });
     const service = createShipService({
       store,
-      cursor,
       fs,
       clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
       config: {
@@ -134,6 +139,8 @@ describe("createShipService — dep injection defaults", () => {
           params: [{ id: "thinking", value: "high" }],
         },
         mcpServers: { foo: { type: "stdio" as const, command: "/bin/foo" } },
+        cursor,
+        cloudCursor: new FakeCursorRunner(),
       },
       // `ids` deliberately omitted to hit the `deps.ids ?? {...}` fallback.
     });
@@ -963,6 +970,82 @@ describe("ShipService.drainBackground — regression for stderr leak", () => {
     } finally {
       process.stderr.write = originalWrite;
     }
+  });
+});
+
+const CLOUD_SPEC: NonNullable<ShipInput["cloud"]> = {
+  repos: [{ url: "https://github.com/owner/repo" }],
+};
+
+describe("ShipService.ship — runtime routing", () => {
+  test("runtime: cloud uses cloudCursor.run; local runner not called", async () => {
+    const h = await createHarness();
+    h.cloudCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      runtime: "cloud",
+      cloud: CLOUD_SPEC,
+    });
+    expect(h.cloudCursor.calls).toHaveLength(1);
+    expect(h.cursor.calls).toHaveLength(0);
+    expect(out.cursorRun.runtime).toBe("cloud");
+    expect(h.store.getCursorRun(out.cursorRun.id)?.runtime).toBe("cloud");
+    h.store.close();
+  });
+
+  test('runtime: "local" uses cursor.run; cloud runner not called', async () => {
+    const h = await createHarness();
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      runtime: "local",
+    });
+    expect(h.cursor.calls).toHaveLength(1);
+    expect(h.cloudCursor.calls).toHaveLength(0);
+    expect(out.cursorRun.runtime).toBe("local");
+    h.store.close();
+  });
+
+  test("runtime omitted uses cursor.run (default local)", async () => {
+    const h = await createHarness();
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    expect(h.cursor.calls).toHaveLength(1);
+    expect(h.cloudCursor.calls).toHaveLength(0);
+    expect(out.cursorRun.runtime).toBe("local");
+    h.store.close();
+  });
+
+  test("runtime cloud without cloudCursor throws before any persistence", async () => {
+    const h = await createHarness({ omitCloudCursor: true });
+    expect(() => {
+      void h.service.ship({
+        workdir: WORKDIR,
+        repo: "ship",
+        docPath: "docs.md",
+        runtime: "cloud",
+        cloud: CLOUD_SPEC,
+      });
+    }).toThrow(CloudRunnerNotConfiguredError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
+    h.store.close();
   });
 });
 

@@ -21,7 +21,7 @@ import type { ThinkingEffort } from "@ship/mcp";
 import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
 
-import { LocalCursorRunner } from "@ship/cursor-runner";
+import { CloudCursorRunner, LocalCursorRunner } from "@ship/cursor-runner";
 import { createStore } from "@ship/store";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -76,6 +76,12 @@ export interface DefaultShipServiceOpts {
    * key + without burning real model quota.
    */
   readonly cursor?: CursorRunner;
+  /**
+   * Cloud runner override. Production omits this and gets
+   * `CloudCursorRunner`. Tests may omit via config construction (no
+   * `cloudCursor` field) to exercise not-configured errors.
+   */
+  readonly cloudCursor?: CursorRunner;
 }
 
 /** Memoizing factory shape. Returns the same `ShipService` across calls. */
@@ -144,13 +150,13 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     mkdirSync(opts.runsDir, { recursive: true });
     const infra = getOrCreateSharedInfra(opts.dbPath);
     const cursor = opts.cursor ?? new LocalCursorRunner();
+    const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
     const fs = createNodeShipFs();
     const defaultModelParams = opts.defaultModelParams ?? [
       { id: "thinking", value: opts.defaultThinking ?? PRODUCTION_DEFAULT_THINKING },
     ];
     cached = createShipService({
       store: infra.store,
-      cursor,
       fs,
       clock: infra.clock,
       activeRuns: infra.activeRuns,
@@ -160,6 +166,8 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
           id: opts.defaultModelId ?? "composer-2",
           params: defaultModelParams,
         },
+        cursor,
+        cloudCursor,
       },
     });
     return cached;

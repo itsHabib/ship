@@ -90,6 +90,26 @@ describe("shipInputSchema", () => {
     expect(shipInputSchema.parse(v)).toEqual(v);
   });
 
+  test("accepts runtime local / cloud and optional cloud spec", () => {
+    const local = shipInputSchema.parse({
+      workdir: "/w",
+      repo: "ship",
+      docPath: "x",
+      runtime: "local",
+    });
+    expect(local.runtime).toBe("local");
+
+    const cloud = shipInputSchema.parse({
+      workdir: "/w",
+      repo: "ship",
+      docPath: "x",
+      runtime: "cloud",
+      cloud: { repos: [{ url: "https://github.com/o/r" }] },
+    });
+    expect(cloud.runtime).toBe("cloud");
+    expect(cloud.cloud?.repos[0]?.url).toBe("https://github.com/o/r");
+  });
+
   test("accepts thinking=low and thinking=high; omits when undefined", () => {
     for (const t of ["low", "high"] as const) {
       const parsed = shipInputSchema.parse({

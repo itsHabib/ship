@@ -49,6 +49,7 @@ export {
   ArtifactWriteFailedError,
   BaseBranchUnresolvedError,
   BranchPushFailedError,
+  CloudRunnerNotConfiguredError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
   EmptyBranchError,

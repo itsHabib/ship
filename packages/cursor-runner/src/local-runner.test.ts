@@ -162,13 +162,16 @@ afterEach(() => {
 });
 
 describe("LocalCursorRunner — runtime selection", () => {
-  test('throws WrongRunnerError when runtime is "cloud"', async () => {
-    const runner = new LocalCursorRunner();
-    await expect(runner.run(baseInput({ runtime: "cloud" }))).rejects.toBeInstanceOf(
-      WrongRunnerError,
-    );
-    expect(Agent.create).not.toHaveBeenCalled();
-  });
+  test.each([["cloud"], ["Cloud"], ["remote"], [null]])(
+    "throws WrongRunnerError when runtime is %p",
+    async (bad) => {
+      const runner = new LocalCursorRunner();
+      await expect(
+        runner.run(baseInput({ runtime: bad as unknown as "local" })),
+      ).rejects.toBeInstanceOf(WrongRunnerError);
+      expect(Agent.create).not.toHaveBeenCalled();
+    },
+  );
 
   test("ignores input.cloud when runtime is unset", async () => {
     const { run } = makeMockRun({});
