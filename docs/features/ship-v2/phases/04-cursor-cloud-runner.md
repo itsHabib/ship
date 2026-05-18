@@ -1,6 +1,6 @@
 # Phase 04 — cursor cloud runner
 
-Status: design draft, revision 1 (2026-05-18). Awaiting inline review.
+Status: design draft, revision 2 (2026-05-18). Cycle-2 review addressed; awaiting cycle-3 sign-off.
 Owner: itsHabib
 Date: 2026-05-18
 
@@ -89,7 +89,14 @@ export interface CloudRunSpec {
    * workflowRun-as-one-new-branch shape isn't designed for it. See § Out of scope.
    */
   readonly workOnCurrentBranch?: boolean;
-  /** Auto-open a PR when the run finishes. Default: false (Ship's `open_pr` phase opens it). See F4. */
+  /**
+   * Auto-open a PR when the cloud run finishes. **Default: true** for cloud
+   * (the cloud VM opens the PR via the SDK's `autoCreatePR` flow). Local
+   * runs ignore this field and continue to use the explicit `open_pr` phase.
+   * See F4 for the rationale; the symmetric "cloud + explicit `open_pr`"
+   * shape is a follow-up phase (open_pr currently reads local git state and
+   * has no path to a cloud-produced branch).
+   */
   readonly autoCreatePR?: boolean;
   /**
    * Skip requesting the calling user as PR reviewer. Defaults to `true` when
@@ -136,15 +143,29 @@ const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
 
 Production callers (CLI, mcp-server) get both wired without opt-in. Tests / fakes can pass `cloudCursor: undefined` to assert the not-configured error path.
 
-### F4 — Cloud `autoCreatePR` integrates with the `open_pr` phase, doesn't replace it
+### F4 — Cloud runs default to `autoCreatePR: true`; symmetric `open_pr` integration is a follow-up phase
 
-The SDK's `cloud.autoCreatePR: true` opens a PR for the cloud-produced branch automatically. Phase 02's `open_pr` MCP tool does the same for any branch. Three integration shapes were considered (see Tradeoffs); the chosen shape:
+**Correction from revision 1:** the prior draft said cloud `autoCreatePR` defaults to `false` and falls through to `open_pr`. That was wrong. `open_pr`'s implementation ([packages/core/src/open-pr.ts:235](../../../../packages/core/src/open-pr.ts) `resolveHead`) reads the branch name from the local worktree's branch (`worktree.branch` or a fallback `git rev-parse`) — there is no path today for `open_pr` to discover a cloud-produced branch, because cloud runs have no local checkout the branch lives in. Codex caught this in cycle-2.
 
-1. **Default `cloud.autoCreatePR: false`.** Cloud runs produce a branch (recorded in `result.git.branches`); the caller then invokes `open_pr` against that `workflowRunId`. Symmetric with local runs.
-2. **`open_pr` is idempotency-aware for cloud-pre-opened PRs.** When `cloud.autoCreatePR: true` was set on the parent run, `result.git.branches[0].prUrl` is populated. `open_pr`'s existing idempotency check (phase 02 § F3 step 4) already handles "PR already exists for this branch" — it returns the existing PR url instead of trying to open a new one. No new code; the path already works.
-3. **Power-user opt-in via `cloud.autoCreatePR: true`.** Callers that don't want a second tool call can flip the flag. The flow becomes: `ship` (cloud, autoCreatePR=true) → done. `open_pr` is optional; if invoked, it short-circuits per (2).
+**Revised choice:** cloud runs default to `cloud.autoCreatePR: true`. The cloud VM opens the PR itself; the caller's flow is `ship.ship` → done. Local runs continue to use the explicit `open_pr` flow unchanged.
 
-This keeps the canonical workflow uniform across runtimes: `ship → open_pr`. Cloud's autoCreatePR is a shortcut for callers that know they want it, not a fork of the workflow shape.
+This produces an intentional asymmetry between runtimes this phase:
+
+| Runtime | Canonical flow | Why |
+|---|---|---|
+| local | `ship.ship` → `open_pr` | Status quo. `open_pr` reads the local worktree's branch. |
+| cloud | `ship.ship` (`autoCreatePR: true`) → done | Cloud VM opens the PR. No need to round-trip through `open_pr`. |
+
+Callers that want `cloud + explicit open_pr` (e.g. to inspect the diff locally before opening) cannot use that flow until the follow-up phase lands. That phase (call it "open_pr cloud-aware") needs:
+
+- A new `cursor_runs.branches_json` column (0002 migration) so the cloud-produced branch info is persisted.
+- `CloudCursorRunner` writes `result.git.branches` to the new column on terminal.
+- `open_pr.resolveHead` becomes runtime-aware: for `cursor_runs.runtime === "cloud"`, read from `cursor_runs.branches[0].branch` instead of `worktree.branch`.
+- L3 scenarios exercising the cloud-then-explicit-open_pr flow.
+
+Filing the follow-up under the same dossier phase (`v2-cursor-cloud-runner`) as a separate task rather than expanding this phase's scope. Keeps phase 04's impl PRs in the "amazing" band.
+
+`cloud.autoCreatePR: false` is still accepted as input (caller may want to disable the auto-PR for non-PR-producing runs); when used, Ship records the cloud-produced branch in `events.ndjson` via the `result.git.branches` data (no new persistence) and the operator can manually open the PR via `gh pr create` from the cloud-pushed remote until the follow-up phase lands.
 
 ### F5 — Subagents in cloud: file-based via repo commit, inline via `CursorRunInput.agents`
 
@@ -157,11 +178,11 @@ The Ship-repo `.cursor/agents/code-reviewer.md` set already committed in phase 0
 
 ### F6 — Branch / PR discovery via `result.git.branches`
 
-The interface already exposes this surface; `LocalCursorRunner` populates it with `result.git?.branches ?? []` (always empty for local). Cloud runs populate it for real.
+The interface already exposes this surface; `LocalCursorRunner` populates `CursorRunResult.branches` with `result.git?.branches ?? []` (always empty for local). Cloud runs populate it for real.
 
-`CursorRunResult.branches` is recorded on `cursor_runs` already (V1). No schema change. The `open_pr` phase (F4) reads it via the existing `WorkflowRun → cursor_runs` join.
+**Persistence**, **correction from revision 1**: branches are NOT persisted to a `cursor_runs` column today — `cursor_runs` has no `branches_json` column. The cloud-produced branch info flows through `onEvent` → `events.ndjson` (per F7) and is available to any reader of the run's `events.ndjson` artifact. Adding a structured `cursor_runs.branches_json` column is the follow-up phase's job (see F4); this phase keeps the schema unchanged.
 
-When a cloud run sets `autoCreatePR: true`, `branches[0].prUrl` is populated by the SDK. When unset, only `branches[0].branch` is populated (no PR yet — `open_pr` opens it).
+When a cloud run sets `autoCreatePR: true` (the default per F4), `branches[0].prUrl` is populated by the SDK and visible in `events.ndjson` alongside `branches[0].branch`. When `autoCreatePR: false`, only `branches[0].branch` is populated — the operator can use it to manually open the PR until the follow-up phase enables `open_pr` to read the cloud branch.
 
 ### F7 — Cloud-specific events stream through unchanged
 
@@ -195,7 +216,7 @@ Edge case: if the user cancels during the cloud VM's CREATING phase (before the 
 |---|---|---|---|
 | Runtime selection mechanism | `CursorRunInput.runtime: "local" \| "cloud"` discriminant + optional `cloud: CloudRunSpec` | Split into two interfaces (`LocalCursorRunInput` / `CloudCursorRunInput`) with a tagged union | Splitting forces every caller in `@ship/core` to handle the union when constructing input. The flat discriminant keeps existing call sites unchanged while still validating shape at the runner boundary. SDK precedent: `Agent.create({ local })` vs `Agent.create({ cloud })` uses optional discriminator fields on the same arg shape. |
 | `CloudCursorRunner` placement | Same package (`@ship/cursor-runner`), new file `cloud-runner.ts` | Separate package (`@ship/cursor-cloud-runner`) | One SDK seam, one ED-2 import-isolation boundary. Splitting into two packages duplicates the import-isolation test, the build target, and the package.json publishing story for a one-class addition. |
-| Default `autoCreatePR` | `false` (call `open_pr` after cloud run, symmetric with local) | `true` (cloud opens PR itself, `open_pr` short-circuits) | Workflow uniformity beats one-fewer-tool-call. `ship → open_pr` is the canonical flow; cloud users who explicitly want the shortcut flip the flag. F4 path-(3). |
+| Default `autoCreatePR` for cloud | `true` (cloud VM opens its own PR; `ship.ship` → done) | `false` (call `open_pr` after, symmetric with local) | **Revised from rev 1.** `open_pr` reads the local worktree's branch via `resolveHead` ([open-pr.ts:235](../../../../packages/core/src/open-pr.ts)); cloud runs have no local branch to read. Making `open_pr` cloud-aware needs a new `cursor_runs.branches_json` column + runtime-aware `resolveHead` + L3 scenarios — out of scope this phase. Default `autoCreatePR: true` gives cloud a working end-to-end loop today; the symmetric `cloud + explicit open_pr` flow lands in the follow-up phase. |
 | `EXPIRED` mapping | → `cancelled` | → `failed` | EXPIRED means the platform terminated the run — the agent didn't error, didn't finish, was stopped externally. `cancelled` is closer in vocabulary; `failed` implies the agent's work itself errored. The terminal-state classification has practical impact (open_pr won't fire on failed/cancelled — see phase 02 § F3). |
 | Cloud auth source | SDK-default (CURSOR_API_KEY env var, account-level repo connections) | Per-run override fields | The SDK already handles auth via the API key. SCM connection is account-level; per-run override would duplicate Cursor's dashboard. F8 surfaces the right error when the connection isn't set up. |
 | Subagents in cloud | File-based (commit `.cursor/agents/*.md` to the repo) + inline via existing `CursorRunInput.agents` | Plumb `settingSources` analog through cloud | SDK doc explicitly says `local.settingSources` doesn't apply to cloud. Cloud reads the repo it clones; committed `.cursor/agents/*.md` is the natural file-based path. The existing inline path works unchanged. |
@@ -240,10 +261,16 @@ The `CloudRunSpec` shape is defined in `runner.ts` (Ship's vocabulary) rather th
 
 ### ED-5 — `EXPIRED` maps to `cancelled`, not `failed`
 
-The `mapRunResult` helper in `local-runner.ts:241` switches on `result.status`; the cloud equivalent grows one branch:
+The `mapRunResult` helper in `local-runner.ts:241` (moving to `_shared.ts` per ED-1) switches on `result.status`; the cloud equivalent grows one branch:
 
 ```ts
 function mapCloudRunResult(result: RunResult, input: CursorRunInput): CursorRunResult {
+  // SDK casing TBD — verify in impl PR. F1 / F7 quote the cloud status enum
+  // as `EXPIRED` (uppercase); `local-runner.ts:243` reads `result.status` and
+  // matches against lowercase `"finished"` / `"cancelled"` (Ship-side
+  // vocabulary derived from the SDK's terminal mapping). Check
+  // `RunResult.status` directly in the impl PR before wiring the guard;
+  // adjust casing if needed.
   if (result.status === "expired") return mapTerminalResult(result, "cancelled");
   return mapRunResult(result, input);  // same as local for finished/cancelled/error
 }
@@ -259,17 +286,25 @@ The MCP tool schema (`shipInputSchema`) grows two optional fields. Both are addi
 
 ```ts
 const cloudSpecSchema = z.object({
-  // `.length(1)` enforces single-repo this phase (OQ #3 resolution); multi-repo
-  // opens a follow-up phase that addresses workflowRun.workdir semantics.
-  repos: z.array(z.object({
-    url: z.string().url(),
-    startingRef: z.string().optional(),
-    prUrl: z.string().url().optional(),
-  })).length(1),
+  // Single-repo tuple this phase (OQ #3 resolution). `z.tuple(...)` infers
+  // a single-element tuple type matching `CloudRunSpec.repos: readonly [{...}]`
+  // — `z.array(...).length(1)` would infer a plain array and require a cast
+  // at the runner boundary. Multi-repo opens a follow-up phase that addresses
+  // workflowRun.workdir semantics.
+  repos: z.tuple([
+    z.object({
+      url: z.string().url(),
+      startingRef: z.string().optional(),
+      prUrl: z.string().url().optional(),
+    }),
+  ]),
   workOnCurrentBranch: z.boolean().optional(),
   autoCreatePR: z.boolean().optional(),
   skipReviewerRequest: z.boolean().optional(),
   envVars: z.record(z.string()).optional(),
+  // "pool" / "machine" pass through to the SDK but Ship doesn't provide
+  // operator-side support for self-hosted env configuration this phase
+  // (Out-of-scope). Schema accepts them so power-users can wire their own.
   env: z.object({
     type: z.enum(["cloud", "pool", "machine"]),
     name: z.string().optional(),
@@ -297,9 +332,13 @@ All three map to MCP `isError: true` responses with the typed message; the MCP t
 
 ### ED-8 — Persistence: cloud runs share `cursor_runs` with local runs
 
-No new table. The existing `cursor_runs` row records `agent_id`, `run_id`, `model`, `status`, `result_summary`, `branches_json`, `duration_ms`. Cloud runs use the same row shape.
+No new table, no new column. The existing `cursor_runs` row (V1 schema, [0001_init.sql:44-55](../../../../packages/store/migrations/0001_init.sql)) records `id`, `workflow_run_id`, `agent_id`, `runtime`, `model_json`, `status`, `started_at`, `ended_at`, `duration_ms`, `artifacts_dir`. Cloud runs write the same shape; `runtime` is set to `"cloud"` instead of `"local"`.
 
-The agentId prefix (`bc-` vs `agent-`) is an SDK-side convention, not a contract Ship can rely on indefinitely. It's the implicit runtime marker today; if the SDK ever drops the prefix distinction, Ship needs an explicit `cursor_runs.runtime` column. Out of scope this phase — but the assumption is called out explicitly so dogfood-time queries (and any future BI / reporting tooling) don't bake the prefix into queries irreversibly. The migration when the assumption breaks is a one-column add + backfill from agentId; cheap to defer, expensive to ignore.
+**Correction from revision 1:** the previous draft claimed `cursor_runs.runtime` would be a future-add. The column already exists — codex caught this in cycle-2. The V1 schema landed with it; existing rows all have `runtime: "local"`. This phase just adds the `"cloud"` value to the set of values produced.
+
+**What does NOT get persisted this phase:** `CursorRunResult.branches` (cloud-produced branch info from `result.git.branches`). There is no `branches_json` column today, and this phase doesn't add one. Cloud branch info flows through `onEvent` → `events.ndjson` (per F7) and is readable there. Structured persistence is the follow-up "open_pr cloud-aware" phase's responsibility — it needs the column to make `open_pr.resolveHead` runtime-aware. See Out-of-scope.
+
+The agentId prefix (`bc-` vs `agent-`) is a redundant eyeball-marker; the explicit `runtime` column is authoritative. Querying by `cursor_runs.runtime = 'cloud'` is the supported shape.
 
 ## Validation plan
 
@@ -316,15 +355,15 @@ The agentId prefix (`bc-` vs `agent-`) is an SDK-side convention, not a contract
 
 ### Integration tests
 
-- `e2e` (L2 — `FakeCursor`-substituted): `ShipService.ship({ runtime: "cloud", cloud: { repos: [...] } })` runs end-to-end with a fake cloud runner; `cursor_runs.branches_json` records the fake's `result.git.branches`; `open_pr` against the resulting `workflowRunId` reads the branch correctly.
-- `e2e` (L2): `ship → open_pr` chain works for both runtimes (parameterized scenario over `runtime: ["local", "cloud"]`).
+- `e2e` (L2 — `FakeCursor`-substituted): `ShipService.ship({ runtime: "cloud", cloud: { repos: [...], autoCreatePR: true } })` runs end-to-end with a fake cloud runner; `cursor_runs.runtime === "cloud"` is asserted; the fake's `result.git.branches` flows through `events.ndjson` and is readable via `get_workflow_run`.
+- `e2e` (L2): `ShipService.ship` rejects `runtime: "cloud"` when `cloudCursor` is unconfigured (asserts the `CloudRunnerNotConfiguredError` path before any persistence). Symmetric to the existing local-only test.
 
 ### L3 (live e2e, opt-in via `SHIP_LIVE=1` + `SHIP_CLOUD=1`)
 
 Three new scenarios under `e2e/scenarios/cloud-*.e2e.test.ts`:
 
-1. **Happy path.** Cloud run against a test repo; assert `result.git.branches[0]` is populated; assert `open_pr` opens a PR for that branch.
-2. **`autoCreatePR: true` short-circuit.** Cloud run with `autoCreatePR: true`; assert `result.git.branches[0].prUrl` is populated by the SDK; assert `open_pr` against the resulting run returns the existing PR (idempotency hit per phase 02 § F3 step 4).
+1. **Happy path with `autoCreatePR: true`.** Cloud run against a test repo with the default `autoCreatePR: true`; assert `result.git.branches[0].branch` and `result.git.branches[0].prUrl` are both populated; assert the PR was created on the test repo (via `gh pr view <prUrl>`); assert `events.ndjson` carries the branch + PR info.
+2. **`autoCreatePR: false` flow.** Cloud run with `autoCreatePR: false`; assert `result.git.branches[0].branch` is populated and `prUrl` is undefined; assert the run terminates `succeeded`. (The "explicit `open_pr` against the cloud branch" path is deferred to the follow-up phase — this scenario just verifies the partial-mode persists correctly.)
 3. **Cancellation during CREATING.** Cloud run is cancelled before the SDK transitions to RUNNING; assert the terminal status is `cancelled`; assert no orphan agent left on the Cursor side (verify via `Agent.list({ runtime: "cloud" })`).
 
 The double gate (`SHIP_LIVE=1` + `SHIP_CLOUD=1`) is intentional — cloud runs cost both Cursor credits and real GitHub branches on a test repo. Local L3 scenarios stay under `SHIP_LIVE=1` only.
@@ -355,9 +394,10 @@ The double gate (`SHIP_LIVE=1` + `SHIP_CLOUD=1`) is intentional — cloud runs c
 - **Artifact pickup (`agent.listArtifacts` / `downloadArtifact`).** Cloud-only feature; no existing Ship surface for non-git deliverables. Defer until dogfood proves the use case.
 - **GUI / browser testing via the cloud VM's desktop environment.** [docs/cursor-sdk-typescript.md § Why cloud runtime matters](../../../cursor-sdk-typescript.md) flags this as a long-term unlock; not in this phase's scope. Adjacent: passing `playwright-mcp` via `CursorRunInput.mcpServers` works today for both runtimes.
 - **Self-hosted cloud env (`env.type: "machine"` / `"pool"`).** Schema admits these values (F2 / ED-6), but Ship doesn't ship a self-hosted setup. Operator-config-driven; no Ship-side support code beyond the field passing through to the SDK.
-- **Multi-repo cloud runs.** `cloud.repos: [...]` admits multiple repos; Ship's `workflowRun.workdir` model is single-repo-per-run. Defer until a real multi-repo workflow surfaces.
+- **Multi-repo cloud runs.** Single-repo enforced this phase via `cloud.repos` as a single-element tuple (`.tuple([...])` in the schema). Ship's `workflowRun.workdir` model is single-repo-per-run; multi-repo opens a follow-up phase that addresses what `workdir` means when work spans repos. The SDK admits an array; Ship narrows at the boundary.
 - **`workOnCurrentBranch: true`.** Cloud can push to an existing branch instead of creating a new one — useful for iteration on a PR that's already open. The flag passes through, but the workflow shape (one run = one new branch) doesn't anticipate it. Document as "experimental, no Ship-side guarantees" in the impl PR; promote to first-class in a follow-up if dogfood needs it.
 - **Cloud agent lifecycle management UI / CLI subcommands.** `Agent.archive` / `unarchive` / `delete` are SDK primitives; Ship doesn't surface them as MCP tools or CLI subcommands this phase. Operator uses `cursor` CLI directly if cleanup is needed.
+- **`open_pr` cloud-aware integration.** Today's `open_pr` ([open-pr.ts:235](../../../../packages/core/src/open-pr.ts) `resolveHead`) reads the head branch from the local worktree only. For cloud runs, the branch only exists on the remote (no local worktree to read from). Wiring `open_pr` to read `cursor_runs.branches[0].branch` for `runtime === "cloud"` rows needs: a new `cursor_runs.branches_json` column (0002 migration), `CloudCursorRunner` persistence of `result.git.branches`, runtime-aware `resolveHead`, and L3 scenarios. Filed as a follow-up phase. Until it lands, cloud runs use `autoCreatePR: true` (default) for the end-to-end PR flow.
 
 ## Open questions
 
@@ -366,10 +406,12 @@ These should be resolved in the operator's inline review before the impl PR star
 1. **Should `default-wiring.ts` construct `CloudCursorRunner` eagerly, or lazily on first cloud-mode `ship.ship` call?** Eager (per ED-4 default) keeps wiring simple but constructs the cloud client even for users who never run cloud. Lazy adds a factory layer but avoids the cost. Default proposal: eager — the `CloudCursorRunner` constructor itself is cheap (no network), only `Agent.create` is.
 2. **Does the CLI need `ship ship --runtime cloud` flags exposed, or only the MCP tool?** ED-6 proposes both; the operator may want CLI parity deferred to a separate small PR.
 3. ~~**Should `cloud.repos` accept the SDK's full shape (multiple repos) or restrict to a single repo this phase?**~~ **Resolved:** restrict to a single repo this phase via Zod `.length(1)` (see F2 / ED-6). Multi-repo opens a follow-up phase that addresses `workflowRun.workdir` semantics for multi-repo; the SDK admits the array, but Ship's row shape doesn't anticipate it. Out-of-scope row updated.
-4. **Where does `CURSOR_API_KEY` come from for cloud runs in the mcp-server context?** Today `LocalCursorRunner` reads it from `process.env`. Cloud reads from the same env var. For mcp-server processes run as a service, the env injection is operator-side. Document the requirement; no Ship-side change.
+4. ~~**Where does `CURSOR_API_KEY` come from for cloud runs in the mcp-server context?**~~ **Resolved:** cloud and local both read `process.env.CURSOR_API_KEY`. For mcp-server processes run as a service, env injection is operator-side. No Ship-side change; impl PR's changelog documents the requirement.
 5. ~~**Should cloud runs default to `skipReviewerRequest: true`?**~~ **Resolved:** `skipReviewerRequest` defaults to `autoCreatePR === true` (skip when Ship-flagged auto-PR is on, since Ship's caller already knows about the PR they triggered). When `autoCreatePR === false` (the canonical flow), `skipReviewerRequest` defaults to `false` and is moot — `open_pr`'s own reviewer-request behavior governs. F2 JSDoc reflects the conditional default.
 6. **What's the dogfood plan?** Once impl lands, the natural first cloud run is `ship.ship` against the Ship repo itself for a small phase task (e.g. one of the V3 backlog items in `tsk_01KRVAJVYJDT9Z7Q6A7H53RYWC`'s body). Confirms F1–F8 end-to-end and produces real PR + branch evidence.
-7. **Is the `EXPIRED → cancelled` mapping the right call, or should it be its own terminal state?** ED-5's rationale is workflow-semantics-driven; if monitoring needs separation, the column-add approach in ED-5 trailing paragraph lands separately.
+6. ~~**Is the `EXPIRED → cancelled` mapping the right call, or should it be its own terminal state?**~~ **Resolved:** `cancelled` per ED-5 (platform-side termination, not agent-side error). If monitoring needs to distinguish expired-vs-cancelled with different alerts, a separate `cursor_runs.terminal_reason` column lands as a follow-up — escape hatch is in ED-5.
+
+7. **`cloud + explicit open_pr` flow** — confirmed deferred to a follow-up phase per F4 + Out-of-scope. No operator decision required this phase, but flag here for visibility: callers who want `cloud + autoCreatePR: false + open_pr` cannot use that combination until the follow-up lands.
 
 ## Implementation plan
 
