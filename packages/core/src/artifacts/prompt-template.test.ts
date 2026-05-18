@@ -27,9 +27,10 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("Branch: ship/feat-hello");
     expect(out).toContain("Base ref: main");
     expect(out).toContain("Rules:");
-    // Rule numbers #1–#8 must appear; contract covers #6/#8 (no PR), #7 (commit),
-    // and structured summary.
-    for (let n = 1; n <= 8; n += 1) {
+    // Rule numbers #1–#9 must appear; contract covers #6 (no PR), #7
+    // (commit), #8 (subagent dispatch via `task` tool), and #9
+    // (structured summary).
+    for (let n = 1; n <= 9; n += 1) {
       expect(out).toContain(`${String(n)}.`);
     }
     expect(out).toContain("Do NOT open a pull request");
@@ -39,6 +40,21 @@ describe("renderImplementationPrompt", () => {
     // `git commit` on an empty diff. Pin the guard wording.
     expect(out).toContain("skip this step entirely on a clean working tree");
     expect(out).toContain("Co-authored-by: Cursor <cursoragent@cursor.com>");
+    // Rule 8 dispatches to repo-registered subagents via cursor's
+    // `task` tool — lowercase name matters (the SDK tool surface is
+    // `task`, not `Agent`). Refusal-fallback wording prevents the
+    // composer from fabricating subagent output when a call fails.
+    expect(out).toContain("`task` tool");
+    expect(out).toContain("subagent_type `code-reviewer`");
+    expect(out).toContain("subagent_type `scope-tracker`");
+    expect(out).toContain("subagent_type `test-author`");
+    expect(out).toContain("subagent_type `validator`");
+    // Rule 8's skip guard must reference rule 7's outcome, not the
+    // post-commit working-tree state — `git commit` makes the tree
+    // clean by definition, so a "skip on clean tree" guard would
+    // neuter the rule in its intended success path.
+    expect(out).toContain("Skip this rule entirely if rule 7 was skipped");
+    expect(out).toContain("task-error: <verbatim error message>");
     expect(out).toContain("structured summary");
   });
 
