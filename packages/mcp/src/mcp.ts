@@ -45,7 +45,7 @@ export type ThinkingEffort = z.infer<typeof thinkingEffortSchema>;
  * Single-repo this phase (single-element tuple); multi-repo is a follow-up phase
  * per phase 04 § Out of scope. The runner re-validates shape with a runtime guard.
  */
-const cloudRunSpecSchema = z
+export const cloudRunSpecSchema = z
   .object({
     repos: z.tuple([
       z

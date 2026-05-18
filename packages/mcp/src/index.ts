@@ -7,6 +7,7 @@
 export {
   cancelWorkflowRunInputSchema,
   cancelWorkflowRunOutputSchema,
+  cloudRunSpecSchema,
   getWorkflowRunInputSchema,
   getWorkflowRunOutputSchema,
   listWorkflowRunsInputSchema,
