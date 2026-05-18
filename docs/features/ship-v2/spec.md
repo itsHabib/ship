@@ -1,6 +1,6 @@
 # Ship V2
 
-Status: design draft. Phase 01 (async ship tool) is the first V2 phase under design.
+Status: design draft. Phase 04 (cursor cloud runner) is the active V2 design phase; phases 01–03 are merged on `main`.
 Owner: itsHabib
 Date: 2026-05-10
 
@@ -57,7 +57,7 @@ The V1 `phases` table already admits new `kind` values without ALTER. V2 surface
 
 ### ED-2 — MCP tool surface grows; CLI mirrors selectively
 
-Each V2 phase adds or modifies at most one MCP tool. (Phase 01 modifies `ship`'s return contract without adding a new tool; phase 03 adds none — it plumbs the SDK's subagent surface inside the existing implement phase; phases 02 and 04 each add one new tool — `open_pr`, `ci_fix`.) The CLI mirrors only the surfaces that make sense for a human (e.g. `ship open_pr <run_id>` is plausible; `ship ci_fix` probably isn't). The MCP / CLI symmetry from V1 is not a constraint — V2 surfaces are agent-driven first; CLI parity is opportunistic.
+Each V2 phase adds or modifies at most one MCP tool. (Phase 01 modifies `ship`'s return contract without adding a new tool; phases 03 and 04 add none — phase 03 plumbs the SDK's subagent surface inside the existing implement phase, phase 04 adds optional `runtime` / `cloud` fields to `ship.ship`; phases 02 and 05 each add one new tool — `open_pr`, `ci_fix`.) The CLI mirrors only the surfaces that make sense for a human (e.g. `ship open_pr <run_id>` is plausible; `ship ci_fix` probably isn't). The MCP / CLI symmetry from V1 is not a constraint — V2 surfaces are agent-driven first; CLI parity is opportunistic.
 
 ### ED-3 — V1 contracts stay backward-compatible at the data layer, not at the MCP tool layer
 

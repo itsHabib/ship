@@ -29,9 +29,9 @@ What this phase explicitly **does not** do:
 - It does not add a new `Phase.kind`. Subagents fire inside the existing implement phase; no new state machine.
 - It does not add a new MCP tool. The `ship.ship` input schema is unchanged.
 - It does not orchestrate the *outer* review loop (bot reviewer requests, comment fetching, cycle counting). That ritual remains in the `parallel-driver` skill + `CLAUDE.md § Shipping Features`.
-- It does not introduce cloud-runtime support (still deferred per [spec.md § Non-goals](../spec.md)).
+- It does not introduce cloud-runtime support — that's phase 04 ([04-cursor-cloud-runner.md](04-cursor-cloud-runner.md)).
 
-The originally-planned phase 03 ("review-cycle phase") is **dissolved**. Phase 04 (CI-repair) shape is revisited separately when its design doc is written.
+The originally-planned phase 03 ("review-cycle phase") is **dissolved**. Phase 05 (CI-repair) shape is revisited separately when its design doc is written.
 
 ## Functional requirements
 

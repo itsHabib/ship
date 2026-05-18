@@ -77,13 +77,26 @@ export interface CursorRunInput {
 }
 
 export interface CloudRunSpec {
-  /** GitHub repo(s) the cloud agent operates against. At least one required. */
-  readonly repos: readonly { readonly url: string; readonly startingRef?: string; readonly prUrl?: string }[];
-  /** Push to existing branch instead of creating a new one. Default: false. */
+  /**
+   * GitHub repo the cloud agent operates against. Exactly one entry this
+   * phase — multi-repo runs are out of scope (see § Out of scope and OQ #3).
+   * The schema enforces `.length(1)`.
+   */
+  readonly repos: readonly [{ readonly url: string; readonly startingRef?: string; readonly prUrl?: string }];
+  /**
+   * Push to existing branch instead of creating a new one. Default: false.
+   * **Experimental** — the field passes through to the SDK but the
+   * workflowRun-as-one-new-branch shape isn't designed for it. See § Out of scope.
+   */
   readonly workOnCurrentBranch?: boolean;
   /** Auto-open a PR when the run finishes. Default: false (Ship's `open_pr` phase opens it). See F4. */
   readonly autoCreatePR?: boolean;
-  /** Skip requesting the calling user as PR reviewer. Default: false. Only meaningful with autoCreatePR. */
+  /**
+   * Skip requesting the calling user as PR reviewer. Defaults to `true` when
+   * `autoCreatePR === true` (Ship's caller already knows about the PR — they
+   * triggered it); defaults to `false` otherwise. Only consulted when
+   * `autoCreatePR` is on.
+   */
   readonly skipReviewerRequest?: boolean;
   /** Short-lived session env vars passed to the cloud VM. */
   readonly envVars?: Record<string, string>;
@@ -195,7 +208,9 @@ Edge case: if the user cancels during the cloud VM's CREATING phase (before the 
 
 `LocalCursorRunner` stays unchanged. `CloudCursorRunner` is a new class in a new file with the same shape but its own `Agent.create` config, its own `EXPIRED`-status mapping, and its own error wrapping for `IntegrationNotConnectedError`.
 
-Helpers that are genuinely shared (e.g. `isPromiseLike`, the `safelyEmit` pattern, the cancel pipeline) can be extracted into a `_shared.ts` file, but **only if** an extraction has a clean home — premature DRY between two impls of a runtime-specific class adds shared state for one consumer each (samurai-sword from `feedback_samurai_sword.md`). Default: leave duplication for the implementation PR to decide.
+Helpers that are genuinely shared can be extracted into a `_shared.ts` file, but **only if** an extraction has a clean home — premature DRY between two impls of a runtime-specific class adds shared state for one consumer each (samurai-sword from `feedback_samurai_sword.md`).
+
+**Default: extract `mapRunResult` + `mapTerminalResult`** into `packages/cursor-runner/src/_shared.ts` — ED-5's snippet implies the cross-file call (`mapCloudRunResult` reuses `mapRunResult`'s `finished` / `cancelled` / `error` branches verbatim), and two consumers is the clean-home bar. The cancel pipeline, `isPromiseLike`, `safelyEmit`, and the dispose-in-finally pattern are LESS obvious candidates — leave their extraction to the implementation PR's judgement against the actual code shape.
 
 ### ED-2 — `runtime` + `cloud` are optional on `CursorRunInput`, validated by the runner
 
@@ -244,11 +259,13 @@ The MCP tool schema (`shipInputSchema`) grows two optional fields. Both are addi
 
 ```ts
 const cloudSpecSchema = z.object({
+  // `.length(1)` enforces single-repo this phase (OQ #3 resolution); multi-repo
+  // opens a follow-up phase that addresses workflowRun.workdir semantics.
   repos: z.array(z.object({
     url: z.string().url(),
     startingRef: z.string().optional(),
     prUrl: z.string().url().optional(),
-  })).min(1),
+  })).length(1),
   workOnCurrentBranch: z.boolean().optional(),
   autoCreatePR: z.boolean().optional(),
   skipReviewerRequest: z.boolean().optional(),
@@ -282,7 +299,7 @@ All three map to MCP `isError: true` responses with the typed message; the MCP t
 
 No new table. The existing `cursor_runs` row records `agent_id`, `run_id`, `model`, `status`, `result_summary`, `branches_json`, `duration_ms`. Cloud runs use the same row shape.
 
-The agentId prefix (`bc-` vs `agent-`) is the implicit runtime marker; an explicit `runtime` column could be added if dogfood proves it useful for queries. Out of scope this phase — derivable from agentId.
+The agentId prefix (`bc-` vs `agent-`) is an SDK-side convention, not a contract Ship can rely on indefinitely. It's the implicit runtime marker today; if the SDK ever drops the prefix distinction, Ship needs an explicit `cursor_runs.runtime` column. Out of scope this phase — but the assumption is called out explicitly so dogfood-time queries (and any future BI / reporting tooling) don't bake the prefix into queries irreversibly. The migration when the assumption breaks is a one-column add + backfill from agentId; cheap to defer, expensive to ignore.
 
 ## Validation plan
 
@@ -348,9 +365,9 @@ These should be resolved in the operator's inline review before the impl PR star
 
 1. **Should `default-wiring.ts` construct `CloudCursorRunner` eagerly, or lazily on first cloud-mode `ship.ship` call?** Eager (per ED-4 default) keeps wiring simple but constructs the cloud client even for users who never run cloud. Lazy adds a factory layer but avoids the cost. Default proposal: eager — the `CloudCursorRunner` constructor itself is cheap (no network), only `Agent.create` is.
 2. **Does the CLI need `ship ship --runtime cloud` flags exposed, or only the MCP tool?** ED-6 proposes both; the operator may want CLI parity deferred to a separate small PR.
-3. **Should `cloud.repos` accept the SDK's full shape (multiple repos) or restrict to a single repo this phase?** Out-of-scope notes propose single-repo; the schema accepts an array. If we restrict, the schema can use `repos.length === 1` validation. If we admit multiple, Ship's `workflowRun.workdir` semantics need clarification.
+3. ~~**Should `cloud.repos` accept the SDK's full shape (multiple repos) or restrict to a single repo this phase?**~~ **Resolved:** restrict to a single repo this phase via Zod `.length(1)` (see F2 / ED-6). Multi-repo opens a follow-up phase that addresses `workflowRun.workdir` semantics for multi-repo; the SDK admits the array, but Ship's row shape doesn't anticipate it. Out-of-scope row updated.
 4. **Where does `CURSOR_API_KEY` come from for cloud runs in the mcp-server context?** Today `LocalCursorRunner` reads it from `process.env`. Cloud reads from the same env var. For mcp-server processes run as a service, the env injection is operator-side. Document the requirement; no Ship-side change.
-5. **Should cloud runs default to `skipReviewerRequest: true`?** When Ship is the caller, requesting the calling-user as reviewer is noise (the operator already knows about the PR — they triggered it). Default proposal: `skipReviewerRequest: true` when `autoCreatePR: true`. Disagreement welcome.
+5. ~~**Should cloud runs default to `skipReviewerRequest: true`?**~~ **Resolved:** `skipReviewerRequest` defaults to `autoCreatePR === true` (skip when Ship-flagged auto-PR is on, since Ship's caller already knows about the PR they triggered). When `autoCreatePR === false` (the canonical flow), `skipReviewerRequest` defaults to `false` and is moot — `open_pr`'s own reviewer-request behavior governs. F2 JSDoc reflects the conditional default.
 6. **What's the dogfood plan?** Once impl lands, the natural first cloud run is `ship.ship` against the Ship repo itself for a small phase task (e.g. one of the V3 backlog items in `tsk_01KRVAJVYJDT9Z7Q6A7H53RYWC`'s body). Confirms F1–F8 end-to-end and produces real PR + branch evidence.
 7. **Is the `EXPIRED → cancelled` mapping the right call, or should it be its own terminal state?** ED-5's rationale is workflow-semantics-driven; if monitoring needs separation, the column-add approach in ED-5 trailing paragraph lands separately.
 
