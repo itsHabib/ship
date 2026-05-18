@@ -1,60 +1,107 @@
 /**
- * `LocalCursorRunner` — the only runtime user of `@cursor/sdk` in the
- * monorepo (per ED-2). Drives a local Cursor agent via
- * `Agent.create({ local: { cwd } })`, streams events to `onEvent`,
- * resolves `handle.result` on terminal status. See
- * `phases/05-cursor-runner.md` for the full contract.
+ * `CloudCursorRunner` — drives a Cursor cloud agent via
+ * `Agent.create({ cloud: { repos, ... } })`. Mirrors `LocalCursorRunner`'s
+ * pipeline shape; see phase 04 design (`04-cursor-cloud-runner.md`).
  */
 
-import type { Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
+import type {
+  CloudAgentOptions,
+  ModelSelection,
+  Run,
+  RunResult,
+  SDKAgent,
+  SDKMessage,
+} from "@cursor/sdk";
 
-import { Agent } from "@cursor/sdk";
+import { Agent, IntegrationNotConnectedError } from "@cursor/sdk";
 
-import type { CursorRunHandle, CursorRunInput, CursorRunner, CursorRunResult } from "./runner.js";
+import type {
+  CloudRunSpec,
+  CursorRunHandle,
+  CursorRunInput,
+  CursorRunner,
+  CursorRunResult,
+} from "./runner.js";
 
-import { mapRunResult } from "./_shared.js";
-import { CursorRunFailedError, MissingApiKeyError, WrongRunnerError } from "./errors.js";
+import { mapRunResult, mapTerminalResult } from "./_shared.js";
+import {
+  CursorCloudIntegrationError,
+  CursorRunFailedError,
+  InvalidCloudReposError,
+  MissingApiKeyError,
+  MissingCloudSpecError,
+  WrongRunnerError,
+} from "./errors.js";
 
 const API_KEY_ENV = "CURSOR_API_KEY";
 
+function modelArgFromInput(input: CursorRunInput): ModelSelection {
+  return {
+    id: input.model.id,
+    ...(input.model.params !== undefined && { params: input.model.params }),
+  };
+}
+
+function cloudAgentOptions(spec: CloudRunSpec): CloudAgentOptions {
+  return {
+    repos: [...spec.repos],
+    ...(spec.workOnCurrentBranch !== undefined && {
+      workOnCurrentBranch: spec.workOnCurrentBranch,
+    }),
+    ...(spec.autoCreatePR !== undefined && { autoCreatePR: spec.autoCreatePR }),
+    ...(spec.skipReviewerRequest !== undefined && {
+      skipReviewerRequest: spec.skipReviewerRequest,
+    }),
+    ...(spec.envVars !== undefined && { envVars: spec.envVars }),
+    ...(spec.env !== undefined && { env: spec.env }),
+  };
+}
+
+function mapCloudRunResult(result: RunResult, input: CursorRunInput): CursorRunResult {
+  // `@cursor/sdk` RunResult typings omit "expired" as of 1.0.x; cloud may still surface it.
+  if (((result.status as string | undefined) ?? "").toLowerCase() === "expired") {
+    return mapTerminalResult(result, "cancelled");
+  }
+  return mapRunResult(result, input);
+}
+
 /** Construct once, reuse across runs. The runner holds no per-run state. */
-export class LocalCursorRunner implements CursorRunner {
+export class CloudCursorRunner implements CursorRunner {
   async run(input: CursorRunInput): Promise<CursorRunHandle> {
-    if (input.runtime === "cloud") {
-      throw new WrongRunnerError(
-        'LocalCursorRunner cannot run cloud runtime; use CloudCursorRunner with runtime: "cloud"',
-      );
+    if (input.runtime !== "cloud") {
+      throw new WrongRunnerError('CloudCursorRunner requires input.runtime === "cloud"');
+    }
+    if (input.cloud === undefined) {
+      throw new MissingCloudSpecError();
+    }
+    // Runtime guard for non-TS callers; `repos` is typed as a 1-tuple for normal TS usage.
+    // Reject anything that isn't a single-element array — covers JSON callers passing
+    // `{ cloud: {} }` (undefined), `{ cloud: { repos: null } }`, `{ repos: [] }`, and
+    // multi-repo arrays. Reaching `.length` on a non-array would throw a generic
+    // TypeError; we want the typed `InvalidCloudReposError` at every entry point.
+    const repos = (input.cloud as { repos?: unknown }).repos;
+    if (!Array.isArray(repos) || repos.length !== 1) {
+      throw new InvalidCloudReposError(Array.isArray(repos) ? repos.length : 0);
     }
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
       throw new MissingApiKeyError();
     }
-    const { agent, sdkRun } = await this.#startAgent(apiKey, input);
+    const { agent, sdkRun } = await this.#startAgent(apiKey, input.cloud, input);
     return this.#buildHandle(agent, sdkRun, input);
   }
 
-  /**
-   * Creates the SDK agent and submits the first prompt. Pre-run
-   * failures wrap as `CursorRunFailedError`; if `Agent.create` succeeded
-   * but `agent.send` threw, we dispose the agent before re-throwing.
-   */
   async #startAgent(
     apiKey: string,
+    cloudSpec: CloudRunSpec,
     input: CursorRunInput,
   ): Promise<{ agent: SDKAgent; sdkRun: Run }> {
     let agent: SDKAgent | undefined;
     try {
       agent = await Agent.create({
         apiKey,
-        // Reconstruct `model` field-by-field — workflow's mirror and
-        // SDK's `ModelSelection` are structurally identical at runtime,
-        // but `exactOptionalPropertyTypes` rejects the cross-type
-        // assignment of optional `params`.
-        model: {
-          id: input.model.id,
-          ...(input.model.params !== undefined && { params: input.model.params }),
-        },
-        local: { cwd: input.cwd, settingSources: ["project"] },
+        cloud: cloudAgentOptions(cloudSpec),
+        model: modelArgFromInput(input),
         ...(input.agents !== undefined && { agents: input.agents }),
         ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
         ...(input.agentName !== undefined && { name: input.agentName }),
@@ -69,6 +116,9 @@ export class LocalCursorRunner implements CursorRunner {
           /* swallow secondary dispose error */
         }
       }
+      if (err instanceof IntegrationNotConnectedError) {
+        throw new CursorCloudIntegrationError(err.provider, err.helpUrl, { cause: err });
+      }
       throw new CursorRunFailedError(
         agent === undefined ? "Agent.create failed" : "agent.send failed after Agent.create",
         { cause: err },
@@ -76,13 +126,6 @@ export class LocalCursorRunner implements CursorRunner {
     }
   }
 
-  /**
-   * Wires the SDK run into a `CursorRunHandle`. Cancellation funnels
-   * through one internal pipeline guarded by `terminated` (cancel-after-
-   * terminal) and `cancelInitiated` (concurrent cancel races); the
-   * latter resets on SDK-cancel rejection so transient failures don't
-   * permanently disable cancel.
-   */
   #buildHandle(agent: SDKAgent, sdkRun: Run, input: CursorRunInput): CursorRunHandle {
     let terminated = false;
     let cancelInitiated = false;
@@ -109,6 +152,7 @@ export class LocalCursorRunner implements CursorRunner {
       } catch {
         // Allow retries: a transient SDK-side failure shouldn't
         // permanently disable cancel while the run is still live.
+        // Especially relevant for cloud where cancel() round-trips to the VM.
         cancelInitiated = false;
       }
     };
@@ -148,11 +192,6 @@ export class LocalCursorRunner implements CursorRunner {
     };
   }
 
-  /**
-   * Background pipeline: stream events, await `run.wait()`, map to
-   * Ship vocabulary, dispose the agent in `finally` regardless of
-   * outcome.
-   */
   async #runPipeline(
     agent: SDKAgent,
     sdkRun: Run,
@@ -163,10 +202,6 @@ export class LocalCursorRunner implements CursorRunner {
       detachSignalListener: () => void;
     },
   ): Promise<void> {
-    /**
-     * Calls `onEvent` once and swallows both sync throws and async
-     * rejections (ED-4). Extracted so the for-await body stays shallow.
-     */
     const safelyEmit = (ev: SDKMessage): void => {
       try {
         const maybePromise: unknown = input.onEvent(ev);
@@ -186,11 +221,9 @@ export class LocalCursorRunner implements CursorRunner {
           safelyEmit(ev);
         }
       } catch (streamErr) {
-        // Stream errored before wait() observed a terminal. Try wait()
-        // anyway — if the SDK has a terminal for us, prefer it.
-        const result = await this.#tryWait(sdkRun);
-        if (result !== undefined) {
-          callbacks.finalizeOk(mapRunResult(result, input));
+        const wr = await this.#tryWait(sdkRun);
+        if (wr !== undefined) {
+          callbacks.finalizeOk(mapCloudRunResult(wr, input));
           return;
         }
         callbacks.finalizeError(
@@ -201,8 +234,6 @@ export class LocalCursorRunner implements CursorRunner {
         return;
       }
 
-      // wait() can reject after a clean stream. Catch here so the
-      // rejection doesn't escape via `void this.#runPipeline(...)`.
       let waitResult: RunResult;
       try {
         waitResult = await sdkRun.wait();
@@ -214,7 +245,7 @@ export class LocalCursorRunner implements CursorRunner {
         );
         return;
       }
-      callbacks.finalizeOk(mapRunResult(waitResult, input));
+      callbacks.finalizeOk(mapCloudRunResult(waitResult, input));
     } finally {
       try {
         await agent[Symbol.asyncDispose]();
@@ -225,7 +256,6 @@ export class LocalCursorRunner implements CursorRunner {
     }
   }
 
-  /** Best-effort `run.wait()` after a stream error. `undefined` if `wait()` itself rejects. */
   async #tryWait(sdkRun: Run): Promise<RunResult | undefined> {
     try {
       return await sdkRun.wait();

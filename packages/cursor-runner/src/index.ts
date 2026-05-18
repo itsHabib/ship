@@ -7,13 +7,29 @@
  */
 
 // --- runner.ts ---
-export type { CursorRunHandle, CursorRunInput, CursorRunner, CursorRunResult } from "./runner.js";
+export type {
+  CloudRunSpec,
+  CursorRunHandle,
+  CursorRunInput,
+  CursorRunner,
+  CursorRunResult,
+} from "./runner.js";
+
+// --- cloud-runner.ts ---
+export { CloudCursorRunner } from "./cloud-runner.js";
 
 // --- local-runner.ts ---
 export { LocalCursorRunner } from "./local-runner.js";
 
 // --- errors.ts ---
-export { CursorRunFailedError, MissingApiKeyError } from "./errors.js";
+export {
+  CursorCloudIntegrationError,
+  CursorRunFailedError,
+  InvalidCloudReposError,
+  MissingApiKeyError,
+  MissingCloudSpecError,
+  WrongRunnerError,
+} from "./errors.js";
 
 // --- @cursor/sdk re-exports ---
 export type { AgentDefinition, McpServerConfig, SDKMessage } from "@cursor/sdk";

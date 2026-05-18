@@ -20,6 +20,11 @@ describe("@ship/cursor-runner barrel export (index.ts)", () => {
     expect(new cursorRunner.LocalCursorRunner()).toBeInstanceOf(cursorRunner.LocalCursorRunner);
   });
 
+  test("re-exports CloudCursorRunner (cloud runtime skeleton)", () => {
+    expect(typeof cursorRunner.CloudCursorRunner).toBe("function");
+    expect(new cursorRunner.CloudCursorRunner()).toBeInstanceOf(cursorRunner.CloudCursorRunner);
+  });
+
   test("does NOT re-export FakeCursorRunner from the main barrel", () => {
     // The fake is only reachable via the `./test/fake` subpath so
     // consumer production code can't import it accidentally.
