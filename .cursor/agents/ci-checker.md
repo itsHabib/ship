@@ -34,8 +34,11 @@ You always verify CI against the PR's **current** head ref. There is no way to p
 5. **On red, gather a failing-log excerpt** for each failing check:
    - Extract the workflow run-id from the check's details URL. `gh pr checks --json name,state,link` returns URLs of the form `.../actions/runs/<run-id>/job/<job-id>`:
      ```
+     # Failure-bucket states cover more than FAILURE alone — TIMED_OUT, STALE,
+     # ACTION_REQUIRED, and STARTUP_FAILURE are all `fail` in `gh pr checks`'s
+     # bucket view and need run-id extraction here too.
      gh pr checks <N> --repo <owner>/<repo> --json name,state,link \
-       | jq -r '.[] | select(.state == "FAILURE") | .link' \
+       | jq -r '.[] | select(["FAILURE", "TIMED_OUT", "STALE", "ACTION_REQUIRED", "STARTUP_FAILURE"] | index(.state)) | .link' \
        | sed -E 's|.*/runs/([0-9]+)/.*|\1|'
      ```
    - Fetch the failing log: `gh run view --log-failed <run-id> --repo <owner>/<repo>`.
