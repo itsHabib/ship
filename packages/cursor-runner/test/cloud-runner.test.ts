@@ -1,0 +1,703 @@
+/**
+ * Tests for `cloud-runner.ts`. SDK mocked via `vi.mock("@cursor/sdk")`.
+ */
+
+import type { AgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
+
+import { Agent, IntegrationNotConnectedError } from "@cursor/sdk";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
+import type { CloudRunSpec } from "../src/runner.js";
+
+import { CloudCursorRunner } from "../src/cloud-runner.js";
+import {
+  CursorCloudIntegrationError,
+  CursorRunFailedError,
+  InvalidCloudReposError,
+  MissingApiKeyError,
+  MissingCloudSpecError,
+  WrongRunnerError,
+} from "../src/errors.js";
+
+vi.mock("@cursor/sdk", () => {
+  class IntegrationNotConnectedErrorMock extends Error {
+    readonly helpUrl: string;
+    readonly provider: string;
+
+    constructor(message: string, opts: { helpUrl: string; provider: string }) {
+      super(message);
+      this.provider = opts.provider;
+      this.helpUrl = opts.helpUrl;
+    }
+  }
+
+  return {
+    Agent: {
+      create: vi.fn(),
+    },
+    IntegrationNotConnectedError: IntegrationNotConnectedErrorMock,
+  };
+});
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+type MockRun = Run;
+type MockAgent = SDKAgent;
+
+interface MockRunOpts {
+  events?: SDKMessage[];
+  result?: RunResult;
+  streamThrows?: unknown;
+  waitThrows?: unknown;
+  cancelThrows?: unknown;
+  runId?: string;
+}
+
+function makeMockRun(opts: MockRunOpts): {
+  run: MockRun;
+  cancelSpy: ReturnType<typeof vi.fn>;
+  waitSpy: ReturnType<typeof vi.fn>;
+} {
+  const events = opts.events ?? [];
+  const runId = opts.runId ?? "run-test-cloud-0001";
+  const result: RunResult = opts.result ?? {
+    durationMs: 1234,
+    id: runId,
+    result: "scripted summary",
+    status: "finished",
+  };
+
+  const cancelSpy = vi.fn((): Promise<void> => {
+    if (opts.cancelThrows !== undefined) return Promise.reject(toError(opts.cancelThrows));
+    return Promise.resolve();
+  });
+  const waitSpy = vi.fn((): Promise<RunResult> => {
+    if (opts.waitThrows !== undefined) return Promise.reject(toError(opts.waitThrows));
+    return Promise.resolve(result);
+  });
+
+  const run: MockRun = {
+    agentId: "agent-test-cloud-0001",
+    cancel: cancelSpy,
+    conversation: vi.fn(),
+    id: runId,
+    onDidChangeStatus: vi.fn(() => () => {
+      /* noop unsubscribe */
+    }),
+    status: "running",
+    // eslint-disable-next-line @typescript-eslint/require-await
+    stream: async function* (): AsyncGenerator<SDKMessage, void> {
+      if (opts.streamThrows !== undefined) throw toError(opts.streamThrows);
+      for (const ev of events) {
+        yield ev;
+      }
+    },
+    supports: vi.fn(() => true),
+    unsupportedReason: vi.fn(() => undefined),
+    wait: waitSpy,
+  };
+
+  return { cancelSpy, run, waitSpy };
+}
+
+function makeMockAgent(opts: { run: MockRun; sendThrows?: unknown; agentId?: string }): {
+  agent: MockAgent;
+  disposeSpy: ReturnType<typeof vi.fn>;
+  sendSpy: ReturnType<typeof vi.fn>;
+} {
+  const disposeSpy = vi.fn((): Promise<void> => Promise.resolve());
+  const sendSpy = vi.fn((): Promise<Run> => {
+    if (opts.sendThrows !== undefined) return Promise.reject(toError(opts.sendThrows));
+    return Promise.resolve(opts.run);
+  });
+  const agent: MockAgent = {
+    [Symbol.asyncDispose]: disposeSpy,
+    agentId: opts.agentId ?? "agent-test-cloud-0001",
+    close: vi.fn(),
+    downloadArtifact: vi.fn(),
+    listArtifacts: vi.fn(),
+    model: undefined,
+    reload: vi.fn(),
+    send: sendSpy,
+  };
+  return { agent, disposeSpy, sendSpy };
+}
+
+const evA: SDKMessage = {
+  agent_id: "agent-test-cloud-0001",
+  message: { content: [{ text: "first", type: "text" }], role: "assistant" },
+  run_id: "run-test-cloud-0001",
+  type: "assistant",
+} as unknown as SDKMessage;
+
+const evB: SDKMessage = {
+  agent_id: "agent-test-cloud-0001",
+  message: { content: [{ text: "second", type: "text" }], role: "assistant" },
+  run_id: "run-test-cloud-0001",
+  type: "assistant",
+} as unknown as SDKMessage;
+
+function cloudBaseInput(
+  overrides: Partial<Parameters<CloudCursorRunner["run"]>[0]> = {},
+): Parameters<CloudCursorRunner["run"]>[0] {
+  return {
+    cloud: {
+      repos: [{ url: "https://github.com/acme/sandbox" }],
+    },
+    cwd: "/tmp/cloud-unused-cwd",
+    model: { id: "composer-2" },
+    onEvent: vi.fn(),
+    prompt: "do the cloud thing",
+    runtime: "cloud",
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  vi.stubEnv("CURSOR_API_KEY", "test-key-cloud");
+  vi.mocked(Agent.create).mockReset();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe("CloudCursorRunner — runtime guards", () => {
+  test("throws MissingCloudSpecError when runtime is cloud and cloud is undefined", async () => {
+    const runner = new CloudCursorRunner();
+    await expect(
+      runner.run({
+        cwd: "/x",
+        model: { id: "composer-2" },
+        onEvent: vi.fn(),
+        prompt: "x",
+        runtime: "cloud",
+      }),
+    ).rejects.toBeInstanceOf(MissingCloudSpecError);
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
+  test("throws InvalidCloudReposError when cloud.repos is empty", async () => {
+    const runner = new CloudCursorRunner();
+    await expect(
+      runner.run({
+        cwd: "/x",
+        model: { id: "composer-2" },
+        onEvent: vi.fn(),
+        prompt: "x",
+        runtime: "cloud",
+        cloud: { repos: [] } as unknown as CloudRunSpec, // bypass tuple typing for runtime test
+      }),
+    ).rejects.toBeInstanceOf(InvalidCloudReposError);
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
+  test("throws InvalidCloudReposError when cloud.repos is missing entirely (non-array)", async () => {
+    const runner = new CloudCursorRunner();
+    await expect(
+      runner.run({
+        cwd: "/x",
+        model: { id: "composer-2" },
+        onEvent: vi.fn(),
+        prompt: "x",
+        runtime: "cloud",
+        cloud: {} as unknown as CloudRunSpec, // simulate JSON caller with malformed cloud spec
+      }),
+    ).rejects.toBeInstanceOf(InvalidCloudReposError);
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
+  test("throws InvalidCloudReposError when cloud.repos has more than one entry", async () => {
+    const runner = new CloudCursorRunner();
+    await expect(
+      runner.run({
+        cwd: "/x",
+        model: { id: "composer-2" },
+        onEvent: vi.fn(),
+        prompt: "x",
+        runtime: "cloud",
+        cloud: {
+          repos: [
+            { url: "https://github.com/acme/sandbox" },
+            { url: "https://github.com/acme/other" },
+          ],
+        } as unknown as CloudRunSpec,
+      }),
+    ).rejects.toBeInstanceOf(InvalidCloudReposError);
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
+  test('throws WrongRunnerError when runtime is "local"', async () => {
+    const runner = new CloudCursorRunner();
+    await expect(
+      runner.run(
+        cloudBaseInput({
+          runtime: "local",
+        }),
+      ),
+    ).rejects.toBeInstanceOf(WrongRunnerError);
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
+  test("throws WrongRunnerError when runtime is omitted", async () => {
+    const runner = new CloudCursorRunner();
+    const input = cloudBaseInput();
+    const { runtime: _omit, ...rest } = input;
+    await expect(runner.run(rest)).rejects.toBeInstanceOf(WrongRunnerError);
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("CloudCursorRunner — env / pre-run errors", () => {
+  test("throws MissingApiKeyError when CURSOR_API_KEY is unset (no SDK call)", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("CURSOR_API_KEY", "");
+    const runner = new CloudCursorRunner();
+    await expect(runner.run(cloudBaseInput())).rejects.toBeInstanceOf(MissingApiKeyError);
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
+  test("Agent.create throw → CursorRunFailedError; agent NOT disposed (none was created)", async () => {
+    const sdkErr = new Error("AuthenticationError: bad key");
+    vi.mocked(Agent.create).mockRejectedValue(sdkErr);
+    const runner = new CloudCursorRunner();
+    const promise = runner.run(cloudBaseInput());
+    await expect(promise).rejects.toBeInstanceOf(CursorRunFailedError);
+    await expect(promise).rejects.toThrow(/Agent\.create failed/);
+    await expect(promise).rejects.toMatchObject({ cause: sdkErr });
+  });
+
+  test("agent.send throw after Agent.create → CursorRunFailedError; agent IS disposed", async () => {
+    const { run } = makeMockRun({});
+    const sendErr = new Error("RateLimitError");
+    const { agent, disposeSpy } = makeMockAgent({ run, sendThrows: sendErr });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const promise = runner.run(cloudBaseInput());
+    await expect(promise).rejects.toThrow(/agent\.send failed/);
+    await expect(promise).rejects.toMatchObject({ cause: sendErr });
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("disposal failure during the agent.send catch path is swallowed; original SDK error wins", async () => {
+    const { run } = makeMockRun({});
+    const sendErr = new Error("primary");
+    const { agent, disposeSpy } = makeMockAgent({ run, sendThrows: sendErr });
+    disposeSpy.mockRejectedValueOnce(new Error("dispose secondary"));
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    await expect(runner.run(cloudBaseInput())).rejects.toMatchObject({ cause: sendErr });
+  });
+});
+
+describe("CloudCursorRunner — Agent.create cloud payload", () => {
+  test("maps CursorRunInput.cloud into Agent.create cloud options", async () => {
+    const { run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const repos = [
+      { prUrl: "https://github.com/acme/sandbox/pull/2", url: "https://github.com/acme/sandbox" },
+    ] as const;
+
+    const runner = new CloudCursorRunner();
+    await runner.run(
+      cloudBaseInput({
+        agentName: "ship/wf-cloud",
+        cloud: {
+          autoCreatePR: true,
+          env: { name: "staging", type: "pool" },
+          envVars: { MY_TOKEN: "abc" },
+          repos,
+          skipReviewerRequest: false,
+          workOnCurrentBranch: true,
+        },
+        mcpServers: { docs: { type: "http", url: "https://docs" } },
+        model: { id: "composer-2", params: [{ id: "thinking", value: "high" }] },
+      }),
+    );
+
+    expect(Agent.create).toHaveBeenCalledWith({
+      apiKey: "test-key-cloud",
+      cloud: {
+        autoCreatePR: true,
+        env: { name: "staging", type: "pool" },
+        envVars: { MY_TOKEN: "abc" },
+        repos: [...repos],
+        skipReviewerRequest: false,
+        workOnCurrentBranch: true,
+      },
+      mcpServers: { docs: { type: "http", url: "https://docs" } },
+      model: { id: "composer-2", params: [{ id: "thinking", value: "high" }] },
+      name: "ship/wf-cloud",
+    });
+  });
+
+  test("omits optional cloud fields when unset (exactOptionalPropertyTypes-safe)", async () => {
+    const { run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    await runner.run(cloudBaseInput());
+
+    const arg = vi.mocked(Agent.create).mock.calls[0]?.[0] as AgentOptions | undefined;
+    expect(arg?.cloud).toEqual({
+      repos: [{ url: "https://github.com/acme/sandbox" }],
+    });
+    expect(arg?.cloud).not.toHaveProperty("workOnCurrentBranch");
+    expect(arg?.cloud).not.toHaveProperty("autoCreatePR");
+    expect(arg?.cloud).not.toHaveProperty("skipReviewerRequest");
+    expect(arg?.cloud).not.toHaveProperty("envVars");
+    expect(arg?.cloud).not.toHaveProperty("env");
+  });
+});
+
+describe("CloudCursorRunner — status mapping", () => {
+  test('SDK status "expired" maps to cancelled terminal result', async () => {
+    const expiredResult = {
+      durationMs: 100,
+      id: "run-expired",
+      status: "expired",
+    } as unknown as RunResult;
+
+    const { run } = makeMockRun({ result: expiredResult });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await expect(handle.result).resolves.toMatchObject({ status: "cancelled", durationMs: 100 });
+  });
+
+  test('SDK status "EXPIRED" (uppercase) maps to cancelled terminal result', async () => {
+    const expiredResult = {
+      durationMs: 100,
+      id: "run-expired",
+      status: "EXPIRED",
+    } as unknown as RunResult;
+
+    const { run } = makeMockRun({ result: expiredResult });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await expect(handle.result).resolves.toMatchObject({ status: "cancelled", durationMs: 100 });
+  });
+});
+
+describe("CloudCursorRunner — happy path + status mapping", () => {
+  test("happy path: finished → succeeded, summary = result.result, durationMs preserved", async () => {
+    const { run } = makeMockRun({
+      events: [evA, evB],
+      result: {
+        durationMs: 67_000,
+        id: "run-test-cloud-0001",
+        result: "implementation done",
+        status: "finished",
+      },
+    });
+    const { agent, disposeSpy } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const onEvent = vi.fn();
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput({ onEvent }));
+    const result = await handle.result;
+
+    expect(result).toMatchObject({
+      branches: [],
+      durationMs: 67_000,
+      status: "succeeded",
+      summary: "implementation done",
+    });
+    expect(onEvent.mock.calls.map((c) => (c as [SDKMessage])[0])).toEqual([evA, evB]);
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("error → failed; result resolves (does NOT throw); errorMessage populated", async () => {
+    const { run } = makeMockRun({
+      result: {
+        durationMs: 5_000,
+        id: "run-test-cloud-0001",
+        result: "model rejected the task",
+        status: "error",
+      },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    const result = await handle.result;
+
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toBe("model rejected the task");
+  });
+
+  test("error without RunResult.result → falls back to a generic errorMessage", async () => {
+    const { run } = makeMockRun({
+      result: { durationMs: 0, id: "run-test-cloud-0001", status: "error" },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    const result = await handle.result;
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toMatch(/Cursor SDK reported error/);
+  });
+
+  test("cancelled → cancelled; summary preserved if SDK populated it", async () => {
+    const { run } = makeMockRun({
+      result: {
+        durationMs: 1_000,
+        id: "run-test-cloud-0001",
+        result: "partial output",
+        status: "cancelled",
+      },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await expect(handle.result).resolves.toMatchObject({
+      status: "cancelled",
+      summary: "partial output",
+    });
+  });
+
+  test("branches preserved from RunResult.git", async () => {
+    const { run } = makeMockRun({
+      result: {
+        durationMs: 1_000,
+        git: {
+          branches: [{ branch: "feat-x", prUrl: "https://example.com/pr/1", repoUrl: "r1" }],
+        },
+        id: "run-test-cloud-0001",
+        result: "ok",
+        status: "finished",
+      },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    const result = await handle.result;
+    expect(result.branches).toEqual([
+      { branch: "feat-x", prUrl: "https://example.com/pr/1", repoUrl: "r1" },
+    ]);
+  });
+});
+
+describe("CloudCursorRunner — onEvent contract", () => {
+  test("onEvent throws are swallowed; the run still resolves to its terminal status", async () => {
+    const { run } = makeMockRun({ events: [evA, evB] });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const onEvent = vi.fn().mockImplementation(() => {
+      throw new Error("consumer is broken");
+    });
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput({ onEvent }));
+    await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+    expect(onEvent).toHaveBeenCalledTimes(2);
+  });
+
+  test("async onEvent rejection is swallowed (no unhandled rejection leaks past the runner)", async () => {
+    const { run } = makeMockRun({ events: [evA, evB] });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const onEvent = vi
+      .fn()
+      .mockImplementation(() => Promise.reject(new Error("async consumer broke")));
+    const runner = new CloudCursorRunner();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const handle = await runner.run(cloudBaseInput({ onEvent }));
+      await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(unhandled).toHaveLength(0);
+      expect(onEvent).toHaveBeenCalledTimes(2);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("stream errors but wait() recovers with a terminal RunResult", async () => {
+    const streamErr = new Error("transient stream issue");
+    const { run } = makeMockRun({
+      result: {
+        durationMs: 100,
+        id: "run-test-cloud-0001",
+        result: "fell back gracefully",
+        status: "finished",
+      },
+      streamThrows: streamErr,
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  test("stream errors AND wait() rejects → CursorRunFailedError", async () => {
+    const streamErr = new Error("network disconnected mid-stream");
+    const { run } = makeMockRun({ streamThrows: streamErr, waitThrows: streamErr });
+    const { agent, disposeSpy } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await expect(handle.result).rejects.toThrow(/stream errored/);
+    await expect(handle.result).rejects.toMatchObject({ cause: streamErr });
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("run.wait() rejects after a clean stream → CursorRunFailedError", async () => {
+    const waitErr = new Error("SDK runtime crashed after clean stream");
+    const { run } = makeMockRun({ events: [evA], waitThrows: waitErr });
+    const { agent, disposeSpy } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await expect(handle.result).rejects.toThrow(/run\.wait\(\) rejected/);
+    await expect(handle.result).rejects.toMatchObject({ cause: waitErr });
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("CloudCursorRunner — cancellation", () => {
+  test("AbortSignal pre-aborted → run.cancel() invoked exactly once", async () => {
+    const { cancelSpy, run } = makeMockRun({
+      result: { durationMs: 0, id: "run-test-cloud-0001", status: "cancelled" },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const controller = new AbortController();
+    controller.abort();
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput({ signal: controller.signal }));
+    await handle.result;
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("cancel before terminal: status=cancelled, sdkRun.cancel invoked", async () => {
+    const { cancelSpy, run } = makeMockRun({
+      events: [evA, evB],
+      result: { durationMs: 0, id: "run-test-cloud-0001", status: "cancelled" },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const controller = new AbortController();
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput({ signal: controller.signal }));
+    controller.abort();
+    const result = await handle.result;
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("cancelled");
+  });
+
+  test("cancel after terminal: no-op", async () => {
+    const { cancelSpy, run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await handle.result;
+    await handle.cancel();
+    expect(cancelSpy).not.toHaveBeenCalled();
+  });
+
+  test("cancel-after-cancel: idempotent", async () => {
+    const { cancelSpy, run } = makeMockRun({
+      events: [evA, evB],
+      result: { durationMs: 0, id: "run-test-cloud-0001", status: "cancelled" },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await Promise.all([handle.cancel(), handle.cancel(), handle.cancel()]);
+    await handle.result;
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("SDK cancel rejection allows retry", async () => {
+    const { cancelSpy, run } = makeMockRun({
+      events: [evA, evB],
+      result: { durationMs: 0, id: "run-test-cloud-0001", status: "cancelled" },
+    });
+    cancelSpy.mockRejectedValueOnce(new Error("transient transport"));
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await handle.cancel();
+    await handle.cancel();
+    expect(cancelSpy).toHaveBeenCalledTimes(2);
+    await handle.result;
+  });
+});
+
+describe("CloudCursorRunner — agent disposal", () => {
+  test("disposal failure does NOT propagate to handle.result (run outcome is what consumers see)", async () => {
+    const { run } = makeMockRun({});
+    const { agent, disposeSpy } = makeMockAgent({ run });
+    disposeSpy.mockRejectedValueOnce(new Error("dispose blew up"));
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+  });
+});
+
+describe("CloudCursorRunner — IntegrationNotConnectedError", () => {
+  test("wraps as CursorCloudIntegrationError preserving provider + helpUrl", async () => {
+    const sdkErr = new IntegrationNotConnectedError("integration missing", {
+      helpUrl: "https://cursor.com/dashboard/integrations/github",
+      provider: "github",
+    });
+    vi.mocked(Agent.create).mockRejectedValue(sdkErr);
+
+    const runner = new CloudCursorRunner();
+    let caught: unknown;
+    try {
+      await runner.run(cloudBaseInput());
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(CursorCloudIntegrationError);
+    expect(caught).toMatchObject({
+      cause: sdkErr,
+      helpUrl: "https://cursor.com/dashboard/integrations/github",
+      provider: "github",
+    });
+  });
+});

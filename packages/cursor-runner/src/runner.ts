@@ -34,6 +34,40 @@ export interface CursorRunInput {
    * visibility queue work themselves.
    */
   readonly onEvent: (event: SDKMessage) => void | Promise<void>;
+
+  /** Runtime selector. Defaults to "local" when omitted. */
+  readonly runtime?: "local" | "cloud";
+
+  /** Cloud-specific config. Required when runtime === "cloud"; ignored otherwise. */
+  readonly cloud?: CloudRunSpec;
+}
+
+export interface CloudRunSpec {
+  /**
+   * GitHub repo the cloud agent operates against. Exactly one entry this
+   * phase — multi-repo runs are out of scope.
+   */
+  readonly repos: readonly [
+    { readonly url: string; readonly startingRef?: string; readonly prUrl?: string },
+  ];
+  /**
+   * Push to existing branch instead of creating a new one. Default: false.
+   * **Experimental** — the field passes through to the SDK but the
+   * workflowRun-as-one-new-branch shape isn't designed for it.
+   */
+  readonly workOnCurrentBranch?: boolean;
+  /** Auto-open a PR when the run finishes. Default: false (Ship's `open_pr` phase opens it). */
+  readonly autoCreatePR?: boolean;
+  /**
+   * Skip requesting the calling user as PR reviewer. Defaults to `true` when
+   * `autoCreatePR === true`; defaults to `false` otherwise. Only consulted
+   * when `autoCreatePR` is on.
+   */
+  readonly skipReviewerRequest?: boolean;
+  /** Short-lived session env vars passed to the cloud VM. */
+  readonly envVars?: Record<string, string>;
+  /** Cloud env selector. Default: `{ type: "cloud" }` (Cursor-managed). */
+  readonly env?: { readonly type: "cloud" | "pool" | "machine"; readonly name?: string };
 }
 
 /**

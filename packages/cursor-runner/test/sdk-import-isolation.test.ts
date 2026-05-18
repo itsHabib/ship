@@ -138,6 +138,17 @@ describe("ED-2 — @cursor/sdk is imported in @ship/cursor-runner only", () => {
     expect(new Set(names)).toEqual(allowed);
   });
 
+  test("cursor-runner src/index.ts re-exports CloudCursorRunner + type-only CloudRunSpec from workspace modules", () => {
+    const indexPath = join(PACKAGES_DIR, ALLOWED_PACKAGE, "src", "index.ts");
+    const content = readFileSync(indexPath, "utf-8");
+    expect(content).toMatch(
+      /export\s+\{\s*CloudCursorRunner\s*\}\s*from\s*["']\.\/cloud-runner\.js["']/,
+    );
+    expect(content).toMatch(
+      /export\s+type\s*\{[^}]*\bCloudRunSpec\b[^}]*\}\s*from\s*["']\.\/runner\.js["']/,
+    );
+  });
+
   test("regex catches every import form (static / type-only / side-effect / dynamic / require / export-from)", () => {
     const samples: { line: string; shouldMatch: boolean }[] = [
       { line: `import { Agent } from "@cursor/sdk";`, shouldMatch: true },

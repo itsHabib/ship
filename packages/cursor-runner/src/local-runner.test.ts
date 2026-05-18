@@ -15,7 +15,7 @@ import type {
 import { Agent } from "@cursor/sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { CursorRunFailedError, MissingApiKeyError } from "./errors.js";
+import { CursorRunFailedError, MissingApiKeyError, WrongRunnerError } from "./errors.js";
 import { LocalCursorRunner } from "./local-runner.js";
 
 vi.mock("@cursor/sdk", () => ({
@@ -159,6 +159,51 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+});
+
+describe("LocalCursorRunner — runtime selection", () => {
+  test('throws WrongRunnerError when runtime is "cloud"', async () => {
+    const runner = new LocalCursorRunner();
+    await expect(runner.run(baseInput({ runtime: "cloud" }))).rejects.toBeInstanceOf(
+      WrongRunnerError,
+    );
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
+  test("ignores input.cloud when runtime is unset", async () => {
+    const { run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new LocalCursorRunner();
+    await runner.run(
+      baseInput({
+        cloud: { repos: [{ url: "https://github.com/o/r" }] },
+      }),
+    );
+
+    const call = vi.mocked(Agent.create).mock.calls[0]?.[0] as AgentOptions | undefined;
+    expect(call).toBeDefined();
+    expect(call).not.toHaveProperty("cloud");
+    expect(call?.local).toEqual({ cwd: "/tmp/test-workdir", settingSources: ["project"] });
+  });
+
+  test('ignores input.cloud when runtime is "local"', async () => {
+    const { run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new LocalCursorRunner();
+    await runner.run(
+      baseInput({
+        cloud: { repos: [{ url: "https://github.com/o/r" }] },
+        runtime: "local",
+      }),
+    );
+
+    const call = vi.mocked(Agent.create).mock.calls[0]?.[0] as AgentOptions | undefined;
+    expect(call).not.toHaveProperty("cloud");
+  });
 });
 
 describe("LocalCursorRunner — env / pre-run errors", () => {
