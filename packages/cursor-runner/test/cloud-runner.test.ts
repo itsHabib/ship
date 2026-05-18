@@ -13,7 +13,7 @@ import { CloudCursorRunner } from "../src/cloud-runner.js";
 import {
   CursorCloudIntegrationError,
   CursorRunFailedError,
-  EmptyCloudReposError,
+  InvalidCloudReposError,
   MissingApiKeyError,
   MissingCloudSpecError,
   WrongRunnerError,
@@ -179,7 +179,7 @@ describe("CloudCursorRunner — runtime guards", () => {
     expect(Agent.create).not.toHaveBeenCalled();
   });
 
-  test("throws EmptyCloudReposError when cloud.repos is empty", async () => {
+  test("throws InvalidCloudReposError when cloud.repos is empty", async () => {
     const runner = new CloudCursorRunner();
     await expect(
       runner.run({
@@ -190,7 +190,27 @@ describe("CloudCursorRunner — runtime guards", () => {
         runtime: "cloud",
         cloud: { repos: [] } as unknown as CloudRunSpec, // bypass tuple typing for runtime test
       }),
-    ).rejects.toBeInstanceOf(EmptyCloudReposError);
+    ).rejects.toBeInstanceOf(InvalidCloudReposError);
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
+  test("throws InvalidCloudReposError when cloud.repos has more than one entry", async () => {
+    const runner = new CloudCursorRunner();
+    await expect(
+      runner.run({
+        cwd: "/x",
+        model: { id: "composer-2" },
+        onEvent: vi.fn(),
+        prompt: "x",
+        runtime: "cloud",
+        cloud: {
+          repos: [
+            { url: "https://github.com/acme/sandbox" },
+            { url: "https://github.com/acme/other" },
+          ],
+        } as unknown as CloudRunSpec,
+      }),
+    ).rejects.toBeInstanceOf(InvalidCloudReposError);
     expect(Agent.create).not.toHaveBeenCalled();
   });
 

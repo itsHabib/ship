@@ -32,12 +32,18 @@ export class MissingCloudSpecError extends CursorRunFailedError {
   }
 }
 
-/** Cloud inputs passed to {@link CloudCursorRunner} with an empty `cloud.repos` array. */
-export class EmptyCloudReposError extends CursorRunFailedError {
-  override readonly name: string = "EmptyCloudReposError";
+/**
+ * Cloud inputs passed to {@link CloudCursorRunner} whose `cloud.repos` array
+ * doesn't match the single-repo contract (per phase 04 design § F2 / Out-of-scope).
+ * Covers both empty (`length === 0`) and multi-repo (`length > 1`) cases.
+ */
+export class InvalidCloudReposError extends CursorRunFailedError {
+  override readonly name: string = "InvalidCloudReposError";
 
-  constructor() {
-    super("cloud.repos must contain exactly one repo entry; received an empty array");
+  constructor(receivedLength: number) {
+    super(
+      `cloud.repos must contain exactly one repo entry; received length ${String(receivedLength)}`,
+    );
   }
 }
 

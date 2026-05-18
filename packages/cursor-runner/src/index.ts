@@ -22,7 +22,14 @@ export { CloudCursorRunner } from "./cloud-runner.js";
 export { LocalCursorRunner } from "./local-runner.js";
 
 // --- errors.ts ---
-export { CursorRunFailedError, MissingApiKeyError } from "./errors.js";
+export {
+  CursorCloudIntegrationError,
+  CursorRunFailedError,
+  InvalidCloudReposError,
+  MissingApiKeyError,
+  MissingCloudSpecError,
+  WrongRunnerError,
+} from "./errors.js";
 
 // --- @cursor/sdk re-exports ---
 export type { AgentDefinition, McpServerConfig, SDKMessage } from "@cursor/sdk";

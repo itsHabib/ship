@@ -27,7 +27,7 @@ import { mapRunResult, mapTerminalResult } from "./_shared.js";
 import {
   CursorCloudIntegrationError,
   CursorRunFailedError,
-  EmptyCloudReposError,
+  InvalidCloudReposError,
   MissingApiKeyError,
   MissingCloudSpecError,
   WrongRunnerError,
@@ -75,8 +75,11 @@ export class CloudCursorRunner implements CursorRunner {
       throw new MissingCloudSpecError();
     }
     // Runtime guard for non-TS callers; `repos` is typed as a 1-tuple for normal TS usage.
-    if ((input.cloud.repos as readonly unknown[]).length === 0) {
-      throw new EmptyCloudReposError();
+    // Reject both empty and multi-repo arrays — the single-repo contract is enforced
+    // explicitly here so out-of-scope multi-repo inputs don't silently reach the SDK.
+    const reposLength = (input.cloud.repos as readonly unknown[]).length;
+    if (reposLength !== 1) {
+      throw new InvalidCloudReposError(reposLength);
     }
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
@@ -145,6 +148,9 @@ export class CloudCursorRunner implements CursorRunner {
       try {
         await sdkRun.cancel();
       } catch {
+        // Allow retries: a transient SDK-side failure shouldn't
+        // permanently disable cancel while the run is still live.
+        // Especially relevant for cloud where cancel() round-trips to the VM.
         cancelInitiated = false;
       }
     };
