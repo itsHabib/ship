@@ -20,5 +20,35 @@ export class MissingApiKeyError extends Error {
  * Not used for `RunResult.status === "error"` — see file-level comment.
  */
 export class CursorRunFailedError extends Error {
-  override readonly name = "CursorRunFailedError";
+  override readonly name: string = "CursorRunFailedError";
+}
+
+/** Cloud inputs passed to {@link CloudCursorRunner} without `cloud` config. */
+export class MissingCloudSpecError extends CursorRunFailedError {
+  override readonly name: string = "MissingCloudSpecError";
+
+  constructor() {
+    super("runtime: 'cloud' was set but input.cloud is undefined");
+  }
+}
+
+/** SCM integration is not connected for the target repo (SDK pre-run failure). */
+export class CursorCloudIntegrationError extends CursorRunFailedError {
+  override readonly name: string = "CursorCloudIntegrationError";
+
+  constructor(
+    public readonly provider: string,
+    public readonly helpUrl: string,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `Cloud agent integration not connected for provider "${provider}". Visit ${helpUrl} to connect.`,
+      options,
+    );
+  }
+}
+
+/** Wrong `input.runtime` for the selected runner implementation. */
+export class WrongRunnerError extends CursorRunFailedError {
+  override readonly name: string = "WrongRunnerError";
 }

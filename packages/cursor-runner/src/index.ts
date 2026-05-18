@@ -7,7 +7,16 @@
  */
 
 // --- runner.ts ---
-export type { CursorRunHandle, CursorRunInput, CursorRunner, CursorRunResult } from "./runner.js";
+export type {
+  CloudRunSpec,
+  CursorRunHandle,
+  CursorRunInput,
+  CursorRunner,
+  CursorRunResult,
+} from "./runner.js";
+
+// --- cloud-runner.ts ---
+export { CloudCursorRunner } from "./cloud-runner.js";
 
 // --- local-runner.ts ---
 export { LocalCursorRunner } from "./local-runner.js";
