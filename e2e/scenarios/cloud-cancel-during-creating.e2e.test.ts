@@ -1,15 +1,25 @@
 /**
  * L3 live e2e — cancel during cloud `CREATING` (first `type: "status"`
- * event). Gated on `SHIP_LIVE=1` + `SHIP_CLOUD=1` + `CURSOR_API_KEY`.
+ * event). Gated on `SHIP_LIVE=1` + `SHIP_CLOUD=1` + `CURSOR_API_KEY`
+ * + `GITHUB_TOKEN`.
  */
 
+import type { CursorRunResult } from "@ship/cursor-runner";
 import type { ShipOutput } from "@ship/mcp";
 
 import { Agent, type SDKAgentInfo } from "@cursor/sdk";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
+import {
+  CLOUD_SANDBOX_REPO_URL,
+  HAS_KEY_AND_CLOUD,
+  sandboxSlugFromUrl,
+  stripDotGit,
+  tryCleanupRemoteBranchOrPr,
+} from "./cloud-e2e-helpers.js";
 import { startEventTailer } from "./event-tailer.js";
 import {
   bootstrapFixtureMainOnSandbox,
@@ -22,31 +32,6 @@ import {
   waitForEventsNdjsonPredicate,
   waitForWorkflowRowId,
 } from "./live-open-pr-helpers.js";
-
-const HAS_KEY_AND_CLOUD =
-  process.env["SHIP_LIVE"] === "1" &&
-  process.env["SHIP_CLOUD"] === "1" &&
-  (process.env["CURSOR_API_KEY"] ?? "") !== "";
-
-/** Canonical HTTPS remote for Cursor cloud (edit if your sandbox differs). */
-const CLOUD_SANDBOX_REPO_URL = "https://github.com/itsHabib/ship-live-sandbox";
-
-function stripDotGit(url: string): string {
-  return url.toLowerCase().endsWith(".git") ? url.slice(0, -4) : url;
-}
-
-function sandboxSlugFromUrl(url: string): string {
-  const u = new URL(url);
-  let seg = u.pathname;
-  if (seg.startsWith("/")) seg = seg.slice(1);
-  if (seg.endsWith("/")) seg = seg.slice(0, -1);
-  if (seg.toLowerCase().endsWith(".git")) seg = seg.slice(0, -4);
-  const parts = seg.split("/").filter((p) => p.length > 0);
-  if (parts.length < 2 || parts[0] === undefined || parts[1] === undefined) {
-    throw new Error(`expected https://github.com/owner/repo URL, got: ${url}`);
-  }
-  return `${parts[0]}/${parts[1]}`;
-}
 
 function ndjsonHasCloudCreatingLine(content: string): boolean {
   return content.split("\n").some((line) => {
@@ -88,7 +73,7 @@ interface CloudShipChild {
   readonly stop: () => void;
 }
 
-function spawnCloudShipAsF1(opts: {
+function spawnCloudShipChild(opts: {
   readonly homeRoot: string;
   readonly workdir: string;
   readonly repoLabel: string;
@@ -150,14 +135,17 @@ function spawnCloudShipAsF1(opts: {
 describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — cancel during CREATING", () => {
   test("cancel on first cloud CREATING status event → workflow cancelled; no orphan agent", async () => {
     const slug = sandboxSlugFromUrl(CLOUD_SANDBOX_REPO_URL);
-    parseSandboxSlug(slug);
+    // Validate the URL parses to owner/repo before spawning anything — cheap
+    // pre-flight check so a malformed CLOUD_SANDBOX_REPO_URL fails fast.
+    const { owner, repo } = parseSandboxSlug(slug);
     const token = process.env["GITHUB_TOKEN"] ?? "";
     const { root: homeRoot, workdir } = mkLiveTmp("ship-cloud-l3-cancel-");
     const repoLabel = `cloud-l3-cncl-${randomBytes(4).toString("hex")}`;
 
     bootstrapFixtureMainOnSandbox({ workdir, token, sandboxSlug: slug });
 
-    const s = spawnCloudShipAsF1({ homeRoot, workdir, repoLabel });
+    const s = spawnCloudShipChild({ homeRoot, workdir, repoLabel });
+    let branchForCleanup: string | undefined;
     try {
       const wfId = await waitForWorkflowRowId(homeRoot, repoLabel);
       await waitForEventsNdjsonPredicate({
@@ -173,6 +161,20 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — cancel during CREATING", (
       const shipOut = JSON.parse(stdout.trim()) as ShipOutput;
       expect(shipOut.status).toBe("cancelled");
 
+      // If a partial cloud run pushed a branch before the cancel landed, the
+      // run's result.json may carry it. Best-effort grab so `finally` can
+      // clean it off the sandbox repo.
+      if (existsSync(shipOut.artifacts.resultPath)) {
+        try {
+          const persisted = JSON.parse(
+            readFileSync(shipOut.artifacts.resultPath, "utf-8"),
+          ) as CursorRunResult;
+          branchForCleanup = persisted.branches[0]?.branch;
+        } catch {
+          /* result.json missing or partial — nothing to clean */
+        }
+      }
+
       const matches = await cloudAgentRecordsForId(shipOut.cursorRun.agentId);
       const running = matches.filter((m) => m.status === "running");
       try {
@@ -185,6 +187,12 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — cancel during CREATING", (
       }
     } finally {
       s.stop();
+      tryCleanupRemoteBranchOrPr({
+        owner,
+        repo,
+        prNum: undefined,
+        branch: branchForCleanup,
+      });
     }
   });
 });

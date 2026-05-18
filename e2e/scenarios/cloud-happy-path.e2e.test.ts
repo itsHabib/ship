@@ -1,8 +1,9 @@
 /**
  * L3 live e2e — cloud runtime happy path (`autoCreatePR: true` via
  * `--cloud-auto-create-pr`). Gated on `SHIP_LIVE=1` + `SHIP_CLOUD=1`
- * + `CURSOR_API_KEY`. Cleanup / PR verification use `gh` (expects
- * `GITHUB_TOKEN` or interactive auth like the L4 sandbox flows).
+ * + `CURSOR_API_KEY` + `GITHUB_TOKEN`. Cleanup / PR verification use
+ * `gh` (expects `GITHUB_TOKEN` or interactive auth like the L4
+ * sandbox flows).
  *
  * Branch + PR info is read from `result.json` (the on-disk
  * `CursorRunResult` per phase doc § F6) — `ShipOutput.cursorRun` has
@@ -20,6 +21,13 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
+import {
+  CLOUD_SANDBOX_REPO_URL,
+  HAS_KEY_AND_CLOUD,
+  sandboxSlugFromUrl,
+  stripDotGit,
+  tryCleanupRemoteBranchOrPr,
+} from "./cloud-e2e-helpers.js";
 import { startEventTailer } from "./event-tailer.js";
 import {
   bootstrapFixtureMainOnSandbox,
@@ -29,31 +37,6 @@ import {
   mkLiveTmp,
   parseSandboxSlug,
 } from "./live-open-pr-helpers.js";
-
-const HAS_KEY_AND_CLOUD =
-  process.env["SHIP_LIVE"] === "1" &&
-  process.env["SHIP_CLOUD"] === "1" &&
-  (process.env["CURSOR_API_KEY"] ?? "") !== "";
-
-/** Canonical HTTPS remote for Cursor cloud (edit if your sandbox differs). */
-const CLOUD_SANDBOX_REPO_URL = "https://github.com/itsHabib/ship-live-sandbox";
-
-function stripDotGit(url: string): string {
-  return url.toLowerCase().endsWith(".git") ? url.slice(0, -4) : url;
-}
-
-function sandboxSlugFromUrl(url: string): string {
-  const u = new URL(url);
-  let seg = u.pathname;
-  if (seg.startsWith("/")) seg = seg.slice(1);
-  if (seg.endsWith("/")) seg = seg.slice(0, -1);
-  if (seg.toLowerCase().endsWith(".git")) seg = seg.slice(0, -4);
-  const parts = seg.split("/").filter((p) => p.length > 0);
-  if (parts.length < 2 || parts[0] === undefined || parts[1] === undefined) {
-    throw new Error(`expected https://github.com/owner/repo URL, got: ${url}`);
-  }
-  return `${parts[0]}/${parts[1]}`;
-}
 
 function pullNumberFromPrUrl(prUrl: string): number {
   const m = /\/pull\/(\d+)\b/.exec(prUrl);
@@ -66,38 +49,6 @@ function pullNumberFromPrUrl(prUrl: string): number {
 function ghApiJson(path: string): { html_url?: string; state?: string } {
   const out = execFileSync("gh", ["api", path], { encoding: "utf-8" });
   return JSON.parse(out) as { html_url?: string; state?: string };
-}
-
-function tryCleanupRemoteBranchOrPr(opts: {
-  readonly owner: string;
-  readonly repo: string;
-  readonly prNum: number | undefined;
-  readonly branch: string | undefined;
-}): void {
-  try {
-    if (opts.prNum !== undefined) {
-      execFileSync(
-        "gh",
-        [
-          "pr",
-          "close",
-          String(opts.prNum),
-          "--repo",
-          `${opts.owner}/${opts.repo}`,
-          "--delete-branch",
-        ],
-        { stdio: "ignore" },
-      );
-    } else if (opts.branch !== undefined) {
-      execFileSync(
-        "gh",
-        ["api", "-X", "DELETE", `repos/${opts.owner}/${opts.repo}/git/refs/heads/${opts.branch}`],
-        { stdio: "ignore" },
-      );
-    }
-  } catch {
-    /* best-effort cleanup */
-  }
 }
 
 describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — happy path (auto-create PR)", () => {
@@ -171,7 +122,8 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — happy path (auto-create PR
       branchForCleanup = b0.branch;
       prNum = pullNumberFromPrUrl(b0.prUrl!);
       const prJson = ghApiJson(`repos/${owner}/${repo}/pulls/${String(prNum)}`);
-      expect(prJson.html_url).toMatch(/pull/);
+      expect(prJson.html_url).toMatch(/\/pull\/\d+/);
+      expect(prJson.state).toBe("open");
     } finally {
       tailer.stop();
       tryCleanupRemoteBranchOrPr({ owner, repo, prNum, branch: branchForCleanup });
