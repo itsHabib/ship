@@ -9,6 +9,7 @@
  */
 
 import type { OpenPrService, ShipService } from "@ship/core";
+import type { CursorRunner } from "@ship/cursor-runner";
 import type {
   FakeGhClient,
   FakeGitRemote,
@@ -41,16 +42,21 @@ export interface CliHarness {
   readonly gh: FakeGhClient;
   readonly git: FakeGitRemote;
   readonly harness: Harness;
+  /** Present when `createCliHarness({ cloudCursor })` wired a cloud runner. */
+  readonly cloudCursor?: CursorRunner;
   readonly stdout: string[];
   readonly stderr: string[];
   readonly close: () => void;
 }
 
 export async function createCliHarness(
-  opts: { defaultThinking?: "low" | "high" } = {},
+  opts: { defaultThinking?: "low" | "high"; cloudCursor?: CursorRunner } = {},
 ): Promise<CliHarness> {
   const harness = createHarness();
-  const bundle = createServiceFromHarness(harness, opts);
+  const bundle = createServiceFromHarness(harness, {
+    ...(opts.defaultThinking !== undefined ? { defaultThinking: opts.defaultThinking } : {}),
+    ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
+  });
   const openPrBundle = createOpenPrServiceFromHarness(harness);
   await bundle.fs.mkdir(WORKDIR, { recursive: true });
   await bundle.fs.writeFile(`${WORKDIR}/docs.md`, "# Task\n\nDo it.\n");
@@ -82,6 +88,7 @@ export async function createCliHarness(
     gh: openPrBundle.gh,
     git: openPrBundle.git,
     harness,
+    ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
     stdout,
     stderr,
     close: () => {
