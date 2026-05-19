@@ -54,6 +54,14 @@ describe("renderImplementationPrompt", () => {
     // clean by definition, so a "skip on clean tree" guard would
     // neuter the rule in its intended success path.
     expect(out).toContain("Skip this rule entirely if rule 7 was skipped");
+    // Rule 8 success path: act on P0/P1 via a follow-up commit (not amend);
+    // route P2/P3 to the structured-summary risks section.
+    expect(out).toContain("P0 or P1 finding");
+    expect(out).toContain("second commit");
+    expect(out).toContain("fix(...)");
+    expect(out).toContain("refactor(...)");
+    expect(out).toContain("P2/P3 findings");
+    expect(out).toContain("risks section");
     expect(out).toContain("task-error: <verbatim error message>");
     expect(out).toContain("structured summary");
   });
