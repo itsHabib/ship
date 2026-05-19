@@ -183,7 +183,7 @@ Every scenario tries to clean up its own artifacts in `finally`. Failures can le
 
 Rough costs per full L4+cloud sweep:
 
-- ~6 cursor credits (4 local + 2 cloud; cloud counts as more)
+- ~5-6 cursor credits (2 local + 3 cloud; cloud credits count heavier)
 - 3-4 PRs on the sandbox (auto-closed)
 - 5-7 branches pushed and deleted
 - ~15-20 min wall
