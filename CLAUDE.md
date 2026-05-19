@@ -30,78 +30,159 @@ Subagents live in `.cursor/agents/`. See [docs/features/ship-v2/phases/03-subage
 - Ship owns workflow state, persistence, and the MCP surface above the other two.
 - inspired by lessons learned from ../orchestra ../cortex
 
-## Development workbench
+<!-- BEGIN dev-workbench (managed by /dev-workbench skill — re-run to refresh; hand-edits inside this block will be overwritten) -->
+## Dev workbench
 
-Three MCP tools work together to turn "I want to ship X" into "here's the PR + durable trail." When the signal matches, **just call the verb**. Don't ask permission.
+Several MCP servers + skills are available in any Claude session on this machine — the dev-workflow infrastructure built across the portfolio. **This is ship — the workflow-execution plane itself** — so the ship verbs are the most directly relevant when working in this repo, but dossier (project memory) and tower (worktrees) are part of the same workbench. When the signal matches, **just call the verb**. Don't ask permission.
+
+Dogfood reality: ship runs cursor against ship's own task docs when iterating on ship-the-codebase — every PR shipped here passes through `mcp__ship__ship` at least once.
+
+> **Per-feature phase-doc convention** (ship-specific, lives outside this section): every dossier task that fires `ship.ship` must have a `docs/features/<feature>/phases/<NN>-<slug>.md` written first, with Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation-plan. The dossier task body is a registry pointer; the phase doc is the contract. See "## Session workflow" below.
 
 ### dossier — project memory
 
-Long-term home for what's planned, in-flight, and shipped. Projects → phases (design docs) → tasks → artifacts (PRs / commits / files).
+Long-term home for what's planned, in-flight, and shipped across the portfolio. Projects → phases (design docs) → tasks → artifacts (PRs / commits / files). Markdown-on-disk corpus; the on-disk format IS the source of truth.
 
-Use proactively for:
+**Use proactively for:**
 
-- *"What's the state of `<project>`?"* → `project.get { slug }`, then `phase.list` + `task.list { project: <slug>, status: in_progress }`.
-- *"I'm starting `<new chunk of work>`."* → `phase.add { project, slug, title, body }`.
-- *"I need to do X"* / discrete actionable surfaces → `task.create { project, phase?, slug, title, body }` (status defaults to `todo`).
-- User picks up a task → `task.claim { id, actor: human:michael }`. Re-claim by same actor is a no-op.
-- Progress / state transition on a task → `task.update { id, status?, note?, ... }`. Append notes liberally — the corpus *is* the working log.
-- Open / merged PR, commit ties to a task → `artifact.link { project, task?, kind, ref, label }` without being asked.
-- *"Done with task X."* → `task.complete { id, note? }`.
+- *"What's the state of `<project>`?"* → `mcp__dossier__project_get { slug }`, then `mcp__dossier__phase_list` + `mcp__dossier__task_list { project, status: ["in_progress"] }`.
+- *"I'm starting `<new chunk of work>`."* → `mcp__dossier__phase_add { project, slug, title, body }`.
+- *"I need to do X"* / discrete actionable surface → `mcp__dossier__task_create { project, phase?, slug, title, body }` (status defaults to `todo`).
+- User picks up a task → `mcp__dossier__task_claim { id, actor: "human:michael" }`. Re-claim by same actor is a no-op.
+- Progress on a task → `mcp__dossier__task_update { id, status?, note?, ... }`. Append notes liberally — the corpus IS the working log.
+- Open / merged PR → `mcp__dossier__artifact_link { project, task?, kind: "pr"|"commit", ref, label }` without being asked.
+- *"Done with task X."* → `mcp__dossier__task_complete { id, note? }`.
 
-Don't use for:
+**Don't use for:**
 
-- Code-level work (write the code first; *then* `artifact.link` the PR).
-- Anything that lives only in this session's scratch context.
+- Code-level work (write the code first; *then* `artifact_link` the PR).
+- Anything that only matters within this session's scratch context.
 
 ### tower — workspace substrate
 
-Owns repo registration + git worktrees. Each agent / human task gets its own isolated workspace so the main checkout stays clean and parallel work doesn't collide.
+Owns repo registration + git worktrees. Each agent / human task gets its own isolated workspace at `<repo>/.worktrees/<name>` so the main checkout stays clean and parallel work doesn't collide. Hard-pivoted in 2026-04 to observation-only — tower does not spawn or run agents (that's ship's job).
 
-Use proactively for:
+**Use proactively for:**
 
-- *"Starting `<branch / feature>`."* → `tower.add_worktree { repo, name }`. Branch becomes `tower/<name>`; path becomes `<repo>/.worktrees/<name>`.
-- New repo Tower doesn't know yet → `tower.register_repo { path }` (defaults name to dir basename).
-- *"What worktrees are open?"* → `tower.list_worktrees { repo? }` — includes PR / CI / review state.
-- Worktree done + PR merged → `tower.remove_worktree { repo, name }` to clean up the local clone.
+- *"Starting `<branch / feature>`."* → `mcp__tower__add_worktree { repo, name }`. Branch becomes `tower/<name>`; path becomes `<repo>/.worktrees/<name>`.
+- New repo tower doesn't know yet → `mcp__tower__register_repo { path }` (defaults name to dir basename).
+- *"What worktrees are open?"* → `mcp__tower__list_worktrees { repo? }` — includes PR / CI / review state per branch.
+- *"Refresh GitHub state across every tracked branch."* → `mcp__tower__sync` (reconciles git + refreshes PR/reviews/CI from GitHub).
+- Worktree done + PR merged → `mcp__tower__remove_worktree { repo, name, force?: true }` (`force: true` is the common case — agents leave scratch files in the worktree root that block clean removal).
 
-Don't use for:
+**Don't use for:**
 
-- Editing files inside the worktree (that's a normal file edit, not a Tower call).
-- Anything in the main checkout — Tower's job is the *isolated* workspace.
+- Editing files *inside* a worktree (that's a normal file edit, not a tower call).
+- Anything in the main checkout — tower's job is the *isolated* workspace.
+- Spawning agents to operate on the worktree. Hand the worktree path to ship instead.
 
 ### ship — workflow execution
 
-Hands a task doc to a coding agent, persists what happened, lets you inspect / cancel / replay. Owns nothing about the workspace (Tower's job) or the planning (Dossier's job).
+Hands a task doc to a coding agent (cursor), persists what happened, lets you inspect / cancel / replay the run. Owns nothing about the workspace (tower's job) or the planning (dossier's job).
 
-Use proactively for:
+**Use proactively for:**
 
-- *"Ship `<task doc>` against `<worktree>`."* → `ship.ship { workdir, docPath, repo, branch }`. V1 blocks until terminal; if the MCP request times out, the workflow continues durably — poll `ship.get_workflow_run { workflowRunId }`. See [phases/08-mcp-server.md § Risks](docs/features/ship-v1/phases/08-mcp-server.md) and the V2 async-mode discussion.
-- *"What ran on `<repo>` recently?"* / *"What's still in flight?"* → `ship.list_workflow_runs { repo?, status?, limit? }`.
-- *"What did `<wf id>` do?"* → `ship.get_workflow_run { workflowRunId }` (also accessible via the `ship://runs/{id}` resource).
-- An in-flight run needs to stop → `ship.cancel_workflow_run { workflowRunId }` (idempotent on terminal rows).
+- *"Ship `<task doc>` against `<worktree>`."* → `mcp__ship__ship { workdir, docPath, repo, branch }`. V2-async — returns `{ workflowRunId, status: "running" }` immediately.
+- *"What ran on `<repo>` recently?"* / *"What's still in flight?"* → `mcp__ship__list_workflow_runs { repo?, status?, limit? }`.
+- *"What did `<wf id>` do?"* → `mcp__ship__get_workflow_run { workflowRunId }` (also accessible via the `ship://runs/{id}` resource).
+- In-flight run needs to stop → `mcp__ship__cancel_workflow_run { workflowRunId }` (idempotent on terminal rows).
+- *"Open the PR for this run."* → `mcp__ship__open_pr { workflowRunId }`. **Note (2026-05-18):** currently errors with `missing GITHUB_TOKEN` because ship's MCP env doesn't have the token wired — fall back to `gh pr create` for the session.
 
-Don't use for:
+**Don't use for:**
 
-- Creating the worktree (Tower).
+- Creating the worktree (tower).
 - Writing the task doc (a normal file edit inside the worktree).
-- Recording the result back to project state (Dossier `artifact.link`).
+- Recording the merged PR back to project state (dossier `artifact_link`).
+
+### huddle — multi-agent / multi-seat coordination
+
+Spins up a Slack channel + per-seat keys so multiple agents (or agent + human) can share a working context without polluting any one session's chat. Each "seat" gets a key it uses to post / read; the orchestrator (huddle creator) has full access via `huddleId`.
+
+**Use proactively for:**
+
+- *"Set up a coordination channel for `<purpose>` with `<N>` agents."* → `mcp__huddle__huddle_create { purpose, orchestrator: { id, displayName }, seats: [{ id, displayName }, ...], ttlHours? }`. Returns per-seat keys + Slack channel id.
+- *"What huddles are open?"* → `mcp__huddle__huddle_list { active: true }`.
+- *"Post an update into huddle `<id>`."* → `mcp__huddle__huddle_post { huddleId, body, key?, replyTo? }`. Orchestrator omits `key`; seats include their key.
+- *"Catch up on the channel."* → `mcp__huddle__huddle_read { huddleId?, key?, since?, limit? }`.
+- Done → `mcp__huddle__huddle_close { huddleId }` (archives the Slack channel + marks done).
+
+**Don't use for:**
+
+- One-off agent runs that don't need cross-agent coordination — just ship the task and read the events log.
+- Long-term project memory (dossier owns that).
+
+### playwright — browser automation
+
+Headless / headed browser control via Playwright. Use when an agent task genuinely needs to interact with a web UI (login flow, scraping rendered DOM, screenshotting a page state) rather than hitting an API.
+
+**Use proactively for:**
+
+- *"Open `<url>` and check `<element>`."* → `mcp__plugin_playwright_playwright__browser_navigate { url }` then `..._browser_snapshot` (returns the accessibility tree) or `..._browser_take_screenshot`.
+- *"Fill `<form>` and submit."* → `..._browser_fill_form { fields: [...] }` then `..._browser_click { ref }`.
+- *"Capture network requests during `<flow>`."* → `..._browser_navigate` + `..._browser_network_requests` after the action.
+- *"Run JS against the page."* → `..._browser_evaluate { code }`.
+
+**Don't use for:**
+
+- API testing — use `curl` / `gh` / a real HTTP client.
+- Anything where the page is server-rendered and could be fetched via `WebFetch` instead.
+- Tasks where the operator's actual Chrome session is needed (use the claude-in-chrome MCP for that — separate tier).
+
+### `/work-driver` — drive agent-led impl end-to-end
+
+Coordinates one or N parallel streams through the full loop: pre-flight worktrees, fan out via `ship.ship`, poll terminal states, verify cursor's auto-commit (or commit manually if absent), open PRs, drive review cycles, merge in dep order, cleanup. Reads a manifest produced by `/work-driver-prep` (the common case) or a list of one-off spec docs (ad-hoc).
+
+**Triggers:** "drive this impl work", "run this through ship", "fire N parallel streams", "ship and merge", explicit `/work-driver`.
+
+**Pair with:** `/work-driver-prep` when you have a batch of dossier tasks and want one spec doc per task + conflict-aware batching before fanning out.
+
+### `/work-driver-prep` — spec docs + batched plan from a backlog of tasks
+
+Takes a list of dossier tasks (or a phase slug) and emits one spec doc per task plus a structured `driver.md` manifest grouping the specs into parallel-safe batches. Removes the manual gap between "I have N todo tasks" and "I can invoke `/work-driver`."
+
+**Triggers:** "ship the open follow-ups", "fan these tasks out", "prep work-driver", "set up the hygiene PRs", explicit `/work-driver-prep`.
+
+**Pair with:** `/work-driver` (consumes the emitted manifest).
 
 ### The loop
 
-Most features go through all three in order:
+A typical end-to-end flow when working on any portfolio repo:
 
-1. **Dossier** — `project.create` (once per feature), `phase.add` (one per stage), `task.create` (one per shippable unit).
-2. **Tower** — `tower.register_repo` (once per repo), then `tower.add_worktree` per task. Branch = `tower/<name>`, path = `<repo>/.worktrees/<name>`.
-3. **Task doc — required for every dossier task before `ship.ship` fires.** Write `docs/features/<feature>/phases/<NN>-<slug>.md` inside the worktree (Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation-plan). Commit + push. The dossier task body is a registry pointer; the phase doc is the contract. Even one-line follow-ups get a doc — the bar for skipping is "no real implementation work" (e.g. a status update).
-4. **Ship** — `ship.ship` against the worktree + doc. Poll `get_workflow_run` if the MCP request times out. Inspect the diff; iterate or accept.
-5. **PR** — push, open, request reviewers (Copilot via `gh api -X POST repos/<owner>/<repo>/pulls/<n>/requested_reviewers -f 'reviewers[]=Copilot'`; `@codex review`; `@claude review`).
-6. **Dossier (close)** — `task.complete { id, note }` + `artifact.link` to bind the merged PR url back to the task.
+```
+dossier.task_create        # plan: discrete shippable unit
+       │
+       ▼
+tower.add_worktree         # isolate: own branch + dir under .worktrees/
+       │
+       ▼
+(write the spec doc inside the worktree, commit, push)
+       │
+       ▼
+ship.ship { workdir, docPath, branch }    # dispatch cursor against the spec
+       │     │
+       │     └─ /work-driver coordinates the rest if multiple streams:
+       │        poll → land → PR → review cycles → merge → cleanup
+       ▼
+gh pr create + request reviewers (Copilot + @codex + @claude)
+       │
+       ▼
+gh pr merge --squash --admin --delete-branch     # remote-only delete
+       │
+       ▼
+dossier.task_complete + dossier.artifact_link { kind: "commit", ref }
+       │
+       ▼
+tower.remove_worktree { force: true }            # local cleanup
+```
 
-### Why three MCPs and not one
+Steps 3-7 of this loop are exactly what `/work-driver` automates when you fan multiple streams in parallel.
 
-Each layer is independently swappable. Dossier could be GitHub Projects, Linear, or a Notion DB — it owns "what needs doing." Tower could be plain `git worktree`, a cloud Cursor agent ref, or a Codespace — it owns "where work happens." Ship owns "drive an agent against a workdir + persist what happened" and only that. Substituting any one doesn't ripple into the other two.
+### Why separate MCPs
 
-Not every flow uses all three. A one-off CLI fix can skip Dossier; an existing-checkout edit can skip Tower; a non-agent change skips Ship. The workbench is a menu, not a checklist — but when the signals above match, default to calling the verb without checking in first.
+Each layer is independently swappable. Dossier could be Linear or GitHub Projects — it owns "what needs doing." Tower could be plain `git worktree` shellouts or a Codespace driver — it owns "where work happens." Ship could be a different agent runner (Claude Code SDK, a local cursor subprocess, etc.) — it owns "drive an agent against a workdir + persist what happened." Huddle owns multi-seat coordination channels; playwright owns browser. Substituting any one doesn't ripple into the others.
+
+Not every flow uses every tool. A one-off CLI fix can skip dossier; an existing-checkout edit can skip tower; a non-agent change skips ship. The workbench is a menu, not a checklist — but when the signals above match, default to calling the verb without checking in first.
+<!-- END dev-workbench -->
 
 ## Session workflow
 
