@@ -172,7 +172,7 @@ gh pr merge --squash --admin --delete-branch     # remote-only delete
 mcp__dossier__task_complete + mcp__dossier__artifact_link { kind: "commit", ref }
        │
        ▼
-mcp__tower__remove_worktree { force: true }      # local cleanup
+mcp__tower__remove_worktree { repo, name, force: true }      # local cleanup
 ```
 
 Steps 3-7 of this loop are exactly what `/work-driver` automates when you fan multiple streams in parallel.
