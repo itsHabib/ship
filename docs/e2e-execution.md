@@ -111,7 +111,7 @@ Covers:
 - `hello-world.e2e.test.ts` — basic ship→cursor→succeeded path against the fixture repo
 - `subagent-invocation.e2e.test.ts` — phase-03 subagent passthrough
 
-### Run the open_pr L4 suite (~5 min, 1 cursor credit + 1 GitHub PR)
+### Run the open_pr L4 suite (~10-15 min, ~6 cursor credits + 3-4 GitHub PRs)
 
 ```sh
 export SHIP_LIVE=1
@@ -121,7 +121,7 @@ export SHIP_E2E_SANDBOX_REPO=owner/your-sandbox
 pnpm exec vitest run --config e2e/vitest.e2e.config.ts open-pr ship-then-open-pr cancel-live-ship
 ```
 
-The `open-pr` substring filter matches every `e2e/scenarios/*open-pr*.e2e.test.ts` — namely `open-pr.e2e.test.ts`, `idempotent-open-pr.e2e.test.ts`, and `open-pr-failure-paths.e2e.test.ts`. Covers:
+The `open-pr` substring filter matches every `e2e/scenarios/*open-pr*.e2e.test.ts` — namely `open-pr.e2e.test.ts`, `idempotent-open-pr.e2e.test.ts`, and `open-pr-failure-paths.e2e.test.ts` (3 subtests, each runs a ship). Plus the two explicit filters (`ship-then-open-pr`, `cancel-live-ship`), the suite fires ~6 live cursor runs and opens 3-4 PRs on the sandbox. Covers:
 - `open-pr.e2e.test.ts` — ship → open_pr → PR exists on sandbox
 - `idempotent-open-pr.e2e.test.ts` — re-invoke open_pr is a no-op
 - `open-pr-failure-paths.e2e.test.ts` — bad-state rejection (workdir not git, branch empty, etc.)
@@ -157,14 +157,14 @@ export SHIP_E2E_SANDBOX_REPO=owner/your-sandbox
 pnpm exec vitest run --config e2e/vitest.e2e.config.ts
 ```
 
-Budget ~15-20 min wall + 5-6 cursor credits + several throwaway branches/PRs.
+Budget ~20-25 min wall + ~11 cursor credits (8 local + 3 cloud) + several throwaway branches/PRs.
 
 ## Cleanup
 
 Every scenario tries to clean up its own artifacts in `finally`. Failures can leave residue:
 
 - **Orphan branches on the sandbox repo.** List them: `gh api repos/$SHIP_E2E_SANDBOX_REPO/branches --jq '.[].name' | grep -E '^(cloud-l3|live-e2e|tower/cloud)'`. Delete: `gh api -X DELETE repos/$SHIP_E2E_SANDBOX_REPO/git/refs/heads/<branch>`.
-- **Open PRs on the sandbox.** `gh pr list --repo $SHIP_E2E_SANDBOX_REPO`; close with `gh pr close <n> --delete-branch`.
+- **Open PRs on the sandbox.** `gh pr list --repo $SHIP_E2E_SANDBOX_REPO`; close with `gh pr close <n> --repo $SHIP_E2E_SANDBOX_REPO --delete-branch` (the `--repo` flag is required — without it `gh` targets the current repo and may close an unrelated PR or fail outright).
 - **Orphan cloud agents.** `Agent.list({ runtime: "cloud" })` from a node REPL with `CURSOR_API_KEY` set, or via `cursor.com/dashboard/agents`. Archive/delete from the dashboard or via `Agent.archive(...)`.
 - **Local tmpdirs.** Each spawn uses `mkdtempSync(tmpdir(), "ship-...-")`. Most are cleaned in `finally`, but a crashed run can leave them under `$TMPDIR/ship-*` (Windows: `%TEMP%`).
 
@@ -183,10 +183,13 @@ Every scenario tries to clean up its own artifacts in `finally`. Failures can le
 
 Rough costs per full L4+cloud sweep:
 
-- ~5-6 cursor credits (2 local + 3 cloud; cloud credits count heavier)
-- 3-4 PRs on the sandbox (auto-closed)
-- 5-7 branches pushed and deleted
-- ~15-20 min wall
+- ~11 cursor credits (8 local + 3 cloud; cloud credits count heavier)
+  - L3 local: 2 (hello-world + subagent-invocation, 1 ship each)
+  - L4 open_pr: ~6 (open-pr + idempotent + 3× failure-paths + ship-then-open-pr + partial cancel-live-ship)
+  - L3 cloud: 3 (cloud-happy-path + cloud-auto-create-pr-false + partial cloud-cancel-during-creating)
+- 4-6 PRs on the sandbox (auto-closed)
+- 8-10 branches pushed and deleted
+- ~20-25 min wall
 
 If you're iterating on a single scenario, run just that one via the path-suffix arg shown above. The full sweep is for "before merge of a major cursor-runner / open-pr change" verification.
 
