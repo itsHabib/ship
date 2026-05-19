@@ -158,7 +158,7 @@ mcp__tower__add_worktree         # isolate: own branch + dir under .worktrees/
 (write the spec doc inside the worktree, commit, push)
        │
        ▼
-mcp__ship__ship { workdir, docPath, branch }    # dispatch cursor against the spec
+mcp__ship__ship { workdir, docPath, repo, branch }    # dispatch cursor against the spec
        │     │
        │     └─ /work-driver coordinates the rest if multiple streams:
        │        poll → land → PR → review cycles → merge → cleanup
