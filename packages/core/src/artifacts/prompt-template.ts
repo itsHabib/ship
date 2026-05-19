@@ -51,6 +51,7 @@ export function renderImplementationPrompt(input: RenderImplementationPromptInpu
     "   - `task` with subagent_type `test-author` — only if you added new exported code without matching tests.",
     "   - `task` with subagent_type `validator` — confirm `make check` (or the repo's equivalent) is green.",
     "   Skip any that don't apply (e.g. test-author on a docs-only change). If the `task` tool's subagent_type enum only lists `generalPurpose | cursor-guide | best-of-n-runner` (no repo-registered subagents), skip this rule entirely and note the gap in the structured summary's blockers section.",
+    "   If any subagent returned a P0 or P1 finding, address it in the code, then make a new second commit (not `--amend`) with a `fix(...)` or `refactor(...)` prefix and `Co-authored-by: Cursor <cursoragent@cursor.com>`. Multiple commits per run are expected and fine — the follow-up commit should be separately reviewable. Surface P2/P3 findings in the structured summary's risks section instead.",
     "   If `task` returns an error for an invocation you did attempt, write `task-error: <verbatim error message>` in the blockers section — do NOT fabricate subagent output.",
     "9. At the end, produce a structured summary as the last assistant message:",
     "   - Files changed (paths)",
