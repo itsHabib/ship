@@ -30,14 +30,14 @@ Subagents live in `.cursor/agents/`. See [docs/features/ship-v2/phases/03-subage
 - Ship owns workflow state, persistence, and the MCP surface above the other two.
 - inspired by lessons learned from ../orchestra ../cortex
 
+> **Per-feature phase-doc convention** (ship-specific, lives outside the dev-workbench block on purpose so `/dev-workbench` re-runs don't overwrite it): every dossier task that fires `ship.ship` must have a `docs/features/<feature>/phases/<NN>-<slug>.md` written first, with Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation-plan. The dossier task body is a registry pointer; the phase doc is the contract. See "## Session workflow" below.
+
 <!-- BEGIN dev-workbench (managed by /dev-workbench skill — re-run to refresh; hand-edits inside this block will be overwritten) -->
 ## Dev workbench
 
 Several MCP servers + skills are available in any Claude session on this machine — the dev-workflow infrastructure built across the portfolio. **This is ship — the workflow-execution plane itself** — so the ship verbs are the most directly relevant when working in this repo, but dossier (project memory) and tower (worktrees) are part of the same workbench. When the signal matches, **just call the verb**. Don't ask permission.
 
 Dogfood reality: ship runs cursor against ship's own task docs when iterating on ship-the-codebase — every PR shipped here passes through `mcp__ship__ship` at least once.
-
-> **Per-feature phase-doc convention** (ship-specific, lives outside this section): every dossier task that fires `ship.ship` must have a `docs/features/<feature>/phases/<NN>-<slug>.md` written first, with Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation-plan. The dossier task body is a registry pointer; the phase doc is the contract. See "## Session workflow" below.
 
 ### dossier — project memory
 
@@ -149,16 +149,16 @@ Takes a list of dossier tasks (or a phase slug) and emits one spec doc per task 
 A typical end-to-end flow when working on any portfolio repo:
 
 ```
-dossier.task_create        # plan: discrete shippable unit
+mcp__dossier__task_create        # plan: discrete shippable unit
        │
        ▼
-tower.add_worktree         # isolate: own branch + dir under .worktrees/
+mcp__tower__add_worktree         # isolate: own branch + dir under .worktrees/
        │
        ▼
 (write the spec doc inside the worktree, commit, push)
        │
        ▼
-ship.ship { workdir, docPath, branch }    # dispatch cursor against the spec
+mcp__ship__ship { workdir, docPath, branch }    # dispatch cursor against the spec
        │     │
        │     └─ /work-driver coordinates the rest if multiple streams:
        │        poll → land → PR → review cycles → merge → cleanup
@@ -169,10 +169,10 @@ gh pr create + request reviewers (Copilot + @codex + @claude)
 gh pr merge --squash --admin --delete-branch     # remote-only delete
        │
        ▼
-dossier.task_complete + dossier.artifact_link { kind: "commit", ref }
+mcp__dossier__task_complete + mcp__dossier__artifact_link { kind: "commit", ref }
        │
        ▼
-tower.remove_worktree { force: true }            # local cleanup
+mcp__tower__remove_worktree { force: true }      # local cleanup
 ```
 
 Steps 3-7 of this loop are exactly what `/work-driver` automates when you fan multiple streams in parallel.
@@ -189,7 +189,7 @@ Not every flow uses every tool. A one-off CLI fix can skip dossier; an existing-
 When to use what during a feature session — extends "The loop" above:
 
 - **Design phase (no Ship).** When the phase doc IS the deliverable (design-only PR), Ship doesn't fire — the doc is written in chat / by hand inside the worktree and reviewed inline (per the operator's `feedback_design_doc_inline.md` memory entry: design docs skip the formal reviewer-cycle ceremony of impl PRs). One PR with light review expectations.
-- **Impl phase (work-driver pattern).** When the phase doc is the INPUT — `ship.ship { workdir, docPath, repo, branch }` produces the implementation. The same driver pattern handles one stream or N parallel: fast-forward or rebase each worktree to `origin/main`, fire `ship.ship` per stream, poll terminal, commit + push (cursor doesn't auto-commit), open PR, coordinate review cycles per "Shipping Features" below, merge in dep order. Invoke `/work-driver` to load the codified steps — single-stream runs use the same loop with the merge-order step trivially no-op.
+- **Impl phase (work-driver pattern).** When the phase doc is the INPUT — `mcp__ship__ship { workdir, docPath, repo, branch }` produces the implementation. The same driver pattern handles one stream or N parallel: fast-forward or rebase each worktree to `origin/main`, fire `mcp__ship__ship` per stream, poll terminal, commit + push (cursor doesn't auto-commit), open PR, coordinate review cycles per "Shipping Features" below, merge in dep order. Invoke `/work-driver` to load the codified steps — single-stream runs use the same loop with the merge-order step trivially no-op.
 - **One-off fixes (skip the workbench).** A typo, doc-drift, quick chip — direct commit on a short-lived branch. No Dossier, no Ship.
 
 If you maintain a work-driver friction log (operator-specific corpus, e.g. `pers/work-driver.md` outside this repo), append at least one entry per session. The log is the source corpus for skill iteration and `pers/mcp-workstation/` tool POCs; contributors without that corpus can skip this step.
