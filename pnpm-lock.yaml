@@ -41,6 +41,9 @@ importers:
 
   e2e:
     dependencies:
+      '@cursor/sdk':
+        specifier: 1.0.12
+        version: 1.0.12
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
         version: 1.29.0(zod@4.4.3)
