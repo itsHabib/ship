@@ -85,20 +85,19 @@ Scenarios skip cleanly (via `describe.skipIf(...)`) when their gates aren't set 
 
 ## Running the suite
 
-The e2e config (`e2e/vitest.e2e.config.ts`) excludes `e2e/**` from the default `vitest run` (so `make check` never sees them). To run them, point vitest at the e2e config explicitly:
+The e2e config (`e2e/vitest.e2e.config.ts`) excludes `e2e/**` from the default `vitest run` (so `make check` never sees them). To run them, point vitest at the e2e config explicitly (from the repo root):
 
 ```sh
-cd e2e
-pnpm exec vitest run --config vitest.e2e.config.ts
+pnpm exec vitest run --config e2e/vitest.e2e.config.ts
 ```
 
 Or run a single scenario:
 
 ```sh
-pnpm exec vitest run --config vitest.e2e.config.ts scenarios/cloud-happy-path.e2e.test.ts
+pnpm exec vitest run --config e2e/vitest.e2e.config.ts e2e/scenarios/cloud-happy-path.e2e.test.ts
 ```
 
-The 5-minute `testTimeout` in the e2e config covers the slowest scenarios (live cancel + 120s predicate waits).
+The 5-minute `testTimeout` in the e2e config covers the slowest scenarios (live cancel + 120s predicate waits). All commands below assume the repo root as cwd.
 
 ### Run the local-cursor L3 suite (~3 min, 1 cursor credit)
 
@@ -119,14 +118,14 @@ export SHIP_LIVE=1
 export CURSOR_API_KEY=cur_...
 export GITHUB_TOKEN=ghp_...
 export SHIP_E2E_SANDBOX_REPO=owner/your-sandbox
-pnpm exec vitest run --config e2e/vitest.e2e.config.ts open-pr ship-then-open-pr idempotent-open-pr cancel-live-ship
+pnpm exec vitest run --config e2e/vitest.e2e.config.ts open-pr ship-then-open-pr cancel-live-ship
 ```
 
-Covers:
+The `open-pr` substring filter matches every `e2e/scenarios/*open-pr*.e2e.test.ts` — namely `open-pr.e2e.test.ts`, `idempotent-open-pr.e2e.test.ts`, and `open-pr-failure-paths.e2e.test.ts`. Covers:
 - `open-pr.e2e.test.ts` — ship → open_pr → PR exists on sandbox
-- `ship-then-open-pr.e2e.test.ts` — sequencing
 - `idempotent-open-pr.e2e.test.ts` — re-invoke open_pr is a no-op
 - `open-pr-failure-paths.e2e.test.ts` — bad-state rejection (workdir not git, branch empty, etc.)
+- `ship-then-open-pr.e2e.test.ts` — sequencing
 - `cancel-live-ship.e2e.test.ts` — cancel an in-flight run, assert terminal `cancelled`
 
 ### Run the cloud L3 suite (~5-10 min, 3 cursor cloud credits + 3 GitHub branches)
@@ -206,5 +205,4 @@ Naming convention: `<feature-or-flow>.e2e.test.ts`. Add a gate combination that'
 - Shared L4 helpers: [`e2e/scenarios/live-open-pr-helpers.ts`](../e2e/scenarios/live-open-pr-helpers.ts)
 - Shared cloud helpers: [`e2e/scenarios/cloud-e2e-helpers.ts`](../e2e/scenarios/cloud-e2e-helpers.ts)
 - Event tailer (real-time agent output during a live run): [`e2e/scenarios/event-tailer.ts`](../e2e/scenarios/event-tailer.ts)
-- Phase 09 (the original live-e2e impl): [`docs/features/ship-v1/phases/09-live-e2e.md`](features/ship-v1/phases/09-live-e2e.md) (if present)
 - Phase 04 § Validation L3 (the cloud scenarios this doc is principally about): [`docs/features/ship-v2/phases/04-cursor-cloud-runner.md`](features/ship-v2/phases/04-cursor-cloud-runner.md)
