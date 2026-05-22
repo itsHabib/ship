@@ -23,7 +23,7 @@ Files this phase touches (cumulative; per-PR file lists in § Implementation pla
 - `packages/cursor-runner/src/_shared.ts` — `mapTerminalResult` signature widen (PR2).
 - `packages/cursor-runner/src/runner.ts` — `CursorRunResult.warnings` (PR2).
 - `packages/cursor-runner/src/debug.ts` (NEW, PR1) — env-var-gated stderr logger.
-- `e2e/scenarios/cloud-e2e-helpers.ts` + 5 sister files — URL sweep `agent-sandbox` → `agent-sandbox`.
+- `e2e/scenarios/cloud-e2e-helpers.ts` + sister references — **sandbox URL sweep** to canonical `https://github.com/itsHabib/agent-sandbox` (replacing the stale default that no longer exists upstream).
 - `e2e/scenarios/cloud-happy-path.e2e.test.ts` + `cloud-auto-create-pr-false.e2e.test.ts` — PR2 regression-guard assertions.
 - Test churn: ~30 references for PR1, ~17 for PR2 across `packages/cli/test/`, `packages/core/src/`, `packages/cursor-runner/`, `packages/mcp/src/`, `packages/workflow/src/`.
 
@@ -66,7 +66,7 @@ Empty warnings field is omitted entirely (no zero-value array in persisted JSON)
 
 ### F4 — Sandbox URL alignment
 
-`CLOUD_SANDBOX_REPO_URL` in `e2e/scenarios/cloud-e2e-helpers.ts` and 5 sister references update from `agent-sandbox` (doesn't exist) to `agent-sandbox` (does exist). Verified via gh API earlier this session.
+`CLOUD_SANDBOX_REPO_URL` in `e2e/scenarios/cloud-e2e-helpers.ts` and the five onboarding / helper touchpoints called out in PR1 now point at **`itsHabib/agent-sandbox`**, which matches the live GitHub sandbox the operator provisioned (the previous hyphenated repo name was fictional and broke cloud L3).
 
 ### F5 — L3 cloud regression-guard against silent "pushed to main" (PR2)
 
@@ -175,7 +175,7 @@ No `Impl` suffix in symbol names. No `And`/`Or` in function names. Comments `//`
 5. Verify `packages/workflow/src/workflow.ts` `modelSelectionSchema` accepts the freeform shape (likely no change).
 6. Create `packages/cursor-runner/src/debug.ts` with `cloudDebugLog(label, payload)`. Env-var-gated per F2; safety invariant per ED-3.
 7. Add 2 call sites in `packages/cursor-runner/src/cloud-runner.ts`: before `Agent.create` (line ~101) log `{cloud, model}`; inside `mapTerminalResult` in `_shared.ts` (line ~18) log `result.git`.
-8. URL sweep — replace `agent-sandbox` with `agent-sandbox` in 6 files (see § Scope).
+8. URL sweep — normalize every tracked helper/doc reference enumerated in § F4 of the PR1 execution plan to **`itsHabib/agent-sandbox`**, plus remove any leftover references to the legacy hyphenated sandbox segment (\`ship\` + \`-live-\` + \`sandbox\`).
 9. Update tests across the 8 affected test files (~30 references). Most mechanical (sed-equivalent). New: 3 logger tests (env-var on/off, apiKey absence).
 10. `pnpm run check`. `pnpm run coverage`.
 11. Commit as `feat(cloud): drop thinking abstraction + add SHIP_CLOUD_DEBUG logger + URL sweep (phase 06 PR1)` with the Cursor co-author trailer.

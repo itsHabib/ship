@@ -18,7 +18,7 @@ Date: 2026-05-21
 - `packages/cursor-runner/src/debug.ts` — NEW; env-var-gated stderr logger.
 - `packages/cursor-runner/src/cloud-runner.ts` — 2 debug log call sites; verify no other changes needed.
 - `packages/cursor-runner/src/_shared.ts` — 1 debug log call site in `mapTerminalResult`.
-- `e2e/scenarios/cloud-e2e-helpers.ts` + 5 sister files — URL sweep `agent-sandbox` → `agent-sandbox`.
+- `e2e/scenarios/cloud-e2e-helpers.ts` + 5 sister files + related cloud CLI spawns — **sandbox URL sweep** to canonical `https://github.com/itsHabib/agent-sandbox` (replacing stale `CLOUD_SANDBOX_REPO_URL` / doc examples).
 - Test churn (~30 references) across `packages/cli/test/ship-command.test.ts`, `packages/core/src/default-wiring.test.ts`, `packages/core/src/service.test.ts`, `packages/cursor-runner/src/local-runner.test.ts`, `packages/cursor-runner/src/model-selection-compat.test.ts`, `packages/cursor-runner/test/cloud-runner.test.ts`, `packages/mcp/src/mcp.test.ts`, `packages/workflow/src/workflow.test.ts`.
 
 ## Functional requirements
@@ -138,7 +138,9 @@ export function mapTerminalResult(
 
 ### F4 — Sandbox URL alignment
 
-Replace `agent-sandbox` with `agent-sandbox` in exactly these 6 files (verified via grep). Mechanical sed-equivalent; no semantic changes:
+Point every enumerated helper / doc reference at **`itsHabib/agent-sandbox`** (HTTPS URL + owner/repo prose). Mechanical copy-edit; no behavioral change to Ship beyond the corrected default URL constant.
+
+Listed paths (six):
 
 - `e2e/scenarios/cloud-e2e-helpers.ts`
 - `e2e/scenarios/live-open-pr-helpers.ts`
@@ -147,7 +149,9 @@ Replace `agent-sandbox` with `agent-sandbox` in exactly these 6 files (verified 
 - `docs/features/qe-sdet/phases/01-l4-expansion-and-bug-smash.md`
 - `docs/features/ship-v2/phases/02-open-pr.md`
 
-Run `grep -r "agent-sandbox" .` after the sweep — expect zero matches outside `node_modules` and `.git`.
+Post-merge audit: the tree must not retain the **legacy** sandbox slug spelled by concatenating `ship`, `-live-`, and `sandbox` into one repo segment (the hyphenated name that preceded this PR). Search the workspace excluding `node_modules` / `.git` — expect zero contiguous matches for that obsolete segment.
+
+CLI-spawned cloud scenarios updated in-repo for `--model-param` parity (replacing `--thinking`) ship in the same PR even when not listed explicitly above — same mechanical alignment pass.
 
 ## Tradeoffs
 
@@ -190,7 +194,7 @@ Out of scope (it's a PR2 / phase-doc-out-of-scope concern). PR1 leaves the helpe
 - `make check` green (typecheck + lint + format + unit tests).
 - `pnpm run coverage` green (per-package thresholds hold).
 - Manual probe: render `mcp__ship__ship` schema (via the MCP introspection path or by reading the generated schema doc) — confirm `thinking` field is gone and `modelParams` field is present.
-- Manual probe: `grep -r "agent-sandbox" .` (excluding `node_modules`, `.git`) returns zero matches.
+- Manual probe: search the checkout (excluding `node_modules`, `.git`) for the **legacy** hyphenated sandbox repo segment assembled from `ship` + `-live-` + `sandbox`; expect zero contiguous matches post-PR.
 - Manual probe: `grep -r "PRODUCTION_DEFAULT_THINKING" packages/` returns zero matches.
 - Manual probe: `grep -r "thinkingEffortSchema\|ThinkingEffort\|thinkingParam\|mergeThinkingParam" packages/` returns zero matches (these symbols are gone).
 
@@ -202,7 +206,7 @@ Out of scope (it's a PR2 / phase-doc-out-of-scope concern). PR1 leaves the helpe
 | `defaultThinking` opt in `DefaultShipServiceOpts` had downstream callers I missed | Grep for `defaultThinking` across the repo; if any e2e harness still passes it, replace with a `defaultModel` override or drop entirely. |
 | `--model-param fast=true` parses `"true"` as a string, but cursor expects literal boolean for some call sites | Per ED-3, the schema accepts both; the resolver passes through. If a runtime conflict surfaces, PR2 (or a chip) tightens. |
 | Logger fires during a unit test that didn't expect stderr noise | Tests run with `SHIP_CLOUD_DEBUG` unset by default; gate is strict `=== "1"`. New logger tests explicitly flip the env. |
-| URL sweep misses a hidden ref (e.g. inside a markdown code block) | `grep -r "agent-sandbox" .` post-sweep is the final gate; zero matches is acceptance. |
+| URL sweep misses a hidden ref (e.g. inside a markdown code block) | Re-run repo-wide search for the legacy hyphenated sandbox segment (\`ship\` + \`-live-\` + \`sandbox\`); acceptance is zero contiguous occurrences outside archival history. |
 
 ## Out of scope
 
@@ -233,8 +237,7 @@ Out of scope (it's a PR2 / phase-doc-out-of-scope concern). PR1 leaves the helpe
    - Add unit tests in `cloud-runner.test.ts`: env-var-on emits 2 lines; env-var-off emits 0 lines; `apiKey` absence from output.
 
 5. **URL sweep.**
-   - sed-equivalent replace `agent-sandbox` with `agent-sandbox` across the 6 files in F4.
-   - Confirm zero matches post-sweep.
+   - Rewrite the tracked helpers + onboarding docs enumerated in F4 to `itsHabib/agent-sandbox`, then grep the checkout for the legacy hyphenated sandbox segment (\`ship\` + \`-live-\` + \`sandbox\`) with vendor dirs excluded—expect zero matches after PR1 merges.
 
 6. **Test churn.**
    - Walk the 8 affected test files in dependency order (mcp → workflow → core → cursor-runner → cli). Most updates are mechanical (`thinking: "high"` → equivalent `modelParams` array; `composer-2` → `composer-2.5` where literal-pinned). A handful need behavioral rewrites (resolveModelSelection tests).
