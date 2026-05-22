@@ -7,7 +7,7 @@ import type { AgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor
 import { Agent, IntegrationNotConnectedError } from "@cursor/sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import type { CloudRunSpec } from "../src/runner.js";
+import type { CloudRunSpec, CursorRunInput } from "../src/runner.js";
 
 import { CloudCursorRunner } from "../src/cloud-runner.js";
 import {
@@ -781,6 +781,38 @@ describe("CloudCursorRunner — SHIP_CLOUD_DEBUG diagnostics", () => {
       expect(out.toLowerCase()).not.toContain("apikey");
       expect(out.includes("cur_cloud")).toBe(false);
       expect(out.includes("crsr_")).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("debug payload redacts cloud.envVars VALUES but keeps KEYS for diagnostic visibility", async () => {
+    vi.stubEnv("SHIP_CLOUD_DEBUG", "1");
+    vi.stubEnv("CURSOR_API_KEY", "test-key");
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { run } = makeMockRun({});
+      const { agent } = makeMockAgent({ run });
+      vi.mocked(Agent.create).mockResolvedValue(agent);
+
+      const inputWithSecret = {
+        ...cloudBaseInput(),
+        cloud: {
+          repos: [{ url: "https://github.com/owner/repo" }],
+          envVars: { MY_SECRET_TOKEN: "ghp_actual_secret_value_xyz" },
+        },
+      } as CursorRunInput;
+
+      const runner = new CloudCursorRunner();
+      const handle = await runner.run(inputWithSecret);
+      await handle.result;
+
+      const out = stderrSpyConcat(spy);
+      // KEY name is visible for diagnostics.
+      expect(out).toContain("MY_SECRET_TOKEN");
+      // VALUE is redacted — the literal secret never reaches stderr.
+      expect(out).not.toContain("ghp_actual_secret_value_xyz");
+      expect(out).toContain("[redacted]");
     } finally {
       spy.mockRestore();
     }

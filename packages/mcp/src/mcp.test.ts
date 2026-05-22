@@ -139,6 +139,36 @@ describe("shipInputSchema", () => {
     ).toBe(false);
   });
 
+  test("rejects modelParams rows with empty id or empty string value at the MCP boundary", () => {
+    // Without this guard, downstream `modelParameterValueSchema` (.min(1))
+    // would convert a caller input error into a mid-run StoreSchemaError.
+    expect(
+      shipInputSchema.safeParse({
+        workdir: "/w",
+        repo: "ship",
+        docPath: "x",
+        modelParams: [{ id: "", value: "high" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      shipInputSchema.safeParse({
+        workdir: "/w",
+        repo: "ship",
+        docPath: "x",
+        modelParams: [{ id: "fast", value: "" }],
+      }).success,
+    ).toBe(false);
+    // Boolean false is a legitimate value (composer-2.5 takes fast: false).
+    expect(
+      shipInputSchema.safeParse({
+        workdir: "/w",
+        repo: "ship",
+        docPath: "x",
+        modelParams: [{ id: "fast", value: false }],
+      }).success,
+    ).toBe(true);
+  });
+
   test("rejects unknown keys", () => {
     expect(
       shipInputSchema.safeParse({

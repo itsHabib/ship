@@ -7,7 +7,6 @@ import type { RunResult } from "@cursor/sdk";
 
 import type { CursorRunInput, CursorRunResult } from "./runner.js";
 
-import { cloudDebugLog } from "./debug.js";
 /** Maps `RunResult` (SDK vocab) to `CursorRunResult` (Ship vocab) per ED-3. */
 export function mapRunResult(result: RunResult, input: CursorRunInput): CursorRunResult {
   if (result.status === "finished") return mapTerminalResult(result, "succeeded");
@@ -16,11 +15,12 @@ export function mapRunResult(result: RunResult, input: CursorRunInput): CursorRu
 }
 
 // Shared shape for finished / cancelled — same field set, different status tag.
+// Cloud-runner wraps this and emits the debug log itself; local-runner doesn't.
+// Keeping the debug call out of here preserves the SHIP_CLOUD_DEBUG-only intent.
 export function mapTerminalResult(
   result: RunResult,
   status: "succeeded" | "cancelled",
 ): CursorRunResult {
-  cloudDebugLog("mapTerminalResult result.git", result.git);
   return {
     branches: result.git?.branches ?? [],
     durationMs: result.durationMs ?? 0,

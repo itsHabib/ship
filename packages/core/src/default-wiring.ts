@@ -38,7 +38,11 @@ import { createShipService } from "./service.js";
 
 // Read from cursor's GET /v1/models catalog on 2026-05-21. composer-2.5 is
 // cursor's current default variant; `fast: true` is its isDefault param
-// shape. Update both when the catalog rotates.
+// shape. Update both when the catalog rotates. String form (rather than
+// boolean) — cursor's API accepts both, and string matches the SDK's typed
+// shape verbatim. parseModelParam produces boolean for `--model-param`
+// overrides; the path inconsistency is tracked as a deferred chip from
+// PR #59 cycle-1 review (P3).
 export const DEFAULT_MODEL: ModelSelection = {
   id: "composer-2.5",
   params: [{ id: "fast", value: "true" }],

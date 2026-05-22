@@ -31,8 +31,11 @@ export const phaseIdSchema = z.string().regex(PHASE_ID_PATTERN);
 
 const shipInputModelParamEntrySchema = z
   .object({
-    id: z.string(),
-    value: z.union([z.string(), z.boolean()]),
+    // Both fields require non-empty values to match the downstream
+    // modelParameterValueSchema (`.min(1)`). Without this, empty-string
+    // payloads pass MCP validation and fail later as a StoreSchemaError.
+    id: z.string().min(1),
+    value: z.union([z.string().min(1), z.boolean()]),
   })
   .strict();
 
