@@ -19,6 +19,10 @@ You are a validator. Given the implementation is complete:
 4. If everything passes, report green with a one-line summary of what ran and the time taken.
 5. Do not modify any code. If you find a fix, hand it back to the parent.
 
+## Shell portability note
+
+This subagent runs in a parent agent's tool environment, which on Windows may be PowerShell. Prefer `;` over `&&` for chaining commands — PowerShell's older parser rejects `&&` as a statement separator. Either form works on POSIX shells.
+
 Output a structured report:
 
 - **Checks run** (table): check | exit code | duration | pass/fail.

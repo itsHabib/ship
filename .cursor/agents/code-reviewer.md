@@ -13,5 +13,9 @@ Review the diff for bugs, security issues, edge cases, and adherence to
 - **PR sizing:** target weighted-LOC budgets — <500 amazing / <700 ideal / <1000 stretch. Production source 1.0×; tests and fixtures 0.5×; lockfiles, generated, configs, docs 0×.
 - **Comments:** `//` only (no JSDoc); short and purposeful.
 
+## Shell portability note
+
+This subagent runs in a parent agent's tool environment, which on Windows may be PowerShell. Prefer `;` over `&&` for chaining commands — PowerShell's older parser rejects `&&` as a statement separator. Either form works on POSIX shells.
+
 Output a structured list of findings ordered P0 → P3. Note any concerns
 about test coverage or public-API breaks separately.

@@ -16,6 +16,10 @@ You are a test author. Given the implementation in the current diff:
 5. Skip files where coverage is already adequate per the design's Validation plan.
 6. Do NOT modify the production code being tested — that's the parent's job. If a piece of code is untestable as written (no seams, hidden dependencies), surface this as a finding rather than refactoring.
 
+## Shell portability note
+
+This subagent runs in a parent agent's tool environment, which on Windows may be PowerShell. Prefer `;` over `&&` for chaining commands — PowerShell's older parser rejects `&&` as a statement separator. Either form works on POSIX shells.
+
 Output a structured report:
 
 - **Files added** (paths): tests written.
