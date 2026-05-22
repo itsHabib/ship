@@ -5,8 +5,9 @@ import type { RunResult } from "@cursor/sdk";
 import { describe, expect, test } from "vitest";
 
 import type { CloudRunSpec } from "./runner.js";
+import type { CursorRunInput } from "./runner.js";
 
-import { deriveCloudWarnings, mapTerminalResult } from "./_shared.js";
+import { deriveCloudWarnings, mapRunResult, mapTerminalResult } from "./_shared.js";
 
 const baseSpec = {
   repos: [{ url: "https://github.com/acme/sandbox" }],
@@ -70,5 +71,41 @@ describe("mapTerminalResult warnings field", () => {
       "autoCreatePR was requested but result.branches[0].prUrl is undefined",
       "a new branch was expected (workOnCurrentBranch !== true) but result.branches[0].branch is undefined",
     ]);
+  });
+
+  test("suppresses warnings on cancelled runs even with a diverging spec", () => {
+    // A cancelled run has no branch / no PR by construction — derivation
+    // would emit uniformly false-positive divergence warnings.
+    const result = {
+      git: { branches: [{ repoUrl: "github.com/acme/sandbox" }] },
+      status: "cancelled",
+    } as RunResult;
+    const spec = { ...baseSpec, autoCreatePR: true } as CloudRunSpec;
+    const mapped = mapTerminalResult(result, "cancelled", spec);
+    expect(mapped).not.toHaveProperty("warnings");
+    expect(mapped.status).toBe("cancelled");
+  });
+});
+
+describe("mapRunResult cloud-spec gating", () => {
+  test("local-style call (no third arg) does NOT derive warnings even when input.cloud is set", () => {
+    // Regression guard: a CursorRunInput with a stray .cloud field handed to
+    // the local runtime must not surface cloud-divergence warnings on the
+    // persisted local result.
+    const result = {
+      durationMs: 50,
+      git: { branches: [{ repoUrl: "github.com/acme/sandbox" }] },
+      status: "finished",
+    } as RunResult;
+    const input = {
+      cloud: { autoCreatePR: true, repos: [{ url: "https://github.com/acme/sandbox" }] },
+      cwd: "/tmp",
+      model: { id: "composer-2.5" },
+      onEvent: () => undefined,
+      prompt: "noop",
+      runtime: "local",
+    } as unknown as CursorRunInput;
+    const mapped = mapRunResult(result, input);
+    expect(mapped).not.toHaveProperty("warnings");
   });
 });

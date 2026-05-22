@@ -7,15 +7,18 @@ import type { RunResult } from "@cursor/sdk";
 
 import type { CloudRunSpec, CursorRunInput, CursorRunResult } from "./runner.js";
 
-/** Maps `RunResult` (SDK vocab) to `CursorRunResult` (Ship vocab) per ED-3. */
+// Cloud spec is forwarded by the cloud runner only — local-runner deliberately
+// omits it so a `CursorRunInput.cloud` carried by a local-runtime caller never
+// triggers cloud-divergence warnings on the persisted result.
 export function mapRunResult(
   result: RunResult,
   input: CursorRunInput,
   requestedCloudSpec?: CloudRunSpec,
 ): CursorRunResult {
-  const spec = requestedCloudSpec ?? input.cloud;
-  if (result.status === "finished") return mapTerminalResult(result, "succeeded", spec);
-  if (result.status === "cancelled") return mapTerminalResult(result, "cancelled", spec);
+  if (result.status === "finished")
+    return mapTerminalResult(result, "succeeded", requestedCloudSpec);
+  if (result.status === "cancelled")
+    return mapTerminalResult(result, "cancelled", requestedCloudSpec);
   return mapErrorResult(result, input);
 }
 
@@ -69,7 +72,10 @@ export function mapTerminalResult(
   status: "succeeded" | "cancelled",
   requestedCloudSpec?: CloudRunSpec,
 ): CursorRunResult {
-  const warnings = deriveCloudWarnings(requestedCloudSpec, result);
+  // Cancelled runs are noisy by construction — no branch / no PR is expected,
+  // so the divergence warnings would be uniformly false-positive. Only derive
+  // warnings on succeeded terminal state.
+  const warnings = status === "succeeded" ? deriveCloudWarnings(requestedCloudSpec, result) : [];
   return {
     branches: result.git?.branches ?? [],
     ...(warnings.length > 0 && { warnings }),
