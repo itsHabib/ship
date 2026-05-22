@@ -54,7 +54,7 @@ describe("createDefaultShipService", () => {
     expect(typeof factory).toBe("function");
   });
 
-  test("pins the wiring-level Cursor `thinking` param to `high` by default", async () => {
+  test("pins DEFAULT_MODEL wiring (composer-2.5 + fast=true)", async () => {
     const { service, cursor } = setupHarness();
     cursor.enqueue({
       events: [],
@@ -65,13 +65,15 @@ describe("createDefaultShipService", () => {
     await service.ship({ workdir, repo: "ship", docPath: "docs.md" });
 
     expect(cursor.calls[0]?.input.model).toEqual({
-      id: "composer-2",
-      params: [{ id: "thinking", value: "high" }],
+      id: "composer-2.5",
+      params: [{ id: "fast", value: "true" }],
     });
   });
 
-  test("opts.defaultThinking overrides the wiring-level `thinking` default", async () => {
-    const { service, cursor } = setupHarness({ defaultThinking: "low" });
+  test("opts.defaultModel overrides DEFAULT_MODEL wholesale", async () => {
+    const { service, cursor } = setupHarness({
+      defaultModel: { id: "cheap-model-x", params: [{ id: "fast", value: false }] },
+    });
     cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
@@ -81,8 +83,8 @@ describe("createDefaultShipService", () => {
     await service.ship({ workdir, repo: "ship", docPath: "docs.md" });
 
     expect(cursor.calls[0]?.input.model).toEqual({
-      id: "composer-2",
-      params: [{ id: "thinking", value: "low" }],
+      id: "cheap-model-x",
+      params: [{ id: "fast", value: false }],
     });
   });
 
@@ -187,20 +189,20 @@ describe("createDefaultOpenPrService", () => {
 });
 
 function setupHarness(opts?: {
-  defaultThinking?: "low" | "high";
+  defaultModel?: ModelSelection;
   defaultModelId?: string;
   defaultModelParams?: NonNullable<ModelSelection["params"]>;
 }): {
   service: ReturnType<ReturnType<typeof createDefaultShipService>>;
   cursor: FakeCursorRunner;
 } {
-  const tmp = mkdtempSync(join(tmpdir(), "ship-wiring-thinking-"));
+  const tmp = mkdtempSync(join(tmpdir(), "ship-wiring-default-model-"));
   const cursor = new FakeCursorRunner();
   const factory = createDefaultShipService({
     dbPath: ":memory:",
     runsDir: join(tmp, "runs"),
     cursor,
-    ...(opts?.defaultThinking !== undefined && { defaultThinking: opts.defaultThinking }),
+    ...(opts?.defaultModel !== undefined && { defaultModel: opts.defaultModel }),
     ...(opts?.defaultModelId !== undefined && { defaultModelId: opts.defaultModelId }),
     ...(opts?.defaultModelParams !== undefined && { defaultModelParams: opts.defaultModelParams }),
   });

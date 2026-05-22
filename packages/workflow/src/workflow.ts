@@ -71,7 +71,7 @@ export type CursorRunRuntime = z.infer<typeof cursorRunRuntimeSchema>;
 const modelParameterValueSchema = z
   .object({
     id: z.string().min(1),
-    value: z.string().min(1),
+    value: z.union([z.string().min(1), z.boolean()]),
   })
   .strict();
 

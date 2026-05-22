@@ -44,7 +44,7 @@ SHIP_LIVE=1 CURSOR_API_KEY=... GITHUB_TOKEN=... SHIP_E2E_SANDBOX_REPO=owner/sand
 
 Per phase doc / CLAUDE.md PR sizing: Ship does **not** provision the sandbox. The operator:
 
-1. Creates an empty GitHub repo (e.g. `itsHabib/ship-live-sandbox`).
+1. Creates an empty GitHub repo (e.g. `itsHabib/agent-sandbox`).
 2. Disables branch protection on `main` (L4 force-pushes fixture `main`).
 3. **Disables GitHub Actions** on the repo (Settings → Actions) so pushes don’t burn workflow quota.
 4. Ensures `GITHUB_TOKEN` can **force-push** to `main` and create PRs from `tower/live-e2e-*` branches.

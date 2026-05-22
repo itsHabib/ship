@@ -15,6 +15,8 @@ export function mapRunResult(result: RunResult, input: CursorRunInput): CursorRu
 }
 
 // Shared shape for finished / cancelled — same field set, different status tag.
+// Cloud-runner wraps this and emits the debug log itself; local-runner doesn't.
+// Keeping the debug call out of here preserves the SHIP_CLOUD_DEBUG-only intent.
 export function mapTerminalResult(
   result: RunResult,
   status: "succeeded" | "cancelled",

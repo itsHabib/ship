@@ -19,7 +19,6 @@ export {
   shipInputSchema,
   shipOutputSchema,
   shipStartOutputSchema,
-  thinkingEffortSchema,
 } from "./mcp.js";
 
 export type {
@@ -35,5 +34,4 @@ export type {
   ShipInput,
   ShipOutput,
   ShipStartOutput,
-  ThinkingEffort,
 } from "./mcp.js";

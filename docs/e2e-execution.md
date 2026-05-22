@@ -56,10 +56,10 @@ A throwaway GitHub repo where the e2e suite pushes branches and opens PRs. Requi
 Set the slug in env:
 
 ```sh
-export SHIP_E2E_SANDBOX_REPO=itsHabib/ship-live-sandbox  # owner/repo, no protocol
+export SHIP_E2E_SANDBOX_REPO=itsHabib/agent-sandbox  # owner/repo, no protocol
 ```
 
-The cloud L3 scenarios currently hardcode `https://github.com/itsHabib/ship-live-sandbox` (in `e2e/scenarios/cloud-e2e-helpers.ts` — `CLOUD_SANDBOX_REPO_URL`). Update that constant for your sandbox or run against the operator's.
+The cloud L3 scenarios currently hardcode `https://github.com/itsHabib/agent-sandbox` (in `e2e/scenarios/cloud-e2e-helpers.ts` — `CLOUD_SANDBOX_REPO_URL`). Update that constant for your sandbox or run against the operator's.
 
 ### 4. `gh` CLI
 

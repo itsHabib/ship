@@ -29,16 +29,15 @@ export const phaseIdSchema = z.string().regex(PHASE_ID_PATTERN);
 // ship
 // =====================================================================
 
-/**
- * Allowed values for the `thinking` Cursor model parameter. Narrow enum
- * (not the broader `ModelSelection.params` array) — exposing one knob at
- * a time keeps Ship's surface insulated from churn in Cursor's parameter
- * grid. Per `cursor.com/docs/sdk/typescript`, omitting the param means
- * "use whatever `isDefault` is set on the server today"; pinning the
- * value at this layer prevents silent shifts across Cursor releases.
- */
-export const thinkingEffortSchema = z.enum(["low", "high"]);
-export type ThinkingEffort = z.infer<typeof thinkingEffortSchema>;
+const shipInputModelParamEntrySchema = z
+  .object({
+    // Both fields require non-empty values to match the downstream
+    // modelParameterValueSchema (`.min(1)`). Without this, empty-string
+    // payloads pass MCP validation and fail later as a StoreSchemaError.
+    id: z.string().min(1),
+    value: z.union([z.string().min(1), z.boolean()]),
+  })
+  .strict();
 
 /**
  * Cloud-agent config — structural twin of `CloudRunSpec` in `@ship/cursor-runner`.
@@ -82,12 +81,7 @@ export const shipInputSchema = z
     baseRef: z.string().min(1).optional(),
     branch: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
-    /**
-     * Override for the Cursor `thinking` model parameter. Omitted →
-     * fall back to the wiring-level default (`"high"` in production).
-     * E2E suites pass `"low"` to downshift cost / latency.
-     */
-    thinking: thinkingEffortSchema.optional(),
+    modelParams: z.array(shipInputModelParamEntrySchema).optional(),
     /**
      * Runtime selector. Defaults to `"local"` when omitted. `"cloud"` routes
      * to the configured `CloudCursorRunner`; `cloud` field below is required
@@ -244,8 +238,8 @@ export const openPrInputSchema = z
     title: z.string().min(1).optional(),
     body: z.string().optional(),
     // Optional with no schema-side default — the service treats absent
-    // as `false`. Matches the `ShipInput.thinking?: ThinkingEffort`
-    // pattern from V1 (service owns the fallback, not the schema).
+    // as `false`. Same pattern as `ShipInput.cloud` refinement (service
+    // owns the semantic default, not this schema layer).
     draft: z.boolean().optional(),
   })
   .strict();

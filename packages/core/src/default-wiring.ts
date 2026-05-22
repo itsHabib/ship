@@ -17,7 +17,6 @@
  */
 
 import type { CursorRunner } from "@ship/cursor-runner";
-import type { ThinkingEffort } from "@ship/mcp";
 import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
 
@@ -37,15 +36,25 @@ import { createNodeGitRemote } from "./git-remote.js";
 import { createOpenPrService } from "./open-pr.js";
 import { createShipService } from "./service.js";
 
-/**
- * Wiring-level fallback for the Cursor `thinking` parameter. Cursor's
- * SDK has no documented default — the server resolves `params: []` to
- * whichever `ModelVariant.isDefault` is set today, which can shift
- * silently across releases. Pinning to `"high"` keeps Ship's real
- * runs at the quality grid we measured against; tests / harnesses
- * downshift to `"low"` via `defaultThinking`.
- */
-const PRODUCTION_DEFAULT_THINKING: ThinkingEffort = "high";
+// Read from cursor's GET /v1/models catalog on 2026-05-21. composer-2.5 is
+// cursor's current default variant; `fast: true` is its isDefault param
+// shape. Update both when the catalog rotates. String form (rather than
+// boolean) — cursor's API accepts both, and string matches the SDK's typed
+// shape verbatim. parseModelParam produces boolean for `--model-param`
+// overrides; the path inconsistency is tracked as a deferred chip from
+// PR #59 cycle-1 review (P3).
+export const DEFAULT_MODEL: ModelSelection = {
+  id: "composer-2.5",
+  params: [{ id: "fast", value: "true" }],
+};
+
+function resolveConfiguredDefaultModel(opts: DefaultShipServiceOpts): ModelSelection {
+  if (opts.defaultModel !== undefined) return opts.defaultModel;
+  return {
+    id: opts.defaultModelId ?? DEFAULT_MODEL.id,
+    params: opts.defaultModelParams ?? DEFAULT_MODEL.params,
+  };
+}
 
 /** Construction-time options for the production-wired `ShipService`. */
 export interface DefaultShipServiceOpts {
@@ -53,22 +62,18 @@ export interface DefaultShipServiceOpts {
   readonly dbPath: string;
   /** Absolute path to the artifacts directory. */
   readonly runsDir: string;
+  /**
+   * Full default `ModelSelection` when set; ignores `defaultModelId` /
+   * `defaultModelParams`. Use in tests / harnesses to downshift cost.
+   */
+  readonly defaultModel?: ModelSelection;
   /** Default model id when `input.model` is omitted. */
   readonly defaultModelId?: string;
   /**
-   * Exact default model params. Use `[]` for a custom `defaultModelId`
-   * that does not support Cursor's `thinking` grid. When omitted,
-   * Ship pins `thinking` from `defaultThinking`.
+   * Exact default model params. Use `[]` for models that omit the
+   * default param grid entirely. When omitted, uses `DEFAULT_MODEL.params`.
    */
   readonly defaultModelParams?: NonNullable<ModelSelection["params"]>;
-  /**
-   * Wiring-level override for the default Cursor `thinking` param.
-   * Applies when a `ship` call omits `input.thinking`. Production
-   * omits this and gets `"high"`; e2e harnesses pass `"low"` to
-   * downshift cost / latency for the whole `ShipService` instance.
-   * Ignored when `defaultModelParams` is provided.
-   */
-  readonly defaultThinking?: ThinkingEffort;
   /**
    * Cursor runner override. Production omits this and gets the real
    * `LocalCursorRunner`; integration tests pass a `FakeCursorRunner`
@@ -152,9 +157,6 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     const cursor = opts.cursor ?? new LocalCursorRunner();
     const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
     const fs = createNodeShipFs();
-    const defaultModelParams = opts.defaultModelParams ?? [
-      { id: "thinking", value: opts.defaultThinking ?? PRODUCTION_DEFAULT_THINKING },
-    ];
     cached = createShipService({
       store: infra.store,
       fs,
@@ -162,10 +164,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
       activeRuns: infra.activeRuns,
       config: {
         runsDir: opts.runsDir,
-        defaultModel: {
-          id: opts.defaultModelId ?? "composer-2",
-          params: defaultModelParams,
-        },
+        defaultModel: resolveConfiguredDefaultModel(opts),
         cursor,
         cloudCursor,
       },

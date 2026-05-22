@@ -6,11 +6,11 @@
 
 import type {
   CloudAgentOptions,
-  ModelSelection,
   Run,
   RunResult,
   SDKAgent,
   SDKMessage,
+  ModelSelection as SdkModelSelection,
 } from "@cursor/sdk";
 
 import { Agent, IntegrationNotConnectedError } from "@cursor/sdk";
@@ -24,6 +24,7 @@ import type {
 } from "./runner.js";
 
 import { mapRunResult, mapTerminalResult } from "./_shared.js";
+import { cloudDebugLog } from "./debug.js";
 import {
   CursorCloudIntegrationError,
   CursorRunFailedError,
@@ -35,11 +36,15 @@ import {
 
 const API_KEY_ENV = "CURSOR_API_KEY";
 
-function modelArgFromInput(input: CursorRunInput): ModelSelection {
+function modelArgFromInput(input: CursorRunInput): SdkModelSelection {
+  // Cast needed because workflow's ModelSelection accepts both string and
+  // boolean param values (cursor's API takes both), but the SDK's
+  // SdkModelSelection narrows to its own ModelParameter shape. The structural
+  // overlap is asserted by model-selection-compat.test.ts.
   return {
     id: input.model.id,
     ...(input.model.params !== undefined && { params: input.model.params }),
-  };
+  } as SdkModelSelection;
 }
 
 function cloudAgentOptions(spec: CloudRunSpec): CloudAgentOptions {
@@ -57,7 +62,23 @@ function cloudAgentOptions(spec: CloudRunSpec): CloudAgentOptions {
   };
 }
 
+// Redacts envVars VALUES (keeps KEYS for diagnostic visibility) and the env
+// block entirely. apiKey is excluded by construction (built separately in
+// the caller), but operator-supplied envVars / env may carry secrets.
+function loggableCloudOptions(opts: CloudAgentOptions): unknown {
+  return {
+    ...opts,
+    ...(opts.envVars !== undefined && {
+      envVars: Object.fromEntries(Object.keys(opts.envVars).map((k) => [k, "[redacted]"])),
+    }),
+    ...(opts.env !== undefined && { env: "[redacted]" }),
+  };
+}
+
 function mapCloudRunResult(result: RunResult, input: CursorRunInput): CursorRunResult {
+  // Cloud-only debug telemetry. Local runs go through mapRunResult directly
+  // and never reach this wrapper, preserving the SHIP_CLOUD_DEBUG-only intent.
+  cloudDebugLog("mapTerminalResult result.git", result.git);
   // `@cursor/sdk` RunResult typings omit "expired" as of 1.0.x; cloud may still surface it.
   if (((result.status as string | undefined) ?? "").toLowerCase() === "expired") {
     return mapTerminalResult(result, "cancelled");
@@ -98,10 +119,16 @@ export class CloudCursorRunner implements CursorRunner {
   ): Promise<{ agent: SDKAgent; sdkRun: Run }> {
     let agent: SDKAgent | undefined;
     try {
+      const cloudOpts = cloudAgentOptions(cloudSpec);
+      const modelArg = modelArgFromInput(input);
+      cloudDebugLog("Agent.create payload", {
+        cloud: loggableCloudOptions(cloudOpts),
+        model: modelArg,
+      });
       agent = await Agent.create({
         apiKey,
-        cloud: cloudAgentOptions(cloudSpec),
-        model: modelArgFromInput(input),
+        cloud: cloudOpts,
+        model: modelArg,
         ...(input.agents !== undefined && { agents: input.agents }),
         ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
         ...(input.agentName !== undefined && { name: input.agentName }),

@@ -6,7 +6,7 @@
  * `phases/05-cursor-runner.md` for the full contract.
  */
 
-import type { Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
+import type { AgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
 
 import { Agent } from "@cursor/sdk";
 
@@ -49,11 +49,13 @@ export class LocalCursorRunner implements CursorRunner {
         // Reconstruct `model` field-by-field — workflow's mirror and
         // SDK's `ModelSelection` are structurally identical at runtime,
         // but `exactOptionalPropertyTypes` rejects the cross-type
-        // assignment of optional `params`.
+        // assignment until we cast across the shim boundary (the SDK types
+        // still model `value` as string-only — booleans are accepted via
+        // runtime JSON from upstream callers).
         model: {
           id: input.model.id,
           ...(input.model.params !== undefined && { params: input.model.params }),
-        },
+        } as NonNullable<AgentOptions["model"]>,
         local: { cwd: input.cwd, settingSources: ["project"] },
         ...(input.agents !== undefined && { agents: input.agents }),
         ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),

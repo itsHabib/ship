@@ -640,7 +640,7 @@ describe("LocalCursorRunner — SDK options forwarding", () => {
         agentName: "ship/wf-123",
         cwd: "/abs/work",
         mcpServers,
-        model: { id: "composer-2", params: [{ id: "thinking", value: "high" }] },
+        model: { id: "composer-2.5", params: [{ id: "fast", value: "true" }] },
       }),
     );
 
@@ -648,7 +648,7 @@ describe("LocalCursorRunner — SDK options forwarding", () => {
       apiKey: "test-key-abc123",
       local: { cwd: "/abs/work", settingSources: ["project"] },
       mcpServers,
-      model: { id: "composer-2", params: [{ id: "thinking", value: "high" }] },
+      model: { id: "composer-2.5", params: [{ id: "fast", value: "true" }] },
       name: "ship/wf-123",
     });
   });

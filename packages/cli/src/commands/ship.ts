@@ -3,10 +3,10 @@
  * `ShipService.ship` and prints the resulting `ShipOutput`.
  */
 
-import type { ShipInput, ThinkingEffort } from "@ship/mcp";
+import type { ShipInput } from "@ship/mcp";
 import type { Command } from "commander";
 
-import { cloudRunSpecSchema, thinkingEffortSchema } from "@ship/mcp";
+import { cloudRunSpecSchema } from "@ship/mcp";
 import { readFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 
@@ -25,7 +25,7 @@ interface ShipOpts {
   baseRef?: string;
   worktreeName?: string;
   model?: string;
-  thinking?: string;
+  modelParam?: string[];
   json: boolean;
   runtime?: string;
   /** `--cloud` JSON file path; when set, other `--cloud-*` field flags are ignored. */
@@ -45,8 +45,13 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
     .option("--branch <name>", "branch the run targets")
     .option("--base-ref <ref>", "git ref the worktree branched from")
     .option("--worktree-name <name>", "worktree slug")
-    .option("--model <id>", "Cursor model id (e.g. composer-2)")
-    .option("--thinking <effort>", "Cursor thinking effort (low|high); defaults to high")
+    .option("--model <id>", "Cursor model id (e.g. composer-2.5)")
+    .option(
+      "--model-param <pair>",
+      "model KEY=VAL (split on first '=' only; repeatable; last key wins; true/false → booleans)",
+      collectPair,
+      [] as string[],
+    )
     .option("--runtime <mode>", "cursor runtime (local|cloud); omit to use service default")
     .option(
       "--cloud <path>",
@@ -67,21 +72,8 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
     .option("--json", "emit machine-readable JSON instead of pretty output")
     .action(async (docPath: string, rawOpts: ShipOpts) => {
       try {
-        const thinking = parseThinking(rawOpts.thinking);
-        const runtime = parseRuntime(rawOpts.runtime);
-        const cloud = await resolveCloudSpec(rawOpts, runtime);
-        const out = await factory().ship({
-          workdir: resolvePath(rawOpts.workdir),
-          repo: rawOpts.repo,
-          docPath,
-          ...(rawOpts.branch !== undefined && { branch: rawOpts.branch }),
-          ...(rawOpts.baseRef !== undefined && { baseRef: rawOpts.baseRef }),
-          ...(rawOpts.worktreeName !== undefined && { worktreeName: rawOpts.worktreeName }),
-          ...(rawOpts.model !== undefined && { model: rawOpts.model }),
-          ...(thinking !== undefined && { thinking }),
-          ...(runtime !== undefined && { runtime }),
-          ...(cloud !== undefined && { cloud }),
-        });
+        const input = await buildShipCliInput(rawOpts, docPath);
+        const out = await factory().ship(input);
         process.stdout.write(`${formatShipOutput(out, rawOpts.json)}\n`);
       } catch (err) {
         const code = toCliExitCode(err);
@@ -91,20 +83,63 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
     });
 }
 
+async function buildShipCliInput(opts: ShipOpts, docPath: string): Promise<ShipInput> {
+  const modelParamsRaw = opts.modelParam ?? [];
+  const modelParams = modelParamsRaw.length > 0 ? accumulateModelParams(modelParamsRaw) : undefined;
+
+  const runtime = parseRuntime(opts.runtime);
+  const cloud = await resolveCloudSpec(opts, runtime);
+  return {
+    workdir: resolvePath(opts.workdir),
+    repo: opts.repo,
+    docPath,
+    ...(opts.branch !== undefined && { branch: opts.branch }),
+    ...(opts.baseRef !== undefined && { baseRef: opts.baseRef }),
+    ...(opts.worktreeName !== undefined && { worktreeName: opts.worktreeName }),
+    ...(opts.model !== undefined && { model: opts.model }),
+    ...(modelParams !== undefined && { modelParams }),
+    ...(runtime !== undefined && { runtime }),
+    ...(cloud !== undefined && { cloud }),
+  };
+}
+
 function collectPair(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
-function parseThinking(raw: string | undefined): ThinkingEffort | undefined {
-  if (raw === undefined) return undefined;
-  const result = thinkingEffortSchema.safeParse(raw);
-  if (!result.success) {
-    throw new InvalidArgumentError(`invalid --thinking: ${raw} (expected: low | high)`);
+function accumulateModelParams(pairs: string[]): NonNullable<ShipInput["modelParams"]> {
+  const m = new Map<string, NonNullable<ShipInput["modelParams"]>[number]>();
+  for (const p of pairs) {
+    const parsed = parseModelParam(p);
+    m.set(parsed.id, parsed);
   }
-  return result.data;
+  return [...m.values()];
 }
 
-/** Mirrors `parseThinking`: omit flag → undefined (service default); invalid → InvalidArgumentError. */
+/** Split on first `=` only; boolean values for lowercase `true` / `false`; otherwise string. */
+function parseModelParam(raw: string): { id: string; value: string | boolean } {
+  const idx = raw.indexOf("=");
+  if (idx <= 0) {
+    throw new InvalidArgumentError(`invalid --model-param: ${raw} (expected KEY=VAL)`);
+  }
+  const id = raw.slice(0, idx);
+  const rawVal = raw.slice(idx + 1);
+  if (rawVal === "true") return { id, value: true };
+  if (rawVal === "false") return { id, value: false };
+  // Reject empty string at parse time — the CLI bypasses shipInputSchema and
+  // reaches ShipService directly, so without this guard a mistyped flag like
+  // `--model-param fast=` surfaces as a downstream modelSelectionSchema
+  // failure at run-time instead of an immediate argument error. Boolean
+  // false is still allowed (legitimate value for composer-2.5 fast param).
+  if (rawVal === "") {
+    throw new InvalidArgumentError(
+      `invalid --model-param: ${raw} (empty value; use KEY=true / KEY=false / KEY=<non-empty>)`,
+    );
+  }
+  return { id, value: rawVal };
+}
+
+/** Mirrors parseModelParam omission → undefined semantics for runtime. */
 function parseRuntime(raw: string | undefined): "local" | "cloud" | undefined {
   if (raw === undefined) return undefined;
   if (raw === "local" || raw === "cloud") return raw;
