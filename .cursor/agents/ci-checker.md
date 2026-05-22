@@ -52,7 +52,7 @@ You always verify CI against the PR's **current** head ref. There is no way to p
 
 ## Shell portability note
 
-This subagent runs in a parent agent's tool environment, which on Windows may be PowerShell. Prefer `;` over `&&` for chaining commands — PowerShell's older parser rejects `&&` as a statement separator. Either form works on POSIX shells.
+This subagent runs in a parent agent's tool environment, which on Windows may be PowerShell. Older PowerShell parsers (Windows PowerShell 5.1) reject `&&` as a statement separator. Use `;` for chaining unrelated steps. For steps where a later command should only run on success (e.g. typecheck → test), run them as separate tool calls and check exit codes between, since `;` does not short-circuit on failure the way `&&` does.
 
 ## Output (structured)
 
