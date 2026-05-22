@@ -18,7 +18,7 @@ Date: 2026-05-21
 - `packages/cursor-runner/src/debug.ts` — NEW; env-var-gated stderr logger.
 - `packages/cursor-runner/src/cloud-runner.ts` — 2 debug log call sites; verify no other changes needed.
 - `packages/cursor-runner/src/_shared.ts` — 1 debug log call site in `mapTerminalResult`.
-- `e2e/scenarios/cloud-e2e-helpers.ts` + 5 sister files — URL sweep `ship-live-sandbox` → `agent-sandbox`.
+- `e2e/scenarios/cloud-e2e-helpers.ts` + 5 sister files — URL sweep `agent-sandbox` → `agent-sandbox`.
 - Test churn (~30 references) across `packages/cli/test/ship-command.test.ts`, `packages/core/src/default-wiring.test.ts`, `packages/core/src/service.test.ts`, `packages/cursor-runner/src/local-runner.test.ts`, `packages/cursor-runner/src/model-selection-compat.test.ts`, `packages/cursor-runner/test/cloud-runner.test.ts`, `packages/mcp/src/mcp.test.ts`, `packages/workflow/src/workflow.test.ts`.
 
 ## Functional requirements
@@ -138,7 +138,7 @@ export function mapTerminalResult(
 
 ### F4 — Sandbox URL alignment
 
-Replace `ship-live-sandbox` with `agent-sandbox` in exactly these 6 files (verified via grep). Mechanical sed-equivalent; no semantic changes:
+Replace `agent-sandbox` with `agent-sandbox` in exactly these 6 files (verified via grep). Mechanical sed-equivalent; no semantic changes:
 
 - `e2e/scenarios/cloud-e2e-helpers.ts`
 - `e2e/scenarios/live-open-pr-helpers.ts`
@@ -147,7 +147,7 @@ Replace `ship-live-sandbox` with `agent-sandbox` in exactly these 6 files (verif
 - `docs/features/qe-sdet/phases/01-l4-expansion-and-bug-smash.md`
 - `docs/features/ship-v2/phases/02-open-pr.md`
 
-Run `grep -r "ship-live-sandbox" .` after the sweep — expect zero matches outside `node_modules` and `.git`.
+Run `grep -r "agent-sandbox" .` after the sweep — expect zero matches outside `node_modules` and `.git`.
 
 ## Tradeoffs
 
@@ -190,7 +190,7 @@ Out of scope (it's a PR2 / phase-doc-out-of-scope concern). PR1 leaves the helpe
 - `make check` green (typecheck + lint + format + unit tests).
 - `pnpm run coverage` green (per-package thresholds hold).
 - Manual probe: render `mcp__ship__ship` schema (via the MCP introspection path or by reading the generated schema doc) — confirm `thinking` field is gone and `modelParams` field is present.
-- Manual probe: `grep -r "ship-live-sandbox" .` (excluding `node_modules`, `.git`) returns zero matches.
+- Manual probe: `grep -r "agent-sandbox" .` (excluding `node_modules`, `.git`) returns zero matches.
 - Manual probe: `grep -r "PRODUCTION_DEFAULT_THINKING" packages/` returns zero matches.
 - Manual probe: `grep -r "thinkingEffortSchema\|ThinkingEffort\|thinkingParam\|mergeThinkingParam" packages/` returns zero matches (these symbols are gone).
 
@@ -202,7 +202,7 @@ Out of scope (it's a PR2 / phase-doc-out-of-scope concern). PR1 leaves the helpe
 | `defaultThinking` opt in `DefaultShipServiceOpts` had downstream callers I missed | Grep for `defaultThinking` across the repo; if any e2e harness still passes it, replace with a `defaultModel` override or drop entirely. |
 | `--model-param fast=true` parses `"true"` as a string, but cursor expects literal boolean for some call sites | Per ED-3, the schema accepts both; the resolver passes through. If a runtime conflict surfaces, PR2 (or a chip) tightens. |
 | Logger fires during a unit test that didn't expect stderr noise | Tests run with `SHIP_CLOUD_DEBUG` unset by default; gate is strict `=== "1"`. New logger tests explicitly flip the env. |
-| URL sweep misses a hidden ref (e.g. inside a markdown code block) | `grep -r "ship-live-sandbox" .` post-sweep is the final gate; zero matches is acceptance. |
+| URL sweep misses a hidden ref (e.g. inside a markdown code block) | `grep -r "agent-sandbox" .` post-sweep is the final gate; zero matches is acceptance. |
 
 ## Out of scope
 
@@ -233,7 +233,7 @@ Out of scope (it's a PR2 / phase-doc-out-of-scope concern). PR1 leaves the helpe
    - Add unit tests in `cloud-runner.test.ts`: env-var-on emits 2 lines; env-var-off emits 0 lines; `apiKey` absence from output.
 
 5. **URL sweep.**
-   - sed-equivalent replace `ship-live-sandbox` with `agent-sandbox` across the 6 files in F4.
+   - sed-equivalent replace `agent-sandbox` with `agent-sandbox` across the 6 files in F4.
    - Confirm zero matches post-sweep.
 
 6. **Test churn.**

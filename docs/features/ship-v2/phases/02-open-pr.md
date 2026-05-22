@@ -384,7 +384,7 @@ The stub binary lives under `e2e/fixtures/gh-stub/` and is selected via `SHIP_GH
 
 ### L3 (live e2e, opt-in via `SHIP_LIVE=1`)
 
-Optional. The existing `e2e/scenarios/` live harness gets one new scenario that opens a real PR on a sandbox repo (e.g. `itsHabib/ship-live-sandbox`). Gated behind `SHIP_LIVE=1` so CI doesn't burn quota. Asserts the PR is open with the expected title/body.
+Optional. The existing `e2e/scenarios/` live harness gets one new scenario that opens a real PR on a sandbox repo (e.g. `itsHabib/agent-sandbox`). Gated behind `SHIP_LIVE=1` so CI doesn't burn quota. Asserts the PR is open with the expected title/body.
 
 ### Acceptance for the phase
 

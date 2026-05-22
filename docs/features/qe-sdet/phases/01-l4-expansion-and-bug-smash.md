@@ -52,7 +52,7 @@ Each scenario is a single file under `e2e/scenarios/` and inherits the `SHIP_LIV
 4. `ship open_pr <workflowRunId> --json`.
 5. Assert: exit 0; `prUrl` is a real GitHub URL; `gh pr view <prNumber> --json state,headRefName,baseRefName` confirms PR open, head matches the run's branch, base is the sandbox's default branch; phase row `Phase{kind: "open_pr", status: "succeeded"}` written to the run's SQLite store.
 
-Sandbox repo: a dedicated throwaway GitHub repo (e.g. `itsHabib/ship-live-sandbox`). Owned by the operator; accepts force-push from `GITHUB_TOKEN`. Each scenario run pushes a fresh branch named `tower/live-e2e-<workflowRunId>` so concurrent runs don't collide.
+Sandbox repo: a dedicated throwaway GitHub repo (e.g. `itsHabib/agent-sandbox`). Owned by the operator; accepts force-push from `GITHUB_TOKEN`. Each scenario run pushes a fresh branch named `tower/live-e2e-<workflowRunId>` so concurrent runs don't collide.
 
 Requires `GITHUB_TOKEN` in env in addition to `CURSOR_API_KEY` + `SHIP_E2E_SANDBOX_REPO`. `test.skip` when any is absent.
 
@@ -105,7 +105,7 @@ Each new scenario reuses three conventions from `hello-world.e2e.test.ts`:
 - **No new production dependency.** Helpers stay under `e2e/scenarios/`; no new pnpm-workspace package.
 - **Strict TS + lint match.** The eslint relaxation for `*.test.ts` (longer functions) applies but the comment + naming rules don't change.
 - **L4 quota discipline.** Each scenario burns 1+ Cursor run + 1+ GitHub PR-open per execution. Per-file JSDoc documents the cost (mirroring `hello-world.e2e.test.ts`'s "Burns one Cursor run per execution — not free").
-- **Sandbox repo is operator-owned, not Ship-owned.** Ship doesn't create or destroy the sandbox repo. The repo lives at `itsHabib/ship-live-sandbox` (or operator-chosen path); env-injected via `SHIP_E2E_SANDBOX_REPO`. One-time setup documented in `e2e/README.md`.
+- **Sandbox repo is operator-owned, not Ship-owned.** Ship doesn't create or destroy the sandbox repo. The repo lives at `itsHabib/agent-sandbox` (or operator-chosen path); env-injected via `SHIP_E2E_SANDBOX_REPO`. One-time setup documented in `e2e/README.md`.
 - **No L4 by default in CI.** Default `make integration` doesn't touch L4. `make e2e` requires `SHIP_LIVE=1` + the env vars above.
 
 ## Tradeoffs
@@ -124,7 +124,7 @@ Each new scenario reuses three conventions from `hello-world.e2e.test.ts`:
 
 ### ED-1 — Sandbox repo URL via env, default unset
 
-Each L4 scenario reads `SHIP_E2E_SANDBOX_REPO` (e.g. `itsHabib/ship-live-sandbox`). Unset = `test.skip`. Matches phase 9's `CURSOR_API_KEY`-driven gating and keeps the suite portable: any operator with their own sandbox repo can run the suite locally.
+Each L4 scenario reads `SHIP_E2E_SANDBOX_REPO` (e.g. `itsHabib/agent-sandbox`). Unset = `test.skip`. Matches phase 9's `CURSOR_API_KEY`-driven gating and keeps the suite portable: any operator with their own sandbox repo can run the suite locally.
 
 ### ED-2 — One `git remote add origin` per scenario, no persistent worktree
 
@@ -157,7 +157,7 @@ Lives at `e2e/scenarios/event-tailer.ts`. Imported by the 5 scenarios via relati
 
 ## Validation plan
 
-Each scenario, when run with `SHIP_LIVE=1 CURSOR_API_KEY=... GITHUB_TOKEN=... SHIP_E2E_SANDBOX_REPO=itsHabib/ship-live-sandbox`:
+Each scenario, when run with `SHIP_LIVE=1 CURSOR_API_KEY=... GITHUB_TOKEN=... SHIP_E2E_SANDBOX_REPO=itsHabib/agent-sandbox`:
 
 - A1 (`open-pr`): exits 0; PR url returned; `gh pr view` confirms PR open with the expected `headRefName` / `baseRefName`; phase row written.
 - A2 (`ship-then-open-pr`): full chain succeeds (async ship → poll → open_pr); PR url is the agent's branch + agent's commits; `gh pr view --json files` shows agent-authored files.
@@ -198,7 +198,7 @@ Run each scenario 3× consecutively against the sandbox repo. No flakes; if a fl
 
 ## Open questions
 
-1. **Sandbox repo location.** `itsHabib/ship-live-sandbox` proposed. Operator confirms or names an alternative before implementation lands.
+1. **Sandbox repo location.** `itsHabib/agent-sandbox` proposed. Operator confirms or names an alternative before implementation lands.
 2. **L4 nightly workflow.** Defer per § Out of scope; revisit in this phase's outcome.
 3. **Does `cancel-live-ship.e2e.test.ts` need its own fixture or can it reuse `open-pr-sandbox/`?** Proposed: reuse; `docs/features/long.md` lives under `open-pr-sandbox/` so A3 picks it up.
 4. **Should A5 be folded into A1 instead of its own file?** Proposed: separate file. A1 asserts the first-open path; A5 asserts the idempotent path. Bundling would couple the assertions and obscure failures. Keep separate; the cost is one extra fixture-tree clone, ~5s.
@@ -207,7 +207,7 @@ Run each scenario 3× consecutively against the sandbox repo. No flakes; if a fl
 
 After this doc + `../spec.md` are reviewed and merged:
 
-1. **One-time setup.** Operator creates `itsHabib/ship-live-sandbox`; turns off branch protection on `main`; disables GitHub Actions on the repo; documents the setup in `e2e/README.md`. (One-time, not in scope of any implementation PR.)
+1. **One-time setup.** Operator creates `itsHabib/agent-sandbox`; turns off branch protection on `main`; disables GitHub Actions on the repo; documents the setup in `e2e/README.md`. (One-time, not in scope of any implementation PR.)
 2. **Add `e2e/fixtures/open-pr-sandbox/`** with `README.md`, `docs/features/sandbox.md`, `docs/features/long.md`, `.gitignore`. ~80 LOC × 0.5 = ~40 weighted (fixtures are 0.5× per CLAUDE.md PR sizing).
 3. **Extract `event-tailer.ts`** from `hello-world.e2e.test.ts:140–186` into `e2e/scenarios/event-tailer.ts`; update `hello-world.e2e.test.ts` to import it. ~100 LOC moved, ~15 weighted.
 4. **A1 — `open-pr.e2e.test.ts`.** ~100 LOC × 0.5 = 50 weighted.

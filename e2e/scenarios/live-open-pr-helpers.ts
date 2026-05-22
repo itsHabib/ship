@@ -34,7 +34,7 @@ export function hasOpenPrLiveEnv(): boolean {
 export function parseSandboxSlug(raw: string): { owner: string; repo: string } {
   const parts = raw.split("/").filter((s) => s.length > 0);
   if (parts.length !== 2 || parts[0] === undefined || parts[1] === undefined) {
-    throw new Error("SHIP_E2E_SANDBOX_REPO must be owner/repo (e.g. itsHabib/ship-live-sandbox)");
+    throw new Error("SHIP_E2E_SANDBOX_REPO must be owner/repo (e.g. itsHabib/agent-sandbox)");
   }
   return { owner: parts[0], repo: parts[1] };
 }
@@ -210,7 +210,6 @@ export interface SpawnShipArgs {
   readonly repoLabel: string;
   readonly branch: string;
   readonly docRel: string;
-  readonly thinking?: "low" | "high";
 }
 
 /**
@@ -237,8 +236,8 @@ export function spawnShipChild(args: SpawnShipArgs): ShipChildHandle {
       "--branch",
       args.branch,
       "--json",
-      "--thinking",
-      args.thinking ?? "low",
+      "--model-param",
+      "fast=false",
     ],
     {
       cwd: CLI_PKG,

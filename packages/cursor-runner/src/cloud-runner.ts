@@ -6,11 +6,11 @@
 
 import type {
   CloudAgentOptions,
-  ModelSelection,
   Run,
   RunResult,
   SDKAgent,
   SDKMessage,
+  ModelSelection as SdkModelSelection,
 } from "@cursor/sdk";
 
 import { Agent, IntegrationNotConnectedError } from "@cursor/sdk";
@@ -24,6 +24,7 @@ import type {
 } from "./runner.js";
 
 import { mapRunResult, mapTerminalResult } from "./_shared.js";
+import { cloudDebugLog } from "./debug.js";
 import {
   CursorCloudIntegrationError,
   CursorRunFailedError,
@@ -35,11 +36,11 @@ import {
 
 const API_KEY_ENV = "CURSOR_API_KEY";
 
-function modelArgFromInput(input: CursorRunInput): ModelSelection {
+function modelArgFromInput(input: CursorRunInput): SdkModelSelection {
   return {
     id: input.model.id,
     ...(input.model.params !== undefined && { params: input.model.params }),
-  };
+  } as SdkModelSelection;
 }
 
 function cloudAgentOptions(spec: CloudRunSpec): CloudAgentOptions {
@@ -98,10 +99,13 @@ export class CloudCursorRunner implements CursorRunner {
   ): Promise<{ agent: SDKAgent; sdkRun: Run }> {
     let agent: SDKAgent | undefined;
     try {
+      const cloudOpts = cloudAgentOptions(cloudSpec);
+      const modelArg = modelArgFromInput(input);
+      cloudDebugLog("Agent.create payload", { cloud: cloudOpts, model: modelArg });
       agent = await Agent.create({
         apiKey,
-        cloud: cloudAgentOptions(cloudSpec),
-        model: modelArgFromInput(input),
+        cloud: cloudOpts,
+        model: modelArg,
         ...(input.agents !== undefined && { agents: input.agents }),
         ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
         ...(input.agentName !== undefined && { name: input.agentName }),

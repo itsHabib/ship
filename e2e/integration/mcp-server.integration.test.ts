@@ -155,13 +155,11 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     // load-bearing check that the post-runner store writes ran.
     const cursorRunPhase = terminal.phases[0];
     expect(cursorRunPhase?.cursorRunId).toBeDefined();
-    // V1 also asserted the wiring-default `thinking: high` propagated
-    // to `shipped.cursorRun.model`. V2's MCP `ship` response no
-    // longer surfaces `CursorRunRef`, and `WorkflowRun` only carries
-    // the phase row's FK — not the embedded ref. Coverage for the
-    // model-resolver path lives at the unit level
-    // (`packages/core/src/service.test.ts` — "uses config.defaultModel
-    // verbatim …" + the thinking-override variants).
+    // V1 also asserted the wiring-default model params propagated to
+    // `shipped.cursorRun.model`. V2's MCP `ship` response no longer
+    // surfaces `CursorRunRef`, and `WorkflowRun` only carries the phase
+    // row's FK — not the embedded ref. Coverage for the model-resolver
+    // path lives at the unit level (`packages/core/src/service.test.ts`).
 
     const got = await client.readResource({ uri: `ship://runs/${shipped.workflowRunId}` });
     const block = got.contents[0];
@@ -174,14 +172,14 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     expect(run.status).toBe("succeeded");
   });
 
-  test("ship with thinking=low overrides the wiring default on a real run", async () => {
+  test("ship with explicit modelParams still reaches persistence on the fake runner", async () => {
     const shippedRaw = await client.callTool({
       name: "ship",
       arguments: {
         workdir: cenv.workdir,
         repo: "ship",
         docPath: "docs.md",
-        thinking: "low",
+        modelParams: [{ id: "fast", value: false }],
       },
     });
     const shipped = parseToolJson(shippedRaw) as ShipStartOutput;

@@ -17,6 +17,7 @@ import type {
   OpenPrServiceBundle,
   ServiceBundle,
 } from "@ship/test-harness";
+import type { ModelSelection } from "@ship/workflow";
 import type { Command } from "commander";
 
 import {
@@ -50,11 +51,11 @@ export interface CliHarness {
 }
 
 export async function createCliHarness(
-  opts: { defaultThinking?: "low" | "high"; cloudCursor?: CursorRunner } = {},
+  opts: { defaultModel?: ModelSelection; cloudCursor?: CursorRunner } = {},
 ): Promise<CliHarness> {
   const harness = createHarness();
   const bundle = createServiceFromHarness(harness, {
-    ...(opts.defaultThinking !== undefined ? { defaultThinking: opts.defaultThinking } : {}),
+    ...(opts.defaultModel !== undefined ? { defaultModel: opts.defaultModel } : {}),
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
   });
   const openPrBundle = createOpenPrServiceFromHarness(harness);

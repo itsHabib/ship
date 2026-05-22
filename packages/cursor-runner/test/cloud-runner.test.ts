@@ -147,7 +147,7 @@ function cloudBaseInput(
       repos: [{ url: "https://github.com/acme/sandbox" }],
     },
     cwd: "/tmp/cloud-unused-cwd",
-    model: { id: "composer-2" },
+    model: { id: "composer-2.5" },
     onEvent: vi.fn(),
     prompt: "do the cloud thing",
     runtime: "cloud",
@@ -170,7 +170,7 @@ describe("CloudCursorRunner — runtime guards", () => {
     await expect(
       runner.run({
         cwd: "/x",
-        model: { id: "composer-2" },
+        model: { id: "composer-2.5" },
         onEvent: vi.fn(),
         prompt: "x",
         runtime: "cloud",
@@ -184,7 +184,7 @@ describe("CloudCursorRunner — runtime guards", () => {
     await expect(
       runner.run({
         cwd: "/x",
-        model: { id: "composer-2" },
+        model: { id: "composer-2.5" },
         onEvent: vi.fn(),
         prompt: "x",
         runtime: "cloud",
@@ -199,7 +199,7 @@ describe("CloudCursorRunner — runtime guards", () => {
     await expect(
       runner.run({
         cwd: "/x",
-        model: { id: "composer-2" },
+        model: { id: "composer-2.5" },
         onEvent: vi.fn(),
         prompt: "x",
         runtime: "cloud",
@@ -214,7 +214,7 @@ describe("CloudCursorRunner — runtime guards", () => {
     await expect(
       runner.run({
         cwd: "/x",
-        model: { id: "composer-2" },
+        model: { id: "composer-2.5" },
         onEvent: vi.fn(),
         prompt: "x",
         runtime: "cloud",
@@ -317,7 +317,7 @@ describe("CloudCursorRunner — Agent.create cloud payload", () => {
           workOnCurrentBranch: true,
         },
         mcpServers: { docs: { type: "http", url: "https://docs" } },
-        model: { id: "composer-2", params: [{ id: "thinking", value: "high" }] },
+        model: { id: "composer-2.5", params: [{ id: "fast", value: true }] },
       }),
     );
 
@@ -332,7 +332,7 @@ describe("CloudCursorRunner — Agent.create cloud payload", () => {
         workOnCurrentBranch: true,
       },
       mcpServers: { docs: { type: "http", url: "https://docs" } },
-      model: { id: "composer-2", params: [{ id: "thinking", value: "high" }] },
+      model: { id: "composer-2.5", params: [{ id: "fast", value: true }] },
       name: "ship/wf-cloud",
     });
   });
@@ -699,5 +699,90 @@ describe("CloudCursorRunner — IntegrationNotConnectedError", () => {
       helpUrl: "https://cursor.com/dashboard/integrations/github",
       provider: "github",
     });
+  });
+});
+
+function stderrSpyConcat(spy: {
+  mock: { calls: readonly [string | Uint8Array, ...unknown[]][] };
+}): string {
+  return spy.mock.calls
+    .map((call) => {
+      const chunk = call[0];
+      return typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8");
+    })
+    .join("");
+}
+
+describe("CloudCursorRunner — SHIP_CLOUD_DEBUG diagnostics", () => {
+  test("SHIP_CLOUD_DEBUG=1 writes Agent.create payload + terminal map lines", async () => {
+    vi.stubEnv("SHIP_CLOUD_DEBUG", "1");
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { run } = makeMockRun({
+        result: {
+          durationMs: 50,
+          git: { branches: [] },
+          id: "run-dbg",
+          result: "ok",
+          status: "finished",
+        },
+      });
+      const { agent } = makeMockAgent({ run });
+      vi.mocked(Agent.create).mockResolvedValue(agent);
+
+      const runner = new CloudCursorRunner();
+      const handle = await runner.run(cloudBaseInput());
+      await handle.result;
+
+      const out = stderrSpyConcat(spy);
+      const segments = out
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.includes("[ship-cloud-debug]"));
+      expect(segments).toHaveLength(2);
+      expect(segments.some((s) => s.includes("Agent.create payload"))).toBe(true);
+      expect(segments.some((s) => s.includes("mapTerminalResult"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("SHIP_CLOUD_DEBUG off → stderr has no prefixed diagnostic lines", async () => {
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { run } = makeMockRun({});
+      const { agent } = makeMockAgent({ run });
+      vi.mocked(Agent.create).mockResolvedValue(agent);
+
+      const runner = new CloudCursorRunner();
+      const handle = await runner.run(cloudBaseInput());
+      await handle.result;
+
+      expect(stderrSpyConcat(spy).includes("[ship-cloud-debug]")).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("debug JSON never contains the Cursor key material or literal apiKey", async () => {
+    vi.stubEnv("SHIP_CLOUD_DEBUG", "1");
+    vi.stubEnv("CURSOR_API_KEY", "cur_cloud_debug_must_not_echo");
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { run } = makeMockRun({});
+      const { agent } = makeMockAgent({ run });
+      vi.mocked(Agent.create).mockResolvedValue(agent);
+
+      const runner = new CloudCursorRunner();
+      const handle = await runner.run(cloudBaseInput());
+      await handle.result;
+
+      const out = stderrSpyConcat(spy);
+      expect(out.toLowerCase()).not.toContain("apikey");
+      expect(out.includes("cur_cloud")).toBe(false);
+      expect(out.includes("crsr_")).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

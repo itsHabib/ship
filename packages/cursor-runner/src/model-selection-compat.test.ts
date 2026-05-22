@@ -16,12 +16,24 @@ describe("@ship/workflow ModelSelection ↔ @cursor/sdk ModelSelection", () => {
     expect(modelSelectionSchema.parse(sdkValue)).toEqual(sdkValue);
   });
 
-  test("accepts an SDK-typed value with id + params", () => {
+  test("accepts an SDK-typed value with composer-2.5 + fast grid", () => {
     const sdkValue: SDKModelSelection = {
-      id: "composer-2",
-      params: [{ id: "thinking", value: "high" }],
+      id: "composer-2.5",
+      params: [{ id: "fast", value: "true" }],
     };
     expect(modelSelectionSchema.parse(sdkValue)).toEqual(sdkValue);
+  });
+
+  test("workflow schema admits boolean parameter values coming from MCP / CLI adapters", () => {
+    expect(
+      modelSelectionSchema.parse({
+        id: "composer-2.5",
+        params: [{ id: "fast", value: true }],
+      }),
+    ).toEqual({
+      id: "composer-2.5",
+      params: [{ id: "fast", value: true }],
+    });
   });
 });
 
@@ -32,8 +44,8 @@ describe("@ship/workflow ModelSelection ↔ @cursor/sdk ModelSelection", () => {
 // under `exactOptionalPropertyTypes`.
 const _sdkSampleEmpty: SDKModelSelection = { id: "composer-2" };
 const _sdkSampleFull: SDKModelSelection = {
-  id: "composer-2",
-  params: [{ id: "thinking", value: "high" }],
+  id: "composer-2.5",
+  params: [{ id: "fast", value: "true" }],
 };
 const _domainFromSdkEmpty: ModelSelection = _sdkSampleEmpty;
 const _domainFromSdkFull: ModelSelection = _sdkSampleFull;

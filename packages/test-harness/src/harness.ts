@@ -9,8 +9,14 @@
 import type { ShipService, ShipServiceConfig } from "@ship/core";
 import type { CursorRunner } from "@ship/cursor-runner";
 import type { Store } from "@ship/store";
+import type { ModelSelection } from "@ship/workflow";
 
-import { createMemoryShipFs, createShipService, type MemoryShipFs } from "@ship/core";
+import {
+  createMemoryShipFs,
+  createShipService,
+  DEFAULT_MODEL,
+  type MemoryShipFs,
+} from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore } from "@ship/store";
 import { newCursorRunId, newPhaseId, newWorkflowRunId } from "@ship/workflow";
@@ -83,10 +89,21 @@ export function createHarness(opts: CreateHarnessOptions = {}): Harness {
  * call so multiple services can co-exist over the same store rows.
  */
 export interface CreateServiceFromHarnessOptions {
-  /** Default model `core` falls back to when `input.model` is omitted. Default `"composer-2"`. */
+  /**
+   * Full default `ModelSelection`; when set, ignores `defaultModelId` and
+   * `defaultModelParams`.
+   */
+  defaultModel?: ModelSelection;
+  /**
+   * Default model id when `input.model` is omitted. Default mirrors
+   * production wiring (`DEFAULT_MODEL.id`).
+   */
   defaultModelId?: string;
-  /** Optional default Cursor `thinking` param for tests that mirror production wiring. */
-  defaultThinking?: "low" | "high";
+  /**
+   * Default params when defaultModel omitted. Default mirrors production
+   * wiring (`DEFAULT_MODEL.params`).
+   */
+  defaultModelParams?: NonNullable<ModelSelection["params"]>;
   /** Absolute artifacts directory inside the in-memory `ShipFs`. Default `/state/runs`. */
   runsDir?: string;
   /** Optional override `CursorRunner`. Defaults to the harness's `FakeCursorRunner`. */
@@ -114,14 +131,13 @@ export function createServiceFromHarness(
   opts: CreateServiceFromHarnessOptions = {},
 ): ServiceBundle {
   const fs = createMemoryShipFs();
+  const defaultSelection: ModelSelection = opts.defaultModel ?? {
+    id: opts.defaultModelId ?? DEFAULT_MODEL.id,
+    params: opts.defaultModelParams ?? DEFAULT_MODEL.params,
+  };
   const config: ShipServiceConfig = {
     runsDir: opts.runsDir ?? DEFAULT_RUNS_DIR,
-    defaultModel: {
-      id: opts.defaultModelId ?? "composer-2",
-      ...(opts.defaultThinking !== undefined && {
-        params: [{ id: "thinking", value: opts.defaultThinking }],
-      }),
-    },
+    defaultModel: defaultSelection,
     cursor: opts.cursor ?? h.cursor,
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
   };

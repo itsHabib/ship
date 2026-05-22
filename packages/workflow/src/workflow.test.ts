@@ -176,10 +176,18 @@ describe("modelSelectionSchema", () => {
     expect(modelSelectionSchema.parse(v)).toEqual(v);
   });
 
-  test("accepts a selection with params", () => {
+  test("accepts a selection with string params", () => {
     const v: ModelSelection = {
-      id: "composer-2",
-      params: [{ id: "thinking", value: "high" }],
+      id: "composer-2.5",
+      params: [{ id: "fast", value: "true" }],
+    };
+    expect(modelSelectionSchema.parse(v)).toEqual(v);
+  });
+
+  test("accepts boolean param values", () => {
+    const v: ModelSelection = {
+      id: "composer-2.5",
+      params: [{ id: "fast", value: false }],
     };
     expect(modelSelectionSchema.parse(v)).toEqual(v);
   });

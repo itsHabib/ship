@@ -26,7 +26,7 @@ export const HAS_KEY_AND_CLOUD =
   (process.env["GITHUB_TOKEN"] ?? "") !== "";
 
 /** Canonical HTTPS remote for Cursor cloud (edit if your sandbox differs). */
-export const CLOUD_SANDBOX_REPO_URL = "https://github.com/itsHabib/ship-live-sandbox";
+export const CLOUD_SANDBOX_REPO_URL = "https://github.com/itsHabib/agent-sandbox";
 
 export function stripDotGit(url: string): string {
   return url.toLowerCase().endsWith(".git") ? url.slice(0, -4) : url;

@@ -109,9 +109,11 @@ describe("ship ship", () => {
     expect(h.harness.cursor.calls[0]?.input.model).toEqual({ id: "composer-2-thinking" });
   });
 
-  test("--thinking low passes through to ShipService and overrides the wiring default", async () => {
+  test("--model-param overrides wiring default params (last pair wins)", async () => {
     h.close();
-    h = await createCliHarness({ defaultThinking: "high" });
+    h = await createCliHarness({
+      defaultModel: { id: "composer-2.5", params: [{ id: "fast", value: "true" }] },
+    });
     h.harness.cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
@@ -123,17 +125,17 @@ describe("ship ship", () => {
       TEST_WORKDIR,
       "--repo",
       "ship",
-      "--thinking",
-      "low",
+      "--model-param",
+      "fast=false",
     ]);
     expect(code).toBe(0);
     expect(h.harness.cursor.calls[0]?.input.model).toEqual({
-      id: "composer-2",
-      params: [{ id: "thinking", value: "low" }],
+      id: "composer-2.5",
+      params: [{ id: "fast", value: false }],
     });
   });
 
-  test("--thinking high passes through to ShipService", async () => {
+  test("--model-param boolean parsing for literal true/false", async () => {
     h.harness.cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
@@ -145,17 +147,22 @@ describe("ship ship", () => {
       TEST_WORKDIR,
       "--repo",
       "ship",
-      "--thinking",
-      "high",
+      "--model-param",
+      "fast=false",
+      "--model-param",
+      "other=stay",
     ]);
     expect(code).toBe(0);
     expect(h.harness.cursor.calls[0]?.input.model).toEqual({
-      id: "composer-2",
-      params: [{ id: "thinking", value: "high" }],
+      id: "composer-2.5",
+      params: [
+        { id: "fast", value: false },
+        { id: "other", value: "stay" },
+      ],
     });
   });
 
-  test("--thinking absent → no thinking field forwarded (wiring default applies)", async () => {
+  test("--model-param absent Service gets no modelParams field (defaults apply)", async () => {
     h.harness.cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
@@ -169,14 +176,13 @@ describe("ship ship", () => {
       "ship",
     ]);
     expect(code).toBe(0);
-    // CLI harness's `createServiceFromHarness` uses a thinking-less
-    // default model — so absence of `--thinking` lands as `{ id: "composer-2" }`,
-    // not an injected high. The "default belongs in core, not the CLI"
-    // invariant: the CLI never invents a thinking value of its own.
-    expect(h.harness.cursor.calls[0]?.input.model).toEqual({ id: "composer-2" });
+    expect(h.harness.cursor.calls[0]?.input.model).toEqual({
+      id: "composer-2.5",
+      params: [{ id: "fast", value: "true" }],
+    });
   });
 
-  test("--thinking medium rejected with the standard input-validation message → exit 1", async () => {
+  test("--model-param without '=' rejected", async () => {
     const { code } = await runArgv(h.program, [
       "ship",
       "docs.md",
@@ -184,15 +190,15 @@ describe("ship ship", () => {
       TEST_WORKDIR,
       "--repo",
       "ship",
-      "--thinking",
-      "medium",
+      "--model-param",
+      "KEY",
     ]);
     expect(code).toBe(1);
-    expect(h.stderr.join("")).toMatch(/invalid --thinking: medium/);
+    expect(h.stderr.join("")).toMatch(/invalid --model-param: KEY/);
     expect(h.harness.cursor.calls).toHaveLength(0);
   });
 
-  test("--thinking + --model combine in the synthesized ModelSelection", async () => {
+  test("--model-param + --model combine in synthesized ModelSelection", async () => {
     h.harness.cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
@@ -206,12 +212,35 @@ describe("ship ship", () => {
       "ship",
       "--model",
       "composer-2-thinking",
-      "--thinking",
-      "low",
+      "--model-param",
+      "fast=true",
     ]);
     expect(h.harness.cursor.calls[0]?.input.model).toEqual({
       id: "composer-2-thinking",
-      params: [{ id: "thinking", value: "low" }],
+      params: [{ id: "fast", value: true }],
+    });
+  });
+
+  test("--model-param duplicates last key wins", async () => {
+    h.harness.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--model-param",
+      "fast=false",
+      "--model-param",
+      "fast=true",
+    ]);
+    expect(h.harness.cursor.calls[0]?.input.model).toEqual({
+      id: "composer-2.5",
+      params: [{ id: "fast", value: true }],
     });
   });
 

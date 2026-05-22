@@ -96,8 +96,8 @@ function spawnCloudShipChild(opts: {
       "--cloud-repo",
       stripDotGit(CLOUD_SANDBOX_REPO_URL),
       "--cloud-auto-create-pr",
-      "--thinking",
-      "low",
+      "--model-param",
+      "fast=false",
       "--json",
     ],
     {
