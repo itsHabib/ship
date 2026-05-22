@@ -27,20 +27,20 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("Branch: ship/feat-hello");
     expect(out).toContain("Base ref: main");
     expect(out).toContain("Rules:");
-    // Rule numbers #1–#9 must appear; contract covers #6 (no PR), #7
-    // (commit), #8 (subagent dispatch via `task` tool), and #9
-    // (structured summary).
-    for (let n = 1; n <= 9; n += 1) {
+    // Rule numbers #1–#8 must appear; contract covers #6 (commit + draft PR),
+    // #7 (subagent dispatch via `task` tool), and #8 (structured summary).
+    for (let n = 1; n <= 8; n += 1) {
       expect(out).toContain(`${String(n)}.`);
     }
-    expect(out).toContain("Do NOT open a pull request");
+    expect(out).not.toContain("Do NOT open a pull request");
+    expect(out).toContain("mark the PR as `--draft`");
     expect(out).toContain("Before your final summary, commit your work");
-    // Rule 7 must be conditional on actual file changes — a clean
+    // Rule 6 must be conditional on actual file changes — a clean
     // working tree (e.g. a blocker run per rule 5) must not trip
     // `git commit` on an empty diff. Pin the guard wording.
     expect(out).toContain("skip this step entirely on a clean working tree");
     expect(out).toContain("Co-authored-by: Cursor <cursoragent@cursor.com>");
-    // Rule 8 dispatches to repo-registered subagents via cursor's
+    // Rule 7 dispatches to repo-registered subagents via cursor's
     // `task` tool — lowercase name matters (the SDK tool surface is
     // `task`, not `Agent`). Refusal-fallback wording prevents the
     // composer from fabricating subagent output when a call fails.
@@ -49,18 +49,19 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("subagent_type `scope-tracker`");
     expect(out).toContain("subagent_type `test-author`");
     expect(out).toContain("subagent_type `validator`");
-    // Rule 8's skip guard must reference rule 7's outcome, not the
+    // Rule 7's skip guard must reference rule 6's outcome, not the
     // post-commit working-tree state — `git commit` makes the tree
     // clean by definition, so a "skip on clean tree" guard would
     // neuter the rule in its intended success path.
-    expect(out).toContain("Skip this rule entirely if rule 7 was skipped");
-    // Rule 8 success path: act on P0/P1 via a NEW follow-up commit
+    expect(out).toContain("Skip this rule entirely if rule 6 was skipped");
+    // Rule 7 success path: act on P0/P1 via a NEW follow-up commit
     // (explicitly not `--amend`, which differentiates the new clause from
-    // rule 7's commit guidance — the `fix(...)`/`refactor(...)` strings
-    // alone don't pin the new clause because rule 7 already lists them);
-    // route P2/P3 to the structured-summary risks section.
+    // rule 6's commit guidance); route P2/P3 to the structured-summary
+    // risks section; re-run validator after follow-up commit when applicable.
     expect(out).toContain("P0 or P1 finding");
     expect(out).toContain("second commit (not `--amend`)");
+    expect(out).toContain("appropriate Conventional Commit prefix per rule 6");
+    expect(out).toContain("re-invoke it on the post-fix diff");
     expect(out).toContain("P2/P3 findings");
     expect(out).toContain("risks section");
     expect(out).toContain("task-error: <verbatim error message>");

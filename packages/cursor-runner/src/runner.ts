@@ -108,6 +108,8 @@ export interface CursorRunResult {
     readonly branch?: string;
     readonly prUrl?: string;
   }[];
+  /** Cloud-only divergence signals (omitted when empty). */
+  readonly warnings?: readonly string[];
   /** Populated when `status === "failed"`. */
   readonly errorMessage?: string;
 }

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { CloudRunSpec, CursorRunInput } from "../src/runner.js";
 
+import { mapTerminalResult } from "../src/_shared.js";
 import { CloudCursorRunner } from "../src/cloud-runner.js";
 import {
   CursorCloudIntegrationError,
@@ -327,13 +328,34 @@ describe("CloudCursorRunner — Agent.create cloud payload", () => {
         autoCreatePR: true,
         env: { name: "staging", type: "pool" },
         envVars: { MY_TOKEN: "abc" },
-        repos: [...repos],
+        repos: [{ url: repos[0].url, prUrl: repos[0].prUrl }],
         skipReviewerRequest: false,
         workOnCurrentBranch: true,
       },
       mcpServers: { docs: { type: "http", url: "https://docs" } },
       model: { id: "composer-2.5", params: [{ id: "fast", value: true }] },
       name: "ship/wf-cloud",
+    });
+  });
+
+  test("forwards per-repo startingRef into Agent.create cloud.repos[0]", async () => {
+    const { run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    await runner.run(
+      cloudBaseInput({
+        cloud: {
+          repos: [{ startingRef: "ship-l3-fixture", url: "https://github.com/acme/sandbox" }],
+        },
+      }),
+    );
+
+    const arg = vi.mocked(Agent.create).mock.calls[0]?.[0] as AgentOptions | undefined;
+    expect(arg?.cloud?.repos?.[0]).toMatchObject({
+      startingRef: "ship-l3-fixture",
+      url: "https://github.com/acme/sandbox",
     });
   });
 
@@ -354,6 +376,59 @@ describe("CloudCursorRunner — Agent.create cloud payload", () => {
     expect(arg?.cloud).not.toHaveProperty("skipReviewerRequest");
     expect(arg?.cloud).not.toHaveProperty("envVars");
     expect(arg?.cloud).not.toHaveProperty("env");
+  });
+});
+
+describe("CloudCursorRunner — cloud warnings on terminal result", () => {
+  test("autoCreatePR without prUrl surfaces warnings on succeeded mapped result", async () => {
+    const { run } = makeMockRun({
+      result: {
+        durationMs: 100,
+        git: { branches: [{ repoUrl: "github.com/acme/sandbox" }] },
+        id: "run-warn",
+        result: "ok",
+        status: "finished",
+      },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(
+      cloudBaseInput({
+        cloud: {
+          autoCreatePR: true,
+          repos: [{ url: "https://github.com/acme/sandbox" }],
+        },
+      }),
+    );
+    const mapped = await handle.result;
+    expect(mapped.warnings).toContain(
+      "autoCreatePR was requested but result.branches[0].prUrl is undefined",
+    );
+  });
+
+  test("mapTerminalResult includes warnings at top level for autoCreatePR divergence", () => {
+    const result = {
+      durationMs: 50,
+      git: { branches: [{ repoUrl: "github.com/acme/sandbox" }] },
+      status: "finished",
+    } as RunResult;
+    const spec = {
+      autoCreatePR: true,
+      repos: [{ url: "https://github.com/acme/sandbox" }],
+    } as CloudRunSpec;
+    const mapped = mapTerminalResult(result, "succeeded", spec);
+    // Both the autoCreatePR (no prUrl) and the branch-expected (no branch)
+    // warnings fire — the persisted JSON surfaces every divergence so the
+    // operator can tell whether cursor pushed-to-main vs left work dangling.
+    expect(mapped).toMatchObject({
+      status: "succeeded",
+      warnings: [
+        "autoCreatePR was requested but result.branches[0].prUrl is undefined",
+        "a new branch was expected (workOnCurrentBranch !== true) but result.branches[0].branch is undefined",
+      ],
+    });
   });
 });
 
