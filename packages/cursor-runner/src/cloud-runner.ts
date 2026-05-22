@@ -49,7 +49,11 @@ function modelArgFromInput(input: CursorRunInput): SdkModelSelection {
 
 function cloudAgentOptions(spec: CloudRunSpec): CloudAgentOptions {
   return {
-    repos: [...spec.repos],
+    repos: spec.repos.map((r) => ({
+      url: r.url,
+      ...(r.startingRef !== undefined && { startingRef: r.startingRef }),
+      ...(r.prUrl !== undefined && { prUrl: r.prUrl }),
+    })),
     ...(spec.workOnCurrentBranch !== undefined && {
       workOnCurrentBranch: spec.workOnCurrentBranch,
     }),
@@ -79,11 +83,12 @@ function mapCloudRunResult(result: RunResult, input: CursorRunInput): CursorRunR
   // Cloud-only debug telemetry. Local runs go through mapRunResult directly
   // and never reach this wrapper, preserving the SHIP_CLOUD_DEBUG-only intent.
   cloudDebugLog("mapTerminalResult result.git", result.git);
+  const cloudSpec = input.cloud;
   // `@cursor/sdk` RunResult typings omit "expired" as of 1.0.x; cloud may still surface it.
   if (((result.status as string | undefined) ?? "").toLowerCase() === "expired") {
-    return mapTerminalResult(result, "cancelled");
+    return mapTerminalResult(result, "cancelled", cloudSpec);
   }
-  return mapRunResult(result, input);
+  return mapRunResult(result, input, cloudSpec);
 }
 
 /** Construct once, reuse across runs. The runner holds no per-run state. */

@@ -116,8 +116,9 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — happy path (auto-create PR
       ) as CursorRunResult;
       expect(persisted.branches.length).toBeGreaterThan(0);
       const b0 = persisted.branches[0]!;
-      expect((b0.branch ?? "").length).toBeGreaterThan(0);
-      expect((b0.prUrl ?? "").length).toBeGreaterThan(0);
+      const diag = `result.branches[0]=${JSON.stringify(b0)} warnings=${JSON.stringify(persisted.warnings ?? null)}`;
+      expect((b0.branch ?? "").length, diag).toBeGreaterThan(0);
+      expect(b0.prUrl?.startsWith("https://github.com/"), diag).toBe(true);
 
       branchForCleanup = b0.branch;
       prNum = pullNumberFromPrUrl(b0.prUrl!);
