@@ -126,6 +126,16 @@ function parseModelParam(raw: string): { id: string; value: string | boolean } {
   const rawVal = raw.slice(idx + 1);
   if (rawVal === "true") return { id, value: true };
   if (rawVal === "false") return { id, value: false };
+  // Reject empty string at parse time — the CLI bypasses shipInputSchema and
+  // reaches ShipService directly, so without this guard a mistyped flag like
+  // `--model-param fast=` surfaces as a downstream modelSelectionSchema
+  // failure at run-time instead of an immediate argument error. Boolean
+  // false is still allowed (legitimate value for composer-2.5 fast param).
+  if (rawVal === "") {
+    throw new InvalidArgumentError(
+      `invalid --model-param: ${raw} (empty value; use KEY=true / KEY=false / KEY=<non-empty>)`,
+    );
+  }
   return { id, value: rawVal };
 }
 

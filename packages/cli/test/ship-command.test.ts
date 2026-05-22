@@ -198,6 +198,25 @@ describe("ship ship", () => {
     expect(h.harness.cursor.calls).toHaveLength(0);
   });
 
+  test("--model-param with empty value (KEY=) rejected at parse time", async () => {
+    // CLI bypasses shipInputSchema and reaches ShipService directly, so without
+    // this guard the empty string surfaces as a downstream modelSelectionSchema
+    // failure at run-time instead of an immediate argument error.
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--model-param",
+      "fast=",
+    ]);
+    expect(code).toBe(1);
+    expect(h.stderr.join("")).toMatch(/invalid --model-param: fast= \(empty value/);
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
   test("--model-param + --model combine in synthesized ModelSelection", async () => {
     h.harness.cursor.enqueue({
       events: [],
