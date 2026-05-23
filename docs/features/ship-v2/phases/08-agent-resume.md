@@ -57,9 +57,9 @@ interface CursorRunAttachInput {
 ### F2 — `CloudCursorRunner.attach` implementation
 
 1. `Agent.resume(input.agentId, { apiKey })` → `SDKAgent`.
-2. `Agent.getRun(input.runId, { runtime: "cloud", agentId: input.agentId })` → `Run`.
+2. `Agent.getRun(input.runId, { runtime: "cloud", agentId: input.agentId, apiKey })` → `Run`. **Pass `apiKey` explicitly** — the SDK's normal `CURSOR_API_KEY` env fallback still applies, but auth context from a prior `Agent.resume` call is NOT carried over (even within the same process). Verified by the phase 08 spike, 2026-05-23 — calling `getRun` without `apiKey` (and without the env fallback) after a successful `resume` throws an auth error.
 3. From here the pipeline is identical to `run`'s post-`agent.send` path: stream events via `sdkRun.stream()`, terminal via `sdkRun.wait()`, finalize via `mapCloudRunResult`.
-4. If `Agent.resume` throws because the agent is gone (expired, deleted, revoked) → throw `CursorAgentNotFoundError`. Caller (`ShipService`) maps this to `cursor_runs.status = 'failed'`, `workflow_run.status = 'failed'`, terminal write-back with an explanatory error message.
+4. If `Agent.resume` / `Agent.getRun` throws because the agent or run is gone (expired, deleted, revoked, terminal-and-purged) → throw `CursorAgentNotFoundError`. Map both `UnknownAgentError` and cloud-side HTTP 404 / 410 variants to the same Ship error class (the spike observed both, depending on whether the bad ID was the agent or the run). Caller (`ShipService`) maps this to `cursor_runs.status = 'failed'`, `workflow_run.status = 'failed'`, terminal write-back with an explanatory error message.
 
 ### F3 — Ship startup resume scan
 
@@ -101,7 +101,7 @@ Started for: (a) every freshly-fired cloud run, (b) every resumed run from F3.
 
 ### F6 — `CursorAgentNotFoundError`
 
-New error class in `packages/cursor-runner/src/errors.ts`. Carries `{ agentId, runId, runtime }`. Thrown when `Agent.resume` / `Agent.getRun` indicates the agent or run is gone.
+New error class in `packages/cursor-runner/src/errors.ts`. Carries `{ agentId, runId, runtime }`. Thrown when `Agent.resume` / `Agent.getRun` indicates the agent or run is gone. The mapping must cover both SDK-side `UnknownAgentError` (typed) and cloud-side HTTP 404 / 410 responses (the phase 08 spike observed both depending on which ID was stale — bad agentId vs terminal-and-purged runId).
 
 ## Tradeoffs
 
@@ -134,7 +134,7 @@ Per the tradeoff table above. Concrete shape: `createShipService` returns a Prom
 
 ### ED-5 — `mcpServers` and `agents` re-passed from wiring, not from DB
 
-Per the SDK resume gotcha (`mcpServers` not persisted; same likely for inline `agents`), we re-build these from the same wiring layer used for fresh runs. Configuration is re-passable from `ServiceConfig`; no DB schema change for these inputs.
+`mcpServers` is not persisted by the SDK across `Agent.resume` and MUST be re-passed; the wiring layer used for fresh runs handles this with no DB schema change. Inline `agents` **empirically survives `Agent.resume`** (phase 08 spike Q2, 2026-05-23 — both pre-resume and post-resume `subagent_type` enumerations contained the registered `code-reviewer` byte-for-byte), so re-pass is defensive symmetry rather than strictly required: keeping the same code path for both fields makes `attach` mirror `run` cleanly and protects against future SDK regressions.
 
 ## Validation plan
 
@@ -144,7 +144,7 @@ Per the SDK resume gotcha (`mcpServers` not persisted; same likely for inline `a
 - **Unit (`ShipService.resumeOrphanedRuns`)** — fixture DB with N `running` cloud rows; assert N parallel `attach` calls; assert idempotent re-run.
 - **Unit (`CursorAgentNotFoundError`)** — `Agent.resume` rejects → row finalizes as `failed` with the new error class as cause.
 - **L2** — kill-mid-run scenario via `FakeCursorRunner.attach` + simulated process restart.
-- **L3 (gated on `SHIP_LIVE` + `SHIP_CLOUD`)** — fire `ship.ship` against the sandbox, kill the ship-cli process before terminal, restart, assert the run completes with the same `workflowRunId` and a `ship.resumed` event in `events.ndjson`.
+- **L3 (gated on `SHIP_LIVE` + `SHIP_CLOUD`)** — fire `ship.ship` against the sandbox, kill the ship-cli process before terminal, restart, assert the run completes with the same `workflowRunId` and a `ship.resumed` event in `events.ndjson`. Use a prompt the model can't shortcut (a real long-running shell command, not print-and-sleep — the spike's `cancel-resumed` run lost its cancel race because composer-2.5 collapsed the "print one line per second for 60s" loop into ~20s of immediate output).
 - **Negative** — explicit "local resume throws" unit test on `LocalCursorRunner.attach`.
 
 ## Risks
