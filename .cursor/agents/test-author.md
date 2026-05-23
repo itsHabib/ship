@@ -1,6 +1,6 @@
 ---
 name: test-author
-description: Use this AFTER writing new production code AND BEFORE declaring done, when the diff has new or modified exports without matching tests. Detects the repo's test framework + naming conventions and drafts tests in the prevailing style; reuses existing harness / fakes / fixtures; references the design's F1-Fn so tests encode the documented contract.
+description: Use proactively when the diff adds a new exported function, method, or type in any language. Detects the repo's test framework + naming conventions and drafts tests in the prevailing style; reuses existing harness / fakes / fixtures; references the design's F1-Fn so tests encode the documented contract.
 model: composer-2-fast
 ---
 
