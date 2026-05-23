@@ -38,4 +38,6 @@ If your `task` tool doesn't list one of these subagents (e.g. the repo predates 
 
 ## Background
 
-These subagents push inner-loop concerns (review, validation, security) INTO the implement phase instead of relying on outer-loop bot reviewers to catch them in cycle 1. Phase 10 retired `scope-tracker` and `ci-checker` per empirical audit; a follow-up retrench retired `test-author`, `verifier`, and `debugger` in favor of a smaller 3-specialist set with `code-reviewer` absorbing both naming and scope checks.
+These subagents push inner-loop concerns (review, validation, security) INTO the implement phase instead of relying on outer-loop bot reviewers to catch them in cycle 1. Phase 10 retired `scope-tracker` and `ci-checker` per empirical audit; a follow-up retrench retired `test-author`, `verifier`, and `debugger` in favor of a smaller 3-specialist set with `code-reviewer` absorbing both naming and scope checks. Older phase docs may reference the historical 6-agent set — those are point-in-time snapshots, not the current shape.
+
+Note: F-id functional satisfaction (the retired `verifier`'s beat) is now the parent agent's own judgment rather than a dedicated subagent pass. `code-reviewer`'s Scope checklist covers *which files* are touched, not *whether each F-id is satisfied* — the trade-off is faster runs at the cost of explicit per-requirement structured coverage.

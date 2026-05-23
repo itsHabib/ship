@@ -55,11 +55,14 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("- `validator`");
     expect(out).toContain("- `security-auditor`");
     // Phase 10 retired scope-tracker + ci-checker; the retrench retired
-    // verifier + test-author + debugger. None should be in rule 7.
+    // verifier + test-author + debugger. None should appear ANYWHERE in
+    // the rendered prompt — assert the backticked name broadly, not just
+    // the bullet form, so a stray prose mention also fails the test.
     expect(out).not.toContain("`scope-tracker`");
-    expect(out).not.toContain("- `verifier`");
-    expect(out).not.toContain("- `test-author`");
-    expect(out).not.toContain("- `debugger`");
+    expect(out).not.toContain("`ci-checker`");
+    expect(out).not.toContain("`verifier`");
+    expect(out).not.toContain("`test-author`");
+    expect(out).not.toContain("`debugger`");
     expect(out).toContain("built-in subagents (`Explore`, `Bash`, `Browser`)");
     // Rule 7's skip guard is scoped to the diff-reviewing pair only —
     // security-auditor (the sole remaining proactive subagent) still

@@ -28,7 +28,7 @@ Example finding format: `P2 — Rule 3: module renamed to helpers/ instead of a 
 Read the task doc's `Scope` and `Out-of-scope` sections. Classify each touched file:
 
 - **In-scope** — listed in Scope, or a logical extension (e.g. a `.test.ts` alongside a listed source file; a barrel re-export when a new public symbol is added).
-- **Adjacent** — not listed but reasonably required by the impl (snapshot updates, version bumps, lint-nit fixes the change introduces).
+- **Adjacent** — not listed but reasonably required by the impl (snapshot updates, version bumps, lint-nit fixes the change introduces). Accept without a finding unless their count pushes the PR past its sizing band — in that case surface them as `P2 — Scope: budget pressure from adjacent edits` so the operator can decide split-vs-justify.
 - **Out-of-scope** — not in Scope, not adjacent.
 
 For each out-of-scope file, assign severity:
