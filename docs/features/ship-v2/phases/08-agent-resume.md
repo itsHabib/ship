@@ -57,7 +57,7 @@ interface CursorRunAttachInput {
 ### F2 — `CloudCursorRunner.attach` implementation
 
 1. `Agent.resume(input.agentId, { apiKey })` → `SDKAgent`.
-2. `Agent.getRun(input.runId, { runtime: "cloud", agentId: input.agentId, apiKey })` → `Run`. **`apiKey` is required on `Agent.getRun` too** — the SDK does NOT inherit it from a prior `Agent.resume` call, even within the same process. (Verified by the phase 08 spike, 2026-05-23 — calling `getRun` without `apiKey` after a successful `resume` throws an auth error.)
+2. `Agent.getRun(input.runId, { runtime: "cloud", agentId: input.agentId, apiKey })` → `Run`. **Pass `apiKey` explicitly** — the SDK's normal `CURSOR_API_KEY` env fallback still applies, but auth context from a prior `Agent.resume` call is NOT carried over (even within the same process). Verified by the phase 08 spike, 2026-05-23 — calling `getRun` without `apiKey` (and without the env fallback) after a successful `resume` throws an auth error.
 3. From here the pipeline is identical to `run`'s post-`agent.send` path: stream events via `sdkRun.stream()`, terminal via `sdkRun.wait()`, finalize via `mapCloudRunResult`.
 4. If `Agent.resume` / `Agent.getRun` throws because the agent or run is gone (expired, deleted, revoked, terminal-and-purged) → throw `CursorAgentNotFoundError`. Map both `UnknownAgentError` and cloud-side HTTP 404 / 410 variants to the same Ship error class (the spike observed both, depending on whether the bad ID was the agent or the run). Caller (`ShipService`) maps this to `cursor_runs.status = 'failed'`, `workflow_run.status = 'failed'`, terminal write-back with an explanatory error message.
 
