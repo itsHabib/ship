@@ -46,6 +46,7 @@ describe("renderImplementationPrompt", () => {
     // composer from fabricating subagent output when a call fails.
     expect(out).toContain("`task` tool");
     expect(out).toContain("subagent_type `code-reviewer`");
+    expect(out).toContain("subagent_type `naming-critic`");
     expect(out).toContain("subagent_type `scope-tracker`");
     expect(out).toContain("subagent_type `test-author`");
     expect(out).toContain("subagent_type `validator`");
