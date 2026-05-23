@@ -17,8 +17,7 @@ Files this phase touches:
 - `.cursor/agents/verifier.md` — **NEW** (Cursor's recommended Verifier pattern; complements `validator`).
 - `.cursor/agents/debugger.md` — **NEW** (Cursor's recommended Debugger pattern; manual `/debugger` invocation).
 - `.cursor/agents/security-auditor.md` — **NEW** (Cursor's recommended specialty for auth/payments/secrets).
-- `.cursor/agents/code-reviewer.md` — keep, no content change.
-- `.cursor/agents/naming-critic.md` — add explicit `model: composer-2-fast` (multi-model cost optimization).
+- `.cursor/agents/code-reviewer.md` — **UPDATE**: absorb the 5 operator naming rules into the body as an explicit checklist (replaces the rejected `naming-critic` specialist; see § Tradeoffs).
 - `.cursor/agents/validator.md` — add explicit `model: composer-2-fast`.
 - `.cursor/agents/test-author.md` — add explicit `model: composer-2-fast`.
 - `packages/core/src/artifacts/prompt-template.ts` — rewrite rule 7 with the new set + proactive language ("use proactively" / "always use for"); note Cursor's built-in Explore/Bash/Browser.
@@ -36,6 +35,8 @@ Phase 03 shipped subagents based on a hypothesis: inner-loop quality checks via 
    - `scope-tracker` — **0 P0/P1 raised across 6 runs**; every report was "Approve, all in-scope". **Rubber-stamp; net-zero value.**
    - `test-author` — never fired (overcautious conditional gate). **Dead surface.**
    - `ci-checker` — never in prompt template; never fires. **Dead surface.**
+
+> **Naming-critic reversal (2026-05-23):** PR #68 added a `naming-critic` specialist subagent before the audit results were fully digested. On reflection: the audit showed **0 P0/P1 naming findings across 6 runs** — naming-critic addresses a P3-noise problem that code-reviewer already covers. PR #68 was closed; the 5 operator naming rules absorb into code-reviewer's prompt body as an explicit checklist. One specialist, broader coverage, no duplicate findings.
 
 2. **Cursor's official guidance** (post-research, 2026-05-23):
    - Recommended specialty subagents: **Verifier, Debugger, Test Runner, Security Auditor**.
@@ -103,8 +104,7 @@ Add explicit `model:` frontmatter to each subagent:
 
 | Subagent | Model | Rationale |
 |---|---|---|
-| `code-reviewer` | `inherit` | High-signal generalist; quality justifies parent's model cost |
-| `naming-critic` | `composer-2-fast` | Pattern-matching against 5 fixed rules; cheap model suffices |
+| `code-reviewer` | `inherit` | High-signal generalist (audited 2/2 P0/P1 match rate); quality justifies parent's model cost. Now also carries the 5 operator naming rules as a body checklist (replacing the rejected `naming-critic` specialist). |
 | `validator` | `composer-2-fast` | Runs commands, reports pass/fail; mechanical |
 | `test-author` | `composer-2-fast` | Drafts tests per detected convention; structured output |
 | `verifier` | `opus-high` (fallback `inherit`) | Reasoning-heavy; reads spec + diff |
@@ -115,6 +115,20 @@ Falls back to `inherit` cleanly if the configured model isn't on the operator's 
 
 Acceptance: subagent file frontmatter parsed correctly; events.ndjson `task` tool_call events show the dispatched model is the one configured.
 
+### F6b — Code-reviewer absorbs the operator naming rules
+
+Update `code-reviewer.md` body with an explicit "Naming checklist" section listing the 5 rules:
+
+1. No `Impl` suffix on symbols (memory: `feedback_naming_no_impl_suffix.md`)
+2. No `And`/`Or` in function/method names (memory: `feedback_naming_no_and_or.md`)
+3. No generic package/module names like `shared`/`common`/`utils`/`helpers` (memory: `feedback_naming.md`)
+4. `//` comments only, no JSDoc (memory: `feedback_comments_in_code.md`)
+5. No `Impl`-smell hidden behind paper-thin renames (related to #1)
+
+Each finding cites the rule + memory file (audit format from the deprecated naming-critic — preserves the traceability benefit without the duplicate-finding cost).
+
+Acceptance: `code-reviewer.md` body has a "Naming checklist" section; a follow-up firing run produces naming findings that quote the memory file. Existing findings (correctness/security/edge-case) unaffected.
+
 ### F7 — Rewrite `prompt-template.ts` rule 7
 
 Replace conditional-gate language with **proactive language** per Cursor's recommendation. Drop the "only if you did X" qualifications; describe the natural dispatch trigger as a job description.
@@ -123,8 +137,7 @@ Rough shape:
 
 ```
 7. As you implement, dispatch to the repo's registered subagents at the natural points. Use `task` with subagent_type:
-   - `code-reviewer` — always use before producing the structured summary. Pass the diff.
-   - `naming-critic` — always use when the diff adds or renames symbols. Specialist for operator naming opinions.
+   - `code-reviewer` — always use before producing the structured summary. Pass the diff. Code-reviewer now also covers the 5 operator naming rules (no Impl suffix, no And/Or, no generic package names, no JSDoc, no Impl-hidden-behind-rename) per its body's "Naming checklist" section.
    - `verifier` — always use before producing the structured summary. Reads the task doc's F1-Fn against the diff.
    - `validator` — always use before producing the structured summary. Runs the repo's check commands.
    - `test-author` — use proactively when the diff adds a new exported function / method / type in any language.
@@ -160,7 +173,8 @@ Not in the Ship PR (skill files aren't in the Ship repo). Tracked here for cross
 
 | Decision | Chose | Alternative | Why |
 |---|---|---|---|
-| Subagent count after retire+add | **7** (code-reviewer, naming-critic, validator, test-author, verifier, debugger, security-auditor) | 5 (keep the existing minus retirees, don't add Cursor patterns) / 10+ (add pr-budgeter, doc-first-enforcer, samurai-sword-checker per leverage doc) | 7 matches Cursor's "specialized over many generic" principle without flirting with the "50 is too many" warning. Adding more without empirical fire-rate data is premature. |
+| Subagent count after retire+add | **6** (code-reviewer, validator, test-author, verifier, debugger, security-auditor) | 5 (drop naming-critic AND test-author since test-author hasn't fired) / 7+ (add naming-critic per PR #68 + pr-budgeter + doc-first-enforcer) | 6 matches Cursor's "specialized over many generic" principle. Naming-critic dropped after PR #68 was closed (0 P0/P1 naming findings across 6 audit runs — not worth a slot; rolls into code-reviewer's body checklist instead). Test-author kept on probation — PR #68's broadened trigger ("any new export") might fire it; re-audit decides retention. Adding pr-budgeter / doc-first-enforcer without empirical justification is premature. |
+| Naming coverage shape | **Absorbed into code-reviewer's body** as an explicit checklist | Separate `naming-critic` specialist (rejected — PR #68 closed) | One specialist with broader coverage > two specialists with overlapping coverage. The "memory-grounded findings" benefit of naming-critic (each finding cites the rule's memory file) is preserved by adding the checklist to code-reviewer's body with the same citation format. Saves a subagent slot for higher-stakes additions (verifier, security-auditor). |
 | Verifier vs validator separation | **Two distinct subagents** | One unified "checker" subagent | Different cognitive load: validator is mechanical (run commands), verifier reasons over spec satisfaction. Combining them = a bloated prompt covering both. |
 | Debugger trigger | **Manual `/debugger` only** | Auto-dispatch on first error | Auto-dispatching on every error would burn tokens on transient/network errors; the operator's judgment (or the parent's, via the SDK's manual invocation surface) is the right filter. |
 | Multi-model assignment | **Per-subagent `model:` frontmatter** | All on `inherit` (current state) | Cursor's docs + community pattern: ~5× token cost difference between cheap and expensive models per subagent invocation. Routine checks should run cheap; reasoning-heavy + high-stakes should run expensive. |
