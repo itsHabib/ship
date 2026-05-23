@@ -47,26 +47,27 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("`task` tool");
     expect(out).toContain("Use `task` with subagent_type:");
     expect(out).toContain("- `code-reviewer`");
-    // Code-reviewer's bullet must reference the absorbed naming
-    // checklist so future edits can't quietly drop the link between
-    // rule 7 and code-reviewer.md's body checklist (the rejected
-    // naming-critic specialist's traceability lives there).
+    // Code-reviewer's bullet must reference BOTH absorbed checklists
+    // so future edits can't quietly drop the link between rule 7 and
+    // code-reviewer.md's body checklists.
     expect(out).toContain('"Naming checklist" section');
-    expect(out).toContain("- `verifier`");
+    expect(out).toContain('"Scope checklist" section');
     expect(out).toContain("- `validator`");
-    expect(out).toContain("- `test-author`");
     expect(out).toContain("- `security-auditor`");
-    expect(out).toContain("- `debugger`");
+    // Phase 10 retired scope-tracker + ci-checker; the retrench retired
+    // verifier + test-author + debugger. None should be in rule 7.
     expect(out).not.toContain("`scope-tracker`");
+    expect(out).not.toContain("- `verifier`");
+    expect(out).not.toContain("- `test-author`");
+    expect(out).not.toContain("- `debugger`");
     expect(out).toContain("built-in subagents (`Explore`, `Bash`, `Browser`)");
-    // Rule 7's skip guard is scoped to the diff-reviewing subagents
-    // only — the proactive subagents (test-author / security-auditor)
-    // still fire during impl even if no commits were ultimately
-    // produced. Pin the narrow gate wording.
+    // Rule 7's skip guard is scoped to the diff-reviewing pair only —
+    // security-auditor (the sole remaining proactive subagent) still
+    // fires during impl even if no commits were ultimately produced.
     expect(out).toContain(
-      "diff-reviewing subagents (code-reviewer / verifier / validator) have no diff to review",
+      "diff-reviewing subagents (code-reviewer / validator) have no diff to review",
     );
-    expect(out).toContain("proactive subagents (test-author / security-auditor) still fire");
+    expect(out).toContain("security-auditor still fires");
     // Rule 7 success path: act on P0/P1 via a NEW follow-up commit
     // (explicitly not `--amend`, which differentiates the new clause from
     // rule 6's commit guidance); route P2/P3 to the structured-summary
