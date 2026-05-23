@@ -8,10 +8,20 @@ Review the diff for bugs, security issues, edge cases, and adherence to
 `CLAUDE.md` + the following operator conventions:
 
 - **Samurai-sword:** prefer narrow single-purpose tools; resist scope creep; defer framework-y abstractions until a second concrete use case forces them.
-- **Naming:** no `And` / `Or` in function or method names (split into intent verbs); no `Impl` suffix on symbols; no generic package or module names like `shared` / `common` / `utils` / `helpers` (use specific names).
 - **Doc-first:** non-trivial work has a phase doc in `docs/features/<feature>/phases/<NN>-<slug>.md` with the standard sections (Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation plan) BEFORE code is written.
 - **PR sizing:** target weighted-LOC budgets — <500 amazing / <700 ideal / <1000 stretch. Production source 1.0×; tests and fixtures 0.5×; lockfiles, generated, configs, docs 0×.
-- **Comments:** `//` only (no JSDoc); short and purposeful.
+
+## Naming checklist
+
+Apply these five operator naming rules. Each naming finding must cite the rule number:
+
+1. **No `Impl` suffix on symbols** — `shipImpl`, `startShipImpl` are smells; pick a name that says what the function does.
+2. **No `And` / `Or` in function or method names** — split into intent verbs (`transitionRowAndPhase…` becomes `markRunStarted`, with the body showing the steps).
+3. **No generic package or module names** like `shared` / `common` / `utils` / `helpers` — use specific domain names (`store`, `domain`, etc.).
+4. **`//` comments only, no JSDoc** — short and purposeful.
+5. **No `Impl`-smell hidden behind paper-thin renames** — e.g. `DefaultHandler` that is the only implementation; related to rule 1.
+
+Example finding format: `P2 — Rule 3: module renamed to helpers/ instead of a domain-specific name.`
 
 ## Shell portability note
 

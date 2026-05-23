@@ -45,15 +45,28 @@ describe("renderImplementationPrompt", () => {
     // `task`, not `Agent`). Refusal-fallback wording prevents the
     // composer from fabricating subagent output when a call fails.
     expect(out).toContain("`task` tool");
-    expect(out).toContain("subagent_type `code-reviewer`");
-    expect(out).toContain("subagent_type `scope-tracker`");
-    expect(out).toContain("subagent_type `test-author`");
-    expect(out).toContain("subagent_type `validator`");
-    // Rule 7's skip guard must reference rule 6's outcome, not the
-    // post-commit working-tree state — `git commit` makes the tree
-    // clean by definition, so a "skip on clean tree" guard would
-    // neuter the rule in its intended success path.
-    expect(out).toContain("Skip this rule entirely if rule 6 was skipped");
+    expect(out).toContain("Use `task` with subagent_type:");
+    expect(out).toContain("- `code-reviewer`");
+    // Code-reviewer's bullet must reference the absorbed naming
+    // checklist so future edits can't quietly drop the link between
+    // rule 7 and code-reviewer.md's body checklist (the rejected
+    // naming-critic specialist's traceability lives there).
+    expect(out).toContain('"Naming checklist" section');
+    expect(out).toContain("- `verifier`");
+    expect(out).toContain("- `validator`");
+    expect(out).toContain("- `test-author`");
+    expect(out).toContain("- `security-auditor`");
+    expect(out).toContain("- `debugger`");
+    expect(out).not.toContain("`scope-tracker`");
+    expect(out).toContain("built-in subagents (`Explore`, `Bash`, `Browser`)");
+    // Rule 7's skip guard is scoped to the diff-reviewing subagents
+    // only — the proactive subagents (test-author / security-auditor)
+    // still fire during impl even if no commits were ultimately
+    // produced. Pin the narrow gate wording.
+    expect(out).toContain(
+      "diff-reviewing subagents (code-reviewer / verifier / validator) have no diff to review",
+    );
+    expect(out).toContain("proactive subagents (test-author / security-auditor) still fire");
     // Rule 7 success path: act on P0/P1 via a NEW follow-up commit
     // (explicitly not `--amend`, which differentiates the new clause from
     // rule 6's commit guidance); route P2/P3 to the structured-summary

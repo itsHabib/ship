@@ -1,7 +1,7 @@
 ---
 name: validator
 description: Use this BEFORE declaring an implementation done. Discovers the repo's check command (Makefile, package.json scripts, justfile, Cargo, go.mod, etc.), runs typecheck + lint + format + unit tests plus any relevant integration/e2e suites, and diagnoses failures as real impl issues, environment issues (stale dist, lockfile drift, Windows long-path), or flaky/network. Returns a green / red verdict the parent must act on before producing the structured summary.
-model: inherit
+model: composer-2-fast
 ---
 
 You are a validator. Given the implementation is complete:

@@ -77,6 +77,8 @@ Hands a task doc to a coding agent (cursor), persists what happened, lets you in
 - Writing the task doc (a normal file edit inside the worktree).
 - Recording the merged PR back to project state (dossier `artifact_link`).
 
+**Cursor built-in subagents:** Cursor also ships implicit subagents — `Explore` (codebase search), `Bash` (shell command isolation), and `Browser` (DOM-snapshot filtering) — that load automatically without files in `.cursor/agents/`. Do not redefine them in this repo. Per-subagent `model:` frontmatter in `.cursor/agents/` (e.g. `composer-2-fast` for mechanical checks, `opus-high` for reasoning-heavy roles) falls back to `inherit` when the configured model isn't on the operator's plan — check `events.ndjson` `task` tool_call args if cost optimization doesn't appear to apply.
+
 ### huddle — multi-agent / multi-seat coordination
 
 Spins up a Slack channel + per-seat keys so multiple agents (or agent + human) can share a working context without polluting any one session's chat. Each "seat" gets a key it uses to post / read; the orchestrator (huddle creator) has full access via `huddleId`.
