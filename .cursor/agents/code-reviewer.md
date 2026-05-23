@@ -23,6 +23,24 @@ Apply these five operator naming rules. Each naming finding must cite the rule n
 
 Example finding format: `P2 — Rule 3: module renamed to helpers/ instead of a domain-specific name.`
 
+## Scope checklist
+
+Read the task doc's `Scope` and `Out-of-scope` sections. Classify each touched file:
+
+- **In-scope** — listed in Scope, or a logical extension (e.g. a `.test.ts` alongside a listed source file; a barrel re-export when a new public symbol is added).
+- **Adjacent** — not listed but reasonably required by the impl (snapshot updates, version bumps, lint-nit fixes the change introduces). Accept without a finding unless their count pushes the PR past its sizing band — in that case surface them as `P2 — Scope: budget pressure from adjacent edits` so the operator can decide split-vs-justify.
+- **Out-of-scope** — not in Scope, not adjacent.
+
+For each out-of-scope file, assign severity:
+
+1. **P0** — changes unrelated behavior or public API; must revert before merge.
+2. **P1** — touches a different feature's surface; needs explicit justification in the PR description or split into a separate PR.
+3. **P2** — cosmetic / refactor / drive-by cleanup; recommend splitting but don't block.
+
+If a file SHOULD have been touched but wasn't, surface it as a "missing-from-scope" gap rather than fabricating one. Cross-check against the design's PR sizing budget — out-of-scope edits compound risk near band limits; flag that in the report.
+
+Example finding format: `P1 — Scope: edited packages/store/src/runs.ts but task doc's Scope only lists packages/core/src/service.ts. Justify or split.`
+
 ## Shell portability note
 
 This subagent runs in a parent agent's tool environment, which on Windows may be PowerShell. Older PowerShell parsers (Windows PowerShell 5.1) reject `&&` as a statement separator. Use `;` for chaining unrelated steps. For steps where a later command should only run on success (e.g. typecheck → test), run them as separate tool calls and check exit codes between, since `;` does not short-circuit on failure the way `&&` does.

@@ -14,28 +14,22 @@ This repo ships a curated set of subagents under `.cursor/agents/`:
 
 | Subagent | What it returns | When to invoke |
 |---|---|---|
-| `code-reviewer` | P0-P3 findings on the diff (bugs, security, conventions, naming checklist) | Always before the final summary |
-| `verifier` | F-id satisfaction report (spec vs diff) | Always before the final summary |
+| `code-reviewer` | P0-P3 findings on the diff (bugs, edge cases, conventions, naming checklist, scope checklist) | Always before the final summary |
 | `validator` | Green / red verdict from `make check` + e2e + diagnosis | Always before the final summary |
-| `test-author` | Drafted tests for new exported surface | Proactively when the diff adds a new export |
 | `security-auditor` | P0-P2 security findings on auth/payment/secrets/API surfaces | Proactively when the diff touches those surfaces |
-| `debugger` | Root-cause analysis for blocking errors | Manually via `/debugger` only |
 
 Cursor also provides built-in subagents (`Explore`, `Bash`, `Browser`) for context-heavy operations — these load automatically; do not redefine them.
 
 ## When you are implementing a task from a `ship.ship` run, dispatch at the natural points
 
-1. **When the diff adds a new exported function / method / type** → invoke `test-author` via your `task` tool. Incorporate its drafted tests before continuing.
-2. **When the diff touches auth, payments, secrets, env vars, or third-party API calls** → invoke `security-auditor`.
-3. **Before producing the final structured summary** → invoke `code-reviewer`, `verifier`, and `validator`. Address P0/P1 findings inline; surface P2/P3 in the summary's risks section.
-4. **When you hit an error you can't immediately diagnose** → invoke `debugger` manually via `/debugger`.
+1. **When the diff touches auth, payments, secrets, env vars, or third-party API calls** → invoke `security-auditor`.
+2. **Before producing the final structured summary** → invoke `code-reviewer` and `validator`. Address P0/P1 findings inline; surface P2/P3 in the summary's risks section.
 
 ## How to invoke
 
 Each subagent has a `name:` in its frontmatter (e.g. `code-reviewer`). Use your `task` tool with `subagent_type` set to that name and a brief instruction such as:
 
-- *"Review the current diff for P0/P1 findings against CLAUDE.md conventions."*
-- *"Verify the task doc's F1-Fn against the diff."*
+- *"Review the current diff for P0/P1 findings against CLAUDE.md conventions; check scope against the task doc."*
 - *"Run `make check` and report green / red."*
 
 ## If a subagent isn't registered
@@ -44,4 +38,6 @@ If your `task` tool doesn't list one of these subagents (e.g. the repo predates 
 
 ## Background
 
-These subagents push inner-loop concerns (review, spec verification, tests, validation, security) INTO the implement phase instead of relying on outer-loop bot reviewers to catch them in cycle 1. Phase 10 retired `scope-tracker` and `ci-checker` per empirical audit; see `docs/features/ship-v2/phases/10-subagent-redesign.md`.
+These subagents push inner-loop concerns (review, validation, security) INTO the implement phase instead of relying on outer-loop bot reviewers to catch them in cycle 1. Phase 10 retired `scope-tracker` and `ci-checker` per empirical audit; a follow-up retrench retired `test-author`, `verifier`, and `debugger` in favor of a smaller 3-specialist set with `code-reviewer` absorbing both naming and scope checks. Older phase docs may reference the historical 6-agent set — those are point-in-time snapshots, not the current shape.
+
+Note: F-id functional satisfaction (the retired `verifier`'s beat) is now the parent agent's own judgment rather than a dedicated subagent pass. `code-reviewer`'s Scope checklist covers *which files* are touched, not *whether each F-id is satisfied* — the trade-off is faster runs at the cost of explicit per-requirement structured coverage.
