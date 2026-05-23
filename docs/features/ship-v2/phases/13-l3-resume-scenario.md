@@ -112,7 +112,7 @@ Single PR. Step list = commit boundaries.
 ## Cross-refs
 
 - Overall design: [`08-agent-resume.md`](08-agent-resume.md) — Validation plan § L3.
-- Spike findings: [`pers/cursor-sdk-resume-spike/findings.md`](../../../../cursor-sdk-resume-spike/findings.md) — Q3 (cancel endpoint) + the print-loop-shortcut anomaly that forced the constraint on the prompt shape.
+- Spike findings (external to this repo, lives in the operator's `pers/` tree as a sibling to `pers/ship/`): `pers/cursor-sdk-resume-spike/findings.md` — Q3 (cancel endpoint) + the print-loop-shortcut anomaly that forced the constraint on the prompt shape.
 - Predecessor: phase 12 (`12-resume-orchestration.md`) — ships the orchestration this scenario exercises.
 - Sibling scenarios: `e2e/scenarios/cloud-happy-path.e2e.test.ts`, `cloud-cancel-during-creating.e2e.test.ts` — pattern reference for gating + cloud setup.
 - Dossier task: `tsk_01KSBJ3PHQNJ871MAHV5W3PW8M` (`phase-8c-l3-scenario`).

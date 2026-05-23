@@ -153,7 +153,7 @@ Single PR. Step list = commit boundaries.
 ## Cross-refs
 
 - Overall design: [`08-agent-resume.md`](08-agent-resume.md) — F1, F2, F6, ED-1, ED-2.
-- Spike findings: [`pers/cursor-sdk-resume-spike/findings.md`](../../../../cursor-sdk-resume-spike/findings.md) — Q1 ✓ (attach is live), Q2 ✓ (agents survive), Q3 endpoint reachable, Q4 deferred.
+- Spike findings (external to this repo, lives in the operator's `pers/` tree as a sibling to `pers/ship/`): `pers/cursor-sdk-resume-spike/findings.md` — Q1 ✓ (attach is live), Q2 ✓ (agents survive), Q3 endpoint reachable, Q4 deferred.
 - Spike-derived doc tweaks already landed: PR #74 (`docs(phase-8): incorporate SDK resume spike findings`).
 - Predecessor: [`04-cursor-cloud-runner.md`](04-cursor-cloud-runner.md) — `CloudCursorRunner` introduced.
 - Successor: phase 12 (`12-resume-orchestration.md`) — consumes `attach` to wire ShipService startup scan + event-pump.

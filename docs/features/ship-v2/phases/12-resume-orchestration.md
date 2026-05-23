@@ -149,7 +149,7 @@ Single PR. Step list = commit boundaries (split into a follow-up PR if implement
 ## Cross-refs
 
 - Overall design: [`08-agent-resume.md`](08-agent-resume.md) — F3, F4, F5, ED-3, ED-4, ED-5.
-- Spike findings: [`pers/cursor-sdk-resume-spike/findings.md`](../../../../cursor-sdk-resume-spike/findings.md) — Q2 informs ED-5 nuance.
+- Spike findings (external to this repo, lives in the operator's `pers/` tree as a sibling to `pers/ship/`): `pers/cursor-sdk-resume-spike/findings.md` — Q2 informs ED-5 nuance.
 - Predecessor: phase 11 (`11-attach-cloud-surface.md`) — ships the `attach` primitive this PR uses.
 - Successor: phase 13 (`13-l3-resume-scenario.md`) — end-to-end test that exercises this orchestration against real cloud.
 - Dossier task: `tsk_01KSBJ3C5VS3WP26VN47JM3MQC` (`phase-8b-resume-orchestration`).
