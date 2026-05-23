@@ -88,6 +88,9 @@ export const modelSelectionSchema = z
   .strict();
 export type ModelSelection = z.infer<typeof modelSelectionSchema>;
 
+/** Sentinel value for cloud runs with no local checkout (phase 09). */
+export const CLOUD_WORKTREE_SENTINEL = "(cloud)" as const;
+
 /**
  * Reference to a Tower-managed worktree. Captured at run-creation and
  * immutable for the run's lifetime.
@@ -95,9 +98,11 @@ export type ModelSelection = z.infer<typeof modelSelectionSchema>;
  * Fields:
  * - `repo`     — Tower-registered repo name (not a path).
  * - `name`     — worktree name within the repo; conventionally derived from
- *                the doc slug, matches the branch name for V1.
+ *                the doc slug, matches the branch name for V1. Cloud runs
+ *                without a local checkout use `CLOUD_WORKTREE_SENTINEL`.
  * - `branch`   — git branch the worktree is checked out on.
- * - `path`     — absolute filesystem path of the worktree.
+ * - `path`     — absolute filesystem path of the worktree, or
+ *                `CLOUD_WORKTREE_SENTINEL` when no local checkout exists.
  * - `baseRef`  — the ref this worktree was branched from (typically `main`).
  */
 export const worktreeRefSchema = z

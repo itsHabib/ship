@@ -20,6 +20,7 @@ import {
   GhAuthError,
   GhCreatePrFailedError,
   ImplementPhaseNotSucceededError,
+  MissingRepoError,
   OriginHeadUnsetError,
   OriginRepoUnresolvedError,
   WorkdirNotFoundError,
@@ -38,6 +39,7 @@ const USER_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   WorkdirNotFoundError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
+  MissingRepoError,
   WorkflowRunNotFoundError,
   // open_pr pre-conditions.
   ImplementPhaseNotSucceededError,

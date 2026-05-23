@@ -83,6 +83,7 @@ Hands a task doc to a coding agent (cursor), persists what happened, lets you in
 **Use proactively for:**
 
 - *"Ship `<task doc>` against `<worktree>`."* → `mcp__ship__ship { workdir, docPath, repo, branch }`. V2-async — returns `{ workflowRunId, status: "running" }` immediately.
+- *"Ship `<task doc>` on cursor cloud (no local worktree)."* → `mcp__ship__ship { docPath, runtime: "cloud", cloud: { repos: [{ url }] } }`.
 - *"What ran on `<repo>` recently?"* / *"What's still in flight?"* → `mcp__ship__list_workflow_runs { repo?, status?, limit? }`.
 - *"What did `<wf id>` do?"* → `mcp__ship__get_workflow_run { workflowRunId }` (also accessible via the `ship://runs/{id}` resource).
 - In-flight run needs to stop → `mcp__ship__cancel_workflow_run { workflowRunId }` (idempotent on terminal rows).

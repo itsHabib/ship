@@ -121,7 +121,7 @@ describe("ship tool", () => {
     expect(expectToolError(raw).text).toMatch(/workdir/i);
   });
 
-  test("docPath escapes workdir → isError", async () => {
+  test("docPath escapes workdir → isError (local only)", async () => {
     const raw = await h.client.callTool({
       name: "ship",
       arguments: { workdir: TEST_WORKDIR, repo: "ship", docPath: "../../etc/passwd" },
@@ -130,6 +130,31 @@ describe("ship tool", () => {
     // depending on whether the synthetic path lands inside the in-memory
     // FS — both map to `-32602` and carry the offending docPath.
     expect(expectToolError(raw).text).toMatch(/passwd|escape|not found/i);
+  });
+
+  test("cloud without workdir or repo reaches terminal with synthetic worktree", async () => {
+    await h.bundle.fs.mkdir("/external", { recursive: true });
+    await h.bundle.fs.writeFile("/external/cloud-task.md", "# Cloud parity\n\nDo it.\n");
+    h.cloudCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const raw = await h.client.callTool({
+      name: "ship",
+      arguments: {
+        docPath: "/external/cloud-task.md",
+        runtime: "cloud",
+        cloud: { repos: [{ url: "https://github.com/itsHabib/roxiq" }] },
+      },
+    });
+    const start = parseToolJson(raw) as ShipStartOutput;
+    expect(start.status).toBe("running");
+
+    const terminal = await waitForTerminalRun(h.client, start.workflowRunId);
+    expect(terminal.status).toBe("succeeded");
+    expect(terminal.repo).toBe("itsHabib/roxiq");
+    expect(terminal.worktree.path).toBe("(cloud)");
   });
 
   test("tools/list returns the V1 tools + the V2 open_pr tool", async () => {

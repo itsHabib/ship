@@ -1,6 +1,11 @@
 /** Tests for `errors.ts` — exit-code mapping pinned per spec.md. */
 
-import { DocNotFoundError, DocPathEscapesWorkdirError, WorkdirNotFoundError } from "@ship/core";
+import {
+  DocNotFoundError,
+  DocPathEscapesWorkdirError,
+  MissingRepoError,
+  WorkdirNotFoundError,
+} from "@ship/core";
 import { WorkflowRunNotFoundError } from "@ship/store";
 import { describe, expect, test } from "vitest";
 
@@ -17,6 +22,7 @@ describe("isUserError", () => {
     expect(isUserError(new WorkdirNotFoundError("/nope"))).toBe(true);
     expect(isUserError(new DocNotFoundError("missing.md"))).toBe(true);
     expect(isUserError(new DocPathEscapesWorkdirError("/work", "../escape"))).toBe(true);
+    expect(isUserError(new MissingRepoError())).toBe(true);
   });
 
   test("Commander 'missing required option' messages map to user errors", () => {

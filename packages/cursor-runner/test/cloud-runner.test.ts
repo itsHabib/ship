@@ -359,7 +359,7 @@ describe("CloudCursorRunner — Agent.create cloud payload", () => {
     });
   });
 
-  test("omits optional cloud fields when unset (exactOptionalPropertyTypes-safe)", async () => {
+  test("applies cloud defaults when autoCreatePR / workOnCurrentBranch omitted", async () => {
     const { run } = makeMockRun({});
     const { agent } = makeMockAgent({ run });
     vi.mocked(Agent.create).mockResolvedValue(agent);
@@ -369,13 +369,32 @@ describe("CloudCursorRunner — Agent.create cloud payload", () => {
 
     const arg = vi.mocked(Agent.create).mock.calls[0]?.[0] as AgentOptions | undefined;
     expect(arg?.cloud).toEqual({
+      autoCreatePR: true,
       repos: [{ url: "https://github.com/acme/sandbox" }],
+      workOnCurrentBranch: false,
     });
-    expect(arg?.cloud).not.toHaveProperty("workOnCurrentBranch");
-    expect(arg?.cloud).not.toHaveProperty("autoCreatePR");
     expect(arg?.cloud).not.toHaveProperty("skipReviewerRequest");
     expect(arg?.cloud).not.toHaveProperty("envVars");
     expect(arg?.cloud).not.toHaveProperty("env");
+  });
+
+  test("explicit autoCreatePR: false is forwarded (defaults do not override)", async () => {
+    const { run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    await runner.run(
+      cloudBaseInput({
+        cloud: {
+          autoCreatePR: false,
+          repos: [{ url: "https://github.com/acme/sandbox" }],
+        },
+      }),
+    );
+
+    const arg = vi.mocked(Agent.create).mock.calls[0]?.[0] as AgentOptions | undefined;
+    expect(arg?.cloud?.autoCreatePR).toBe(false);
   });
 });
 

@@ -10,11 +10,17 @@ import type { WorkflowRun } from "@ship/workflow";
 
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore } from "@ship/store";
-import { isTerminal } from "@ship/workflow";
+import { CLOUD_WORKTREE_SENTINEL, isTerminal } from "@ship/workflow";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { CloudRunnerNotConfiguredError, DocNotFoundError, WorkdirNotFoundError } from "./errors.js";
+import {
+  CloudRunnerNotConfiguredError,
+  DocNotFoundError,
+  DocPathEscapesWorkdirError,
+  MissingRepoError,
+  WorkdirNotFoundError,
+} from "./errors.js";
 import { createMemoryShipFs, type MemoryShipFs } from "./fs/memory.js";
 import { createShipService, type ShipService, type ShipServiceConfig } from "./service.js";
 
@@ -1012,6 +1018,91 @@ describe("ShipService.ship — runtime routing", () => {
         cloud: CLOUD_SPEC,
       });
     }).toThrow(CloudRunnerNotConfiguredError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
+    h.store.close();
+  });
+});
+
+describe("ShipService.ship — cloud parity", () => {
+  test("cloud without workdir: synthetic worktree + repo auto-derived", async () => {
+    const h = await createHarness();
+    await h.fs.mkdir("/external", { recursive: true });
+    await h.fs.writeFile("/external/task.md", "# External cloud task\n");
+    h.cloudCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const out = await h.service.ship({
+      docPath: "/external/task.md",
+      runtime: "cloud",
+      cloud: { repos: [{ url: "https://github.com/itsHabib/roxiq" }] },
+    });
+
+    expect(out.status).toBe("succeeded");
+    expect(out.worktree.path).toBe(CLOUD_WORKTREE_SENTINEL);
+    expect(out.worktree.name).toBe(CLOUD_WORKTREE_SENTINEL);
+    expect(out.worktree.branch).toBe(CLOUD_WORKTREE_SENTINEL);
+    const row = h.store.getRun(out.workflowRunId);
+    expect(row?.repo).toBe("itsHabib/roxiq");
+    expect(h.cloudCursor.calls).toHaveLength(1);
+    h.store.close();
+  });
+
+  test("cloud docPath outside workdir succeeds; local docPath outside workdir fails", async () => {
+    const h = await createHarness();
+    await h.fs.mkdir("/outside", { recursive: true });
+    await h.fs.writeFile("/outside/doc.md", "# Outside\n");
+    h.cloudCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const cloudOut = await h.service.ship({
+      workdir: WORKDIR,
+      docPath: "/outside/doc.md",
+      runtime: "cloud",
+      cloud: CLOUD_SPEC,
+    });
+    expect(cloudOut.status).toBe("succeeded");
+
+    await expect(
+      h.service.ship({ workdir: WORKDIR, repo: "ship", docPath: "/outside/doc.md" }),
+    ).rejects.toBeInstanceOf(DocPathEscapesWorkdirError);
+    h.store.close();
+  });
+
+  test("explicit repo wins over cloud URL auto-derive", async () => {
+    const h = await createHarness();
+    await h.fs.mkdir("/external", { recursive: true });
+    await h.fs.writeFile("/external/task.md", "# Task\n");
+    h.cloudCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const out = await h.service.ship({
+      docPath: "/external/task.md",
+      repo: "explicit/label",
+      runtime: "cloud",
+      cloud: { repos: [{ url: "https://github.com/itsHabib/roxiq" }] },
+    });
+    expect(h.store.getRun(out.workflowRunId)?.repo).toBe("explicit/label");
+    h.store.close();
+  });
+
+  test("unparseable cloud URL without repo → MissingRepoError", async () => {
+    const h = await createHarness();
+    await h.fs.mkdir("/external", { recursive: true });
+    await h.fs.writeFile("/external/task.md", "# Task\n");
+
+    await expect(
+      h.service.ship({
+        docPath: "/external/task.md",
+        runtime: "cloud",
+        cloud: { repos: [{ url: "not-a-url" }] },
+      }),
+    ).rejects.toBeInstanceOf(MissingRepoError);
     expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
     h.store.close();
   });

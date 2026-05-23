@@ -13,6 +13,7 @@ import type {
 
 import {
   canTransition,
+  CLOUD_WORKTREE_SENTINEL,
   cursorRunRefSchema,
   cursorRunRuntimeSchema,
   cursorRunStatusSchema,
@@ -229,6 +230,17 @@ describe("worktreeRefSchema", () => {
 
   test("rejects empty string in required field", () => {
     expect(worktreeRefSchema.safeParse({ ...validWorktree, repo: "" }).success).toBe(false);
+  });
+
+  test("accepts cloud sentinel worktree shape", () => {
+    const cloudWorktree = {
+      repo: "itsHabib/roxiq",
+      name: CLOUD_WORKTREE_SENTINEL,
+      branch: CLOUD_WORKTREE_SENTINEL,
+      path: CLOUD_WORKTREE_SENTINEL,
+      baseRef: "main",
+    };
+    expect(worktreeRefSchema.parse(cloudWorktree)).toEqual(cloudWorktree);
   });
 });
 

@@ -54,10 +54,8 @@ function cloudAgentOptions(spec: CloudRunSpec): CloudAgentOptions {
       ...(r.startingRef !== undefined && { startingRef: r.startingRef }),
       ...(r.prUrl !== undefined && { prUrl: r.prUrl }),
     })),
-    ...(spec.workOnCurrentBranch !== undefined && {
-      workOnCurrentBranch: spec.workOnCurrentBranch,
-    }),
-    ...(spec.autoCreatePR !== undefined && { autoCreatePR: spec.autoCreatePR }),
+    workOnCurrentBranch: spec.workOnCurrentBranch ?? false,
+    autoCreatePR: spec.autoCreatePR ?? true,
     ...(spec.skipReviewerRequest !== undefined && {
       skipReviewerRequest: spec.skipReviewerRequest,
     }),

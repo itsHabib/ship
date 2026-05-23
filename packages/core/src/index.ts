@@ -60,6 +60,7 @@ export {
   GhAuthError,
   GhCreatePrFailedError,
   ImplementPhaseNotSucceededError,
+  MissingRepoError,
   OpenPrAbortedError,
   OriginHeadUnsetError,
   OriginRepoUnresolvedError,
