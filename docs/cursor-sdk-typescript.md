@@ -101,7 +101,7 @@ const run = await agent.send({
 
 // With per-run model override (sticky for that run)
 const run = await agent.send("Plan the refactor", {
-  model: { id: "composer-2", params: [{ id: "thinking", value: "high" }] },
+  model: { id: "composer-2.5" },
 });
 ```
 
@@ -273,10 +273,12 @@ interface ModelSelection {
   params?: Array<{ id: string; value: string }>;
 }
 
-// Discover available models + parameter grids
+// Discover available models + parameter grids — the per-model param surface
+// evolves (e.g. as of 2026-05-23, `composer-2` no longer accepts a `thinking`
+// param; current composer variants expose `fast`). Always call this to find
+// the live shape rather than assuming a hard-coded grid.
 const models = await Cursor.models.list({ apiKey? });
 // Each item: { id, displayName, description?, parameters?, variants? }
-// e.g. composer-2 has params [{ id: "thinking", values: [{ value: "low" }, { value: "high" }] }]
 ```
 
 ## Account-level helpers (`Cursor` namespace)
