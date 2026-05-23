@@ -26,6 +26,7 @@ import type {
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import {
   createHarness,
   createOpenPrServiceFromHarness,
@@ -55,6 +56,7 @@ export interface McpHarness {
   readonly gh: FakeGhClient;
   readonly git: FakeGitRemote;
   readonly harness: Harness;
+  readonly cloudCursor: FakeCursorRunner;
   readonly factory: ShipServiceFactory;
   readonly openPrFactory: OpenPrServiceFactory;
   readonly close: () => Promise<void>;
@@ -69,7 +71,8 @@ export interface McpHarness {
  */
 export async function createMcpHarness(): Promise<McpHarness> {
   const harness = createHarness();
-  const bundle = createServiceFromHarness(harness);
+  const cloudCursor = new FakeCursorRunner();
+  const bundle = createServiceFromHarness(harness, { cloudCursor });
   const openPrBundle = createOpenPrServiceFromHarness(harness);
   await bundle.fs.mkdir(TEST_WORKDIR, { recursive: true });
   await bundle.fs.writeFile(`${TEST_WORKDIR}/${TEST_DOC_PATH}`, "# Task\n\nDo it.\n");
@@ -92,6 +95,7 @@ export async function createMcpHarness(): Promise<McpHarness> {
     gh: openPrBundle.gh,
     git: openPrBundle.git,
     harness,
+    cloudCursor,
     factory,
     openPrFactory,
     close: async () => {

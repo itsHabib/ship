@@ -6,6 +6,7 @@ import {
   ArtifactWriteFailedError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
+  MissingRepoError,
   WorkdirNotFoundError,
 } from "./errors.js";
 
@@ -35,6 +36,14 @@ describe("DocPathEscapesWorkdirError", () => {
     expect(err.workdir).toBe("/w");
     expect(err.docPath).toBe("../escape");
     expect(err.message).toMatch(/resolves outside/);
+  });
+});
+
+describe("MissingRepoError", () => {
+  test("has expected name + message", () => {
+    const err = new MissingRepoError();
+    expect(err.name).toBe("MissingRepoError");
+    expect(err.message).toMatch(/repo is required/);
   });
 });
 

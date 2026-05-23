@@ -4,7 +4,7 @@ import { describe, expect, test } from "vitest";
 
 import { DocNotFoundError, DocPathEscapesWorkdirError, WorkdirNotFoundError } from "./errors.js";
 import { createMemoryShipFs } from "./fs/memory.js";
-import { resolveValidatedDoc } from "./validate.js";
+import { resolveValidatedDoc, resolveValidatedDocForCloud } from "./validate.js";
 
 describe("resolveValidatedDoc", () => {
   test("happy path: workdir exists, docPath resolves to a file inside it", async () => {
@@ -78,5 +78,15 @@ describe("resolveValidatedDoc", () => {
     await expect(resolveValidatedDoc(fs, "/work", "/work2/docs.md")).rejects.toBeInstanceOf(
       DocPathEscapesWorkdirError,
     );
+  });
+});
+
+describe("resolveValidatedDocForCloud", () => {
+  test("absolute docPath outside any workdir succeeds", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir("/elsewhere", { recursive: true });
+    await fs.writeFile("/elsewhere/task.md", "# Cloud task\n");
+    const out = await resolveValidatedDocForCloud(fs, "/elsewhere/task.md");
+    expect(out.absoluteDocPath).toBe("/elsewhere/task.md");
   });
 });

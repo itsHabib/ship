@@ -72,11 +72,19 @@ export const cloudRunSpecSchema = z
 /** Input to the `ship` tool. Optional fields default in `core`. */
 export const shipInputSchema = z
   .object({
-    /** Absolute path of the workspace the caller created. `core` runs the agent here. */
-    workdir: z.string().min(1),
-    /** Path to the task doc. Relative paths resolve against `workdir`; absolute paths are also accepted as long as they realpath inside `workdir`. Symlink-escape rejected by `core`. */
+    /**
+     * Absolute path of the workspace the caller created. `core` runs the
+     * local agent here. Optional when `runtime === "cloud"`.
+     */
+    workdir: z.string().min(1).optional(),
+    /**
+     * Path to the task doc. Relative paths resolve against `workdir`.
+     * For local runs, absolute paths must realpath inside `workdir`.
+     * Cloud runs skip that guard in `core`.
+     */
     docPath: z.string().min(1),
-    repo: z.string().min(1),
+    /** Repo label persisted on the workflow row; optional for cloud (auto-derived). */
+    repo: z.string().min(1).optional(),
     worktreeName: z.string().min(1).optional(),
     baseRef: z.string().min(1).optional(),
     branch: z.string().min(1).optional(),
@@ -95,11 +103,26 @@ export const shipInputSchema = z
   })
   .strict()
   .superRefine((data, ctx) => {
-    if (data.runtime === "cloud" && data.cloud === undefined) {
+    const runtime = data.runtime ?? "local";
+    if (runtime === "cloud" && data.cloud === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["cloud"],
         message: "cloud config is required when runtime is 'cloud'",
+      });
+    }
+    if (runtime !== "cloud" && data.workdir === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workdir"],
+        message: "workdir is required when runtime is not 'cloud'",
+      });
+    }
+    if (runtime !== "cloud" && data.repo === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repo"],
+        message: "repo is required when runtime is not 'cloud'",
       });
     }
   });

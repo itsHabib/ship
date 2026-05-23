@@ -45,6 +45,15 @@ export class DocPathEscapesWorkdirError extends Error {
   }
 }
 
+/** Cloud call with no `repo` and an unparseable `cloud.repos[0].url`. */
+export class MissingRepoError extends Error {
+  override readonly name = "MissingRepoError";
+
+  constructor() {
+    super("repo is required when it cannot be derived from cloud.repos[0].url");
+  }
+}
+
 /** Wraps an underlying fs failure during a post-run-creation artifact write. */
 export class ArtifactWriteFailedError extends Error {
   override readonly name = "ArtifactWriteFailedError";

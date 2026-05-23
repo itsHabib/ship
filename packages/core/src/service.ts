@@ -27,6 +27,7 @@ import type {
 } from "@ship/workflow";
 
 import {
+  CLOUD_WORKTREE_SENTINEL,
   DEFAULT_WORKFLOW_POLICY,
   newCursorRunId,
   newPhaseId,
@@ -41,8 +42,13 @@ import type { ValidatedDoc } from "./validate.js";
 import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import { resolveRunArtifactPaths, type RunArtifactPaths } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
-import { ArtifactWriteFailedError, CloudRunnerNotConfiguredError } from "./errors.js";
-import { resolveValidatedDoc } from "./validate.js";
+import {
+  ArtifactWriteFailedError,
+  CloudRunnerNotConfiguredError,
+  MissingRepoError,
+  WorkdirNotFoundError,
+} from "./errors.js";
+import { resolveValidatedDoc, resolveValidatedDocForCloud } from "./validate.js";
 
 /** Construction-time configuration for the service. */
 export interface ShipServiceConfig {
@@ -223,7 +229,7 @@ interface BuildCursorRunInputArgs {
 function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput {
   const { ctx, prep, prompt, model, controller, onEvent } = args;
   const base = {
-    cwd: ctx.input.workdir,
+    cwd: prep.effectiveWorkdir,
     prompt,
     model,
     ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
@@ -257,6 +263,8 @@ interface PreparedRun {
   readonly worktree: WorktreeRef;
   readonly baseRef: string;
   readonly validated: ValidatedDoc;
+  readonly effectiveWorkdir: string;
+  readonly repo: string;
 }
 
 // Sync `ship` body — drives the run end-to-end, blocking the caller
@@ -320,9 +328,46 @@ async function runShipStart(
 }
 
 async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
-  // Pre-row validation throws cleanly with no row created.
+  if (ctx.input.runtime === "cloud") {
+    const validated = await resolveValidatedDocForCloud(
+      ctx.fs,
+      ctx.input.docPath,
+      ctx.input.workdir,
+    );
+    return persistInitialState(ctx, validated);
+  }
+  if (ctx.input.workdir === undefined) {
+    throw new WorkdirNotFoundError("(missing)");
+  }
   const validated = await resolveValidatedDoc(ctx.fs, ctx.input.workdir, ctx.input.docPath);
   return persistInitialState(ctx, validated);
+}
+
+function deriveRepoFromCloudUrl(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    let path = u.pathname;
+    if (path.startsWith("/")) path = path.slice(1);
+    if (path.endsWith("/")) path = path.slice(0, -1);
+    if (path.toLowerCase().endsWith(".git")) path = path.slice(0, -4);
+    const parts = path.split("/").filter((p) => p.length > 0);
+    if (parts.length >= 2 && parts[0] !== undefined && parts[1] !== undefined) {
+      return `${parts[0]}/${parts[1]}`;
+    }
+  } catch {
+    /* unparseable URL */
+  }
+  return undefined;
+}
+
+function resolveRepo(input: ShipInput): string {
+  if (input.repo !== undefined) return input.repo;
+  const url = input.cloud?.repos[0]?.url;
+  if (url !== undefined) {
+    const derived = deriveRepoFromCloudUrl(url);
+    if (derived !== undefined) return derived;
+  }
+  throw new MissingRepoError();
 }
 
 // Atomic `pending → running` transition for the workflow row + initial
@@ -355,22 +400,31 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
   const phaseId = ctx.ids.phase();
   const paths = resolveRunArtifactPaths(ctx.config.runsDir, workflowRunId);
 
+  const repo = resolveRepo(ctx.input);
   const baseRef = ctx.input.baseRef ?? DEFAULT_WORKFLOW_POLICY.baseRef;
-  const branch = ctx.input.branch ?? "(unknown)";
-  const worktreeName = ctx.input.worktreeName ?? (basename(ctx.input.workdir) || "workdir");
-  const worktree: WorktreeRef = {
-    repo: ctx.input.repo,
-    name: worktreeName,
-    branch,
-    path: ctx.input.workdir,
-    baseRef,
-  };
+  const cloudNoWorkdir = ctx.input.runtime === "cloud" && ctx.input.workdir === undefined;
+  const effectiveWorkdir = ctx.input.workdir ?? paths.dir;
+  const worktree: WorktreeRef = cloudNoWorkdir
+    ? {
+        repo,
+        name: CLOUD_WORKTREE_SENTINEL,
+        branch: CLOUD_WORKTREE_SENTINEL,
+        path: CLOUD_WORKTREE_SENTINEL,
+        baseRef,
+      }
+    : {
+        repo,
+        name: ctx.input.worktreeName ?? (basename(effectiveWorkdir) || "workdir"),
+        branch: ctx.input.branch ?? "(unknown)",
+        path: effectiveWorkdir,
+        baseRef,
+      };
 
   // Row exists from this point — fs and runner failures resolve with
   // a persisted `failed` ShipOutput rather than throwing past `ship()`.
   ctx.store.createWorkflowRun({
     id: workflowRunId,
-    repo: ctx.input.repo,
+    repo,
     docPath: ctx.input.docPath,
     baseRef,
     worktree,
@@ -383,7 +437,16 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
     inputJson: JSON.stringify({ docPath: ctx.input.docPath }),
   });
 
-  return { workflowRunId, phaseId, paths, worktree, baseRef, validated };
+  return {
+    workflowRunId,
+    phaseId,
+    paths,
+    worktree,
+    baseRef,
+    validated,
+    effectiveWorkdir,
+    repo,
+  };
 }
 
 async function runToTerminal(
@@ -483,8 +546,11 @@ async function prepareArtifacts(ctx: ShipContext, prep: PreparedRun): Promise<st
 
   const prompt = renderImplementationPrompt({
     taskDoc,
-    repo: ctx.input.repo,
-    worktreePath: ctx.input.workdir,
+    repo: prep.repo,
+    worktreePath:
+      prep.worktree.path === CLOUD_WORKTREE_SENTINEL
+        ? CLOUD_WORKTREE_SENTINEL
+        : prep.effectiveWorkdir,
     ...(ctx.input.branch !== undefined && { branch: ctx.input.branch }),
     baseRef: prep.baseRef,
   });

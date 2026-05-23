@@ -7,6 +7,7 @@
 // --- workflow.ts: schemas, helpers, constants ---
 export {
   canTransition,
+  CLOUD_WORKTREE_SENTINEL,
   cursorRunRefSchema,
   cursorRunRuntimeSchema,
   cursorRunStatusSchema,

@@ -95,6 +95,22 @@ describe("shipInputSchema", () => {
     expect(cloud.cloud?.repos[0]?.url).toBe("https://github.com/o/r");
   });
 
+  test("accepts cloud call without workdir or repo", () => {
+    const cloud = shipInputSchema.parse({
+      docPath: "/tmp/task.md",
+      runtime: "cloud",
+      cloud: { repos: [{ url: "https://github.com/itsHabib/roxiq" }] },
+    });
+    expect(cloud.workdir).toBeUndefined();
+    expect(cloud.repo).toBeUndefined();
+  });
+
+  test("rejects local call without workdir", () => {
+    expect(
+      shipInputSchema.safeParse({ repo: "ship", docPath: "x", runtime: "local" }).success,
+    ).toBe(false);
+  });
+
   test("rejects runtime: 'cloud' without a cloud spec (cross-field refinement)", () => {
     const result = shipInputSchema.safeParse({
       workdir: "/w",

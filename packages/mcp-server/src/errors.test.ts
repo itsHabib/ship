@@ -1,7 +1,12 @@
 /** Tests for `errors.ts` — ED-4 error-code mapping pinned per task doc. */
 
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { DocNotFoundError, DocPathEscapesWorkdirError, WorkdirNotFoundError } from "@ship/core";
+import {
+  DocNotFoundError,
+  DocPathEscapesWorkdirError,
+  MissingRepoError,
+  WorkdirNotFoundError,
+} from "@ship/core";
 import { WorkflowRunNotFoundError } from "@ship/store";
 import { describe, expect, test } from "vitest";
 
@@ -12,6 +17,7 @@ describe("isUserError", () => {
     expect(isUserError(new WorkdirNotFoundError("/nope"))).toBe(true);
     expect(isUserError(new DocNotFoundError("missing.md"))).toBe(true);
     expect(isUserError(new DocPathEscapesWorkdirError("/work", "../escape"))).toBe(true);
+    expect(isUserError(new MissingRepoError())).toBe(true);
   });
 
   test("WorkflowRunNotFoundError (cancel/getRun on unknown id) is a user error", () => {

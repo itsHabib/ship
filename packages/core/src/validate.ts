@@ -15,6 +15,24 @@ export interface ValidatedDoc {
 }
 
 /**
+ * Validates a task doc for cloud runs — the doc is read once and embedded
+ * in the prompt; no workdir containment check applies.
+ */
+export async function resolveValidatedDocForCloud(
+  fs: ShipFs,
+  docPath: string,
+  workdir?: string,
+): Promise<ValidatedDoc> {
+  let candidate = docPath;
+  if (!isAbsolute(docPath) && workdir !== undefined) {
+    candidate = joinPath(workdir, docPath);
+  }
+  await assertFile(fs, candidate, docPath);
+  const realDoc = await fs.realpath(candidate);
+  return { absoluteDocPath: realDoc };
+}
+
+/**
  * Validates `workdir` exists as a directory, the doc resolves to a
  * file inside it (absolute `docPath` is allowed if it lands inside
  * `workdir`'s realpath), and the realpath of the doc is a descendant
