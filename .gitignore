@@ -54,3 +54,4 @@ packages/core/.stryker-tmp/
 
 # Tower worktrees (per-task workspaces; never committed)
 .worktrees/
+.cloud-validation-spec.json

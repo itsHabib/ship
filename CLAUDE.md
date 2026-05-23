@@ -35,7 +35,7 @@ Subagents live in `.cursor/agents/`. See [docs/features/ship-v2/phases/03-subage
 <!-- BEGIN dev-workbench (managed by /dev-workbench skill — re-run to refresh; hand-edits inside this block will be overwritten) -->
 ## Dev workbench
 
-Several MCP servers + skills are available in any Claude session on this machine — the dev-workflow infrastructure built across the portfolio. **This is ship — the workflow-execution plane itself** — so the ship verbs are the most directly relevant when working in this repo, but dossier (project memory) and tower (worktrees) are part of the same workbench. When the signal matches, **just call the verb**. Don't ask permission.
+Several MCP servers + skills are available in any Claude session on this machine — the dev-workflow infrastructure built across the portfolio. **This is ship — the workflow-execution plane itself** — so the ship verbs are the most directly relevant when working in this repo, alongside dossier (project memory), huddle (multi-seat coordination), and the `/worktree-*` skill family for git worktrees. When the signal matches, **just call the verb**. Don't ask permission.
 
 Dogfood reality: ship runs cursor against ship's own task docs when iterating on ship-the-codebase — every PR shipped here passes through `mcp__ship__ship` at least once.
 
@@ -58,27 +58,9 @@ Long-term home for what's planned, in-flight, and shipped across the portfolio. 
 - Code-level work (write the code first; *then* `artifact_link` the PR).
 - Anything that only matters within this session's scratch context.
 
-### tower — workspace substrate
-
-Owns repo registration + git worktrees. Each agent / human task gets its own isolated workspace at `<repo>/.worktrees/<name>` so the main checkout stays clean and parallel work doesn't collide. Hard-pivoted in 2026-04 to observation-only — tower does not spawn or run agents (that's ship's job).
-
-**Use proactively for:**
-
-- *"Starting `<branch / feature>`."* → `mcp__tower__add_worktree { repo, name }`. Branch becomes `tower/<name>`; path becomes `<repo>/.worktrees/<name>`.
-- New repo tower doesn't know yet → `mcp__tower__register_repo { path }` (defaults name to dir basename).
-- *"What worktrees are open?"* → `mcp__tower__list_worktrees { repo? }` — includes PR / CI / review state per branch.
-- *"Refresh GitHub state across every tracked branch."* → `mcp__tower__sync` (reconciles git + refreshes PR/reviews/CI from GitHub).
-- Worktree done + PR merged → `mcp__tower__remove_worktree { repo, name, force?: true }` (`force: true` is the common case — agents leave scratch files in the worktree root that block clean removal).
-
-**Don't use for:**
-
-- Editing files *inside* a worktree (that's a normal file edit, not a tower call).
-- Anything in the main checkout — tower's job is the *isolated* workspace.
-- Spawning agents to operate on the worktree. Hand the worktree path to ship instead.
-
 ### ship — workflow execution
 
-Hands a task doc to a coding agent (cursor), persists what happened, lets you inspect / cancel / replay the run. Owns nothing about the workspace (tower's job) or the planning (dossier's job).
+Hands a task doc to a coding agent (cursor), persists what happened, lets you inspect / cancel / replay the run. Owns nothing about the workspace (the `/worktree-*` skills handle that) or the planning (dossier's job).
 
 **Use proactively for:**
 
@@ -86,11 +68,11 @@ Hands a task doc to a coding agent (cursor), persists what happened, lets you in
 - *"What ran on `<repo>` recently?"* / *"What's still in flight?"* → `mcp__ship__list_workflow_runs { repo?, status?, limit? }`.
 - *"What did `<wf id>` do?"* → `mcp__ship__get_workflow_run { workflowRunId }` (also accessible via the `ship://runs/{id}` resource).
 - In-flight run needs to stop → `mcp__ship__cancel_workflow_run { workflowRunId }` (idempotent on terminal rows).
-- *"Open the PR for this run."* → `mcp__ship__open_pr { workflowRunId }`. **Note (2026-05-18):** currently errors with `missing GITHUB_TOKEN` because ship's MCP env doesn't have the token wired — fall back to `gh pr create` for the session.
+- *"Open the PR for this run."* → `mcp__ship__open_pr { workflowRunId }`.
 
 **Don't use for:**
 
-- Creating the worktree (tower).
+- Creating the worktree (use `/worktree-add`).
 - Writing the task doc (a normal file edit inside the worktree).
 - Recording the merged PR back to project state (dossier `artifact_link`).
 
@@ -144,6 +126,16 @@ Takes a list of dossier tasks (or a phase slug) and emits one spec doc per task 
 
 **Pair with:** `/work-driver` (consumes the emitted manifest).
 
+### `/worktree-*` — manage secondary git worktrees
+
+Thin skill family over plain `git worktree`. Use these instead of reaching for an MCP — they cover the verbs that mattered (add, list, remove, transfer, where) without an external state store. Default convention: branch name is user-chosen (no forced prefix); path is `<repo>/.claude/worktrees/<branch>/`.
+
+- **`/worktree-add`** — *"spin up a worktree for <ticket>"* → creates `.claude/worktrees/<branch>/`, copies untracked CLAUDE.md if present
+- **`/worktree-list`** — *"what worktrees do I have"* → branch, dirty state, optional PR/CI from `gh`
+- **`/worktree-remove`** — *"clean up the worktree"* → dirty-state aware (commit-WIP / stash / discard)
+- **`/worktree-transfer`** — *"bring this work over to main"* → removes secondary, checks out branch in root
+- **`/worktree-where`** — *"where am I"* → which worktree, branch, and cwd this session is pointing at
+
 ### The loop
 
 A typical end-to-end flow when working on any portfolio repo:
@@ -152,7 +144,7 @@ A typical end-to-end flow when working on any portfolio repo:
 mcp__dossier__task_create        # plan: discrete shippable unit
        │
        ▼
-mcp__tower__add_worktree         # isolate: own branch + dir under .worktrees/
+/worktree-add <branch>           # isolate: own branch + dir under .claude/worktrees/
        │
        ▼
 (write the spec doc inside the worktree, commit, push)
@@ -172,16 +164,16 @@ gh pr merge --squash --admin --delete-branch     # remote-only delete
 mcp__dossier__task_complete + mcp__dossier__artifact_link { kind: "commit", ref }
        │
        ▼
-mcp__tower__remove_worktree { repo, name, force: true }      # local cleanup
+/worktree-remove                                  # local cleanup (or /worktree-transfer to drain into root)
 ```
 
 Steps 3-7 of this loop are exactly what `/work-driver` automates when you fan multiple streams in parallel.
 
-### Why separate MCPs
+### Why this shape
 
-Each layer is independently swappable. Dossier could be Linear or GitHub Projects — it owns "what needs doing." Tower could be plain `git worktree` shellouts or a Codespace driver — it owns "where work happens." Ship could be a different agent runner (Claude Code SDK, a local cursor subprocess, etc.) — it owns "drive an agent against a workdir + persist what happened." Huddle owns multi-seat coordination channels; playwright owns browser. Substituting any one doesn't ripple into the others.
+Each layer is independently swappable. Dossier could be Linear or GitHub Projects — it owns "what needs doing." The `/worktree-*` skills could be hand-rolled `git worktree` calls or a Codespace driver — they own "where work happens." Ship could be a different agent runner (Claude Code SDK, a local cursor subprocess, etc.) — it owns "drive an agent against a workdir + persist what happened." Huddle owns multi-seat coordination channels; playwright owns browser. Substituting any one doesn't ripple into the others.
 
-Not every flow uses every tool. A one-off CLI fix can skip dossier; an existing-checkout edit can skip tower; a non-agent change skips ship. The workbench is a menu, not a checklist — but when the signals above match, default to calling the verb without checking in first.
+Not every flow uses every tool. A one-off CLI fix can skip dossier; an existing-checkout edit can skip the worktree skills; a non-agent change skips ship. The workbench is a menu, not a checklist — but when the signals above match, default to calling the verb without checking in first.
 <!-- END dev-workbench -->
 
 ## Session workflow
