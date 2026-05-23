@@ -8,10 +8,20 @@ Review the diff for bugs, security issues, edge cases, and adherence to
 `CLAUDE.md` + the following operator conventions:
 
 - **Samurai-sword:** prefer narrow single-purpose tools; resist scope creep; defer framework-y abstractions until a second concrete use case forces them.
-- **Naming:** no `And` / `Or` in function or method names (split into intent verbs); no `Impl` suffix on symbols; no generic package or module names like `shared` / `common` / `utils` / `helpers` (use specific names).
 - **Doc-first:** non-trivial work has a phase doc in `docs/features/<feature>/phases/<NN>-<slug>.md` with the standard sections (Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation plan) BEFORE code is written.
 - **PR sizing:** target weighted-LOC budgets — <500 amazing / <700 ideal / <1000 stretch. Production source 1.0×; tests and fixtures 0.5×; lockfiles, generated, configs, docs 0×.
-- **Comments:** `//` only (no JSDoc); short and purposeful.
+
+## Naming checklist
+
+Apply these five operator naming rules. Each naming finding must cite the rule number and its memory file:
+
+1. **No `Impl` suffix on symbols** — memory: `feedback_naming_no_impl_suffix.md`
+2. **No `And` / `Or` in function or method names** — split into intent verbs; memory: `feedback_naming_no_and_or.md`
+3. **No generic package or module names** like `shared` / `common` / `utils` / `helpers` — use specific names; memory: `feedback_naming.md`
+4. **`//` comments only, no JSDoc** — memory: `feedback_comments_in_code.md`
+5. **No `Impl`-smell hidden behind paper-thin renames** — e.g. `DefaultHandler` that is the only implementation; related to rule 1; memory: `feedback_naming_no_impl_suffix.md`
+
+Example finding format: `P2 — Rule 3 (feedback_naming.md): module renamed to helpers/ instead of a domain-specific name.`
 
 ## Shell portability note
 
