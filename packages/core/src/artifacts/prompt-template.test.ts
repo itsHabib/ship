@@ -63,7 +63,9 @@ describe("renderImplementationPrompt", () => {
     // only — the proactive subagents (test-author / security-auditor)
     // still fire during impl even if no commits were ultimately
     // produced. Pin the narrow gate wording.
-    expect(out).toContain("diff-reviewing subagents (code-reviewer / verifier / validator) have no diff to review");
+    expect(out).toContain(
+      "diff-reviewing subagents (code-reviewer / verifier / validator) have no diff to review",
+    );
     expect(out).toContain("proactive subagents (test-author / security-auditor) still fire");
     // Rule 7 success path: act on P0/P1 via a NEW follow-up commit
     // (explicitly not `--amend`, which differentiates the new clause from
