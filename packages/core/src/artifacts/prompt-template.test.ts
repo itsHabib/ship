@@ -47,6 +47,11 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("`task` tool");
     expect(out).toContain("Use `task` with subagent_type:");
     expect(out).toContain("- `code-reviewer`");
+    // Code-reviewer's bullet must reference the absorbed naming
+    // checklist so future edits can't quietly drop the link between
+    // rule 7 and code-reviewer.md's body checklist (the rejected
+    // naming-critic specialist's traceability lives there).
+    expect(out).toContain('"Naming checklist" section');
     expect(out).toContain("- `verifier`");
     expect(out).toContain("- `validator`");
     expect(out).toContain("- `test-author`");
