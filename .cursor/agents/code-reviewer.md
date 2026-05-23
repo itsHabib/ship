@@ -13,15 +13,15 @@ Review the diff for bugs, security issues, edge cases, and adherence to
 
 ## Naming checklist
 
-Apply these five operator naming rules. Each naming finding must cite the rule number and its memory file:
+Apply these five operator naming rules. Each naming finding must cite the rule number:
 
-1. **No `Impl` suffix on symbols** — memory: `feedback_naming_no_impl_suffix.md`
-2. **No `And` / `Or` in function or method names** — split into intent verbs; memory: `feedback_naming_no_and_or.md`
-3. **No generic package or module names** like `shared` / `common` / `utils` / `helpers` — use specific names; memory: `feedback_naming.md`
-4. **`//` comments only, no JSDoc** — memory: `feedback_comments_in_code.md`
-5. **No `Impl`-smell hidden behind paper-thin renames** — e.g. `DefaultHandler` that is the only implementation; related to rule 1; memory: `feedback_naming_no_impl_suffix.md`
+1. **No `Impl` suffix on symbols** — `shipImpl`, `startShipImpl` are smells; pick a name that says what the function does.
+2. **No `And` / `Or` in function or method names** — split into intent verbs (`transitionRowAndPhase…` becomes `markRunStarted`, with the body showing the steps).
+3. **No generic package or module names** like `shared` / `common` / `utils` / `helpers` — use specific domain names (`store`, `domain`, etc.).
+4. **`//` comments only, no JSDoc** — short and purposeful.
+5. **No `Impl`-smell hidden behind paper-thin renames** — e.g. `DefaultHandler` that is the only implementation; related to rule 1.
 
-Example finding format: `P2 — Rule 3 (feedback_naming.md): module renamed to helpers/ instead of a domain-specific name.`
+Example finding format: `P2 — Rule 3: module renamed to helpers/ instead of a domain-specific name.`
 
 ## Shell portability note
 

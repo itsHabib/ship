@@ -59,11 +59,12 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("- `debugger`");
     expect(out).not.toContain("`scope-tracker`");
     expect(out).toContain("built-in subagents (`Explore`, `Bash`, `Browser`)");
-    // Rule 7's skip guard must reference rule 6's outcome, not the
-    // post-commit working-tree state — `git commit` makes the tree
-    // clean by definition, so a "skip on clean tree" guard would
-    // neuter the rule in its intended success path.
-    expect(out).toContain("Skip this rule entirely if rule 6 was skipped");
+    // Rule 7's skip guard is scoped to the diff-reviewing subagents
+    // only — the proactive subagents (test-author / security-auditor)
+    // still fire during impl even if no commits were ultimately
+    // produced. Pin the narrow gate wording.
+    expect(out).toContain("diff-reviewing subagents (code-reviewer / verifier / validator) have no diff to review");
+    expect(out).toContain("proactive subagents (test-author / security-auditor) still fire");
     // Rule 7 success path: act on P0/P1 via a NEW follow-up commit
     // (explicitly not `--amend`, which differentiates the new clause from
     // rule 6's commit guidance); route P2/P3 to the structured-summary

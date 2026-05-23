@@ -44,7 +44,7 @@ export function renderImplementationPrompt(input: RenderImplementationPromptInpu
     "   - Commit with a Conventional Commit subject derived from the task (e.g. `feat(...)`, `fix(...)`, `test(...)`, `docs(...)`, `refactor(...)`).",
     "   - Include `Co-authored-by: Cursor <cursoragent@cursor.com>` in the commit message body.",
     "   - If you do push or open a PR, mark the PR as `--draft`. The driver promotes from draft to ready when reviewing.",
-    "7. As you implement, dispatch to the repo's registered subagents at the natural points. Skip this rule entirely if rule 6 was skipped (no changes were committed). Use `task` with subagent_type:",
+    "7. As you implement, dispatch to the repo's registered subagents at the natural points. If you ultimately produce no commits in this run (rule 6 skipped per its clean-tree clause), the diff-reviewing subagents (code-reviewer / verifier / validator) have no diff to review — skip those and note the gap in the structured summary's blockers section; proactive subagents (test-author / security-auditor) still fire if their triggers fired during implementation. Use `task` with subagent_type:",
     '   - `code-reviewer` — always use before producing the structured summary. Pass the diff. Code-reviewer now also covers the 5 operator naming rules (no Impl suffix, no And/Or, no generic package names, no JSDoc, no Impl-hidden-behind-rename) per its body\'s "Naming checklist" section.',
     "   - `verifier` — always use before producing the structured summary. Reads the task doc's F1-Fn against the diff.",
     "   - `validator` — always use before producing the structured summary. Runs the repo's check commands.",
