@@ -181,7 +181,12 @@ export class CloudCursorRunner implements CursorRunner {
         apiKey,
         runtime: "cloud",
       });
-      return this.#buildHandle(agent, sdkRun, runInput);
+      return this.#buildHandle(agent, sdkRun, runInput, {
+        shipResumed: {
+          agentId: input.agentId,
+          runId: input.runId,
+        },
+      });
     } catch (err) {
       if (agent !== undefined) {
         try {
@@ -239,7 +244,14 @@ export class CloudCursorRunner implements CursorRunner {
     }
   }
 
-  #buildHandle(agent: SDKAgent, sdkRun: Run, input: CursorRunInput): CursorRunHandle {
+  #buildHandle(
+    agent: SDKAgent,
+    sdkRun: Run,
+    input: CursorRunInput,
+    opts?: {
+      readonly shipResumed?: { readonly agentId: string; readonly runId: string };
+    },
+  ): CursorRunHandle {
     let terminated = false;
     let cancelInitiated = false;
     let resolveResult!: (value: CursorRunResult) => void;
@@ -295,6 +307,7 @@ export class CloudCursorRunner implements CursorRunner {
         detachSignalListener();
         resolveResult(terminal);
       },
+      ...(opts?.shipResumed !== undefined && { shipResumed: opts.shipResumed }),
     });
 
     return {
@@ -313,6 +326,7 @@ export class CloudCursorRunner implements CursorRunner {
       finalizeOk: (terminal: CursorRunResult) => void;
       finalizeError: (err: unknown) => void;
       detachSignalListener: () => void;
+      shipResumed?: { readonly agentId: string; readonly runId: string };
     },
   ): Promise<void> {
     const safelyEmit = (ev: SDKMessage): void => {
@@ -329,6 +343,14 @@ export class CloudCursorRunner implements CursorRunner {
     };
 
     try {
+      if (callbacks.shipResumed !== undefined) {
+        safelyEmit({
+          type: "ship.resumed",
+          ts: new Date().toISOString(),
+          agentId: callbacks.shipResumed.agentId,
+          runId: callbacks.shipResumed.runId,
+        } as unknown as SDKMessage);
+      }
       try {
         for await (const ev of sdkRun.stream()) {
           safelyEmit(ev);

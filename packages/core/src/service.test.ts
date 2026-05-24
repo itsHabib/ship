@@ -1144,3 +1144,172 @@ describe("ShipService.getRun + listRuns", () => {
     expect(otherRepo).toHaveLength(0);
   });
 });
+
+const CLOUD_RESUME_SPEC: NonNullable<ShipInput["cloud"]> = {
+  repos: [{ url: "https://github.com/owner/repo" }],
+};
+
+async function seedOrphanedCloudRun(
+  h: Harness,
+  opts: {
+    workflowRunId: string;
+    phaseId: string;
+    cursorRunId: string;
+    agentId?: string;
+    runId?: string;
+  },
+): Promise<void> {
+  h.store.createWorkflowRun({
+    baseRef: "main",
+    docPath: "docs.md",
+    id: opts.workflowRunId,
+    policy: { agentTimeoutMs: 1, baseRef: "main", maxRunDurationMs: 1 },
+    repo: "ship",
+    worktree: {
+      baseRef: "main",
+      branch: CLOUD_WORKTREE_SENTINEL,
+      name: CLOUD_WORKTREE_SENTINEL,
+      path: CLOUD_WORKTREE_SENTINEL,
+      repo: "ship",
+    },
+  });
+  h.store.appendPhase({
+    id: opts.phaseId,
+    inputJson: JSON.stringify({ cloud: CLOUD_RESUME_SPEC, docPath: "docs.md" }),
+    kind: "implement",
+    workflowRunId: opts.workflowRunId,
+  });
+  h.store.markRunStarted(opts.workflowRunId, opts.phaseId, "2026-05-09T00:00:00.000Z");
+  h.store.updatePhase(opts.phaseId, { cursorRunId: opts.cursorRunId, status: "running" });
+  h.store.recordCursorRun({
+    agentId: opts.agentId ?? "bc-resume-0001",
+    artifactsDir: `${RUNS_DIR}/${opts.workflowRunId}`,
+    id: opts.cursorRunId,
+    model: { id: "composer-2.5" },
+    runId: opts.runId ?? "run-resume-0001",
+    runtime: "cloud",
+    workflowRunId: opts.workflowRunId,
+  });
+  await h.fs.mkdir(`${RUNS_DIR}/${opts.workflowRunId}`, { recursive: true });
+}
+
+describe("ShipService.resumeOrphanedRuns", () => {
+  test("attaches once per orphaned cloud row and finalizes succeeded", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    cloudCursor.enqueueAttach({
+      events: [],
+      result: { status: "succeeded", durationMs: 100, branches: [], summary: "resumed ok" },
+    });
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000001",
+        phaseId: "ph_00000000000000000000000001",
+        workflowRunId: "wf_00000000000000000000000001",
+      },
+    );
+
+    const service = createShipService({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    const row = await waitForRunTerminal(service, "wf_00000000000000000000000001");
+    expect(row.status).toBe("succeeded");
+    expect(cloudCursor.attachCalls).toHaveLength(1);
+    expect(cloudCursor.attachCalls[0]?.input).toMatchObject({
+      agentId: "bc-resume-0001",
+      runId: "run-resume-0001",
+    });
+
+    await service.resumeOrphanedRuns();
+    expect(cloudCursor.attachCalls).toHaveLength(1);
+    store.close();
+  });
+
+  test("CursorAgentNotFoundError finalizes row as failed with resume message", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    cloudCursor.enqueueAttach({ notFound: true });
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000002",
+        phaseId: "ph_00000000000000000000000002",
+        workflowRunId: "wf_00000000000000000000000002",
+      },
+    );
+
+    const service = createShipService({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    const row = await waitForRunTerminal(service, "wf_00000000000000000000000002");
+    expect(row.status).toBe("failed");
+    expect(row.phases[0]?.errorMessage).toBe(
+      "cloud agent bc-resume-0001 no longer reachable on resume",
+    );
+    expect(store.getCursorRun("cr_00000000000000000000000002")?.status).toBe("failed");
+    store.close();
+  });
+
+  test("no cloudCursor configured is a no-op", async () => {
+    const h = await createHarness({ omitCloudCursor: true });
+    await seedOrphanedCloudRun(h, {
+      cursorRunId: "cr_00000000000000000000000003",
+      phaseId: "ph_00000000000000000000000003",
+      workflowRunId: "wf_00000000000000000000000003",
+    });
+    await h.service.resumeOrphanedRuns();
+    expect(h.cloudCursor.attachCalls).toHaveLength(0);
+    h.store.close();
+  });
+});

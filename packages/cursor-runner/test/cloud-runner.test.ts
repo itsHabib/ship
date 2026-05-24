@@ -245,7 +245,14 @@ describe("CloudCursorRunner — attach", () => {
       status: "succeeded",
       summary: "attached run finished",
     });
-    expect(onEvent.mock.calls.map((c) => (c as [SDKMessage])[0])).toEqual([evA, evB]);
+    const emitted = onEvent.mock.calls.map((c) => (c as [SDKMessage])[0]);
+    expect(emitted[0]).toMatchObject({
+      type: "ship.resumed",
+      agentId: "bc-test-cloud-0001",
+      runId: "run-test-cloud-0001",
+    });
+    expect(typeof (emitted[0] as { ts?: string }).ts).toBe("string");
+    expect(emitted.slice(1)).toEqual([evA, evB]);
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 

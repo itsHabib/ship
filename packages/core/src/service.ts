@@ -6,7 +6,9 @@
  */
 
 import type {
+  AgentDefinition,
   CloudRunSpec,
+  CursorRunAttachInput,
   CursorRunHandle,
   CursorRunInput,
   CursorRunner,
@@ -14,7 +16,7 @@ import type {
   McpServerConfig,
 } from "@ship/cursor-runner";
 import type { ShipInput, ShipOutput, ShipStartOutput } from "@ship/mcp";
-import type { ListRunsFilter, Store } from "@ship/store";
+import type { ListRunsFilter, ResumableCloudCursorRun, Store } from "@ship/store";
 import type {
   CursorRunRef,
   CursorRunRuntime,
@@ -26,6 +28,7 @@ import type {
   WorktreeRef,
 } from "@ship/workflow";
 
+import { CursorAgentNotFoundError } from "@ship/cursor-runner";
 import {
   CLOUD_WORKTREE_SENTINEL,
   DEFAULT_WORKFLOW_POLICY,
@@ -42,6 +45,7 @@ import type { ValidatedDoc } from "./validate.js";
 import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import { resolveRunArtifactPaths, type RunArtifactPaths } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
+import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
 import {
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
@@ -58,6 +62,8 @@ export interface ShipServiceConfig {
   readonly defaultModel: ModelSelection;
   /** Optional MCP servers passed through to every `cursor.run()` call. */
   readonly mcpServers?: Record<string, McpServerConfig>;
+  /** Optional inline subagents re-passed on cloud resume per ED-5. */
+  readonly agents?: Record<string, AgentDefinition>;
   /** Local/desktop runner; used when `input.runtime` is `"local"` or omitted. */
   readonly cursor: CursorRunner;
   /** Optional cloud runner; required at dispatch time only for `runtime: "cloud"`. */
@@ -109,6 +115,14 @@ export interface ShipService {
   // with "database connection is not open" against the closed handle.
   // Resolves immediately if nothing is in flight.
   drainBackground(): Promise<void>;
+  /** Resolves when the eager startup `resumeOrphanedRuns` scan finishes. */
+  resumeReady(): Promise<void>;
+  /**
+   * Re-attaches every orphaned cloud cursor run (`status IN ('running','pending')`)
+   * left from a prior process. Idempotent via `activeRuns`. Also invoked
+   * eagerly at service construction.
+   */
+  resumeOrphanedRuns(): Promise<void>;
 }
 
 // Per-run entry stored in the shared `ActiveRunsRegistry`. `handle` is
@@ -137,6 +151,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
   // un-awaited continuations, so there's nothing for `OpenPrService`
   // to drain through this Set.
   const bgPending = new Set<Promise<void>>();
+  const resumeBgPending = new Set<Promise<void>>();
   const makeCtx = (input: ShipInput): ShipContext => ({
     activeRuns,
     clock,
@@ -149,7 +164,20 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     store,
   });
 
-  return {
+  const resumeCtx: ResumeContext = {
+    activeRuns,
+    clock,
+    config,
+    fs,
+    resumeBgPending,
+    store,
+  };
+
+  const initialResume = resumeOrphanedRunsTracked(resumeCtx).catch((err: unknown) => {
+    logResumeFailure(err);
+  });
+
+  const service: ShipService = {
     ship: (input) => runShip(makeCtx(input)),
     startShip: (input) => runShipStart(makeCtx(input), bgPending),
     getRun: (id) => Promise.resolve(store.getRun(id)),
@@ -171,9 +199,27 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
       // can call into `bgPending.delete`, which is fine, but iterating
       // a mutating Set isn't. `allSettled` because we don't want one
       // rejection to mask the rest still in flight.
-      await Promise.allSettled([...bgPending]);
+      await Promise.allSettled([...bgPending, ...resumeBgPending]);
     },
+    resumeOrphanedRuns: () => resumeOrphanedRunsTracked(resumeCtx),
+    resumeReady: () => initialResume,
   };
+
+  return service;
+}
+
+interface ResumeContext {
+  readonly activeRuns: ActiveRunsRegistry;
+  readonly clock: () => string;
+  readonly config: ShipServiceConfig;
+  readonly fs: ShipFs;
+  readonly resumeBgPending: Set<Promise<void>>;
+  readonly store: Store;
+}
+
+function logResumeFailure(err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  process.stderr.write(`ship: resumeOrphanedRuns failed: ${message}\n`);
 }
 
 interface ShipContext {
@@ -233,6 +279,7 @@ function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput 
     prompt,
     model,
     ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
+    ...(ctx.config.agents !== undefined && { agents: ctx.config.agents }),
     agentName: `ship/${prep.workflowRunId}`,
     signal: controller.signal,
     onEvent,
@@ -434,7 +481,11 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
     id: phaseId,
     workflowRunId,
     kind: "implement",
-    inputJson: JSON.stringify({ docPath: ctx.input.docPath }),
+    inputJson: JSON.stringify(
+      ctx.input.runtime === "cloud" && ctx.input.cloud !== undefined
+        ? { cloud: ctx.input.cloud, docPath: ctx.input.docPath }
+        : { docPath: ctx.input.docPath },
+    ),
   });
 
   return {
@@ -463,6 +514,7 @@ async function runToTerminal(
 
   let cursorRunId: string | undefined;
   let ndjson: EventWriter | undefined;
+  let eventPump: EventPumpHandle | undefined;
 
   try {
     const prompt = await prepareArtifacts(ctx, prep);
@@ -479,24 +531,32 @@ async function runToTerminal(
     ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
     const ndjsonRef = ndjson;
 
+    const onEvent: CursorRunInput["onEvent"] = (ev) => {
+      ndjsonRef.write(ev);
+      eventPump?.heartbeat();
+    };
+
     const runInput = buildShipCursorRunInput({
       ctx,
       prep,
       prompt,
       model,
       controller,
-      onEvent: (ev) => {
-        ndjsonRef.write(ev);
-      },
+      onEvent,
     });
 
     const handle = await ctx.runner.run(runInput);
+
+    if (ctx.resolvedCursorRuntime === "cloud") {
+      eventPump = startEventPump({ store: ctx.store, workflowRunId: prep.workflowRunId });
+    }
 
     cursorRunId = ctx.ids.cursorRun();
     ctx.store.recordCursorRun({
       id: cursorRunId,
       workflowRunId: prep.workflowRunId,
       agentId: handle.agentId,
+      runId: handle.runId,
       runtime: ctx.resolvedCursorRuntime,
       model,
       artifactsDir: prep.paths.dir,
@@ -529,6 +589,7 @@ async function runToTerminal(
     });
   } finally {
     ctx.activeRuns.delete(prep.workflowRunId);
+    eventPump?.stop();
     if (ndjson !== undefined) {
       try {
         await ndjson.close();
@@ -866,4 +927,225 @@ function synthesizeFailedCursorRun(
     endedAt,
     artifactsDir,
   };
+}
+
+async function resumeOrphanedRuns(ctx: ResumeContext): Promise<void> {
+  if (ctx.config.cloudCursor === undefined) return;
+  const rows = ctx.store.listResumableCloudCursorRuns();
+  if (rows.length === 0) return;
+
+  await Promise.allSettled(rows.map((row) => resumeOneOrphanedCloudRun(ctx, row)));
+}
+
+function resumeOrphanedRunsTracked(ctx: ResumeContext): Promise<void> {
+  const bg = resumeOrphanedRuns(ctx);
+  ctx.resumeBgPending.add(bg);
+  void bg.finally(() => {
+    ctx.resumeBgPending.delete(bg);
+  });
+  return bg;
+}
+
+interface ResumeAttachContext {
+  readonly cloudSpec: CloudRunSpec;
+  readonly controller: AbortController;
+  readonly ndjson: EventWriter;
+  readonly paths: RunArtifactPaths;
+  readonly phaseId: string;
+  readonly row: ResumableCloudCursorRun;
+  readonly shipCtx: ShipContext;
+  readonly worktree: WorktreeRef;
+}
+
+function buildResumeAttachContext(args: {
+  ctx: ResumeContext;
+  row: ResumableCloudCursorRun;
+  phaseId: string;
+  cloudSpec: CloudRunSpec;
+  worktree: WorktreeRef;
+  controller: AbortController;
+}): ResumeAttachContext {
+  const { ctx, row, phaseId, cloudSpec, worktree, controller } = args;
+  const paths = resolveRunArtifactPaths(ctx.config.runsDir, row.workflowRunId);
+  return {
+    cloudSpec,
+    controller,
+    ndjson: createNdjsonEventWriter(ctx.fs, paths.events),
+    paths,
+    phaseId,
+    row,
+    shipCtx: resumeCtxAsShipContext(ctx, row.workflowRunId),
+    worktree,
+  };
+}
+
+async function resumeOneOrphanedCloudRun(
+  ctx: ResumeContext,
+  row: ResumableCloudCursorRun,
+): Promise<void> {
+  if (ctx.activeRuns.has(row.workflowRunId)) return;
+
+  const controller = new AbortController();
+  ctx.activeRuns.set(row.workflowRunId, { controller });
+
+  const workflowRun = ctx.store.getRun(row.workflowRunId);
+  if (workflowRun === null) {
+    ctx.activeRuns.delete(row.workflowRunId);
+    return;
+  }
+
+  const phase = workflowRun.phases.find((p) => p.kind === "implement" && p.cursorRunId === row.id);
+  if (phase === undefined) {
+    ctx.activeRuns.delete(row.workflowRunId);
+    return;
+  }
+
+  const cloudSpec = parseImplementPhaseCloudSpec(phase.inputJson);
+  if (cloudSpec === undefined) {
+    ctx.activeRuns.delete(row.workflowRunId);
+    await finalizeResumeFailure(ctx, row, phase.id, workflowRun.worktree, {
+      message: "cloud spec missing from implement phase input_json on resume",
+    });
+    return;
+  }
+
+  const target = buildResumeAttachContext({
+    cloudSpec,
+    controller,
+    ctx,
+    phaseId: phase.id,
+    row,
+    worktree: workflowRun.worktree,
+  });
+  let eventPump: EventPumpHandle | undefined;
+  try {
+    await runResumeAttach(ctx, target, (pump) => {
+      eventPump = pump;
+    });
+  } finally {
+    eventPump?.stop();
+    ctx.activeRuns.delete(row.workflowRunId);
+    try {
+      await target.ndjson.close();
+    } catch {
+      /* swallow */
+    }
+  }
+}
+
+async function runResumeAttach(
+  ctx: ResumeContext,
+  target: ResumeAttachContext,
+  onPumpStarted: (pump: EventPumpHandle) => void,
+): Promise<void> {
+  const cloudCursor = ctx.config.cloudCursor;
+  if (cloudCursor === undefined) return;
+
+  let eventPump: EventPumpHandle | undefined;
+  const onEvent: CursorRunAttachInput["onEvent"] = (ev) => {
+    target.ndjson.write(ev);
+    eventPump?.heartbeat();
+  };
+
+  try {
+    const model = target.row.model ?? ctx.config.defaultModel;
+    const handle = await cloudCursor.attach({
+      agentId: target.row.agentId,
+      cloud: target.cloudSpec,
+      model,
+      onEvent,
+      runId: target.row.runId,
+      signal: target.controller.signal,
+      ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
+      ...(ctx.config.agents !== undefined && { agents: ctx.config.agents }),
+    });
+
+    eventPump = startEventPump({ store: ctx.store, workflowRunId: target.row.workflowRunId });
+    onPumpStarted(eventPump);
+    ctx.activeRuns.set(target.row.workflowRunId, { controller: target.controller, handle });
+
+    const result = await handle.result;
+    await finalizeSuccess({
+      ctx: target.shipCtx,
+      cursorRunId: target.row.id,
+      paths: target.paths,
+      phaseId: target.phaseId,
+      result,
+      worktree: target.worktree,
+      workflowRunId: target.row.workflowRunId,
+    });
+  } catch (err) {
+    await handleResumeAttachError(ctx, target, err);
+  }
+}
+
+async function handleResumeAttachError(
+  ctx: ResumeContext,
+  target: ResumeAttachContext,
+  err: unknown,
+): Promise<void> {
+  if (err instanceof CursorAgentNotFoundError) {
+    await finalizeResumeFailure(ctx, target.row, target.phaseId, target.worktree, {
+      message: `cloud agent ${target.row.agentId} no longer reachable on resume`,
+    });
+    return;
+  }
+  await finalizeFailure({
+    ctx: target.shipCtx,
+    cursorRunId: target.row.id,
+    err,
+    paths: target.paths,
+    phaseId: target.phaseId,
+    worktree: target.worktree,
+    workflowRunId: target.row.workflowRunId,
+  });
+}
+
+function resumeCtxAsShipContext(ctx: ResumeContext, workflowRunId: string): ShipContext {
+  return {
+    activeRuns: ctx.activeRuns,
+    clock: ctx.clock,
+    config: ctx.config,
+    fs: ctx.fs,
+    ids: {
+      cursorRun: newCursorRunId,
+      phase: newPhaseId,
+      workflowRun: () => workflowRunId,
+    },
+    input: { docPath: "", runtime: "cloud" },
+    resolvedCursorRuntime: "cloud",
+    runner: ctx.config.cloudCursor ?? ctx.config.cursor,
+    store: ctx.store,
+  };
+}
+
+function parseImplementPhaseCloudSpec(inputJson: string): CloudRunSpec | undefined {
+  try {
+    const parsed: unknown = JSON.parse(inputJson);
+    if (parsed === null || typeof parsed !== "object") return undefined;
+    const cloud = (parsed as { cloud?: unknown }).cloud;
+    if (cloud === null || typeof cloud !== "object") return undefined;
+    return cloud as CloudRunSpec;
+  } catch {
+    return undefined;
+  }
+}
+
+async function finalizeResumeFailure(
+  ctx: ResumeContext,
+  row: ResumableCloudCursorRun,
+  phaseId: string,
+  worktree: WorktreeRef,
+  args: { readonly message: string },
+): Promise<void> {
+  const paths = resolveRunArtifactPaths(ctx.config.runsDir, row.workflowRunId);
+  await finalizeFailure({
+    ctx: resumeCtxAsShipContext(ctx, row.workflowRunId),
+    cursorRunId: row.id,
+    err: new Error(args.message),
+    paths,
+    phaseId,
+    worktree,
+    workflowRunId: row.workflowRunId,
+  });
 }

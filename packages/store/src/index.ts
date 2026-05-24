@@ -11,7 +11,11 @@ export type { CreateWorkflowRunInput, ListRunsFilter } from "./workflow-runs.js"
 
 export type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
 
-export type { RecordCursorRunInput, UpdateCursorRunInput } from "./cursor-runs.js";
+export type {
+  RecordCursorRunInput,
+  ResumableCloudCursorRun,
+  UpdateCursorRunInput,
+} from "./cursor-runs.js";
 
 export {
   CursorRunNotFoundError,
