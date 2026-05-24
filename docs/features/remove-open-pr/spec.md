@@ -65,11 +65,12 @@ Both binaries lose their `openPrFactory` plumbing. `program.ts`, `service.ts`, `
 ### Docs
 
 - [CLAUDE.md](../../../CLAUDE.md) — drop the `"Open the PR for this run." → mcp__ship__open_pr` bullet from the ship MCP verbs list. The "Shipping Features" loop already documents `gh pr create` as the operator path; that stays.
-- `docs/features/ship-v2/{spec.md, cursor-cloud-followups.md, phases/{03,04,06,08,09}-*.md}` — scrub open_pr references; rewrite F4 in phase 04 (cloud + explicit open_pr flow becomes "cloud's `autoCreatePR: true` is canonical").
-- `docs/features/qe-sdet/{spec.md, phases/{01,02,03}-*.md}` — drop open_pr from surface list; retire L4 phase 01.
-- `docs/{cursor-sdk-leverage.md, cursor-sdk-typescript.md, e2e-execution.md}` — scrub references; drop the "Run the open_pr L4 suite" section.
-- `docs/features/ship-v1/spec.md:360` — leave as historical (V1 spec never included open_pr; reference remains as period-accurate context).
-- `e2e/README.md` — drop the `open-pr-sandbox/` fixture listing.
+- `docs/features/ship-v2/{spec.md, cursor-cloud-followups.md}` — scrub current-state references (phase-02 status, "open_pr cloud-aware" backlog item, etc.).
+- `docs/features/qe-sdet/spec.md` — mark phase 01 as retired (the L4 suite it built out is deleted alongside the verb); update fixture-naming example.
+- `docs/{cursor-sdk-leverage.md, e2e-execution.md}` — scrub references; drop the "Run the open_pr L4 suite" section.
+- `docs/features/ship-v2/phases/06-impl-01-cloud-unblock.md` — update the two file paths this PR invalidated (`live-open-pr-helpers.ts` rename + deleted `02-open-pr.md`).
+- `e2e/README.md` — rename the `open-pr-sandbox/` fixture listing to `live-sandbox/`.
+- **Left as period-accurate frozen records:** historical phase docs in `ship-v2/phases/{01,03,04,06,08,09}-*.md`, `ship-v2/phases/04-impl-04-*.md`, `qe-sdet/phases/{01,02,03}-*.md`, `ship-v1/spec.md`. These contain open_pr references that describe what was true at the time the phase shipped; rewriting them would lie about history. Inbound links from active docs are pointed at this removal spec instead.
 
 ## Why now
 

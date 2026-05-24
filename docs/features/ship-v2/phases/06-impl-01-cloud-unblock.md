@@ -143,11 +143,11 @@ Point every enumerated helper / doc reference at **`itsHabib/agent-sandbox`** (H
 Listed paths (six):
 
 - `e2e/scenarios/cloud-e2e-helpers.ts`
-- `e2e/scenarios/live-open-pr-helpers.ts`
+- `e2e/scenarios/live-cli-helpers.ts` (was `live-open-pr-helpers.ts` pre-removal of the open_pr verb)
 - `e2e/README.md`
 - `docs/e2e-execution.md`
 - `docs/features/qe-sdet/phases/01-l4-expansion-and-bug-smash.md`
-- `docs/features/ship-v2/phases/02-open-pr.md`
+- `docs/features/remove-open-pr/spec.md` (was `docs/features/ship-v2/phases/02-open-pr.md` pre-removal)
 
 Post-merge audit: the tree must not retain the **legacy** sandbox slug spelled by concatenating `ship`, `-live-`, and `sandbox` into one repo segment (the hyphenated name that preceded this PR). Search the workspace excluding `node_modules` / `.git` — expect zero contiguous matches for that obsolete segment.
 
