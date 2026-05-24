@@ -8,13 +8,13 @@ source:
 repo: ship
 repo_url: https://github.com/itsHabib/ship
 branch_prefix: phase-08-
-default_runtime: cloud
+default_runtime: local
 
 batches:
   - id: 1
     label: phase 11 — cloud attach surface (foundational)
     depends_on: []
-    status: pending
+    status: done
     streams:
       - task_id: tsk_01KSBJ2Z2QQEQZTWBD6FQE0PCY
         task_slug: phase-8a-cloud-attach-surface
@@ -30,7 +30,10 @@ batches:
           - packages/cursor-runner/src/local-runner.test.ts
           - packages/cursor-runner/src/errors.test.ts
           - packages/cursor-runner/src/fake.test.ts
-        status: pending
+        status: done
+        pr_number: 76
+        merge_commit: 9bc358322da9f5524a9e9773e3cd71f95be07fb5
+        merged_at: 2026-05-24T03:29:13Z
 
   - id: 2
     label: phase 12 — resume orchestration (uses phase 11's attach)
@@ -40,7 +43,8 @@ batches:
       - task_id: tsk_01KSBJ3C5VS3WP26VN47JM3MQC
         task_slug: phase-8b-resume-orchestration
         spec_path: docs/features/ship-v2/phases/12-resume-orchestration.md
-        runtime: cloud
+        runtime: local
+        branch_name: phase-12-resume-orchestration
         touches:
           - packages/core/src/service.ts
           - packages/core/src/cursor-runs/event-pump.ts          # NEW
@@ -59,7 +63,8 @@ batches:
       - task_id: tsk_01KSBJ3PHQNJ871MAHV5W3PW8M
         task_slug: phase-8c-l3-scenario
         spec_path: docs/features/ship-v2/phases/13-l3-resume-scenario.md
-        runtime: cloud
+        runtime: local
+        branch_name: phase-13-l3-resume-scenario
         touches:
           - e2e/scenarios/cloud-resume.e2e.test.ts               # NEW
           - e2e/scenarios/cloud-e2e-helpers.ts                   # minor additions
