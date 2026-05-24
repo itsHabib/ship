@@ -342,6 +342,32 @@ describe("ShipService.ship — happy path", () => {
   });
 });
 
+// Builds the canonical 3-level Error.cause chain used by the
+// failure-mapping cause-chain test. Extracted so the test body stays
+// under the complexity cap.
+function buildThreeLevelChain(): Error {
+  const sdkErr = Object.assign(new Error("[validation_error] Expected string, received boolean"), {
+    name: "ConfigurationError",
+    code: "validation_error",
+    status: 400,
+    endpoint: "POST /v1/agents",
+  });
+  const wrapper = new Error("agent.send failed after Agent.create", { cause: sdkErr });
+  return new Error("ship dispatch failed", { cause: wrapper });
+}
+
+// Parsed shape of `result.json`'s failure-side payload.
+interface ParsedResult {
+  status: string;
+  errorMessage: string;
+  errorChain: { name: string; message: string; extra?: Record<string, unknown> }[];
+}
+
+async function readResultJson(fs: MemoryShipFs, path: string): Promise<ParsedResult> {
+  const raw = await fs.readFile(path, "utf-8");
+  return JSON.parse(raw) as ParsedResult;
+}
+
 describe("ShipService.ship — failure mapping", () => {
   let h: Harness;
 
@@ -470,6 +496,126 @@ describe("ShipService.ship — failure mapping", () => {
     expect(out.status).toBe("failed");
     const row = h.store.getRun(out.workflowRunId);
     expect(row?.phases[0]?.errorMessage).toMatch(/persist run artifacts|ENOSPC/);
+  });
+
+  test("multi-level Error.cause chain serializes into errorMessage and result.json errorChain", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    // Build a 3-level chain: top wraps a CursorRunFailedError-like wrapper
+    // which wraps the underlying SDK error. Each level has its own
+    // distinguishable message + the SDK-style "extra" fields on the deepest.
+    const top = buildThreeLevelChain();
+
+    const origWriteFile = h.fs.writeFile.bind(h.fs);
+    h.fs.writeFile = (path: string, data: string): Promise<void> => {
+      if (path.endsWith("prompt.md")) return Promise.reject(top);
+      return origWriteFile(path, data);
+    };
+
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    expect(out.status).toBe("failed");
+    const row = h.store.getRun(out.workflowRunId);
+    // Joined chain on the row's errorMessage: every level appears in order.
+    const msg = row?.phases[0]?.errorMessage ?? "";
+    expect(msg).toMatch(/L0:.*ship dispatch failed/);
+    expect(msg).toMatch(/L1:.*agent\.send failed after Agent\.create/);
+    expect(msg).toMatch(/L2:.*\[validation_error\]/);
+
+    // Structured chain in result.json: each level preserved with name +
+    // message + SDK-side extras (status, code, endpoint).
+    const parsed = await readResultJson(h.fs, out.artifacts.resultPath);
+    expect(parsed.errorChain.length).toBe(3);
+    expect(parsed.errorChain[0]?.message).toBe("ship dispatch failed");
+    expect(parsed.errorChain[1]?.message).toBe("agent.send failed after Agent.create");
+    expect(parsed.errorChain[2]?.name).toBe("ConfigurationError");
+    expect(parsed.errorChain[2]?.extra).toMatchObject({
+      code: "validation_error",
+      status: 400,
+      endpoint: "POST /v1/agents",
+    });
+  });
+
+  test("non-enumerable own properties on SDK errors surface in errorChain.extra", async () => {
+    // Simulates an SDK that defines its extras as non-enumerable class
+    // fields (e.g. `Object.defineProperty(this, "status", { enumerable: false, value: ... })`).
+    // `Object.keys` would miss these; `Object.getOwnPropertyNames` catches
+    // them. This test would have failed against the prior implementation.
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const sdkErr = new Error("hidden-field error");
+    Object.defineProperty(sdkErr, "status", { value: 503, enumerable: false });
+    Object.defineProperty(sdkErr, "code", { value: "upstream_unavailable", enumerable: false });
+
+    const origWriteFile = h.fs.writeFile.bind(h.fs);
+    h.fs.writeFile = (path: string, data: string): Promise<void> => {
+      if (path.endsWith("prompt.md")) return Promise.reject(sdkErr);
+      return origWriteFile(path, data);
+    };
+
+    const out = await h.service.ship({ workdir: WORKDIR, repo: "ship", docPath: "docs.md" });
+    expect(out.status).toBe("failed");
+
+    const parsed = await readResultJson(h.fs, out.artifacts.resultPath);
+    expect(parsed.errorChain.length).toBe(1);
+    expect(parsed.errorChain[0]?.extra).toMatchObject({
+      status: 503,
+      code: "upstream_unavailable",
+    });
+  });
+
+  test("result.json survives JSON-hostile extras (BigInt + circular ref)", async () => {
+    // SDK errors occasionally carry BigInt (e.g. `Content-Length` from
+    // a header) or circular refs (response object referencing request).
+    // A naive `JSON.stringify` throws on either — the
+    // `tryWriteFailureResult` catch would then silently drop the ENTIRE
+    // `result.json`. Verify the safe-stringify keeps the artifact and
+    // swaps in sentinel strings for the hostile values.
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const sdkErr = new Error("hostile extras error");
+    Object.assign(sdkErr, {
+      bigField: BigInt("9007199254740993"),
+      selfRef: {} as Record<string, unknown>,
+    });
+    // Wire the circular reference: extra.selfRef points back at the
+    // top-level extras object via err itself.
+    (sdkErr as unknown as { selfRef: Record<string, unknown> }).selfRef["back"] = sdkErr;
+
+    const origWriteFile = h.fs.writeFile.bind(h.fs);
+    h.fs.writeFile = (path: string, data: string): Promise<void> => {
+      if (path.endsWith("prompt.md")) return Promise.reject(sdkErr);
+      return origWriteFile(path, data);
+    };
+
+    const out = await h.service.ship({ workdir: WORKDIR, repo: "ship", docPath: "docs.md" });
+    expect(out.status).toBe("failed");
+
+    const parsed = await readResultJson(h.fs, out.artifacts.resultPath);
+    expect(parsed.status).toBe("failed");
+    expect(parsed.errorMessage).toContain("hostile extras error");
+    expect(parsed.errorChain.length).toBeGreaterThanOrEqual(1);
+    const extra = parsed.errorChain[0]?.extra ?? {};
+    // BigInt → tagged-string form.
+    expect(extra["bigField"]).toBe("9007199254740993n");
+    // The selfRef → back → err cycle should be cut by the replacer. The
+    // first occurrence of err's `selfRef` is fine; the recursive visit
+    // through `back.selfRef` hits the WeakSet and becomes "[Circular]".
+    const selfRef = extra["selfRef"] as { back?: { selfRef?: unknown } } | undefined;
+    expect(selfRef?.back?.selfRef).toBe("[Circular]");
   });
 });
 

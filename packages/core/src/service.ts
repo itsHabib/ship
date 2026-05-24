@@ -766,13 +766,21 @@ interface FinalizeFailureArgs {
 async function finalizeFailure(args: FinalizeFailureArgs): Promise<ShipOutput> {
   const { ctx } = args;
   const endedAt = ctx.clock();
-  const errorMessage = args.err instanceof Error ? args.err.message : String(args.err);
+  const errorChain = flattenErrorChain(args.err);
+  // Single-level errors keep the raw message (back-compat with existing
+  // assertions). Multi-level chains get the joined "L0: <msg> | L1: <msg>"
+  // form so a single-field consumer still sees every level. The full
+  // structured chain is also written to `result.json` for forensic use.
+  const errorMessage =
+    errorChain.length <= 1
+      ? (errorChain[0]?.message ?? stringifyUnknown(args.err))
+      : errorChain.map((e, i) => `L${String(i)}: ${e.message}`).join(" | ");
 
   const isCancelled = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
   const terminal: TerminalWorkflowStatus = isCancelled ? "cancelled" : "failed";
 
   persistFailureRows({ ctx, args, terminal, endedAt, errorMessage, isCancelled });
-  await tryWriteFailureResult(ctx, args.paths.result, terminal, errorMessage);
+  await tryWriteFailureResult(ctx, args.paths.result, terminal, errorMessage, errorChain);
 
   const updatedRun = ctx.store.getRun(args.workflowRunId);
   return buildShipOutput({
@@ -816,20 +824,148 @@ function persistFailureRows(p: PersistFailureRowsArgs): void {
   if (!isCancelled) ctx.store.updateWorkflowRunStatus(args.workflowRunId, "failed");
 }
 
+// Shape of one level in the flattened error chain.
+interface ErrorChainEntry {
+  readonly name: string;
+  readonly message: string;
+  readonly stack?: string;
+  readonly extra?: Record<string, unknown>;
+}
+
+// Walk `err.cause` chain into a flat list. Top-level Error is L0, then
+// each successive `.cause` is L1, L2, ... Captures `name` and `message`
+// plus any SDK-side extras (status/code/response body) that aren't on
+// the standard Error shape. Bounded at 10 levels to avoid pathological
+// cycles.
+function flattenErrorChain(err: unknown): ErrorChainEntry[] {
+  const out: ErrorChainEntry[] = [];
+  let cur: unknown = err;
+  const seen = new Set<unknown>();
+  while (cur !== undefined && cur !== null && out.length < 10 && !seen.has(cur)) {
+    seen.add(cur);
+    if (cur instanceof Error) {
+      const entry: {
+        name: string;
+        message: string;
+        stack?: string;
+        extra?: Record<string, unknown>;
+      } = {
+        name: cur.name,
+        message: cur.message,
+      };
+      if (cur.stack !== undefined) entry.stack = cur.stack;
+      const extra = collectExtraErrorFields(cur);
+      if (Object.keys(extra).length > 0) entry.extra = extra;
+      out.push(entry);
+      cur = (cur as { cause?: unknown }).cause;
+    } else {
+      out.push({ name: "NonError", message: stringifyUnknown(cur) });
+      break;
+    }
+  }
+  return out;
+}
+
+// Safe stringification for `unknown` values that may not be plain
+// strings/numbers (e.g. plain objects). Returns a useful representation
+// instead of `[object Object]`. Used by the error-chain walker for the
+// non-Error tail.
+function stringifyUnknown(val: unknown): string {
+  if (typeof val === "string") return val;
+  if (val === null || val === undefined) return String(val);
+  if (typeof val === "object") {
+    try {
+      return JSON.stringify(val);
+    } catch {
+      return Object.prototype.toString.call(val);
+    }
+  }
+  if (typeof val === "number" || typeof val === "boolean" || typeof val === "bigint") {
+    return String(val);
+  }
+  // Function / symbol — last-resort safe representation.
+  return Object.prototype.toString.call(val);
+}
+
+// Pluck non-standard fields off an Error (SDK errors often carry
+// `status`, `code`, `response`, `body`, etc.). Skips standard Error
+// keys + `cause` (walked separately) + `stack` (captured separately).
+// Uses `getOwnPropertyNames` rather than `Object.keys` so SDK errors
+// that define their extras as non-enumerable own properties (a common
+// class-field pattern) still surface in the chain.
+function collectExtraErrorFields(err: Error): Record<string, unknown> {
+  const skip = new Set(["name", "message", "stack", "cause"]);
+  const extra: Record<string, unknown> = {};
+  for (const key of Object.getOwnPropertyNames(err)) {
+    if (skip.has(key)) continue;
+    const val = (err as unknown as Record<string, unknown>)[key];
+    if (val === undefined) continue;
+    extra[key] = val;
+  }
+  return extra;
+}
+
 // Best-effort `result.json` write so the archive carries some forensics
 // even on the failure path. Never propagates — errors are swallowed
-// internally.
+// internally. `errorChain` preserves the full cause chain; `errorMessage`
+// is the joined-string form kept for back-compat with single-field readers.
+// SDK-side `extra` payloads can contain JSON-hostile values (BigInt,
+// circular refs) — `safeStringifyFailureResult` handles those so a bad
+// extra never loses the whole `result.json` (which would also drop
+// `status` / `errorMessage`).
 async function tryWriteFailureResult(
   ctx: ShipContext,
   path: string,
   status: TerminalWorkflowStatus,
   errorMessage: string,
+  errorChain: readonly ErrorChainEntry[],
 ): Promise<void> {
   try {
-    await ctx.fs.writeFile(path, `${JSON.stringify({ status, errorMessage }, null, 2)}\n`);
+    const body = safeStringifyFailureResult({ status, errorMessage, errorChain });
+    await ctx.fs.writeFile(path, `${body}\n`);
   } catch {
     // swallow
   }
+}
+
+interface FailureResultPayload {
+  readonly status: string;
+  readonly errorMessage: string;
+  readonly errorChain: readonly ErrorChainEntry[];
+}
+
+// JSON-stringify wrapper that survives common SDK-error payload hazards:
+// BigInt (default-throws), circular references (default-throws), and
+// functions / symbols (silently dropped → swapped for sentinel strings).
+// On any remaining failure, falls back to a minimal `{status, errorMessage}`
+// payload — better to lose forensic detail than the whole `result.json`.
+function safeStringifyFailureResult(payload: FailureResultPayload): string {
+  try {
+    return JSON.stringify(payload, jsonSafeReplacer(), 2);
+  } catch {
+    return JSON.stringify(
+      { status: payload.status, errorMessage: payload.errorMessage, errorChain: [] },
+      null,
+      2,
+    );
+  }
+}
+
+// JSON.stringify replacer factory: BigInt → `"<n>n"`, cycles → `"[Circular]"`,
+// functions → `"[Function]"`, symbols → `"[Symbol]"`. Closure-scoped
+// `seen` tracks visited objects within a single stringify call.
+function jsonSafeReplacer(): (key: string, value: unknown) => unknown {
+  const seen = new WeakSet();
+  return (_key, value) => {
+    if (typeof value === "bigint") return `${value.toString()}n`;
+    if (typeof value === "function") return "[Function]";
+    if (typeof value === "symbol") return "[Symbol]";
+    if (value !== null && typeof value === "object") {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+    }
+    return value;
+  };
 }
 
 // Picks the cursor-run ref for `ShipOutput`: the persisted row when
