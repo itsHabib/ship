@@ -67,3 +67,37 @@ export class CursorCloudIntegrationError extends CursorRunFailedError {
 export class WrongRunnerError extends CursorRunFailedError {
   override readonly name: string = "WrongRunnerError";
 }
+
+/** Thrown when `Agent.resume` / `Agent.getRun` indicates the agent or run is gone. */
+export class CursorAgentNotFoundError extends Error {
+  override readonly name = "CursorAgentNotFoundError";
+  readonly agentId: string;
+  readonly runId: string;
+  readonly runtime: "local" | "cloud";
+
+  constructor(args: {
+    agentId: string;
+    runId: string;
+    runtime: "local" | "cloud";
+    cause?: unknown;
+  }) {
+    super(
+      `Cursor agent not found (agentId=${args.agentId}, runId=${args.runId}, runtime=${args.runtime})`,
+      args.cause !== undefined ? { cause: args.cause } : undefined,
+    );
+    this.agentId = args.agentId;
+    this.runId = args.runId;
+    this.runtime = args.runtime;
+  }
+}
+
+/** Thrown by {@link LocalCursorRunner.attach} — local agents die with the parent process. */
+export class LocalResumeNotSupportedError extends Error {
+  override readonly name = "LocalResumeNotSupportedError";
+  readonly agentId: string;
+
+  constructor(args: { agentId: string }) {
+    super(`Local agent resume is not supported (agentId=${args.agentId})`);
+    this.agentId = args.agentId;
+  }
+}

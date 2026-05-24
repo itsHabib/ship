@@ -10,10 +10,21 @@ import type { AgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor
 
 import { Agent } from "@cursor/sdk";
 
-import type { CursorRunHandle, CursorRunInput, CursorRunner, CursorRunResult } from "./runner.js";
+import type {
+  CursorRunAttachInput,
+  CursorRunHandle,
+  CursorRunInput,
+  CursorRunner,
+  CursorRunResult,
+} from "./runner.js";
 
 import { mapRunResult } from "./_shared.js";
-import { CursorRunFailedError, MissingApiKeyError, WrongRunnerError } from "./errors.js";
+import {
+  CursorRunFailedError,
+  LocalResumeNotSupportedError,
+  MissingApiKeyError,
+  WrongRunnerError,
+} from "./errors.js";
 
 const API_KEY_ENV = "CURSOR_API_KEY";
 
@@ -31,6 +42,10 @@ export class LocalCursorRunner implements CursorRunner {
     }
     const { agent, sdkRun } = await this.#startAgent(apiKey, input);
     return this.#buildHandle(agent, sdkRun, input);
+  }
+
+  attach(input: CursorRunAttachInput): Promise<CursorRunHandle> {
+    return Promise.reject(new LocalResumeNotSupportedError({ agentId: input.agentId }));
   }
 
   /**

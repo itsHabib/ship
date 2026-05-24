@@ -13,10 +13,16 @@ import type {
   ModelSelection as SdkModelSelection,
 } from "@cursor/sdk";
 
-import { Agent, IntegrationNotConnectedError } from "@cursor/sdk";
+import {
+  Agent,
+  CursorSdkError,
+  IntegrationNotConnectedError,
+  UnknownAgentError,
+} from "@cursor/sdk";
 
 import type {
   CloudRunSpec,
+  CursorRunAttachInput,
   CursorRunHandle,
   CursorRunInput,
   CursorRunner,
@@ -26,6 +32,7 @@ import type {
 import { mapRunResult, mapTerminalResult } from "./_shared.js";
 import { cloudDebugLog } from "./debug.js";
 import {
+  CursorAgentNotFoundError,
   CursorCloudIntegrationError,
   CursorRunFailedError,
   InvalidCloudReposError,
@@ -35,6 +42,51 @@ import {
 } from "./errors.js";
 
 const API_KEY_ENV = "CURSOR_API_KEY";
+
+function attachInputAsRunInput(input: CursorRunAttachInput): CursorRunInput {
+  return {
+    cwd: "",
+    model: input.model,
+    onEvent: input.onEvent,
+    prompt: "",
+    runtime: "cloud",
+    ...(input.cloud !== undefined && { cloud: input.cloud }),
+    ...(input.agents !== undefined && { agents: input.agents }),
+    ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
+    ...(input.signal !== undefined && { signal: input.signal }),
+  };
+}
+
+function assertSingleCloudRepo(cloudSpec: CloudRunSpec | undefined): void {
+  if (cloudSpec === undefined) return;
+  const repos = (cloudSpec as { repos?: unknown }).repos;
+  if (!Array.isArray(repos) || repos.length !== 1) {
+    throw new InvalidCloudReposError(Array.isArray(repos) ? repos.length : 0);
+  }
+}
+
+function mapAgentNotFoundError(
+  err: unknown,
+  input: Pick<CursorRunAttachInput, "agentId" | "runId">,
+): CursorAgentNotFoundError | undefined {
+  if (err instanceof UnknownAgentError) {
+    return new CursorAgentNotFoundError({
+      agentId: input.agentId,
+      runId: input.runId,
+      runtime: "cloud",
+      cause: err,
+    });
+  }
+  if (err instanceof CursorSdkError && (err.status === 404 || err.status === 410)) {
+    return new CursorAgentNotFoundError({
+      agentId: input.agentId,
+      runId: input.runId,
+      runtime: "cloud",
+      cause: err,
+    });
+  }
+  return undefined;
+}
 
 function modelArgFromInput(input: CursorRunInput): SdkModelSelection {
   // Cast needed because workflow's ModelSelection accepts both string and
@@ -113,6 +165,43 @@ export class CloudCursorRunner implements CursorRunner {
     }
     const { agent, sdkRun } = await this.#startAgent(apiKey, input.cloud, input);
     return this.#buildHandle(agent, sdkRun, input);
+  }
+
+  async attach(input: CursorRunAttachInput): Promise<CursorRunHandle> {
+    assertSingleCloudRepo(input.cloud);
+    const apiKey = process.env[API_KEY_ENV];
+    if (apiKey === undefined || apiKey === "") {
+      throw new MissingApiKeyError();
+    }
+    const runInput = attachInputAsRunInput(input);
+    let agent: SDKAgent | undefined;
+    try {
+      agent = await Agent.resume(input.agentId, {
+        apiKey,
+        model: modelArgFromInput(runInput),
+        ...(input.agents !== undefined && { agents: input.agents }),
+        ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
+      });
+      const sdkRun = await Agent.getRun(input.runId, {
+        agentId: input.agentId,
+        apiKey,
+        runtime: "cloud",
+      });
+      return this.#buildHandle(agent, sdkRun, runInput);
+    } catch (err) {
+      if (agent !== undefined) {
+        try {
+          await agent[Symbol.asyncDispose]();
+        } catch {
+          /* swallow secondary dispose error */
+        }
+      }
+      const notFound = mapAgentNotFoundError(err, input);
+      if (notFound !== undefined) {
+        throw notFound;
+      }
+      throw new CursorRunFailedError("Agent.resume or Agent.getRun failed", { cause: err });
+    }
   }
 
   async #startAgent(

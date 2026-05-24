@@ -15,7 +15,12 @@ import type {
 import { Agent } from "@cursor/sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { CursorRunFailedError, MissingApiKeyError, WrongRunnerError } from "./errors.js";
+import {
+  CursorRunFailedError,
+  LocalResumeNotSupportedError,
+  MissingApiKeyError,
+  WrongRunnerError,
+} from "./errors.js";
 import { LocalCursorRunner } from "./local-runner.js";
 
 vi.mock("@cursor/sdk", () => ({
@@ -159,6 +164,30 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+});
+
+function attachBaseInput(
+  overrides: Partial<Parameters<LocalCursorRunner["attach"]>[0]> = {},
+): Parameters<LocalCursorRunner["attach"]>[0] {
+  return {
+    agentId: "agent-test-0001",
+    model: { id: "composer-2" },
+    onEvent: vi.fn(),
+    runId: "run-test-0001",
+    ...overrides,
+  };
+}
+
+describe("LocalCursorRunner — attach", () => {
+  test("throws LocalResumeNotSupportedError unconditionally", async () => {
+    const runner = new LocalCursorRunner();
+    const input = attachBaseInput({ agentId: "agent-resume-target" });
+    await expect(runner.attach(input)).rejects.toBeInstanceOf(LocalResumeNotSupportedError);
+    await expect(runner.attach(input)).rejects.toMatchObject({
+      agentId: "agent-resume-target",
+    });
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("LocalCursorRunner — runtime selection", () => {
