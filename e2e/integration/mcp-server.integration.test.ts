@@ -89,7 +89,6 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
       "cancel_workflow_run",
       "get_workflow_run",
       "list_workflow_runs",
-      "open_pr",
       "ship",
     ]);
   });
