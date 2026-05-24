@@ -45,7 +45,7 @@ import {
   sleep,
   waitForEventsNdjsonPredicate,
   waitForWorkflowRowId,
-} from "./live-open-pr-helpers.js";
+} from "./live-cli-helpers.js";
 
 const RESUME_SLEEP_DOC = `# Cloud resume L3 — sleep workload
 

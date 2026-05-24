@@ -14,7 +14,7 @@ import { describe, expect, test } from "vitest";
 import {
   bootstrapFixtureMainOnSandbox,
   Env,
-  hasOpenPrLiveEnv,
+  hasLiveEnv,
   mkLiveTmp,
   ndjsonSuggestsAgentStarted,
   parseSandboxSlug,
@@ -24,9 +24,9 @@ import {
   spawnShipChild,
   waitForEventsNdjsonPredicate,
   waitForWorkflowRowId,
-} from "./live-open-pr-helpers.js";
+} from "./live-cli-helpers.js";
 
-const LIVE = hasOpenPrLiveEnv();
+const LIVE = hasLiveEnv();
 
 describe.skipIf(!LIVE)("L4 live e2e — A3 cancel in-flight ship", () => {
   const slug = Env.sandbox;

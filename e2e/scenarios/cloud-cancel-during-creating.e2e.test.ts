@@ -31,7 +31,7 @@ import {
   runCli,
   waitForEventsNdjsonPredicate,
   waitForWorkflowRowId,
-} from "./live-open-pr-helpers.js";
+} from "./live-cli-helpers.js";
 
 function ndjsonHasCloudCreatingLine(content: string): boolean {
   return content.split("\n").some((line) => {

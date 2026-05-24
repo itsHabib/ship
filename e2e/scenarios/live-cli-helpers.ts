@@ -1,6 +1,7 @@
-/**
- * Shared subprocess + git helpers for `open_pr` L4 scenarios (test-side only).
- */
+// Shared subprocess + git helpers for live e2e scenarios that drive the
+// CLI binary against a real fixture repo (test-side only). Used by the
+// cloud-runtime L3/L4 suites; the matching open_pr suites were removed
+// alongside the open_pr verb.
 
 import type { ShipOutput } from "@ship/mcp";
 import type { WorkflowRun, WorkflowStatus } from "@ship/workflow";
@@ -15,7 +16,7 @@ import { expect } from "vitest";
 import { startEventTailer } from "./event-tailer.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const OPEN_PR_FIXTURE = resolve(HERE, "..", "fixtures", "open-pr-sandbox");
+export const LIVE_SANDBOX_FIXTURE = resolve(HERE, "..", "fixtures", "live-sandbox");
 export const CLI_PKG = resolve(HERE, "..", "..", "packages", "cli");
 export const CLI_BIN = join(CLI_PKG, "src", "bin.ts");
 
@@ -25,7 +26,7 @@ export const Env = {
   sandbox: process.env["SHIP_E2E_SANDBOX_REPO"] ?? "",
 } as const;
 
-export function hasOpenPrLiveEnv(): boolean {
+export function hasLiveEnv(): boolean {
   return (
     Env.cursor !== "" && Env.github !== "" && Env.sandbox !== "" && process.env["SHIP_LIVE"] === "1"
   );
@@ -68,12 +69,12 @@ export function bootstrapFixtureMainOnSandbox(opts: {
   readonly sandboxSlug: string;
 }): void {
   const url = originHttpsUrl(opts.token, opts.sandboxSlug);
-  cpSync(OPEN_PR_FIXTURE, opts.workdir, { recursive: true });
+  cpSync(LIVE_SANDBOX_FIXTURE, opts.workdir, { recursive: true });
   runGit(opts.workdir, ["init", "-b", "main"]);
   runGit(opts.workdir, ["config", "user.email", "ship-l4@example.com"]);
   runGit(opts.workdir, ["config", "user.name", "Ship L4"]);
   runGit(opts.workdir, ["add", "."]);
-  runGit(opts.workdir, ["commit", "-m", "fixture: open-pr sandbox"]);
+  runGit(opts.workdir, ["commit", "-m", "fixture: live sandbox"]);
   runGit(opts.workdir, ["remote", "add", "origin", url]);
   runGit(opts.workdir, ["push", "-u", "origin", "main", "--force"]);
   runGit(opts.workdir, ["remote", "set-head", "origin", "main"]);
@@ -212,13 +213,10 @@ export interface SpawnShipArgs {
   readonly docRel: string;
 }
 
-/**
- * Spawns `ship` against the CLI binary with a per-scenario isolated home tree,
- * a streaming event-tailer for human visibility, and a captured stdout
- * buffer for the post-run JSON parse. Returns a handle the caller drives
- * (close-the-child, stop-the-tailer). Replaces 4 near-identical spawn
- * blocks previously inlined across A1, A2, A3, A4, A5.
- */
+// Spawns `ship` against the CLI binary with a per-scenario isolated home
+// tree, a streaming event-tailer for human visibility, and a captured
+// stdout buffer for the post-run JSON parse. Returns a handle the caller
+// drives (close-the-child, stop-the-tailer).
 export function spawnShipChild(args: SpawnShipArgs): ShipChildHandle {
   const env = isolatedHomeEnv(args.homeRoot);
   const child = spawn(
@@ -257,10 +255,10 @@ export function spawnShipChild(args: SpawnShipArgs): ShipChildHandle {
   });
   const tailer = startEventTailer(args.homeRoot, child);
   // Eagerly register the close listener — the child may exit before
-  // `waitForClose()` is called (notably in A2, where `pollUntilTerminal`
-  // awaits workflow-terminal status, which means the child has already
-  // exited and the `close` event has already fired). Lazy registration
-  // would attach a listener after-the-fact and hang forever.
+  // `waitForClose()` is called (notably when the caller awaits
+  // workflow-terminal status separately, which means the child has
+  // already exited and the `close` event has already fired). Lazy
+  // registration would attach a listener after-the-fact and hang forever.
   const closePromise = new Promise<{ readonly exitCode: number; readonly stdout: string }>(
     (res) => {
       child.on("close", (c) => {
@@ -277,12 +275,10 @@ export function spawnShipChild(args: SpawnShipArgs): ShipChildHandle {
   };
 }
 
-/**
- * Convenience wrapper: spawn ship, wait for close, assert exit 0 +
- * `status: succeeded`, return parsed output. Used by happy-path scenarios
- * (A1, A4 subtests, A5). A2 uses spawnShipChild directly (polls separately);
- * A3 uses spawnShipChild directly (cancels mid-flight).
- */
+// Convenience wrapper: spawn ship, wait for close, assert exit 0 +
+// `status: succeeded`, return parsed output. Callers that need to poll
+// terminal state separately, or cancel mid-flight, use spawnShipChild
+// directly instead.
 export async function runShipExpectingSuccess(
   args: SpawnShipArgs,
 ): Promise<{ readonly workflowRunId: string; readonly output: ShipOutput }> {
@@ -298,7 +294,7 @@ export async function runShipExpectingSuccess(
   }
 }
 
-/** Event-driven gate for cancellation (ED-6) — assistant / tool traffic only. */
+// Event-driven gate for cancellation — assistant / tool traffic only.
 export function ndjsonSuggestsAgentStarted(line: string): boolean {
   const t = line.trim();
   if (t === "") return false;

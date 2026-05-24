@@ -1,13 +1,10 @@
-/**
- * Shared bits for the `cloud-*.e2e.test.ts` L3 scenarios:
- * `stripDotGit`, `sandboxSlugFromUrl`, the gate constant, the sandbox URL,
- * best-effort cleanup, and kill/restart helpers for the resume scenario.
- *
- * Lives next to the scenarios under `e2e/scenarios/` rather than promoted
- * to `live-open-pr-helpers.ts` because these are cloud-specific (the URL,
- * the double-gate semantics); folding them into the open-pr helpers would
- * widen the open-pr file's scope.
- */
+// Shared bits for the `cloud-*.e2e.test.ts` L3 scenarios:
+// `stripDotGit`, `sandboxSlugFromUrl`, the gate constant, the sandbox URL,
+// best-effort cleanup, and kill/restart helpers for the resume scenario.
+//
+// Cloud-specific helpers (URL constant + double-gate semantics) stay here
+// rather than getting promoted into the generic `live-cli-helpers.ts` —
+// folding them in would widen that file's scope past CLI-driving basics.
 
 /* eslint-disable sonarjs/no-os-command-from-path -- integration: exercises system `gh`. */
 
@@ -18,7 +15,7 @@ import { type ChildProcess, execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isolatedHomeEnv, sleep } from "./live-open-pr-helpers.js";
+import { isolatedHomeEnv, sleep } from "./live-cli-helpers.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MCP_PKG = resolve(HERE, "..", "..", "packages", "mcp-server");
