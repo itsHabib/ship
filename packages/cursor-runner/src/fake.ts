@@ -20,6 +20,7 @@ import type {
   CursorRunResult,
 } from "./runner.js";
 
+import { attachInputAsRunInput } from "./_shared.js";
 import { CursorAgentNotFoundError } from "./errors.js";
 
 /** A single scripted run. The fake pops one of these per `run()` call. */
@@ -302,17 +303,4 @@ function abortableSleep(ms: number): { promise: Promise<void>; cancel: () => voi
     };
   });
   return { cancel: cancelFn, promise };
-}
-
-function attachInputAsRunInput(input: CursorRunAttachInput): CursorRunInput {
-  return {
-    cwd: "",
-    model: input.model,
-    onEvent: input.onEvent,
-    prompt: "",
-    ...(input.cloud !== undefined && { cloud: input.cloud }),
-    ...(input.agents !== undefined && { agents: input.agents }),
-    ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
-    ...(input.signal !== undefined && { signal: input.signal }),
-  };
 }

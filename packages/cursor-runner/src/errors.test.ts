@@ -61,6 +61,9 @@ describe("CursorAgentNotFoundError", () => {
     });
     expect(err).toBeInstanceOf(Error);
     expect(err).toBeInstanceOf(CursorAgentNotFoundError);
+    // Extends CursorRunFailedError so umbrella catch sites (e.g. phase 12's
+    // resumeOrphanedRuns) pick this up alongside the run-start failures.
+    expect(err).toBeInstanceOf(CursorRunFailedError);
     expect(err.name).toBe("CursorAgentNotFoundError");
     expect(err.agentId).toBe("bc-abc123");
     expect(err.runId).toBe("run-xyz789");
@@ -86,6 +89,8 @@ describe("LocalResumeNotSupportedError", () => {
     const err = new LocalResumeNotSupportedError({ agentId: "agent-local-001" });
     expect(err).toBeInstanceOf(Error);
     expect(err).toBeInstanceOf(LocalResumeNotSupportedError);
+    // Extends CursorRunFailedError for parity with the other attach failures.
+    expect(err).toBeInstanceOf(CursorRunFailedError);
     expect(err.name).toBe("LocalResumeNotSupportedError");
     expect(err.agentId).toBe("agent-local-001");
     expect(err.message).toMatch(/agent-local-001/);

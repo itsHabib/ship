@@ -288,7 +288,7 @@ describe("CloudCursorRunner — attach", () => {
   });
 
   test("Agent.getRun HTTP 410 → CursorAgentNotFoundError", async () => {
-    const { agent } = makeMockAgent({
+    const { agent, disposeSpy } = makeMockAgent({
       agentId: "bc-test-cloud-0001",
       run: makeMockRun({ runId: "run-test-cloud-0001" }).run,
     });
@@ -301,6 +301,9 @@ describe("CloudCursorRunner — attach", () => {
       runtime: "cloud",
       cause: sdkErr,
     });
+    // Mirror the 404 test: when Agent.getRun rejects after Agent.resume
+    // succeeds, the resumed agent must be disposed on the way out.
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
   test("throws MissingCloudSpecError when cloud is undefined", async () => {

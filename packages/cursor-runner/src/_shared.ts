@@ -5,7 +5,39 @@
 
 import type { RunResult } from "@cursor/sdk";
 
-import type { CloudRunSpec, CursorRunInput, CursorRunResult } from "./runner.js";
+import type {
+  CloudRunSpec,
+  CursorRunAttachInput,
+  CursorRunInput,
+  CursorRunResult,
+} from "./runner.js";
+
+/**
+ * Project a `CursorRunAttachInput` onto the `CursorRunInput` shape so the
+ * shared post-`agent.send` pipeline (`#buildHandle` in the runners) can be
+ * reused on the attach path. `prompt` and `cwd` are empty because the
+ * pipeline doesn't re-issue a prompt — the agent is already running. The
+ * `runtime` discriminator is set by the caller: `CloudCursorRunner` passes
+ * `"cloud"` so downstream warnings can derive cloud-divergence; the fake
+ * leaves it undefined (matching the runner's run-path treatment of
+ * `CursorRunInput.runtime` as optional with local default).
+ */
+export function attachInputAsRunInput(
+  input: CursorRunAttachInput,
+  runtime?: "local" | "cloud",
+): CursorRunInput {
+  return {
+    cwd: "",
+    model: input.model,
+    onEvent: input.onEvent,
+    prompt: "",
+    ...(runtime !== undefined && { runtime }),
+    ...(input.cloud !== undefined && { cloud: input.cloud }),
+    ...(input.agents !== undefined && { agents: input.agents }),
+    ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
+    ...(input.signal !== undefined && { signal: input.signal }),
+  };
+}
 
 // Cloud spec is forwarded by the cloud runner only — local-runner deliberately
 // omits it so a `CursorRunInput.cloud` carried by a local-runtime caller never

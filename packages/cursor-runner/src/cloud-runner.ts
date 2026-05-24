@@ -29,7 +29,7 @@ import type {
   CursorRunResult,
 } from "./runner.js";
 
-import { mapRunResult, mapTerminalResult } from "./_shared.js";
+import { attachInputAsRunInput, mapRunResult, mapTerminalResult } from "./_shared.js";
 import { cloudDebugLog } from "./debug.js";
 import {
   CursorAgentNotFoundError,
@@ -43,23 +43,12 @@ import {
 
 const API_KEY_ENV = "CURSOR_API_KEY";
 
-function attachInputAsRunInput(input: CursorRunAttachInput): CursorRunInput {
-  return {
-    cwd: "",
-    model: input.model,
-    onEvent: input.onEvent,
-    prompt: "",
-    runtime: "cloud",
-    ...(input.cloud !== undefined && { cloud: input.cloud }),
-    ...(input.agents !== undefined && { agents: input.agents }),
-    ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
-    ...(input.signal !== undefined && { signal: input.signal }),
-  };
-}
-
 function assertSingleCloudRepo(cloudSpec: CloudRunSpec | undefined): void {
   if (cloudSpec === undefined) return;
-  const repos = (cloudSpec as { repos?: unknown }).repos;
+  // Narrow to a typed array form. `repos?: unknown[]` (vs `unknown`) signals
+  // the intended shape — an array we expect to size-check — rather than
+  // leaving the cast looking like a scalar guard.
+  const repos = (cloudSpec as { repos?: unknown[] }).repos;
   if (!Array.isArray(repos) || repos.length !== 1) {
     throw new InvalidCloudReposError(Array.isArray(repos) ? repos.length : 0);
   }
@@ -155,7 +144,7 @@ export class CloudCursorRunner implements CursorRunner {
     // `{ cloud: {} }` (undefined), `{ cloud: { repos: null } }`, `{ repos: [] }`, and
     // multi-repo arrays. Reaching `.length` on a non-array would throw a generic
     // TypeError; we want the typed `InvalidCloudReposError` at every entry point.
-    const repos = (input.cloud as { repos?: unknown }).repos;
+    const repos = (input.cloud as { repos?: unknown[] }).repos;
     if (!Array.isArray(repos) || repos.length !== 1) {
       throw new InvalidCloudReposError(Array.isArray(repos) ? repos.length : 0);
     }
@@ -176,7 +165,7 @@ export class CloudCursorRunner implements CursorRunner {
     if (apiKey === undefined || apiKey === "") {
       throw new MissingApiKeyError();
     }
-    const runInput = attachInputAsRunInput(input);
+    const runInput = attachInputAsRunInput(input, "cloud");
     let agent: SDKAgent | undefined;
     try {
       agent = await Agent.resume(input.agentId, {

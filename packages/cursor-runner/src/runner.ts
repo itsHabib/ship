@@ -50,7 +50,14 @@ export interface CursorRunAttachInput {
   readonly model: ModelSelection;
   readonly mcpServers?: Record<string, McpServerConfig>;
   readonly agents?: Record<string, AgentDefinition>;
-  /** Required when the cursor_run is runtime: cloud. */
+  /**
+   * Required when attaching against a `CloudCursorRunner` (cloud runtime). The
+   * `LocalCursorRunner.attach` path throws `LocalResumeNotSupportedError`
+   * unconditionally and never reads this field, so leaving the type
+   * structurally optional avoids forcing the local caller to pass a value
+   * that's about to be ignored. `CloudCursorRunner.attach` throws
+   * `MissingCloudSpecError` if it's undefined at the cloud entry point.
+   */
   readonly cloud?: CloudRunSpec;
   readonly onEvent: (event: SDKMessage) => void | Promise<void>;
   readonly signal?: AbortSignal;

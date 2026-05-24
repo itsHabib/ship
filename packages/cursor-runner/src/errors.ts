@@ -1,8 +1,18 @@
 /**
- * Typed error subclasses for `@ship/cursor-runner`. Two errors, two
- * paths the caller cares to discriminate. Post-run SDK failures are
- * NOT thrown — they surface as `handle.result` resolving with
- * `status: "failed"`.
+ * Typed error subclasses for `@ship/cursor-runner`. Two top-level
+ * categories of caller-discriminable failures:
+ *
+ *   1. `MissingApiKeyError` — env-var precondition before any SDK call.
+ *   2. `CursorRunFailedError` + subclasses — the SDK could not start or
+ *      attach to a run. Subclasses (`MissingCloudSpecError`,
+ *      `InvalidCloudReposError`, `CursorCloudIntegrationError`,
+ *      `WrongRunnerError`, `CursorAgentNotFoundError`,
+ *      `LocalResumeNotSupportedError`) tag the specific cause; downstream
+ *      catchers can match the umbrella `CursorRunFailedError` to handle
+ *      any of them.
+ *
+ * Post-run SDK failures are NOT thrown — they surface as `handle.result`
+ * resolving with `status: "failed"`.
  */
 
 /** Thrown when `CURSOR_API_KEY` is unset (or empty) at `run()` time, before any SDK call. */
@@ -68,9 +78,13 @@ export class WrongRunnerError extends CursorRunFailedError {
   override readonly name: string = "WrongRunnerError";
 }
 
-/** Thrown when `Agent.resume` / `Agent.getRun` indicates the agent or run is gone. */
-export class CursorAgentNotFoundError extends Error {
-  override readonly name = "CursorAgentNotFoundError";
+/**
+ * Thrown when `Agent.resume` / `Agent.getRun` indicates the agent or run
+ * is gone. Extends {@link CursorRunFailedError} so downstream catchers
+ * that match the umbrella pre-run/attach failure type pick this up too.
+ */
+export class CursorAgentNotFoundError extends CursorRunFailedError {
+  override readonly name: string = "CursorAgentNotFoundError";
   readonly agentId: string;
   readonly runId: string;
   readonly runtime: "local" | "cloud";
@@ -91,9 +105,13 @@ export class CursorAgentNotFoundError extends Error {
   }
 }
 
-/** Thrown by {@link LocalCursorRunner.attach} — local agents die with the parent process. */
-export class LocalResumeNotSupportedError extends Error {
-  override readonly name = "LocalResumeNotSupportedError";
+/**
+ * Thrown by {@link LocalCursorRunner.attach} — local agents die with the
+ * parent process, so resume is not supported. Extends
+ * {@link CursorRunFailedError} for parity with the other attach failures.
+ */
+export class LocalResumeNotSupportedError extends CursorRunFailedError {
+  override readonly name: string = "LocalResumeNotSupportedError";
   readonly agentId: string;
 
   constructor(args: { agentId: string }) {
