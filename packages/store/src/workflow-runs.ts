@@ -62,6 +62,8 @@ export interface WorkflowRunOps {
   // in-flight workflow could end up with `phase=running, workflow=pending`
   // and no continuation scheduled to repair it.
   markRunStarted: (workflowRunId: string, phaseId: string, startedAt: string) => void;
+  /** Bump `updated_at` without changing `status`; throws if the id is unknown. */
+  touchUpdatedAt: (workflowRunId: string) => void;
 }
 
 interface WorkflowRunRow {
@@ -98,6 +100,7 @@ interface WorkflowRunStmts {
   // hazard this method exists to close.
   markRunRunning: Statement;
   markPhaseRunning: Statement;
+  touchUpdatedAt: Statement;
 }
 
 /** Bundle threaded into helpers to stay under the eslint param cap. */
@@ -139,6 +142,7 @@ export function createWorkflowRunOps(
     markRunRunning: db.prepare(
       `UPDATE workflow_runs SET status = 'running', updated_at = ? WHERE id = ?`,
     ),
+    touchUpdatedAt: db.prepare(`UPDATE workflow_runs SET updated_at = ? WHERE id = ?`),
     selectById: db.prepare<[string], WorkflowRunRow>(
       `SELECT ${WORKFLOW_RUN_COLUMNS} FROM workflow_runs WHERE id = ?`,
     ),
@@ -153,6 +157,9 @@ export function createWorkflowRunOps(
     list: (filter) => listRunsImpl(deps, filter),
     markRunStarted: (workflowRunId, phaseId, startedAt) => {
       markRunStarted(deps, workflowRunId, phaseId, startedAt);
+    },
+    touchUpdatedAt: (workflowRunId) => {
+      touchRunUpdatedAt(deps, workflowRunId);
     },
     updateStatus: (id, status) => updateRunStatus(deps, id, status),
   };
@@ -201,6 +208,13 @@ function updateRunStatus(deps: WorkflowRunDeps, id: string, status: WorkflowStat
     return hydrateOne(deps.phases, row);
   });
   return txn();
+}
+
+function touchRunUpdatedAt(deps: WorkflowRunDeps, id: string): void {
+  const result = deps.stmts.touchUpdatedAt.run(deps.clock(), id);
+  if (result.changes === 0) {
+    throw new WorkflowRunNotFoundError(id);
+  }
 }
 
 function getRun(deps: WorkflowRunDeps, id: string): WorkflowRun | null {

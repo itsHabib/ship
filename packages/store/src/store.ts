@@ -6,7 +6,11 @@
 
 import type { CursorRunRef, Phase, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
-import type { RecordCursorRunInput, UpdateCursorRunInput } from "./cursor-runs.js";
+import type {
+  RecordCursorRunInput,
+  ResumableCloudCursorRun,
+  UpdateCursorRunInput,
+} from "./cursor-runs.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
 import type { CreateWorkflowRunInput, ListRunsFilter } from "./workflow-runs.js";
 
@@ -83,6 +87,13 @@ export interface Store {
   updateCursorRunStatus: (id: string, patch: UpdateCursorRunInput) => CursorRunRef;
   /** Hydrated cursor run, or `null` if unknown. Does not throw. */
   getCursorRun: (id: string) => CursorRunRef | null;
+  /**
+   * Cloud cursor runs eligible for startup resume (`running`/`pending` with
+   * a persisted SDK `run_id`).
+   */
+  listResumableCloudCursorRuns: () => ResumableCloudCursorRun[];
+  /** Bump `workflow_runs.updated_at` without changing status. */
+  touchWorkflowRunUpdatedAt: (workflowRunId: string) => void;
   /** Hydrated workflow run plus phases, or `null` if unknown. Does not throw. */
   getRun: (id: string) => WorkflowRun | null;
   /**
@@ -150,9 +161,11 @@ export function createStore(opts: CreateStoreOptions): Store {
       createWorkflowRun: workflowRunOps.create,
       getCursorRun: cursorRunOps.get,
       getRun: workflowRunOps.get,
+      listResumableCloudCursorRuns: cursorRunOps.listResumableCloud,
       listRuns: workflowRunOps.list,
       markRunStarted: workflowRunOps.markRunStarted,
       recordCursorRun: cursorRunOps.record,
+      touchWorkflowRunUpdatedAt: workflowRunOps.touchUpdatedAt,
       updateCursorRunStatus: cursorRunOps.updateStatus,
       updatePhase: phaseOps.update,
       updateWorkflowRunStatus: workflowRunOps.updateStatus,

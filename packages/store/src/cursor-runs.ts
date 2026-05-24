@@ -24,6 +24,8 @@ export interface RecordCursorRunInput {
   id: string;
   workflowRunId: string;
   agentId: string;
+  /** SDK run id (`run-<uuid>`). Required for cloud resume. */
+  runId?: string;
   runtime: CursorRunRuntime;
   model?: ModelSelection;
   artifactsDir: string;
@@ -36,6 +38,16 @@ export interface UpdateCursorRunInput {
   durationMs?: number;
 }
 
+/** Row shape consumed by `ShipService.resumeOrphanedRuns`. */
+export interface ResumableCloudCursorRun {
+  readonly id: string;
+  readonly workflowRunId: string;
+  readonly agentId: string;
+  readonly runId: string;
+  readonly model?: ModelSelection;
+  readonly artifactsDir: string;
+}
+
 /** Internal cursor-run-table API consumed by `store.ts`. */
 export interface CursorRunOps {
   /** Insert a cursor run with `status = 'running'`; throws if `workflowRunId` is unknown. */
@@ -44,12 +56,18 @@ export interface CursorRunOps {
   updateStatus: (id: string, patch: UpdateCursorRunInput) => CursorRunRef;
   /** Hydrated row, or `null` if the id is unknown (does not throw). */
   get: (id: string) => CursorRunRef | null;
+  /**
+   * Cloud rows eligible for startup resume: `status IN ('running','pending')`,
+   * `runtime = 'cloud'`, and a persisted SDK `run_id`.
+   */
+  listResumableCloud: () => ResumableCloudCursorRun[];
 }
 
 interface CursorRunRow {
   id: string;
   workflow_run_id: string;
   agent_id: string;
+  run_id: string | null;
   runtime: string;
   model_json: string | null;
   status: string;
@@ -60,7 +78,7 @@ interface CursorRunRow {
 }
 
 const CURSOR_RUN_COLUMNS =
-  "id, workflow_run_id, agent_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir";
+  "id, workflow_run_id, agent_id, run_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir";
 
 /**
  * Constructs the `cursor_runs` ops. Caches static prepared statements
@@ -68,11 +86,17 @@ const CURSOR_RUN_COLUMNS =
  */
 export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
   const insertStmt = db.prepare(
-    `INSERT INTO cursor_runs (id, workflow_run_id, agent_id, runtime, model_json, status, started_at, artifacts_dir)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO cursor_runs (id, workflow_run_id, agent_id, run_id, runtime, model_json, status, started_at, artifacts_dir)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], CursorRunRow>(
     `SELECT ${CURSOR_RUN_COLUMNS} FROM cursor_runs WHERE id = ?`,
+  );
+  const listResumableCloudStmt = db.prepare<[], CursorRunRow>(
+    `SELECT ${CURSOR_RUN_COLUMNS} FROM cursor_runs
+     WHERE runtime = 'cloud'
+       AND status IN ('running', 'pending')
+       AND run_id IS NOT NULL`,
   );
 
   function record(input: RecordCursorRunInput): CursorRunRef {
@@ -83,6 +107,7 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
           input.id,
           input.workflowRunId,
           input.agentId,
+          input.runId ?? null,
           input.runtime,
           input.model !== undefined ? JSON.stringify(input.model) : null,
           "running",
@@ -151,7 +176,36 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
     return row ? parseCursorRun(row) : null;
   }
 
-  return { get, record, updateStatus };
+  function listResumableCloud(): ResumableCloudCursorRun[] {
+    return listResumableCloudStmt.all().flatMap((row) => {
+      if (row.run_id === null || row.run_id === "") return [];
+      let model: ModelSelection | undefined;
+      if (row.model_json !== null) {
+        try {
+          model = JSON.parse(row.model_json) as ModelSelection;
+        } catch {
+          // Malformed model_json — keep the row resumable. The caller
+          // (ShipService.resumeOrphanedRuns) falls back to its
+          // configured `defaultModel`, so filtering the row out here
+          // would prevent recovery of an otherwise-valid orphan over a
+          // soft data issue. Treat model as undefined and proceed.
+          model = undefined;
+        }
+      }
+      return [
+        {
+          agentId: row.agent_id,
+          artifactsDir: row.artifacts_dir,
+          id: row.id,
+          ...(model !== undefined && { model }),
+          runId: row.run_id,
+          workflowRunId: row.workflow_run_id,
+        },
+      ];
+    });
+  }
+
+  return { get, listResumableCloud, record, updateStatus };
 }
 
 /** True when at least one field of the patch is set. */

@@ -298,6 +298,29 @@ describe("workflow runs (via createStore)", () => {
     expect(succeededPhase?.status).toBe("succeeded");
     expect(cancelledPhase?.status).toBe("cancelled");
   });
+
+  describe("touchWorkflowRunUpdatedAt", () => {
+    test("bumps updated_at on an existing row", () => {
+      const input = makeInput();
+      const created = store.createWorkflowRun(input);
+      const before = created.updatedAt;
+
+      currentNow = "2026-05-08T00:00:30.000Z";
+      store.touchWorkflowRunUpdatedAt(input.id);
+
+      const after = store.getRun(input.id);
+      expect(after?.updatedAt).toBe(currentNow);
+      expect(after?.updatedAt).not.toBe(before);
+      // Status untouched — this is a pure freshness bump.
+      expect(after?.status).toBe(created.status);
+    });
+
+    test("unknown id throws WorkflowRunNotFoundError", () => {
+      expect(() => {
+        store.touchWorkflowRunUpdatedAt(newWorkflowRunId());
+      }).toThrow(WorkflowRunNotFoundError);
+    });
+  });
 });
 
 describe("listRuns", () => {

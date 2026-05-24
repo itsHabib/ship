@@ -46,18 +46,23 @@ describe("runMigrations", () => {
     expect(tables).toContain("cursor_runs");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(1);
-    expect(applied[0]?.name).toBe("0001_init.sql");
-    expect(applied[0]?.applied_at).toMatch(/\d{4}-\d{2}-\d{2}T/);
+    expect(applied).toHaveLength(2);
+    expect(applied.map((r) => r.name)).toEqual(["0001_init.sql", "0002_cursor_runs_run_id.sql"]);
+
+    const columns = db
+      .prepare("PRAGMA table_info(cursor_runs)")
+      .all()
+      .map((r) => (r as { name: string }).name);
+    expect(columns).toContain("run_id");
   });
 
-  test("re-run on already-migrated DB is a no-op (single _migrations row)", () => {
+  test("re-run on already-migrated DB is a no-op (two _migrations rows)", () => {
     runMigrations(db);
     runMigrations(db);
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(1);
+    expect(applied).toHaveLength(2);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {
