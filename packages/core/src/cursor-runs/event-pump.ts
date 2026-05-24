@@ -27,23 +27,36 @@ export function startEventPump(opts: EventPumpOptions): EventPumpHandle {
   let stopped = false;
   let timer: ReturnType<typeof setInterval> | undefined;
 
+  const stopInternal = (): void => {
+    if (stopped) return;
+    stopped = true;
+    if (timer !== undefined) {
+      clearInterval(timer);
+      timer = undefined;
+    }
+  };
+
+  // Heartbeat must not leak exceptions into Node's uncaught-exception
+  // handler. `touchWorkflowRunUpdatedAt` throws `WorkflowRunNotFoundError`
+  // when the row is gone (e.g., the run was cancelled and reaped, or the
+  // store was closed between the moment `handle.result` resolved and
+  // `stop()` ran). On any throw, silently self-stop — the pump's job is
+  // freshness, not error reporting; the run's terminal state is owned
+  // elsewhere.
   const heartbeat = (): void => {
     if (stopped) return;
-    opts.store.touchWorkflowRunUpdatedAt(opts.workflowRunId);
+    try {
+      opts.store.touchWorkflowRunUpdatedAt(opts.workflowRunId);
+    } catch {
+      stopInternal();
+    }
   };
 
   timer = setInterval(heartbeat, intervalMs);
 
   return {
     heartbeat,
-    stop(): void {
-      if (stopped) return;
-      stopped = true;
-      if (timer !== undefined) {
-        clearInterval(timer);
-        timer = undefined;
-      }
-    },
+    stop: stopInternal,
   };
 }
 

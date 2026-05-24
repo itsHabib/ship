@@ -185,4 +185,119 @@ describe("cursor runs (via createStore)", () => {
     expect(fetched?.durationMs).toBeUndefined();
     expect(fetched?.status).toBe("running");
   });
+
+  describe("listResumableCloudCursorRuns", () => {
+    test("empty store returns empty array", () => {
+      expect(store.listResumableCloudCursorRuns()).toEqual([]);
+    });
+
+    test("cloud row with run_id is returned (happy path)", () => {
+      const wfId = seedRun();
+      const cursorRunId = newCursorRunId();
+      const model: ModelSelection = { id: "composer-2.5" };
+      store.recordCursorRun({
+        agentId: "bc-test-001",
+        artifactsDir: "/runs/wf_x",
+        id: cursorRunId,
+        model,
+        runId: "run-test-001",
+        runtime: "cloud",
+        workflowRunId: wfId,
+      });
+
+      const resumable = store.listResumableCloudCursorRuns();
+      expect(resumable).toHaveLength(1);
+      expect(resumable[0]).toEqual({
+        agentId: "bc-test-001",
+        artifactsDir: "/runs/wf_x",
+        id: cursorRunId,
+        model,
+        runId: "run-test-001",
+        workflowRunId: wfId,
+      });
+    });
+
+    test("cloud row WITHOUT run_id is skipped (pre-migration legacy)", () => {
+      const wfId = seedRun();
+      const cursorRunId = newCursorRunId();
+      store.recordCursorRun({
+        agentId: "bc-test-002",
+        artifactsDir: "/runs/wf_y",
+        id: cursorRunId,
+        // runId intentionally omitted — legacy row, no SDK run id persisted
+        runtime: "cloud",
+        workflowRunId: wfId,
+      });
+
+      expect(store.listResumableCloudCursorRuns()).toEqual([]);
+    });
+
+    test("local row is skipped regardless of run_id presence", () => {
+      const wfId = seedRun();
+      store.recordCursorRun({
+        agentId: "agent-local-001",
+        artifactsDir: "/runs/wf_z",
+        id: newCursorRunId(),
+        runId: "run-local-001",
+        runtime: "local",
+        workflowRunId: wfId,
+      });
+
+      expect(store.listResumableCloudCursorRuns()).toEqual([]);
+    });
+
+    test("only resumable cloud rows are returned from a mixed set", () => {
+      const wfId = seedRun();
+      // Cloud + run_id → returned
+      const cloudWithRun = newCursorRunId();
+      store.recordCursorRun({
+        agentId: "bc-001",
+        artifactsDir: "/runs/a",
+        id: cloudWithRun,
+        runId: "run-001",
+        runtime: "cloud",
+        workflowRunId: wfId,
+      });
+      // Cloud, no run_id → skipped
+      store.recordCursorRun({
+        agentId: "bc-002",
+        artifactsDir: "/runs/b",
+        id: newCursorRunId(),
+        runtime: "cloud",
+        workflowRunId: wfId,
+      });
+      // Local → skipped
+      store.recordCursorRun({
+        agentId: "agent-local-002",
+        artifactsDir: "/runs/c",
+        id: newCursorRunId(),
+        runId: "run-local-002",
+        runtime: "local",
+        workflowRunId: wfId,
+      });
+
+      const resumable = store.listResumableCloudCursorRuns();
+      expect(resumable.map((r) => r.id)).toEqual([cloudWithRun]);
+    });
+
+    test("terminal cloud row (succeeded/failed/cancelled) is skipped", () => {
+      const wfId = seedRun();
+      const cursorRunId = newCursorRunId();
+      store.recordCursorRun({
+        agentId: "bc-test-terminal",
+        artifactsDir: "/runs/wf_term",
+        id: cursorRunId,
+        runId: "run-test-terminal",
+        runtime: "cloud",
+        workflowRunId: wfId,
+      });
+      store.updateCursorRunStatus(cursorRunId, {
+        durationMs: 1000,
+        endedAt: currentNow,
+        status: "succeeded",
+      });
+
+      expect(store.listResumableCloudCursorRuns()).toEqual([]);
+    });
+  });
 });

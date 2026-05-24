@@ -103,4 +103,55 @@ describe("startEventPump", () => {
   test("defaults to 30s interval", () => {
     expect(DEFAULT_EVENT_PUMP_INTERVAL_MS).toBe(30_000);
   });
+
+  test("heartbeat error self-stops the pump (no further bumps, no uncaught throw)", () => {
+    const pump = startEventPump({
+      intervalMs: 1_000,
+      store,
+      workflowRunId: "wf_does_not_exist",
+    });
+    // First tick: store.touchWorkflowRunUpdatedAt throws because the row
+    // doesn't exist. The pump must swallow + self-stop, not propagate.
+    expect(() => {
+      vi.advanceTimersByTime(1_000);
+    }).not.toThrow();
+    // After self-stop, a manual heartbeat() is a no-op too.
+    expect(() => {
+      pump.heartbeat();
+    }).not.toThrow();
+    // Subsequent timer ticks don't re-throw either.
+    expect(() => {
+      vi.advanceTimersByTime(10_000);
+    }).not.toThrow();
+    pump.stop();
+  });
+
+  test("heartbeat error on a closed store stops the pump (no further bumps, no throw)", () => {
+    const pump = startEventPump({
+      intervalMs: 1_000,
+      store,
+      workflowRunId: "wf_test_001",
+    });
+    vi.advanceTimersByTime(1_000);
+    const afterFirstTick = store.getRun("wf_test_001")?.updatedAt;
+    expect(afterFirstTick).toBeDefined();
+
+    // Close the store mid-pump — the next heartbeat throws (DB closed),
+    // and the pump must swallow + self-stop. Re-create a fresh store in
+    // the afterEach reset; tests own that bookkeeping.
+    store.close();
+
+    expect(() => {
+      vi.advanceTimersByTime(1_000);
+    }).not.toThrow();
+    expect(() => {
+      pump.heartbeat();
+    }).not.toThrow();
+    pump.stop();
+    // Reopen so afterEach close() doesn't double-close.
+    store = createStore({
+      clock: deterministicClock("2026-05-23T00:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+  });
 });
