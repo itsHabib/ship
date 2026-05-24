@@ -32,7 +32,7 @@ Anti-signal: design-only work where Ship doesn't fire (the design doc IS the del
   - Otherwise → **ad-hoc form** (one or more spec docs, one stream each).
 - `N` (optional, ad-hoc only): stream count. If omitted, infer from the number of doc paths supplied. Ignored in manifest form (stream count comes from the manifest).
 - `--batch N` (manifest form only): run only that batch from the manifest. Useful for operator-paced runs or recovering from a partial failure.
-- `--runtime local|cloud` (optional, default `local`): which Ship runtime to fire each stream against.
+- `--runtime local|cloud` (optional, default `cloud`): which Ship runtime to fire each stream against. **Cloud-first is the default** — the cloud runner is the dogfood target and the path that gets exercised on every fresh PR; local stays available for fast-iteration or offline work, but you opt in explicitly with `--runtime local`.
   - Ad-hoc form: applies to every stream in the invocation.
   - Manifest form: overrides the per-stream `runtime` field in the manifest when present (use sparingly; the manifest is usually authoritative). Manifest form admits **mixed-runtime batches** — some streams `runtime: local`, others `runtime: cloud` within the same batch.
   - `cloud` skips local-only steps (Step 1 pre-flight, Step 2 worktree creation, Step 4's local commit / format / push). See § "Cloud-runtime variant" below for the full delta.
