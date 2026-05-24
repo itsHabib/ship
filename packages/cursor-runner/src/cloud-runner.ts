@@ -428,7 +428,11 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
 function logCloudStartFailure(err: unknown, agentCreated: boolean): void {
   try {
     const stage = agentCreated ? "agent.send" : "Agent.create";
-    const dump = inspect(err, { depth: 10, showHidden: false, breakLength: 100 });
+    // `showHidden: true` is required to render non-enumerable own
+    // properties — SDK error classes commonly set fields like `status`
+    // / `code` / `endpoint` via `Object.defineProperty(..., { enumerable: false })`,
+    // and the whole point of this dump is exposing them.
+    const dump = inspect(err, { depth: 10, showHidden: true, breakLength: 100 });
     process.stderr.write(`[ship-cloud-error] ${stage} failed:\n${dump}\n`);
   } catch {
     // swallow — diagnostic logging must never affect control flow

@@ -957,7 +957,7 @@ function safeStringifyFailureResult(payload: FailureResultPayload): string {
 // functions → `"[Function]"`, symbols → `"[Symbol]"`. Closure-scoped
 // `seen` tracks visited objects within a single stringify call.
 function jsonSafeReplacer(): (key: string, value: unknown) => unknown {
-  const seen = new WeakSet<object>();
+  const seen = new WeakSet();
   return (_key, value) => {
     if (typeof value === "bigint") return `${value.toString()}n`;
     if (typeof value === "function") return "[Function]";
