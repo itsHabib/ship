@@ -6,20 +6,10 @@
  */
 
 import {
-  BaseBranchUnresolvedError,
-  BranchPushFailedError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
-  EmptyBranchError,
-  GhAuthError,
-  GhCreatePrFailedError,
-  ImplementPhaseNotSucceededError,
   MissingRepoError,
-  OriginHeadUnsetError,
-  OriginRepoUnresolvedError,
   WorkdirNotFoundError,
-  WorkdirNotGitError,
-  WorkflowRunStillActiveError,
 } from "@ship/core";
 import { WorkflowRunNotFoundError } from "@ship/store";
 
@@ -49,17 +39,6 @@ const USER_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   WorkflowRunNotFoundError,
   InvalidArgumentError,
   RangeError,
-  // open_pr pre-conditions + integration failures.
-  ImplementPhaseNotSucceededError,
-  WorkdirNotGitError,
-  EmptyBranchError,
-  BaseBranchUnresolvedError,
-  OriginHeadUnsetError,
-  OriginRepoUnresolvedError,
-  WorkflowRunStillActiveError,
-  GhAuthError,
-  BranchPushFailedError,
-  GhCreatePrFailedError,
 ];
 
 // Commander argv errors arrive as plain `Error` with these phrases.

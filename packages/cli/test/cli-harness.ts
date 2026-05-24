@@ -8,23 +8,13 @@
  * glob (`src/**`) doesn't count this helper as production code.
  */
 
-import type { OpenPrService, ShipService } from "@ship/core";
+import type { ShipService } from "@ship/core";
 import type { CursorRunner } from "@ship/cursor-runner";
-import type {
-  FakeGhClient,
-  FakeGitRemote,
-  Harness,
-  OpenPrServiceBundle,
-  ServiceBundle,
-} from "@ship/test-harness";
+import type { Harness, ServiceBundle } from "@ship/test-harness";
 import type { ModelSelection } from "@ship/workflow";
 import type { Command } from "commander";
 
-import {
-  createHarness,
-  createOpenPrServiceFromHarness,
-  createServiceFromHarness,
-} from "@ship/test-harness";
+import { createHarness, createServiceFromHarness } from "@ship/test-harness";
 import { resolve as resolvePath } from "node:path";
 
 import { CliExit } from "../src/errors.js";
@@ -37,13 +27,9 @@ const WORKDIR = resolvePath("/work/wt/feat");
 export interface CliHarness {
   readonly program: Command;
   readonly service: ShipService;
-  readonly openPrService: OpenPrService;
   readonly bundle: ServiceBundle;
-  readonly openPrBundle: OpenPrServiceBundle;
-  readonly gh: FakeGhClient;
-  readonly git: FakeGitRemote;
   readonly harness: Harness;
-  /** Present when `createCliHarness({ cloudCursor })` wired a cloud runner. */
+  // Present when `createCliHarness({ cloudCursor })` wired a cloud runner.
   readonly cloudCursor?: CursorRunner;
   readonly stdout: string[];
   readonly stderr: string[];
@@ -58,14 +44,10 @@ export async function createCliHarness(
     ...(opts.defaultModel !== undefined ? { defaultModel: opts.defaultModel } : {}),
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
   });
-  const openPrBundle = createOpenPrServiceFromHarness(harness);
   await bundle.fs.mkdir(WORKDIR, { recursive: true });
   await bundle.fs.writeFile(`${WORKDIR}/docs.md`, "# Task\n\nDo it.\n");
 
-  const program = buildProgram(
-    () => bundle.service,
-    () => openPrBundle.service,
-  );
+  const program = buildProgram(() => bundle.service);
   const stdout: string[] = [];
   const stderr: string[] = [];
   // Capture via process.stdout/process.stderr without spawning child procs.
@@ -83,11 +65,7 @@ export async function createCliHarness(
   return {
     program,
     service: bundle.service,
-    openPrService: openPrBundle.service,
     bundle,
-    openPrBundle,
-    gh: openPrBundle.gh,
-    git: openPrBundle.git,
     harness,
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
     stdout,

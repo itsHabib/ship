@@ -22,7 +22,7 @@
 import type { CursorRunner } from "@ship/cursor-runner";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createDefaultOpenPrService, createDefaultShipService } from "@ship/core";
+import { createDefaultShipService } from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -61,12 +61,7 @@ async function main(): Promise<void> {
     Object.assign(opts, { cursor: fake });
   }
   const shipFactory = createDefaultShipService(opts);
-  // `createDefaultOpenPrService` shares the same store + activeRuns
-  // registry as `shipFactory` via the dbPath-keyed module cache in
-  // default-wiring (see docs/features/ship-v2/phases/02-open-pr.md § ED-8).
-  const openPrFactory = createDefaultOpenPrService({ dbPath });
-
-  const server = buildServer(shipFactory, openPrFactory);
+  const server = buildServer(shipFactory);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

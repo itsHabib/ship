@@ -1,51 +1,31 @@
-/**
- * CLI-side wrapper around `@ship/core`'s `createDefaultShipService`.
- * The wiring (LocalCursorRunner + node fs + sqlite store + memoizing
- * lazy factory) lives in `@ship/core/src/default-wiring.ts`; the CLI
- * just renames the option-bag type and re-exports the factory so
- * existing call sites (`bin.ts`, tests) keep working unchanged.
- *
- * Path-resolution helpers (`userConfigDir`, `resolveDbPath`,
- * `resolveRunsDir`) stay here — they're CLI-specific defaults and
- * neither `core` nor `mcp-server` needs them.
- */
+// CLI-side wrapper around `@ship/core`'s `createDefaultShipService`. The
+// wiring (LocalCursorRunner + node fs + sqlite store + memoizing lazy
+// factory) lives in `@ship/core/src/default-wiring.ts`; the CLI just
+// renames the option-bag type and re-exports the factory so existing
+// call sites (`bin.ts`, tests) keep working unchanged.
+//
+// Path-resolution helpers (`userConfigDir`, `resolveDbPath`,
+// `resolveRunsDir`) stay here — they're CLI-specific defaults and
+// neither `core` nor `mcp-server` needs them.
 
-import type {
-  OpenPrServiceFactory as CoreOpenPrServiceFactory,
-  DefaultShipServiceOpts,
-  ShipServiceFactory,
-} from "@ship/core";
+import type { DefaultShipServiceOpts, ShipServiceFactory } from "@ship/core";
 
-import { createDefaultOpenPrService, createDefaultShipService } from "@ship/core";
+import { createDefaultShipService } from "@ship/core";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
-/** CLI's option bag — alias of `DefaultShipServiceOpts`, kept for source compatibility with Phase 7's `createCliService` callers. */
+// CLI's option bag — alias of `DefaultShipServiceOpts`, kept for source
+// compatibility with Phase 7's `createCliService` callers.
 export type CliPathOpts = DefaultShipServiceOpts;
 
-/** Memoizing factory shape — alias of `ShipServiceFactory`. */
+// Memoizing factory shape — alias of `ShipServiceFactory`.
 export type ServiceFactory = ShipServiceFactory;
 
-/** Re-export so commands/ files don't reach across packages directly. */
-export type OpenPrServiceFactory = CoreOpenPrServiceFactory;
-
-/**
- * Thin wrapper over `createDefaultShipService` so the CLI keeps a
- * stable, CLI-named entry point. Adding CLI-only knobs here later
- * (e.g. quiet-mode logging) won't ripple into the mcp-server.
- */
+// Thin wrapper over `createDefaultShipService` so the CLI keeps a
+// stable, CLI-named entry point. Adding CLI-only knobs here later
+// (e.g. quiet-mode logging) won't ripple into the mcp-server.
 export function createCliService(opts: CliPathOpts): ServiceFactory {
   return createDefaultShipService(opts);
-}
-
-/**
- * Sibling of `createCliService` for the V2 `open_pr` capability.
- * Shares store + activeRuns with the ship factory when both are
- * constructed against the same `dbPath` (see core's default-wiring
- * § shared infra cache).
- */
-export function createCliOpenPrService(opts: { dbPath: string }): OpenPrServiceFactory {
-  return createDefaultOpenPrService({ dbPath: opts.dbPath });
 }
 
 /**
