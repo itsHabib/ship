@@ -499,4 +499,3 @@ describe("cancelWorkflowRunOutputSchema", () => {
     ).toBe(false);
   });
 });
-

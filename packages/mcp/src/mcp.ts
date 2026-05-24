@@ -241,4 +241,3 @@ export const cancelWorkflowRunOutputSchema = z
   })
   .strict();
 export type CancelWorkflowRunOutput = z.infer<typeof cancelWorkflowRunOutputSchema>;
-
