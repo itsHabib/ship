@@ -49,8 +49,10 @@ coverage/
 packages/core/reports/
 packages/core/.stryker-tmp/
 
-# Claude Code (CLI harness state — local only)
-.claude/
+# Claude Code (CLI harness state — local only, except .claude/skills/
+# which holds project-local skills that should be versioned with the repo).
+.claude/*
+!.claude/skills/
 
 # Tower worktrees (per-task workspaces; never committed)
 .worktrees/
