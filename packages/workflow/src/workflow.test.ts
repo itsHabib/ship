@@ -101,7 +101,7 @@ describe("phaseKindSchema", () => {
     expect(phaseKindSchema.parse("implement")).toBe("implement");
   });
 
-  test("accepts the V2 open_pr kind", () => {
+  test("accepts the open_pr tombstone (verb removed; rows still hydrate)", () => {
     expect(phaseKindSchema.parse("open_pr")).toBe("open_pr");
   });
 

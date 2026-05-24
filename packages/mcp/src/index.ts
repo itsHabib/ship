@@ -1,8 +1,6 @@
-/**
- * Public barrel for `@ship/mcp` — input/output schemas for the four V1 MCP
- * tools (`ship`, `get_workflow_run`, `list_workflow_runs`,
- * `cancel_workflow_run`) plus `shipArtifactsSchema`.
- */
+// Public barrel for `@ship/mcp` — input/output schemas for the V1 MCP
+// tools (`ship`, `get_workflow_run`, `list_workflow_runs`,
+// `cancel_workflow_run`) plus `shipArtifactsSchema`.
 
 export {
   cancelWorkflowRunInputSchema,
@@ -12,9 +10,6 @@ export {
   getWorkflowRunOutputSchema,
   listWorkflowRunsInputSchema,
   listWorkflowRunsOutputSchema,
-  openPrInputSchema,
-  openPrOutputSchema,
-  phaseIdSchema,
   shipArtifactsSchema,
   shipInputSchema,
   shipOutputSchema,
@@ -28,8 +23,6 @@ export type {
   GetWorkflowRunOutput,
   ListWorkflowRunsInput,
   ListWorkflowRunsOutput,
-  OpenPrInput,
-  OpenPrOutput,
   ShipArtifacts,
   ShipInput,
   ShipOutput,

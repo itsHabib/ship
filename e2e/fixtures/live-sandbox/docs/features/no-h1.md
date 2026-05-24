@@ -1,4 +1,4 @@
-This task doc intentionally has **no H1** so `open_pr` title derivation falls back to the branch-name path (open-pr phase ED-5).
+This task doc intentionally has **no H1** to exercise downstream title-derivation fallback paths.
 
 ## Goal
 

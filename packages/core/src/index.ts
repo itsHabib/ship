@@ -1,4 +1,4 @@
-/** `@ship/core` — public barrel. */
+// `@ship/core` — public barrel.
 
 // --- service ---
 export type {
@@ -10,28 +10,9 @@ export type {
 } from "./service.js";
 export { createShipService } from "./service.js";
 
-// --- open_pr service (V2 phase 02) ---
-export type { OpenPrInput, OpenPrOutput, OpenPrService, OpenPrServiceDeps } from "./open-pr.js";
-export { createOpenPrService } from "./open-pr.js";
-
-// --- gh / git shell-out interfaces ---
-export type { GhClient, GhPrRef } from "./gh.js";
-export { createNodeGhClient } from "./gh.js";
-export type { GitRemote } from "./git-remote.js";
-export { createNodeGitRemote } from "./git-remote.js";
-
 // --- default production wiring (consumed by cli + mcp-server) ---
-export type {
-  DefaultOpenPrServiceOpts,
-  DefaultShipServiceOpts,
-  OpenPrServiceFactory,
-  ShipServiceFactory,
-} from "./default-wiring.js";
-export {
-  createDefaultOpenPrService,
-  createDefaultShipService,
-  DEFAULT_MODEL,
-} from "./default-wiring.js";
+export type { DefaultShipServiceOpts, ShipServiceFactory } from "./default-wiring.js";
+export { createDefaultShipService, DEFAULT_MODEL } from "./default-wiring.js";
 
 // --- re-exports of MCP boundary types so consumers (cli, mcp-server) ---
 // don't need a direct `@ship/mcp` dep just to type ShipService's surface.
@@ -51,22 +32,11 @@ export type { ListRunsFilter } from "@ship/store";
 // --- errors ---
 export {
   ArtifactWriteFailedError,
-  BaseBranchUnresolvedError,
-  BranchPushFailedError,
   CloudRunnerNotConfiguredError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
-  EmptyBranchError,
-  GhAuthError,
-  GhCreatePrFailedError,
-  ImplementPhaseNotSucceededError,
   MissingRepoError,
-  OpenPrAbortedError,
-  OriginHeadUnsetError,
-  OriginRepoUnresolvedError,
   WorkdirNotFoundError,
-  WorkdirNotGitError,
-  WorkflowRunStillActiveError,
 } from "./errors.js";
 
 // --- fs ---

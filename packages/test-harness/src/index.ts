@@ -29,17 +29,3 @@ export {
 // --- mcp.ts ---
 export type { ToolCaller, WaitForTerminalRunOptions } from "./mcp.js";
 export { waitForTerminalRun } from "./mcp.js";
-
-// --- open-pr.ts ---
-export type {
-  FakeGhCall,
-  FakeGhClient,
-  FakeGitCall,
-  FakeGitRemote,
-  OpenPrServiceBundle,
-} from "./open-pr.js";
-export {
-  createFakeGhClient,
-  createFakeGitRemote,
-  createOpenPrServiceFromHarness,
-} from "./open-pr.js";

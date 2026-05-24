@@ -1,10 +1,8 @@
-/**
- * Output formatters for the four `ship` subcommands. Each shape has
- * a pretty (default) and `--json` variant; pretty mode is plain ASCII
- * (no ANSI colors in V1) so test snapshots are stable across terminals.
- */
+// Output formatters for the `ship` subcommands. Each shape has a pretty
+// (default) and `--json` variant; pretty mode is plain ASCII (no ANSI
+// colors in V1) so test snapshots are stable across terminals.
 
-import type { OpenPrOutput, ShipOutput } from "@ship/core";
+import type { ShipOutput } from "@ship/core";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
 /** Renders a `ShipOutput` for the `ship ship` subcommand. */
@@ -64,23 +62,7 @@ export function formatCancelOutput(
   return `status: ${out.status}\nworkflowRunId: ${out.workflowRunId}`;
 }
 
-/** Renders an `OpenPrOutput` for the `ship open-pr` subcommand. */
-export function formatOpenPrOutput(out: OpenPrOutput, json: boolean): string {
-  if (json) return jsonStringify(out);
-  const lines = [
-    `status:        ${out.status}`,
-    `workflowRunId: ${out.workflowRunId}`,
-    `phaseId:       ${out.phaseId}`,
-    `prNumber:      ${String(out.prNumber)}`,
-    `prUrl:         ${out.prUrl}`,
-    `base:          ${out.base}`,
-    `head:          ${out.head}`,
-    `alreadyExisted: ${String(out.alreadyExisted)}`,
-  ];
-  return lines.join("\n");
-}
-
-/** Pretty-prints a terminal cursor-run summary; used by `ship ship` in pretty mode. */
+// Pretty-prints a terminal cursor-run summary; used by `ship ship` in pretty mode.
 export function summarizeCursorRun(ref: CursorRunRef): string {
   return `${ref.id} (${ref.status}, ${ref.runtime})`;
 }

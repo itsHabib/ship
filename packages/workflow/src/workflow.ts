@@ -24,26 +24,13 @@ export type WorkflowStatus = z.infer<typeof workflowStatusSchema>;
 export const phaseStatusSchema = z.enum(["pending", "running", "succeeded", "failed", "cancelled"]);
 export type PhaseStatus = z.infer<typeof phaseStatusSchema>;
 
-/** Discriminator for what kind of work a `Phase` represents. */
+// Discriminator for what kind of work a `Phase` represents. "open_pr"
+// is a tombstone: the verb was removed and Ship no longer writes
+// `open_pr` phase rows, but the literal stays so the SQLite store can
+// hydrate historical rows written before the removal. New phase kinds
+// (e.g. `ci_fix`) add their own literal here.
 export const phaseKindSchema = z.enum(["implement", "open_pr"]);
 export type PhaseKind = z.infer<typeof phaseKindSchema>;
-
-/**
- * Shape persisted in `Phase.outputJson` for a successful `open_pr` phase.
- * Failure-path forensics go in the `error_message` column on the phase row
- * (via `Store.updatePhase({ errorMessage })`), not in `outputJson` — the
- * success-only shape keeps the schema honest about what the JSON contains.
- */
-export const phaseOpenPrResultSchema = z
-  .object({
-    prNumber: z.number().int().positive(),
-    prUrl: z.string().url(),
-    base: z.string().min(1),
-    head: z.string().min(1),
-    alreadyExisted: z.boolean(),
-  })
-  .strict();
-export type PhaseOpenPrResult = z.infer<typeof phaseOpenPrResultSchema>;
 
 /**
  * Lifecycle states the underlying Cursor SDK run can be in. No `pending`:

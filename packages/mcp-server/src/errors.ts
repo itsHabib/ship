@@ -12,47 +12,24 @@
 
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import {
-  BaseBranchUnresolvedError,
-  BranchPushFailedError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
-  EmptyBranchError,
-  GhAuthError,
-  GhCreatePrFailedError,
-  ImplementPhaseNotSucceededError,
   MissingRepoError,
-  OriginHeadUnsetError,
-  OriginRepoUnresolvedError,
   WorkdirNotFoundError,
-  WorkdirNotGitError,
-  WorkflowRunStillActiveError,
 } from "@ship/core";
 import { WorkflowRunNotFoundError } from "@ship/store";
 
-// Caller-actionable typed errors: pre-row validation from `@ship/core`,
-// store resource-not-found, and open_pr environment / integration
-// errors. Single source of truth for the user-vs-internal split —
-// mirrors the CLI's `USER_ERROR_CLASSES` so the two consumers stay
-// aligned without duplicate per-class `if` branches.
+// Caller-actionable typed errors: pre-row validation from `@ship/core`
+// + store resource-not-found. Single source of truth for the
+// user-vs-internal split — mirrors the CLI's `USER_ERROR_CLASSES` so
+// the two consumers stay aligned without duplicate per-class `if`
+// branches.
 const USER_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
-  // ship pre-conditions.
   WorkdirNotFoundError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
   MissingRepoError,
   WorkflowRunNotFoundError,
-  // open_pr pre-conditions.
-  ImplementPhaseNotSucceededError,
-  WorkdirNotGitError,
-  EmptyBranchError,
-  BaseBranchUnresolvedError,
-  OriginHeadUnsetError,
-  OriginRepoUnresolvedError,
-  WorkflowRunStillActiveError,
-  // open_pr integration failures (git + GitHub).
-  GhAuthError,
-  BranchPushFailedError,
-  GhCreatePrFailedError,
 ];
 
 /**

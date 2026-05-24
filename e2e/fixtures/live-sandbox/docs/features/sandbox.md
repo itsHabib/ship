@@ -1,6 +1,6 @@
 # Sandbox feature slice
 
-Small task doc for `open_pr` L4 runs against an operator-owned sandbox repo.
+Small task doc for live e2e runs against an operator-owned sandbox repo.
 
 ## Goal
 
@@ -13,5 +13,5 @@ Add a tiny TypeScript module under `src/` (for example `src/sandbox.ts`) exporti
 
 ## Notes
 
-- Do not open a pull request; Ship covers that in a later phase.
+- Do not open a pull request; the test harness handles cleanup.
 - Stay inside the worktree path.

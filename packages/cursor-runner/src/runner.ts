@@ -77,7 +77,12 @@ export interface CloudRunSpec {
    * workflowRun-as-one-new-branch shape isn't designed for it.
    */
   readonly workOnCurrentBranch?: boolean;
-  /** Auto-open a PR when the run finishes. Default: false (Ship's `open_pr` phase opens it). */
+  /**
+   * Auto-open a PR when the run finishes. Optional at the type level;
+   * `CloudCursorRunner` defaults to `true` when omitted (see
+   * `cloud-runner.ts`'s `spec.autoCreatePR ?? true`). Pass `false`
+   * explicitly to suppress cursor cloud's PR creation.
+   */
   readonly autoCreatePR?: boolean;
   /**
    * Skip requesting the calling user as PR reviewer. Defaults to `true` when

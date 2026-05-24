@@ -52,7 +52,7 @@ The SDK's `turn-ended` `InteractionUpdate` carries `{inputTokens, outputTokens, 
 
 #### 4. Subagent layer for the V2 review-cycle phase
 
-The most interesting one. V2's review-cycle phase (not yet designed; follows phase 02 `open_pr`) has two possible shapes:
+The most interesting one. V2's review-cycle phase (not yet designed) has two possible shapes:
 
 - **Outer-loop in Ship:** `implement → external-review → fix` as three workflow phases. Today's mental model. Mirrors how a human runs the loop with `@claude review` / `@codex review` PR comments.
 - **Inner-loop via SDK subagents:** the implement phase passes `agents: { "code-reviewer": {...}, "test-writer": {...} }` to `Agent.create`; the agent self-reviews via the built-in `Agent` tool before declaring done. Some review work collapses into implement.
@@ -95,7 +95,7 @@ Cheaper than spawning a fresh agent for "fix CI failures" — preserves conversa
 
 #### 7. Cloud runtime
 
-Already on the V2 backlog ([ship-v2/spec.md:27](features/ship-v2/spec.md)). Highest leverage long-term — collapses Tier 1 #1's transport question (cloud agents have full http access), enables `cloud.autoCreatePR` (collapses `open_pr` to a no-op for cloud runs), unlocks parallel disconnect-survivable runs and GUI testing via the cloud VM. Out of scope for this doc; gets its own V2 phase when prioritized.
+Already on the V2 backlog ([ship-v2/spec.md:27](features/ship-v2/spec.md)). Highest leverage long-term — collapses Tier 1 #1's transport question (cloud agents have full http access), enables `cloud.autoCreatePR` (delegates PR creation to cursor's cloud), unlocks parallel disconnect-survivable runs and GUI testing via the cloud VM. Out of scope for this doc; gets its own V2 phase when prioritized.
 
 ## What Ship uses today
 
@@ -127,7 +127,7 @@ Hooks plumbed but unused at runtime: `mcpServers`, `agentName`. Both wire from `
 | `run.supports` / `run.unsupportedReason` | Capability negotiation moot for one-runtime-at-a-time. |
 | `agent.reload` | Useful only if Ship reused agents. Today: one agent per run, dispose after. |
 | `run.conversation()` | `RunResult.result` already gives the final assistant text; `events.ndjson` covers the rest. |
-| Cursor-side PR creation (`cloud.autoCreatePR`) replacing Ship's `GhClient` | V2 phase 02 explicitly chose `gh` shell-out via `GhClient` ([phases/02-open-pr.md](features/ship-v2/phases/02-open-pr.md)); cloud-only and doesn't change the local-first calculus. |
+| Cursor-side PR creation (`cloud.autoCreatePR`) replacing a Ship-side PR opener | Ship-side PR opening was removed (see [docs/features/remove-open-pr/spec.md](features/remove-open-pr/spec.md)); cursor's cloud `autoCreatePR` passthrough stays. Local PR creation is now `gh pr create` directly, or the future `gh` MCP shim. |
 
 ### B) Bound to a thing not yet shipped
 
@@ -156,7 +156,7 @@ Re-exporting `Cursor.me` / `Cursor.models.list` from `@ship/cursor-runner` keeps
 
 - **Replacing Ship's store with the SDK's catalog.** Two state systems, one wins. Ship's wins.
 - **Pre-cloud `Agent.resume`.** Pointless for local; defer to whatever cloud-runtime phase tackles cross-process state.
-- **An `@octokit/*` dependency for git/PR.** V2 phase 02 already chose `gh` shell-out; the SDK's git surface is cloud-only and doesn't change that.
+- **An `@octokit/*` dependency for git/PR.** PR creation moves out of ship entirely (see [docs/features/remove-open-pr/spec.md](features/remove-open-pr/spec.md)); the SDK's git surface is cloud-only and doesn't change that.
 - **Live UI for in-flight runs.** `onDelta` is for token/cost tracking, not for driving a real-time view. Ship's contract is poll-based via `get_workflow_run`.
 
 ## References
@@ -164,4 +164,4 @@ Re-exporting `Cursor.me` / `Cursor.models.list` from `@ship/cursor-runner` keeps
 - SDK reference (single source of truth for SDK shape): [docs/cursor-sdk-typescript.md](cursor-sdk-typescript.md)
 - V1 cursor-runner phase doc: [docs/features/ship-v1/phases/05-cursor-runner.md](features/ship-v1/phases/05-cursor-runner.md)
 - V2 plan + open phases: [docs/features/ship-v2/spec.md](features/ship-v2/spec.md)
-- V2 phase 02 (`open_pr`, the GhClient choice): [docs/features/ship-v2/phases/02-open-pr.md](features/ship-v2/phases/02-open-pr.md)
+- Removal of the `open_pr` verb: [docs/features/remove-open-pr/spec.md](features/remove-open-pr/spec.md)

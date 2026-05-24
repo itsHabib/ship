@@ -18,31 +18,6 @@ Listed roughly by leverage-per-effort, highest first. When any of these is picke
 
 ---
 
-## A — `open_pr` cloud-aware (already filed as phase 04's natural successor)
-
-**What.** Make `mcp__ship__open_pr` resolve the PR's head branch from cloud-produced state instead of only the local worktree. Today's `open_pr.resolveHead` ([packages/core/src/open-pr.ts:235](../../../packages/core/src/open-pr.ts)) reads `worktree.branch` / `git rev-parse` — there's no path for it to discover a branch that only exists on the remote because the cloud VM pushed it.
-
-**Why it matters.** Restores symmetry between runtimes. Today's flows:
-
-| Runtime | Canonical | What you can't do |
-|---|---|---|
-| local | `ship.ship` → `open_pr` | — |
-| cloud | `ship.ship` (`autoCreatePR: true`) → done | inspect the diff locally before opening the PR (have to use `autoCreatePR: false`, then open the PR manually with `gh pr create`) |
-
-Cloud `autoCreatePR: false + explicit open_pr` is the missing flow. Useful when you want to QA the cloud-produced branch before exposing it.
-
-**Rough shape.**
-- SQL migration `0002_cursor_runs_branches.sql` — adds `cursor_runs.branches_json TEXT` column.
-- `CloudCursorRunner` (in `_shared.ts` or directly) — persist `result.git.branches` to the new column on terminal-success.
-- `open_pr.resolveHead` — runtime-aware: for `cursor_runs.runtime === "cloud"` rows, read `branches[0].branch` from the JSON column; for `local`, current behavior.
-- L3 scenario: `e2e/scenarios/cloud-explicit-open-pr.e2e.test.ts` exercising the new flow.
-
-**Dependencies.** None hard — phase 04 ships the runner. SQL migration is the only structural change.
-
-**Estimated band.** Ideal (~600 weighted LOC: 1 migration + service.ts changes + 2 unit tests + 1 L3 scenario).
-
----
-
 ## B — `Agent.resume` for cloud runs across Ship-process restart
 
 **What.** The SDK's `Agent.resume(agentId)` re-attaches to a cloud agent that's still running on the Cursor side. Cloud agents survive Ship-process death (the VM keeps running), so Ship could in principle restart, look up "what runs were in flight when we died," and resume each one to receive its terminal result.
@@ -204,13 +179,12 @@ Cloud `autoCreatePR: false + explicit open_pr` is the missing flow. Useful when 
 Pick by leverage-per-effort. A natural sequence:
 
 1. **F — Lifecycle management** (amazing, no deps). Quick win, removes dashboard clutter. Sets up Tier 1 #2 (token tracking) by giving us a list of agents to ask about.
-2. **A — `open_pr` cloud-aware** (ideal, only deps are SQL). Closes phase 04's most-cited gap. Unlocks the cloud-produced-branch L3 expansion.
-3. **D — Artifact pickup** (ideal, no hard deps). Standalone unlock; sets up GUI testing (E).
-4. **B — `Agent.resume`** (stretch, real interface redesign). The biggest leverage but the most design work. Design-only PR first.
-5. **E — GUI testing** (stretch, deps on D). Big-ticket feature once D lands.
-6. **C — Multi-repo cloud** (ideal, deps on A). Specialized use case; pick up when there's a real cross-repo refactor to dogfood against.
-7. **G — `workOnCurrentBranch`** (ideal, mostly design). Iteration QOL; pick up after we've done a few cloud PRs to understand the iteration pain.
-8. **H — Self-hosted env** (amazing, ops-driven). Pick up when operator has a self-hosted setup to validate against.
+2. **D — Artifact pickup** (ideal, no hard deps). Standalone unlock; sets up GUI testing (E).
+3. **B — `Agent.resume`** (stretch, real interface redesign). The biggest leverage but the most design work. Design-only PR first.
+4. **E — GUI testing** (stretch, deps on D). Big-ticket feature once D lands.
+5. **C — Multi-repo cloud** (ideal). Specialized use case; pick up when there's a real cross-repo refactor to dogfood against.
+6. **G — `workOnCurrentBranch`** (ideal, mostly design). Iteration QOL; pick up after we've done a few cloud PRs to understand the iteration pain.
+7. **H — Self-hosted env** (amazing, ops-driven). Pick up when operator has a self-hosted setup to validate against.
 
 ## What this doc doesn't cover
 

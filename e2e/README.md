@@ -9,7 +9,7 @@ e2e/
   vitest.e2e.config.ts        # SHIP_LIVE-gated config for L4
   fixtures/
     test-repo/                 # hello-world L4 fixture (Phase 9)
-    open-pr-sandbox/            # L4 `open_pr` expansion (Phase 01)
+    live-sandbox/               # shared L3/L4 live-sandbox fixture
   integration/                  # L3 subprocess + disk tests (always on)
   scenarios/                    # *.e2e.test.ts — L4 live Cursor/GitHub
 ```

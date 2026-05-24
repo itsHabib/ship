@@ -30,10 +30,10 @@ import {
 import {
   bootstrapFixtureMainOnSandbox,
   isolatedHomeEnv,
+  LIVE_SANDBOX_FIXTURE,
   mkLiveTmp,
-  OPEN_PR_FIXTURE,
   parseSandboxSlug,
-} from "./live-open-pr-helpers.js";
+} from "./live-cli-helpers.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MCP_PKG = resolve(HERE, "..", "..", "packages", "mcp-server");
@@ -92,7 +92,7 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — no workdir / no repo (MCP)
     docPath = join(homeRoot, "external-task-doc.md");
     writeFileSync(
       docPath,
-      readFileSync(join(OPEN_PR_FIXTURE, "docs", "features", "sandbox.md"), "utf-8"),
+      readFileSync(join(LIVE_SANDBOX_FIXTURE, "docs", "features", "sandbox.md"), "utf-8"),
     );
 
     const dbPath = join(homeRoot, "state.db");

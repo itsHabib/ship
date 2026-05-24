@@ -1,20 +1,14 @@
-/**
- * Production wiring for `ShipService` + `OpenPrService`. Both
- * `@ship/cli` and `@ship/mcp-server` consume these factories so they
- * get an identical collaborator graph without duplicating the recipe.
- *
- * Both factories are lazy: construction is deferred until the first
- * `factory()` call so no SQLite open / fs `mkdir` happens during a
- * `--help` run. After the first call the same service is memoized
- * and returned on subsequent calls.
- *
- * `OpenPrService` ships alongside `ShipService` and shares the
- * `activeRuns` registry so `cancelRun` can signal whichever service
- * holds the controller (docs/features/ship-v2/phases/02-open-pr.md
- * § ED-8). Both consumers add their own path-resolution layer on top
- * — the CLI computes `<UserConfigDir>/ship/...` defaults; the
- * mcp-server reads paths from env vars.
- */
+// Production wiring for `ShipService`. Both `@ship/cli` and
+// `@ship/mcp-server` consume this factory so they get an identical
+// collaborator graph without duplicating the recipe.
+//
+// The factory is lazy: construction is deferred until the first
+// `factory()` call so no SQLite open / fs `mkdir` happens during a
+// `--help` run. After the first call the same service is memoized
+// and returned on subsequent calls. Both consumers add their own
+// path-resolution layer on top — the CLI computes
+// `<UserConfigDir>/ship/...` defaults; the mcp-server reads paths
+// from env vars.
 
 import type { CursorRunner } from "@ship/cursor-runner";
 import type { Store } from "@ship/store";
@@ -25,15 +19,9 @@ import { createStore } from "@ship/store";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { GhClient } from "./gh.js";
-import type { GitRemote } from "./git-remote.js";
-import type { OpenPrService } from "./open-pr.js";
 import type { ActiveRunsRegistry, ShipService } from "./service.js";
 
 import { createNodeShipFs } from "./fs/index.js";
-import { createNodeGhClient } from "./gh.js";
-import { createNodeGitRemote } from "./git-remote.js";
-import { createOpenPrService } from "./open-pr.js";
 import { createShipService } from "./service.js";
 
 // Read from cursor's GET /v1/models catalog on 2026-05-21. composer-2.5 is
@@ -89,26 +77,8 @@ export interface DefaultShipServiceOpts {
   readonly cloudCursor?: CursorRunner;
 }
 
-/** Memoizing factory shape. Returns the same `ShipService` across calls. */
+// Memoizing factory shape. Returns the same `ShipService` across calls.
 export type ShipServiceFactory = () => ShipService;
-
-/** Memoizing factory shape for `OpenPrService`. */
-export type OpenPrServiceFactory = () => OpenPrService;
-
-/** Construction-time options for the production-wired `OpenPrService`. */
-export interface DefaultOpenPrServiceOpts {
-  /** Absolute path to the SQLite db file, or `:memory:` for ephemeral. */
-  readonly dbPath: string;
-  /**
-   * `GhClient` override. Production omits this and gets a
-   * `createNodeGhClient()` (Octokit) that reads `GITHUB_TOKEN` /
-   * `GH_TOKEN` from the environment. Integration tests inject a
-   * stub or a pre-built Octokit pointing at a localhost mock.
-   */
-  readonly gh?: GhClient;
-  /** `GitRemote` override. Production gets `createNodeGitRemote()`. */
-  readonly git?: GitRemote;
-}
 
 interface SharedInfra {
   readonly store: Store;
@@ -116,15 +86,11 @@ interface SharedInfra {
   readonly activeRuns: ActiveRunsRegistry;
 }
 
-// Module-level cache keyed by the `dbPath` string — both factories
-// constructed against the same dbPath share the underlying store +
-// clock + activeRuns map. Without this an `open_pr` factory + a
-// separately-constructed `ship` factory would each open their own
-// SQLite handle (read/write contention on the same file) and have
-// separate registries (cancel signals lost across services).
-//
-// The cache is a small Map; entries are GC-eligible once the binary
-// exits because nothing else references them.
+// Module-level cache keyed by the `dbPath` string — multiple factory
+// constructions against the same dbPath share the underlying store +
+// clock + activeRuns map. The cache is a small Map; entries are
+// GC-eligible once the binary exits because nothing else references
+// them.
 const SHARED_INFRA_BY_DB_PATH = new Map<string, SharedInfra>();
 
 function getOrCreateSharedInfra(dbPath: string): SharedInfra {
@@ -141,13 +107,10 @@ function getOrCreateSharedInfra(dbPath: string): SharedInfra {
   return infra;
 }
 
-/**
- * Returns a memoizing factory that constructs the production-wired
- * `ShipService` on first call. Subsequent calls return the cached
- * instance so each binary invocation gets exactly one
- * service-store-runner-fs triple. Shares store + activeRuns with
- * `createDefaultOpenPrService` constructed against the same `dbPath`.
- */
+// Returns a memoizing factory that constructs the production-wired
+// `ShipService` on first call. Subsequent calls return the cached
+// instance so each binary invocation gets exactly one
+// service-store-runner-fs triple.
 export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServiceFactory {
   let cached: ShipService | undefined;
   return () => {
@@ -168,29 +131,6 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
         cursor,
         cloudCursor,
       },
-    });
-    return cached;
-  };
-}
-
-/**
- * Returns a memoizing factory that constructs the production-wired
- * `OpenPrService`. Shares store + activeRuns with
- * `createDefaultShipService` constructed against the same `dbPath`.
- */
-export function createDefaultOpenPrService(opts: DefaultOpenPrServiceOpts): OpenPrServiceFactory {
-  let cached: OpenPrService | undefined;
-  return () => {
-    if (cached !== undefined) return cached;
-    const infra = getOrCreateSharedInfra(opts.dbPath);
-    const fs = createNodeShipFs();
-    cached = createOpenPrService({
-      store: infra.store,
-      fs,
-      clock: infra.clock,
-      activeRuns: infra.activeRuns,
-      gh: opts.gh ?? createNodeGhClient(),
-      git: opts.git ?? createNodeGitRemote(),
     });
     return cached;
   };

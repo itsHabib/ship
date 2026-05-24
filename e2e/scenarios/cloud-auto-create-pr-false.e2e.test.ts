@@ -4,9 +4,8 @@
  * + `CURSOR_API_KEY` + `GITHUB_TOKEN`.
  *
  * Branch info is read from `result.json` (the on-disk `CursorRunResult`
- * per phase doc § F6). The "explicit `open_pr` against the cloud
- * branch" path is deferred to the follow-up phase per § F4; this
- * scenario verifies only the partial-mode persists correctly today.
+ * per phase doc § F6). This scenario verifies the partial-mode
+ * (branch-only, no PR) persists correctly.
  */
 
 import type { CursorRunResult } from "@ship/cursor-runner";
@@ -32,7 +31,7 @@ import {
   isolatedHomeEnv,
   mkLiveTmp,
   parseSandboxSlug,
-} from "./live-open-pr-helpers.js";
+} from "./live-cli-helpers.js";
 
 describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — auto-create PR off", () => {
   test("ship exits 0; result.json carries branch; prUrl undefined; remote branch cleaned", async () => {

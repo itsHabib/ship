@@ -83,18 +83,16 @@ export interface ShipServiceDeps {
     cursorRun: () => string;
   };
   // Shared `activeRuns` registry. When provided, the same Map is used
-  // for in-flight `ship` runs and `open_pr` runs so `cancelRun` can
-  // signal whichever service holds the controller. Omitted → service
-  // creates its own private map.
+  // across factory constructions against the same dbPath. Omitted →
+  // service creates its own private map.
   readonly activeRuns?: ActiveRunsRegistry;
 }
 
-// Shared registry of in-flight runs. Each entry carries an
-// `AbortController` whose `signal` the running service observes; the
-// optional `handle` is `ShipService`-specific (it lets `cancelRun`
-// abort an in-flight cursor SDK call). `OpenPrService` populates an
-// entry without a handle. Exported so default wiring can construct a
-// single Map and pass it to both services.
+// Registry of in-flight runs. Each entry carries an `AbortController`
+// whose `signal` the running service observes; `handle` is set after
+// the cursor SDK call resolves so `cancelRun` can abort the in-flight
+// run. Exported so default wiring can construct a single Map and
+// share it across factory constructions.
 export type ActiveRunsRegistry = Map<string, ActiveRun>;
 
 /** Public service surface. CLI + MCP server code against this. */
@@ -133,8 +131,9 @@ export interface ShipService {
   resumeOrphanedRuns(): Promise<void>;
 }
 
-// Per-run entry stored in the shared `ActiveRunsRegistry`. `handle` is
-// `ShipService`-specific; `OpenPrService` populates an entry without one.
+// Per-run entry stored in the `ActiveRunsRegistry`. `handle` is set
+// after the cursor SDK call resolves and lets `cancelRun` abort the
+// in-flight run.
 export interface ActiveRun {
   readonly controller: AbortController;
   handle?: CursorRunHandle;
@@ -154,10 +153,9 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
   // resolves — so `activeRuns.size` reaching 0 doesn't mean the
   // continuation is safe from a closing store. Entries auto-remove on
   // settle so a long-lived service doesn't grow this set unbounded.
-  // `bgPending` stays per-`ShipService` even when `activeRuns` is
-  // shared with `OpenPrService` — only `startShip` schedules these
-  // un-awaited continuations, so there's nothing for `OpenPrService`
-  // to drain through this Set.
+  // `bgPending` stays per-`ShipService`: only `startShip` schedules
+  // these un-awaited continuations, so it doesn't need to be shared
+  // across services.
   const bgPending = new Set<Promise<void>>();
   const resumeBgPending = new Set<Promise<void>>();
   const makeCtx = (input: ShipInput): ShipContext => ({

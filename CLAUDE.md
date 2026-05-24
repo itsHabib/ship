@@ -69,12 +69,12 @@ Hands a task doc to a coding agent (cursor), persists what happened, lets you in
 - *"What ran on `<repo>` recently?"* / *"What's still in flight?"* → `mcp__ship__list_workflow_runs { repo?, status?, limit? }`.
 - *"What did `<wf id>` do?"* → `mcp__ship__get_workflow_run { workflowRunId }` (also accessible via the `ship://runs/{id}` resource).
 - In-flight run needs to stop → `mcp__ship__cancel_workflow_run { workflowRunId }` (idempotent on terminal rows).
-- *"Open the PR for this run."* → `mcp__ship__open_pr { workflowRunId }`.
 
 **Don't use for:**
 
 - Creating the worktree (use `/worktree-add`).
 - Writing the task doc (a normal file edit inside the worktree).
+- Opening a PR — that's `gh pr create` directly (or the future `gh` MCP shim per `pers/mcp-workstation/gh-shim`). Ship's job ends at agent-run terminal state; PR creation is downstream.
 - Recording the merged PR back to project state (dossier `artifact_link`).
 
 **Cursor built-in subagents:** Cursor also ships implicit subagents — `Explore` (codebase search), `Bash` (shell command isolation), and `Browser` (DOM-snapshot filtering) — that load automatically without files in `.cursor/agents/`. Do not redefine them in this repo. Per-subagent `model:` frontmatter in `.cursor/agents/` (e.g. `composer-2-fast` for mechanical checks, `opus-high` for reasoning-heavy roles) falls back to `inherit` when the configured model isn't on the operator's plan — check `events.ndjson` `task` tool_call args if cost optimization doesn't appear to apply.

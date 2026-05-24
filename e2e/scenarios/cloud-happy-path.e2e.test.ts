@@ -7,8 +7,7 @@
  *
  * Branch + PR info is read from `result.json` (the on-disk
  * `CursorRunResult` per phase doc § F6) — `ShipOutput.cursorRun` has
- * no `branches` field this phase by design (no schema change; the
- * follow-up "open_pr cloud-aware" phase adds `cursor_runs.branches_json`).
+ * no `branches` field by design (no schema change).
  */
 
 /* eslint-disable sonarjs/no-os-command-from-path -- integration: exercises system `gh`. */
@@ -36,7 +35,7 @@ import {
   isolatedHomeEnv,
   mkLiveTmp,
   parseSandboxSlug,
-} from "./live-open-pr-helpers.js";
+} from "./live-cli-helpers.js";
 
 function pullNumberFromPrUrl(prUrl: string): number {
   const m = /\/pull\/(\d+)\b/.exec(prUrl);

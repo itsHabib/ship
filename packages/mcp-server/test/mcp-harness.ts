@@ -10,28 +10,13 @@
  * glob (`src/**`) doesn't count this helper as production code.
  */
 
-import type {
-  OpenPrService,
-  OpenPrServiceFactory,
-  ShipService,
-  ShipServiceFactory,
-} from "@ship/core";
-import type {
-  FakeGhClient,
-  FakeGitRemote,
-  Harness,
-  OpenPrServiceBundle,
-  ServiceBundle,
-} from "@ship/test-harness";
+import type { ShipService, ShipServiceFactory } from "@ship/core";
+import type { Harness, ServiceBundle } from "@ship/test-harness";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
-import {
-  createHarness,
-  createOpenPrServiceFromHarness,
-  createServiceFromHarness,
-} from "@ship/test-harness";
+import { createHarness, createServiceFromHarness } from "@ship/test-harness";
 
 import { buildServer } from "../src/server.js";
 
@@ -46,40 +31,30 @@ export const TEST_WORKDIR = "/work/wt/feat";
 /** Default doc path inside `TEST_WORKDIR`. */
 export const TEST_DOC_PATH = "docs.md";
 
-/** What `createMcpHarness` hands back to a calling test. */
+// What `createMcpHarness` hands back to a calling test.
 export interface McpHarness {
   readonly client: Client;
   readonly service: ShipService;
-  readonly openPrService: OpenPrService;
   readonly bundle: ServiceBundle;
-  readonly openPrBundle: OpenPrServiceBundle;
-  readonly gh: FakeGhClient;
-  readonly git: FakeGitRemote;
   readonly harness: Harness;
   readonly cloudCursor: FakeCursorRunner;
   readonly factory: ShipServiceFactory;
-  readonly openPrFactory: OpenPrServiceFactory;
   readonly close: () => Promise<void>;
 }
 
-/**
- * Constructs a fully-wired in-process MCP harness: in-memory store +
- * fs + fake cursor + fake gh/git + an `McpServer` connected to a
- * `Client` over an in-memory transport pair. Pre-creates the test
- * workdir + a sample doc so the `ship` tool's pre-row validation
- * passes by default.
- */
+// Constructs a fully-wired in-process MCP harness: in-memory store +
+// fs + fake cursor + an `McpServer` connected to a `Client` over an
+// in-memory transport pair. Pre-creates the test workdir + a sample
+// doc so the `ship` tool's pre-row validation passes by default.
 export async function createMcpHarness(): Promise<McpHarness> {
   const harness = createHarness();
   const cloudCursor = new FakeCursorRunner();
   const bundle = createServiceFromHarness(harness, { cloudCursor });
-  const openPrBundle = createOpenPrServiceFromHarness(harness);
   await bundle.fs.mkdir(TEST_WORKDIR, { recursive: true });
   await bundle.fs.writeFile(`${TEST_WORKDIR}/${TEST_DOC_PATH}`, "# Task\n\nDo it.\n");
 
   const factory: ShipServiceFactory = () => bundle.service;
-  const openPrFactory: OpenPrServiceFactory = () => openPrBundle.service;
-  const server = buildServer(factory, openPrFactory);
+  const server = buildServer(factory);
 
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "ship-mcp-test-client", version: "0.0.0" });
@@ -89,15 +64,10 @@ export async function createMcpHarness(): Promise<McpHarness> {
   return {
     client,
     service: bundle.service,
-    openPrService: openPrBundle.service,
     bundle,
-    openPrBundle,
-    gh: openPrBundle.gh,
-    git: openPrBundle.git,
     harness,
     cloudCursor,
     factory,
-    openPrFactory,
     close: async () => {
       await client.close();
       await server.close();

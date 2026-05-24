@@ -8,7 +8,7 @@ Date: 2026-05-16
 
 ## Summary
 
-QE / SDET is a long-lived feature: every new Ship surface (`ship` + cancel; `open_pr`; future `review` / `ci_fix`) compounds the test matrix. Instead of bolting testing onto each per-feature phase doc as a footnote, this feature owns it as a first-class slot — with its own spec, its own phases, and its own PR cadence.
+QE / SDET is a long-lived feature: every new Ship surface (`ship` + cancel; future `review` / `ci_fix`) compounds the test matrix. Instead of bolting testing onto each per-feature phase doc as a footnote, this feature owns it as a first-class slot — with its own spec, its own phases, and its own PR cadence.
 
 The spec codifies the test-layer taxonomy (L1 unit / L2 scenario / L3 integration / L4 live e2e) and the philosophy ("coverage is a floor, mutation score is the ceiling"). The phases ship the concrete work: live-e2e expansion + bug-smash (Phase 01), mutation testing (Phase 02), property-based state-machine tests (Phase 03). Each phase is its own design PR, then its own impl PR (where there is one).
 
@@ -86,7 +86,7 @@ Mutation testing, property-based testing, contract testing, fuzz testing — eac
 
 Each gets its own `phases/NN-...md` doc, reviewed and merged before implementation lands. Phase ordering reflects sequencing constraints, not priority.
 
-1. **[01 — L4 expansion: `open_pr` coverage](phases/01-l4-expansion-and-bug-smash.md).** Build out the live-e2e suite from one scenario (hello-world ship) to cover the `open_pr` surface end-to-end against a sandbox repo + a `ship → open_pr` chain + cancellation against the real SDK + failure paths + idempotency. Bug-smashing happens continuously as the suite is built (per § Philosophy above); chips file in real time, not in a dedicated session.
+1. **[01 — L4 expansion: `open_pr` coverage](phases/01-l4-expansion-and-bug-smash.md) (retired).** Originally built out the live-e2e suite for the `open_pr` surface. The verb has since been removed (see [remove-open-pr/spec.md](../remove-open-pr/spec.md)); the L4 scenarios it added are deleted. The phase doc stays as historical record; the live-cancel scenario it spawned (`cancel-live-ship.e2e.test.ts`) survives.
 2. **02 — Mutation testing (planned).** Wire `@stryker-mutator/core` + `@stryker-mutator/vitest-runner` against `@ship/core` (workflow state machine + ship service) as a nightly-only CI step. Surviving mutants become chips per phase 9's ED-2 checklist. Out of scope: rewriting tests to kill mutants — that's the work each chip's PR does.
 3. **03 — Property-based state-machine tests (planned).** Wire `fast-check` against `@ship/workflow`'s `Phase.kind × status` transition graph. Each valid/invalid transition becomes a property; invariants over the state graph (e.g. "every terminal status sets `endedAt`", "no `pending` row has an `endedAt`") are exhaustively checked. Replaces or supplements the hand-written transition tests in `packages/workflow/`.
 
@@ -120,7 +120,7 @@ Phase 9's 8-cap on the P2/P3 chip queue applies to this feature's bug-smash phas
 
 ### ED-4 — L4 fixtures are repo-scoped, not test-scoped
 
-The existing `e2e/fixtures/test-repo/` is one fixture. New L4 scenarios that need a different fixture shape (e.g. a sandbox repo for live `open_pr`) add a sibling tree (`e2e/fixtures/open-pr-sandbox/`) rather than mutate the existing one. Fixture isolation == scenario isolation.
+The existing `e2e/fixtures/test-repo/` is one fixture. New L4 scenarios that need a different fixture shape (e.g. a sandbox repo for live cloud / cancel scenarios) add a sibling tree (`e2e/fixtures/live-sandbox/`) rather than mutate the existing one. Fixture isolation == scenario isolation.
 
 ### ED-5 — Templatability is a first-class goal, not an afterthought
 
