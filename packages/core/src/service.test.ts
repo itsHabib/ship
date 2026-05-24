@@ -542,6 +542,81 @@ describe("ShipService.ship — failure mapping", () => {
       endpoint: "POST /v1/agents",
     });
   });
+
+  test("non-enumerable own properties on SDK errors surface in errorChain.extra", async () => {
+    // Simulates an SDK that defines its extras as non-enumerable class
+    // fields (e.g. `Object.defineProperty(this, "status", { enumerable: false, value: ... })`).
+    // `Object.keys` would miss these; `Object.getOwnPropertyNames` catches
+    // them. This test would have failed against the prior implementation.
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const sdkErr = new Error("hidden-field error");
+    Object.defineProperty(sdkErr, "status", { value: 503, enumerable: false });
+    Object.defineProperty(sdkErr, "code", { value: "upstream_unavailable", enumerable: false });
+
+    const origWriteFile = h.fs.writeFile.bind(h.fs);
+    h.fs.writeFile = (path: string, data: string): Promise<void> => {
+      if (path.endsWith("prompt.md")) return Promise.reject(sdkErr);
+      return origWriteFile(path, data);
+    };
+
+    const out = await h.service.ship({ workdir: WORKDIR, repo: "ship", docPath: "docs.md" });
+    expect(out.status).toBe("failed");
+
+    const parsed = await readResultJson(h.fs, out.artifacts.resultPath);
+    expect(parsed.errorChain.length).toBe(1);
+    expect(parsed.errorChain[0]?.extra).toMatchObject({
+      status: 503,
+      code: "upstream_unavailable",
+    });
+  });
+
+  test("result.json survives JSON-hostile extras (BigInt + circular ref)", async () => {
+    // SDK errors occasionally carry BigInt (e.g. `Content-Length` from
+    // a header) or circular refs (response object referencing request).
+    // A naive `JSON.stringify` throws on either — the
+    // `tryWriteFailureResult` catch would then silently drop the ENTIRE
+    // `result.json`. Verify the safe-stringify keeps the artifact and
+    // swaps in sentinel strings for the hostile values.
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const sdkErr = new Error("hostile extras error");
+    Object.assign(sdkErr, {
+      bigField: BigInt("9007199254740993"),
+      selfRef: {} as Record<string, unknown>,
+    });
+    // Wire the circular reference: extra.selfRef points back at the
+    // top-level extras object via err itself.
+    (sdkErr as unknown as { selfRef: Record<string, unknown> }).selfRef["back"] = sdkErr;
+
+    const origWriteFile = h.fs.writeFile.bind(h.fs);
+    h.fs.writeFile = (path: string, data: string): Promise<void> => {
+      if (path.endsWith("prompt.md")) return Promise.reject(sdkErr);
+      return origWriteFile(path, data);
+    };
+
+    const out = await h.service.ship({ workdir: WORKDIR, repo: "ship", docPath: "docs.md" });
+    expect(out.status).toBe("failed");
+
+    const parsed = await readResultJson(h.fs, out.artifacts.resultPath);
+    expect(parsed.status).toBe("failed");
+    expect(parsed.errorMessage).toContain("hostile extras error");
+    expect(parsed.errorChain.length).toBeGreaterThanOrEqual(1);
+    const extra = parsed.errorChain[0]?.extra ?? {};
+    // BigInt → tagged-string form.
+    expect(extra["bigField"]).toBe("9007199254740993n");
+    // The selfRef → back → err cycle should be cut by the replacer. The
+    // first occurrence of err's `selfRef` is fine; the recursive visit
+    // through `back.selfRef` hits the WeakSet and becomes "[Circular]".
+    const selfRef = extra["selfRef"] as { back?: { selfRef?: unknown } } | undefined;
+    expect(selfRef?.back?.selfRef).toBe("[Circular]");
+  });
 });
 
 describe("ShipService.ship — input validation", () => {

@@ -892,10 +892,13 @@ function stringifyUnknown(val: unknown): string {
 // Pluck non-standard fields off an Error (SDK errors often carry
 // `status`, `code`, `response`, `body`, etc.). Skips standard Error
 // keys + `cause` (walked separately) + `stack` (captured separately).
+// Uses `getOwnPropertyNames` rather than `Object.keys` so SDK errors
+// that define their extras as non-enumerable own properties (a common
+// class-field pattern) still surface in the chain.
 function collectExtraErrorFields(err: Error): Record<string, unknown> {
   const skip = new Set(["name", "message", "stack", "cause"]);
   const extra: Record<string, unknown> = {};
-  for (const key of Object.keys(err)) {
+  for (const key of Object.getOwnPropertyNames(err)) {
     if (skip.has(key)) continue;
     const val = (err as unknown as Record<string, unknown>)[key];
     if (val === undefined) continue;
@@ -908,6 +911,10 @@ function collectExtraErrorFields(err: Error): Record<string, unknown> {
 // even on the failure path. Never propagates — errors are swallowed
 // internally. `errorChain` preserves the full cause chain; `errorMessage`
 // is the joined-string form kept for back-compat with single-field readers.
+// SDK-side `extra` payloads can contain JSON-hostile values (BigInt,
+// circular refs) — `safeStringifyFailureResult` handles those so a bad
+// extra never loses the whole `result.json` (which would also drop
+// `status` / `errorMessage`).
 async function tryWriteFailureResult(
   ctx: ShipContext,
   path: string,
@@ -916,13 +923,51 @@ async function tryWriteFailureResult(
   errorChain: readonly ErrorChainEntry[],
 ): Promise<void> {
   try {
-    await ctx.fs.writeFile(
-      path,
-      `${JSON.stringify({ status, errorMessage, errorChain }, null, 2)}\n`,
-    );
+    const body = safeStringifyFailureResult({ status, errorMessage, errorChain });
+    await ctx.fs.writeFile(path, `${body}\n`);
   } catch {
     // swallow
   }
+}
+
+interface FailureResultPayload {
+  readonly status: string;
+  readonly errorMessage: string;
+  readonly errorChain: readonly ErrorChainEntry[];
+}
+
+// JSON-stringify wrapper that survives common SDK-error payload hazards:
+// BigInt (default-throws), circular references (default-throws), and
+// functions / symbols (silently dropped → swapped for sentinel strings).
+// On any remaining failure, falls back to a minimal `{status, errorMessage}`
+// payload — better to lose forensic detail than the whole `result.json`.
+function safeStringifyFailureResult(payload: FailureResultPayload): string {
+  try {
+    return JSON.stringify(payload, jsonSafeReplacer(), 2);
+  } catch {
+    return JSON.stringify(
+      { status: payload.status, errorMessage: payload.errorMessage, errorChain: [] },
+      null,
+      2,
+    );
+  }
+}
+
+// JSON.stringify replacer factory: BigInt → `"<n>n"`, cycles → `"[Circular]"`,
+// functions → `"[Function]"`, symbols → `"[Symbol]"`. Closure-scoped
+// `seen` tracks visited objects within a single stringify call.
+function jsonSafeReplacer(): (key: string, value: unknown) => unknown {
+  const seen = new WeakSet<object>();
+  return (_key, value) => {
+    if (typeof value === "bigint") return `${value.toString()}n`;
+    if (typeof value === "function") return "[Function]";
+    if (typeof value === "symbol") return "[Symbol]";
+    if (value !== null && typeof value === "object") {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+    }
+    return value;
+  };
 }
 
 // Picks the cursor-run ref for `ShipOutput`: the persisted row when
