@@ -85,7 +85,7 @@ The cost of carrying the verb (and its 11 error classes, 2 shell-out modules, 5 
 ## Validation
 
 - `make check` (typecheck + lint + format-check + test) passes on the branch.
-- `git grep -niE 'open_pr|openPr|open-pr|OpenPr' packages/ e2e/` returns only the workflow `phaseKindSchema` tombstone + its acceptance test. Any other hit is a missed reference.
+- `git grep -niE 'open_pr|openPr|open-pr|OpenPr' packages/ e2e/ .claude/` returns only the workflow `phaseKindSchema` tombstone + its acceptance test. Any other hit is a missed reference. (`.claude/` is included so operator skill docs that reference the removed verb don't drift.)
 - MCP server smoke: the registered tools list no longer contains `open_pr`.
 - CLI smoke: `ship --help` no longer lists `open-pr`.
 
