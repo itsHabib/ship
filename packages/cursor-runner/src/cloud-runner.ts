@@ -168,6 +168,9 @@ export class CloudCursorRunner implements CursorRunner {
   }
 
   async attach(input: CursorRunAttachInput): Promise<CursorRunHandle> {
+    if (input.cloud === undefined) {
+      throw new MissingCloudSpecError();
+    }
     assertSingleCloudRepo(input.cloud);
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {

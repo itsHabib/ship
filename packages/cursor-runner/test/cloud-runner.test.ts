@@ -303,6 +303,31 @@ describe("CloudCursorRunner — attach", () => {
     });
   });
 
+  test("throws MissingCloudSpecError when cloud is undefined", async () => {
+    const runner = new CloudCursorRunner();
+    await expect(
+      runner.attach({
+        agentId: "bc-test-cloud-0001",
+        model: { id: "composer-2.5" },
+        onEvent: vi.fn(),
+        runId: "run-test-cloud-0001",
+      }),
+    ).rejects.toBeInstanceOf(MissingCloudSpecError);
+    expect(Agent.resume).not.toHaveBeenCalled();
+  });
+
+  test("throws InvalidCloudReposError when cloud.repos is empty", async () => {
+    const runner = new CloudCursorRunner();
+    await expect(
+      runner.attach(
+        cloudAttachBaseInput({
+          cloud: { repos: [] } as unknown as CloudRunSpec,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(InvalidCloudReposError);
+    expect(Agent.resume).not.toHaveBeenCalled();
+  });
+
   test("throws MissingApiKeyError when CURSOR_API_KEY is unset", async () => {
     vi.unstubAllEnvs();
     vi.stubEnv("CURSOR_API_KEY", "");
