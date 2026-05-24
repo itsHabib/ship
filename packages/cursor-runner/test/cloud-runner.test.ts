@@ -515,8 +515,43 @@ describe("CloudCursorRunner — Agent.create cloud payload", () => {
         workOnCurrentBranch: true,
       },
       mcpServers: { docs: { type: "http", url: "https://docs" } },
-      model: { id: "composer-2.5", params: [{ id: "fast", value: true }] },
+      // Boolean `true` from CursorRunInput is coerced to the string "true"
+      // before being passed to Agent.create — Cursor's cloud API rejects
+      // boolean param values with a 400 "[validation_error] Expected
+      // string, received boolean".
+      model: { id: "composer-2.5", params: [{ id: "fast", value: "true" }] },
       name: "ship/wf-cloud",
+    });
+  });
+
+  test("coerces boolean model param values to strings before Agent.create", async () => {
+    const { run } = makeMockRun({});
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    await runner.run(
+      cloudBaseInput({
+        cloud: { repos: [{ url: "https://github.com/acme/sandbox" }] },
+        model: {
+          id: "composer-2.5",
+          params: [
+            { id: "fast", value: false },
+            { id: "thinking", value: true },
+            { id: "tier", value: "premium" },
+          ],
+        },
+      }),
+    );
+
+    const arg = vi.mocked(Agent.create).mock.calls[0]?.[0] as AgentOptions | undefined;
+    expect(arg?.model).toEqual({
+      id: "composer-2.5",
+      params: [
+        { id: "fast", value: "false" },
+        { id: "thinking", value: "true" },
+        { id: "tier", value: "premium" },
+      ],
     });
   });
 

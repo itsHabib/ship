@@ -19,6 +19,7 @@ import {
   IntegrationNotConnectedError,
   UnknownAgentError,
 } from "@cursor/sdk";
+import { inspect } from "node:util";
 
 import type {
   CloudRunSpec,
@@ -81,13 +82,19 @@ function mapAgentNotFoundError(
 
 function modelArgFromInput(input: CursorRunInput): SdkModelSelection {
   // Cast needed because workflow's ModelSelection accepts both string and
-  // boolean param values (cursor's API takes both), but the SDK's
-  // SdkModelSelection narrows to its own ModelParameter shape. The structural
-  // overlap is asserted by model-selection-compat.test.ts.
-  return {
-    id: input.model.id,
-    ...(input.model.params !== undefined && { params: input.model.params }),
-  } as SdkModelSelection;
+  // boolean param values, but the SDK's SdkModelSelection narrows to its
+  // own ModelParameter shape. Empirically Cursor's cloud API REJECTS
+  // boolean values with a 400 "[validation_error] Expected string,
+  // received boolean" — so coerce booleans to their string form before
+  // calling the SDK. The structural overlap is asserted by
+  // model-selection-compat.test.ts.
+  const params = input.model.params?.map((p) => ({
+    id: p.id,
+    value: typeof p.value === "boolean" ? String(p.value) : p.value,
+  }));
+  const out: SdkModelSelection = { id: input.model.id };
+  if (params !== undefined) out.params = params;
+  return out;
 }
 
 function cloudAgentOptions(spec: CloudRunSpec): CloudAgentOptions {
@@ -234,6 +241,11 @@ export class CloudCursorRunner implements CursorRunner {
           /* swallow secondary dispose error */
         }
       }
+      // Stderr-dump the raw SDK error chain so cloud failures aren't
+      // opaque. cloudDebugLog gates on SHIP_CLOUD_DEBUG; this always
+      // fires because the cause chain is exactly what an operator needs
+      // when Agent.create or agent.send throws.
+      logCloudStartFailure(err, agent !== undefined);
       if (err instanceof IntegrationNotConnectedError) {
         throw new CursorCloudIntegrationError(err.provider, err.helpUrl, { cause: err });
       }
@@ -406,4 +418,19 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
     typeof value === "object" &&
     typeof (value as { then?: unknown }).then === "function"
   );
+}
+
+// Stderr-dump the raw cause chain when Agent.create or agent.send
+// throws. Uses util.inspect which natively traverses `Error.cause`
+// chains and renders non-enumerable SDK error fields (status, code,
+// endpoint) — so an operator running an L3 dry-run sees the actual
+// cursor failure without spelunking. Best-effort; never throws.
+function logCloudStartFailure(err: unknown, agentCreated: boolean): void {
+  try {
+    const stage = agentCreated ? "agent.send" : "Agent.create";
+    const dump = inspect(err, { depth: 10, showHidden: false, breakLength: 100 });
+    process.stderr.write(`[ship-cloud-error] ${stage} failed:\n${dump}\n`);
+  } catch {
+    // swallow — diagnostic logging must never affect control flow
+  }
 }
