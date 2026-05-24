@@ -163,7 +163,7 @@ Each batch can run as one `/work-driver N` invocation. **Batches may be mixed-ru
 
 #### 4b. Runtime selection (default LOCAL; cloud only on positive signal)
 
-**Default: `runtime: local`.** Local is cheaper (no Cursor VM time billed), faster per fire, lets the operator step into the run with normal tooling, and is the right choice for the L1/L2 unit-test-driven impl work that dominates most batches. Suggest `runtime: cloud` ONLY when the task body / spec gives a positive cloud signal. When the heuristic doesn't actively push cloud, stay local.
+**Default: `runtime: local`.** Local runs against the operator's machine with normal tooling — fast turnaround for the L1/L2 unit-test-driven impl work that dominates most batches. Suggest `runtime: cloud` ONLY when the task body / spec gives a positive cloud signal. When the heuristic doesn't actively push cloud, stay local.
 
 | Signal in task body / spec | Runtime decision |
 |---|---|
@@ -177,7 +177,7 @@ Each batch can run as one `/work-driver N` invocation. **Batches may be mixed-ru
 
 Force signals are gates: if any LOCAL-force row is present, runtime is local regardless of any CLOUD signal also being present. Otherwise the explicit-override / browser / parallel-long-running rows win in that priority order. If none apply, default local.
 
-**Why local-first.** Cloud fires cost real money (billed by Cursor VM active time). For the typical impl task — single repo, L1/L2 unit-test-driven work — local is just as fast and free. Cloud earns its slot when its specific capabilities are actually needed: browser automation, parallelization at scale across ≥3 streams, or an explicit dogfood signal from the operator. "I could use either" defaults to local. When in doubt, surface the choice in the grouping report and let the operator override before committing the manifest.
+**Why local-first.** Most impl tasks — single repo, L1/L2 unit-test-driven work — fit local cleanly; the operator can step into the run with normal debugging tools. Cloud earns its slot when its specific capabilities are actually needed: browser automation, parallelization at scale across ≥3 streams, or an explicit dogfood signal from the operator. "I could use either" defaults to local. When in doubt, surface the choice in the grouping report and let the operator override before committing the manifest.
 
 Surface the suggestion alongside the grouping report; let the operator override before committing the manifest:
 
