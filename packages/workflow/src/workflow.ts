@@ -25,9 +25,10 @@ export const phaseStatusSchema = z.enum(["pending", "running", "succeeded", "fai
 export type PhaseStatus = z.infer<typeof phaseStatusSchema>;
 
 // Discriminator for what kind of work a `Phase` represents. "open_pr"
-// is a tombstone: the verb was removed, but the literal stays so the
-// SQLite store can hydrate historical phase rows written before the
-// removal. New phase rows are only ever `kind: "implement"`.
+// is a tombstone: the verb was removed and Ship no longer writes
+// `open_pr` phase rows, but the literal stays so the SQLite store can
+// hydrate historical rows written before the removal. New phase kinds
+// (e.g. `ci_fix`) add their own literal here.
 export const phaseKindSchema = z.enum(["implement", "open_pr"]);
 export type PhaseKind = z.infer<typeof phaseKindSchema>;
 

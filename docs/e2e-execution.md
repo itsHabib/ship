@@ -13,7 +13,7 @@ Ship has four layers of testing (see [`docs/features/qe-sdet/spec.md`](features/
 | **L1** | Pure unit tests | `packages/**/src/**/*.test.ts` | Every `make check` (~600+ tests) |
 | **L2** | Integration tests with FakeCursor | `packages/test-harness/scenarios/*.scenario.test.ts`, `packages/core/src/service.test.ts` | Every `make check` |
 | **L3** | Live e2e against real SDK + local cursor | `e2e/scenarios/*.e2e.test.ts` (non-cloud), gated `SHIP_LIVE=1 + CURSOR_API_KEY` | Operator-run; CI skips by default |
-| **L4** | Live e2e against real SDK + cursor cloud + real GitHub | `e2e/scenarios/cloud-*.e2e.test.ts` + `cancel-live-ship.e2e.test.ts`, gated `SHIP_LIVE=1 + SHIP_CLOUD=1 + CURSOR_API_KEY + GITHUB_TOKEN` | Operator-run; cost real money + leave artifacts on GitHub |
+| **L4** | Live e2e against real SDK + cursor cloud + real GitHub | `e2e/scenarios/cloud-*.e2e.test.ts` (gated `SHIP_LIVE=1 + SHIP_CLOUD=1 + CURSOR_API_KEY + GITHUB_TOKEN`) + `cancel-live-ship.e2e.test.ts` (gated `SHIP_LIVE=1 + CURSOR_API_KEY + GITHUB_TOKEN + SHIP_E2E_SANDBOX_REPO` via `hasLiveEnv()` — no `SHIP_CLOUD` required) | Operator-run; cost real money + leave artifacts on GitHub |
 
 CI runs L1 + L2 on every push (ubuntu + windows). L3/L4 stay opt-in because they consume Cursor credits, push branches to a real GitHub repo, and leave PRs behind. Cleanup is best-effort in `finally` blocks but not guaranteed.
 
