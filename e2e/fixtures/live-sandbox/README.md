@@ -1,3 +1,3 @@
-# open-pr-sandbox
+# live-sandbox
 
-Fixture tree for L4 `open_pr` scenarios. Copied into isolated tmpdirs; see `e2e/README.md`.
+Fixture tree for live L3/L4 e2e scenarios (cloud + live-cancel). Copied into isolated tmpdirs; see `e2e/README.md`.

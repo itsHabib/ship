@@ -1,7 +1,6 @@
 // Shared subprocess + git helpers for live e2e scenarios that drive the
 // CLI binary against a real fixture repo (test-side only). Used by the
-// cloud-runtime L3/L4 suites; the matching open_pr suites were removed
-// alongside the open_pr verb.
+// cloud-runtime L3 suites + the live-cancel L4 scenario.
 
 import type { ShipOutput } from "@ship/mcp";
 import type { WorkflowRun, WorkflowStatus } from "@ship/workflow";
