@@ -9,6 +9,7 @@
 // --- runner.ts ---
 export type {
   CloudRunSpec,
+  CursorRunAttachInput,
   CursorRunHandle,
   CursorRunInput,
   CursorRunner,
@@ -23,9 +24,11 @@ export { LocalCursorRunner } from "./local-runner.js";
 
 // --- errors.ts ---
 export {
+  CursorAgentNotFoundError,
   CursorCloudIntegrationError,
   CursorRunFailedError,
   InvalidCloudReposError,
+  LocalResumeNotSupportedError,
   MissingApiKeyError,
   MissingCloudSpecError,
   WrongRunnerError,

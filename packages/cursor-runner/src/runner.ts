@@ -42,6 +42,27 @@ export interface CursorRunInput {
   readonly cloud?: CloudRunSpec;
 }
 
+/** Input required to re-attach to an in-flight Cursor run (cloud resume). */
+export interface CursorRunAttachInput {
+  readonly agentId: string;
+  readonly runId: string;
+  /** Re-passed because the SDK doesn't carry these across `Agent.resume`. */
+  readonly model: ModelSelection;
+  readonly mcpServers?: Record<string, McpServerConfig>;
+  readonly agents?: Record<string, AgentDefinition>;
+  /**
+   * Required when attaching against a `CloudCursorRunner` (cloud runtime). The
+   * `LocalCursorRunner.attach` path throws `LocalResumeNotSupportedError`
+   * unconditionally and never reads this field, so leaving the type
+   * structurally optional avoids forcing the local caller to pass a value
+   * that's about to be ignored. `CloudCursorRunner.attach` throws
+   * `MissingCloudSpecError` if it's undefined at the cloud entry point.
+   */
+  readonly cloud?: CloudRunSpec;
+  readonly onEvent: (event: SDKMessage) => void | Promise<void>;
+  readonly signal?: AbortSignal;
+}
+
 export interface CloudRunSpec {
   /**
    * GitHub repo the cloud agent operates against. Exactly one entry this
@@ -121,4 +142,5 @@ export interface CursorRunResult {
  */
 export interface CursorRunner {
   run(input: CursorRunInput): Promise<CursorRunHandle>;
+  attach(input: CursorRunAttachInput): Promise<CursorRunHandle>;
 }

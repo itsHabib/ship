@@ -5,8 +5,9 @@ import type { SDKMessage } from "@cursor/sdk";
 import { getEventListeners } from "node:events";
 import { describe, expect, test, vi } from "vitest";
 
-import type { CursorRunInput, CursorRunResult } from "./runner.js";
+import type { CursorRunAttachInput, CursorRunInput, CursorRunResult } from "./runner.js";
 
+import { CursorAgentNotFoundError } from "./errors.js";
 import { FakeCursorRunner, type FakeCursorScript } from "./fake.js";
 
 // Minimal SDK envelopes — payload shape doesn't matter; we treat them as
@@ -482,6 +483,74 @@ describe("FakeCursorRunner — queue mechanics", () => {
     expect(runner.calls[0]?.script).toBe(scriptA);
     expect(runner.calls[1]?.input).toBe(inputB);
     expect(runner.calls[1]?.script).toBe(scriptB);
+  });
+});
+
+function attachBaseInput(overrides: Partial<CursorRunAttachInput> = {}): CursorRunAttachInput {
+  return {
+    agentId: "bc-fake-attach-0001",
+    model: { id: "composer-2" },
+    onEvent: vi.fn(),
+    runId: "run-fake-attach-0001",
+    ...overrides,
+  };
+}
+
+describe("FakeCursorRunner — attach", () => {
+  test("resume-able script emits events and resolves with input agentId/runId", async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueueAttach({ events: [evA, evB], result: baseResult({ summary: "attached" }) });
+
+    const onEvent = vi.fn();
+    const handle = await runner.attach(attachBaseInput({ onEvent }));
+    const result = await handle.result;
+
+    expect(handle.agentId).toBe("bc-fake-attach-0001");
+    expect(handle.runId).toBe("run-fake-attach-0001");
+    expect(onEvent.mock.calls.map((c) => (c as [SDKMessage])[0])).toEqual([evA, evB]);
+    expect(result).toMatchObject({ status: "succeeded", summary: "attached" });
+  });
+
+  test("not-found script throws CursorAgentNotFoundError with input ids", async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueueAttach({ notFound: true });
+
+    const promise = runner.attach(
+      attachBaseInput({
+        agentId: "bc-missing",
+        runId: "run-missing",
+      }),
+    );
+    await expect(promise).rejects.toBeInstanceOf(CursorAgentNotFoundError);
+    await expect(promise).rejects.toMatchObject({
+      agentId: "bc-missing",
+      runId: "run-missing",
+      runtime: "cloud",
+    });
+  });
+
+  test("attach() with no script enqueued throws", async () => {
+    const runner = new FakeCursorRunner();
+    await expect(runner.attach(attachBaseInput())).rejects.toThrow(/no script enqueued/i);
+  });
+
+  test("defaultAttachScript is used when the attach queue is empty", async () => {
+    const runner = new FakeCursorRunner({
+      defaultAttachScript: { events: [], result: baseResult({ summary: "default attach" }) },
+    });
+    const handle = await runner.attach(attachBaseInput());
+    await expect(handle.result).resolves.toMatchObject({ summary: "default attach" });
+  });
+
+  test("attachCalls records input + script in order", async () => {
+    const runner = new FakeCursorRunner();
+    const script = { events: [], result: baseResult({ summary: "attach call" }) };
+    runner.enqueueAttach(script);
+    const input = attachBaseInput();
+    await runner.attach(input);
+    expect(runner.attachCalls).toHaveLength(1);
+    expect(runner.attachCalls[0]?.input).toBe(input);
+    expect(runner.attachCalls[0]?.script).toBe(script);
   });
 });
 

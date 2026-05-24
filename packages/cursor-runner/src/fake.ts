@@ -12,7 +12,16 @@
 
 import type { SDKMessage } from "@cursor/sdk";
 
-import type { CursorRunHandle, CursorRunInput, CursorRunner, CursorRunResult } from "./runner.js";
+import type {
+  CursorRunAttachInput,
+  CursorRunHandle,
+  CursorRunInput,
+  CursorRunner,
+  CursorRunResult,
+} from "./runner.js";
+
+import { attachInputAsRunInput } from "./_shared.js";
+import { CursorAgentNotFoundError } from "./errors.js";
 
 /** A single scripted run. The fake pops one of these per `run()` call. */
 export interface FakeCursorScript {
@@ -32,6 +41,25 @@ export interface FakeCursorScript {
   readonly delayMsBetweenEvents?: number;
 }
 
+/** Scripted attach outcome — either a resumable run or a not-found rejection. */
+export type FakeCursorAttachScript =
+  | FakeCursorScript
+  | {
+      readonly notFound: true;
+    };
+
+function isFakeAttachNotFound(
+  script: FakeCursorAttachScript,
+): script is { readonly notFound: true } {
+  return "notFound" in script;
+}
+
+/** Recorded `attach()` call metadata for post-hoc test assertions. */
+export interface FakeCursorAttachCall {
+  readonly input: CursorRunAttachInput;
+  readonly script: FakeCursorAttachScript;
+}
+
 /** Recorded `run()` call metadata for post-hoc test assertions. */
 export interface FakeCursorRunCall {
   readonly input: CursorRunInput;
@@ -43,6 +71,8 @@ const CANCEL_THROWN_MESSAGE = "FakeCursorRunner: scripted cancel error";
 export interface FakeCursorRunnerOptions {
   /** Used when `enqueue()` hasn't been called for a `run()` invocation. */
   readonly defaultScript?: FakeCursorScript;
+  /** Used when `enqueueAttach()` hasn't been called for an `attach()` invocation. */
+  readonly defaultAttachScript?: FakeCursorAttachScript;
 }
 
 /**
@@ -52,12 +82,16 @@ export interface FakeCursorRunnerOptions {
  */
 export class FakeCursorRunner implements CursorRunner {
   readonly #scripts: FakeCursorScript[] = [];
+  readonly #attachScripts: FakeCursorAttachScript[] = [];
   readonly #calls: FakeCursorRunCall[] = [];
+  readonly #attachCalls: FakeCursorAttachCall[] = [];
   readonly #defaultScript: FakeCursorScript | undefined;
+  readonly #defaultAttachScript: FakeCursorAttachScript | undefined;
   #runCounter = 0;
 
   constructor(opts: FakeCursorRunnerOptions = {}) {
     this.#defaultScript = opts.defaultScript;
+    this.#defaultAttachScript = opts.defaultAttachScript;
   }
 
   /** Append a script to the FIFO queue. */
@@ -65,9 +99,19 @@ export class FakeCursorRunner implements CursorRunner {
     this.#scripts.push(script);
   }
 
+  /** Append an attach script to the FIFO queue. */
+  enqueueAttach(script: FakeCursorAttachScript): void {
+    this.#attachScripts.push(script);
+  }
+
   /** All `run()` calls in invocation order. */
   get calls(): readonly FakeCursorRunCall[] {
     return this.#calls;
+  }
+
+  /** All `attach()` calls in invocation order. */
+  get attachCalls(): readonly FakeCursorAttachCall[] {
+    return this.#attachCalls;
   }
 
   /** Number of scripts still queued (excludes `defaultScript`). */
@@ -75,20 +119,67 @@ export class FakeCursorRunner implements CursorRunner {
     return this.#scripts.length;
   }
 
-  async run(input: CursorRunInput): Promise<CursorRunHandle> {
+  run(input: CursorRunInput): Promise<CursorRunHandle> {
     const script = this.#scripts.shift() ?? this.#defaultScript;
     if (script === undefined) {
-      throw new Error(
-        "FakeCursorRunner: run() called with no script enqueued and no defaultScript provided",
+      return Promise.reject(
+        new Error(
+          "FakeCursorRunner: run() called with no script enqueued and no defaultScript provided",
+        ),
       );
     }
     this.#calls.push({ input, script });
 
     this.#runCounter += 1;
     const callIndex = this.#runCounter;
-    const agentId = `agent-fake-${callIndex.toString().padStart(4, "0")}`;
-    const runId = `run-fake-${callIndex.toString().padStart(4, "0")}`;
+    return Promise.resolve(
+      this.#buildScriptedHandle({
+        agentId: `agent-fake-${callIndex.toString().padStart(4, "0")}`,
+        input,
+        runId: `run-fake-${callIndex.toString().padStart(4, "0")}`,
+        script,
+      }),
+    );
+  }
 
+  attach(input: CursorRunAttachInput): Promise<CursorRunHandle> {
+    const script = this.#attachScripts.shift() ?? this.#defaultAttachScript;
+    if (script === undefined) {
+      return Promise.reject(
+        new Error(
+          "FakeCursorRunner: attach() called with no script enqueued and no defaultAttachScript provided",
+        ),
+      );
+    }
+    this.#attachCalls.push({ input, script });
+
+    if (isFakeAttachNotFound(script)) {
+      return Promise.reject(
+        new CursorAgentNotFoundError({
+          agentId: input.agentId,
+          runId: input.runId,
+          runtime: "cloud",
+        }),
+      );
+    }
+
+    return Promise.resolve(
+      this.#buildScriptedHandle({
+        agentId: input.agentId,
+        input: attachInputAsRunInput(input),
+        runId: input.runId,
+        script,
+      }),
+    );
+  }
+
+  #buildScriptedHandle(args: {
+    agentId: string;
+    input: CursorRunInput;
+    runId: string;
+    script: FakeCursorScript;
+  }): CursorRunHandle {
+    const { agentId, input, runId, script } = args;
     let terminated = false;
     let cancelAttempted = false;
     let resolveResult!: (value: CursorRunResult) => void;
@@ -154,7 +245,7 @@ export class FakeCursorRunner implements CursorRunner {
     };
     void this.#emit(script, input, () => terminated, finalize, setActiveSleep);
 
-    return Promise.resolve({ agentId, runId, result, cancel: cancelInternal });
+    return { agentId, cancel: cancelInternal, result, runId };
   }
 
   async #emit(
