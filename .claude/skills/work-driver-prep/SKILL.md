@@ -161,27 +161,31 @@ Greedy grouping respecting both conflict types from Step 3:
 
 Each batch can run as one `/work-driver N` invocation. **Batches may be mixed-runtime** — some streams `runtime: local`, others `runtime: cloud` — per phase 09. The driver dispatches each stream per its own runtime; the batch boundary still respects file + dep conflicts independent of runtime.
 
-#### 4b. Cloud-eligibility heuristic (suggestion, not gate)
+#### 4b. Runtime selection (default LOCAL; cloud only on positive signal)
 
-For each task, suggest `runtime: cloud` if **all** of the following hold (else default `local`). The heuristic is a suggestion only — operators override per stream when they know better.
+**Default: `runtime: local`.** Local is cheaper (no Cursor VM time billed), faster per fire, lets the operator step into the run with normal tooling, and is the right choice for the L1/L2 unit-test-driven impl work that dominates most batches. Suggest `runtime: cloud` ONLY when the task body / spec gives a positive cloud signal. When the heuristic doesn't actively push cloud, stay local.
 
-| Signal | Indicates cloud-eligible if |
+| Signal in task body / spec | Runtime decision |
 |---|---|
-| Spec body mentions `docker compose` / `setup-local-db` / `localhost` API deps | NO — cloud VM doesn't have local services |
-| Spec body mentions env vars not in the cloud VM (e.g. operator-personal API tokens for non-public services) | NO |
-| Touches files in one repo only | YES |
-| Touches files in multiple repos (multi-repo refactor) | NO — multi-repo cloud is out of scope per phase 04 |
-| Spec is long-running (>10 min impl estimate) | YES — cloud parallelizes well |
-| Spec involves browser automation / desktop env | YES — cloud cursor's desktop VM unlocks this |
-| Spec is L1/L2 unit-test-driven impl on a small surface | EITHER — local is faster turnaround, cloud parallelizes |
+| `docker compose` / `setup-local-db` / `localhost` API deps | **LOCAL (force)** — cloud VM doesn't have local services |
+| Operator-personal env vars / tokens not in the cloud VM | **LOCAL (force)** — cloud VM lacks the secrets |
+| Touches files in multiple repos (multi-repo refactor) | **LOCAL (force)** — multi-repo cloud out of scope per phase 04 |
+| Spec mentions browser automation / desktop GUI testing | **CLOUD** — cursor cloud's desktop VM unlocks this |
+| Long-running impl (>10 min) AND batch has ≥3 parallel streams | **CLOUD** — cloud parallelizes; local would serialize on the operator's machine |
+| Operator explicitly asked for cloud (e.g. `--runtime cloud`, "fire this on cloud", dogfood request) | **CLOUD** — explicit override |
+| Otherwise (the common case — single-repo, no special deps, L1/L2 impl) | **LOCAL** (default) |
+
+Force signals are gates: if any LOCAL-force row is present, runtime is local regardless of any CLOUD signal also being present. Otherwise the explicit-override / browser / parallel-long-running rows win in that priority order. If none apply, default local.
+
+**Why local-first.** Cloud fires cost real money (billed by Cursor VM active time). For the typical impl task — single repo, L1/L2 unit-test-driven work — local is just as fast and free. Cloud earns its slot when its specific capabilities are actually needed: browser automation, parallelization at scale across ≥3 streams, or an explicit dogfood signal from the operator. "I could use either" defaults to local. When in doubt, surface the choice in the grouping report and let the operator override before committing the manifest.
 
 Surface the suggestion alongside the grouping report; let the operator override before committing the manifest:
 
 ```
 Batch 1 — parallel-safe, 3 streams (suggested runtime):
-  - tsk_AAA → docs/features/hygiene-followups/aaa.md (src/store.rs only)        [suggest: local — small surface, fast turnaround]
-  - tsk_BBB → docs/features/hygiene-followups/bbb.md (src/domain.rs only)       [suggest: local]
-  - tsk_CCC → docs/features/hygiene-followups/ccc.md (PROTOCOL.md docs only)    [suggest: cloud — docs-only, no local-setup needed]
+  - tsk_AAA → docs/features/hygiene-followups/aaa.md (src/store.rs only)        [suggest: local — single-repo L1/L2 work, default]
+  - tsk_BBB → docs/features/hygiene-followups/bbb.md (src/domain.rs only)       [suggest: local — default]
+  - tsk_CCC → docs/features/hygiene-followups/ccc.md (browser scrape flow)      [suggest: cloud — browser-automation signal]
 ```
 
 Output the grouping report (always show the operator the partition before committing):
