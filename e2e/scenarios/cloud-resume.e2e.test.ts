@@ -109,6 +109,13 @@ function spawnCloudResumeShipChild(opts: {
     child,
     stop: () => {
       tailer.stop();
+      // Defensive: if the test throws before killShipProcess runs (e.g.,
+      // waitForCursorRunRunning times out, vitest's test timeout fires),
+      // the spawned ship-cli would be orphaned. Send SIGTERM if it's
+      // still alive. Per cycle-1 review (Claude P1).
+      if (child.exitCode === null) {
+        child.kill("SIGTERM");
+      }
     },
   };
 }
@@ -146,76 +153,93 @@ async function archiveCloudAgent(agentId: string): Promise<void> {
   const apiKey = process.env["CURSOR_API_KEY"] ?? "";
   try {
     await Agent.archive(agentId, { apiKey });
-  } catch {
-    /* best-effort cleanup */
+  } catch (err) {
+    // Best-effort cleanup. Logged (not silent) so a failed archive
+    // surfaces in test output — an unarchived agent keeps running on
+    // Cursor's VM until the retention window expires. Per cycle-1
+    // review (Claude P2).
+    console.warn(`[cloud-resume] Agent.archive failed (best-effort): ${String(err)}`);
   }
 }
 
 describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — resume after process kill", () => {
-  test("kill mid-flight, restart Ship, same workflowRunId completes with ship.resumed", async () => {
-    const slug = sandboxSlugFromUrl(CLOUD_SANDBOX_REPO_URL);
-    parseSandboxSlug(slug);
-    const token = process.env["GITHUB_TOKEN"] ?? "";
-    const { root: homeRoot, workdir } = mkLiveTmp("ship-cloud-l3-resume-");
-    const repoLabel = `cloud-l3-rsm-${randomBytes(4).toString("hex")}`;
-    const dbPath = shipDbPathFromHome(homeRoot);
+  // Sequential waits add up to ~405s (120 cursor_run + 15 ship.resumed +
+  // 270 terminal) which overflows e2e/vitest.e2e.config.ts's 300s global
+  // testTimeout. Per cycle-1 review (Claude P1), give this single test
+  // its own 8-minute budget — the cloud run itself is ~60s sleep plus
+  // overhead, so 8min has plenty of headroom without sitting on the
+  // global ceiling.
+  test(
+    "kill mid-flight, restart Ship, same workflowRunId completes with ship.resumed",
+    { timeout: 8 * 60_000 },
+    async () => {
+      const slug = sandboxSlugFromUrl(CLOUD_SANDBOX_REPO_URL);
+      // Extra structural validation. sandboxSlugFromUrl already throws on
+      // a malformed URL, but parseSandboxSlug enforces the slug-shape
+      // contract independently — void-prefixed to mark the side-effect intent.
+      void parseSandboxSlug(slug);
+      const token = process.env["GITHUB_TOKEN"] ?? "";
+      const { root: homeRoot, workdir } = mkLiveTmp("ship-cloud-l3-resume-");
+      const repoLabel = `cloud-l3-rsm-${randomBytes(4).toString("hex")}`;
+      const dbPath = shipDbPathFromHome(homeRoot);
 
-    bootstrapFixtureMainOnSandbox({ workdir, token, sandboxSlug: slug });
+      bootstrapFixtureMainOnSandbox({ workdir, token, sandboxSlug: slug });
 
-    const docRel = "docs/features/resume-sleep.md";
-    mkdirSync(join(workdir, "docs", "features"), { recursive: true });
-    writeFileSync(join(workdir, docRel), RESUME_SLEEP_DOC, "utf-8");
+      const docRel = "docs/features/resume-sleep.md";
+      mkdirSync(join(workdir, "docs", "features"), { recursive: true });
+      writeFileSync(join(workdir, docRel), RESUME_SLEEP_DOC, "utf-8");
 
-    const shipChild = spawnCloudResumeShipChild({ homeRoot, workdir, repoLabel, docRel });
-    let agentId: string | undefined;
-    let restartSession: RestartMcpSession | undefined;
+      const shipChild = spawnCloudResumeShipChild({ homeRoot, workdir, repoLabel, docRel });
+      let agentId: string | undefined;
+      let restartSession: RestartMcpSession | undefined;
 
-    try {
-      const workflowRunId = await waitForWorkflowRowId(homeRoot, repoLabel);
-      const cursorRun = await waitForCursorRunRunning({
-        dbPath,
-        workflowRunId,
-        timeoutMs: 120_000,
-      });
-      agentId = cursorRun.agentId;
-      expect(cursorRun.runId.length).toBeGreaterThan(0);
+      try {
+        const workflowRunId = await waitForWorkflowRowId(homeRoot, repoLabel);
+        const cursorRun = await waitForCursorRunRunning({
+          dbPath,
+          workflowRunId,
+          timeoutMs: 120_000,
+        });
+        agentId = cursorRun.agentId;
+        expect(cursorRun.runId.length).toBeGreaterThan(0);
 
-      await killShipProcess(shipChild.child);
+        await killShipProcess(shipChild.child);
 
-      const midRow = readCursorRunForWorkflow(dbPath, workflowRunId);
-      expect(midRow?.status).toBe("running");
+        const midRow = readCursorRunForWorkflow(dbPath, workflowRunId);
+        expect(midRow?.status).toBe("running");
 
-      restartSession = await connectRestartMcpSession({ homeRoot, workflowRunId });
-      await waitForEventsNdjsonPredicate({
-        homeRoot,
-        predicate: ndjsonHasShipResumed,
-        timeoutMs: 15_000,
-      });
+        restartSession = await connectRestartMcpSession({ homeRoot, workflowRunId });
+        await waitForEventsNdjsonPredicate({
+          homeRoot,
+          predicate: ndjsonHasShipResumed,
+          timeoutMs: 15_000,
+        });
 
-      const postResumeRow = readCursorRunForWorkflow(dbPath, workflowRunId);
-      expect(postResumeRow?.status).toBe("running");
+        const postResumeRow = readCursorRunForWorkflow(dbPath, workflowRunId);
+        expect(postResumeRow?.status).toBe("running");
 
-      const terminalStatus = await waitForWorkflowTerminalInDb({
-        dbPath,
-        workflowRunId,
-        timeoutMs: 4.5 * 60_000,
-      });
-      expect(terminalStatus).toBe("succeeded");
+        const terminalStatus = await waitForWorkflowTerminalInDb({
+          dbPath,
+          workflowRunId,
+          timeoutMs: 4.5 * 60_000,
+        });
+        expect(terminalStatus).toBe("succeeded");
 
-      const listR = runCliSync(homeRoot, ["list", "--repo", repoLabel, "--json"]);
-      expect(listR.code).toBe(0);
-      const listed = parseListRuns(listR.stdout);
-      expect(listed.runs).toHaveLength(1);
-      expect(listed.runs[0]?.id).toBe(workflowRunId);
-      expect(listed.runs[0]?.status).toBe("succeeded");
-    } finally {
-      shipChild.stop();
-      if (restartSession !== undefined) {
-        await restartSession.close();
+        const listR = runCliSync(homeRoot, ["list", "--repo", repoLabel, "--json"]);
+        expect(listR.code).toBe(0);
+        const listed = parseListRuns(listR.stdout);
+        expect(listed.runs).toHaveLength(1);
+        expect(listed.runs[0]?.id).toBe(workflowRunId);
+        expect(listed.runs[0]?.status).toBe("succeeded");
+      } finally {
+        shipChild.stop();
+        if (restartSession !== undefined) {
+          await restartSession.close();
+        }
+        if (agentId !== undefined) {
+          await archiveCloudAgent(agentId);
+        }
       }
-      if (agentId !== undefined) {
-        await archiveCloudAgent(agentId);
-      }
-    }
-  });
+    },
+  );
 });

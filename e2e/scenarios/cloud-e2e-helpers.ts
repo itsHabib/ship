@@ -135,34 +135,63 @@ export async function waitForWorkflowTerminalInDb(opts: {
     if (status === "succeeded" || status === "failed" || status === "cancelled") {
       return status;
     }
-    await sleep(400);
+    // 1.5s interval — light on SQLite open/close cycles while still
+    // responsive enough for a multi-minute terminal-wait. Bumped from
+    // 400ms per cycle-1 review (P3 — ~675 cycles over 4.5min was heavy).
+    await sleep(1500);
   }
   throw new Error(`timed out waiting for terminal workflow status: ${opts.workflowRunId}`);
 }
 
-/** SIGTERM (then SIGKILL) a ship-cli child — matches operator Ctrl-C / OOM paths. */
+/**
+ * SIGTERM (then SIGKILL fallback) a ship-cli child — matches operator Ctrl-C
+ * / OOM paths. Resolves when the child has actually exited.
+ *
+ * IMPORTANT: do NOT gate the SIGKILL fallback on `child.killed`. Node sets
+ * `killed = true` immediately after a successful `kill("SIGTERM")` call,
+ * even though the process is still running. Cycle-1 review (Codex + Copilot)
+ * caught this — gate on `exitCode === null` (process hasn't exited) instead.
+ *
+ * Also attach the close/error listeners BEFORE sending the signal, so a
+ * fast-exiting child can't fire `close` between `child.kill()` and
+ * `child.on("close", ...)`, leaving us waiting on the hard timer for
+ * nothing.
+ */
 export async function killShipProcess(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.killed) return;
-  child.kill("SIGTERM");
+  if (child.exitCode !== null) return;
   await new Promise<void>((resolveKill, reject) => {
     const hardTimer = setTimeout(() => {
       reject(new Error("timed out waiting for ship child to exit after SIGKILL"));
     }, 10_000);
     const sigkillTimer = setTimeout(() => {
-      if (child.exitCode === null && !child.killed) {
+      // Only escalate if the process hasn't exited yet. `child.killed`
+      // becomes true on the SIGTERM send itself, so it's NOT a reliable
+      // "process is still alive" guard.
+      if (child.exitCode === null) {
         child.kill("SIGKILL");
       }
     }, 5000);
-    child.on("close", () => {
+    // Attach listeners BEFORE signaling so a fast exit isn't missed.
+    child.once("close", () => {
       clearTimeout(sigkillTimer);
       clearTimeout(hardTimer);
       resolveKill();
     });
-    child.on("error", (err) => {
+    child.once("error", (err) => {
       clearTimeout(sigkillTimer);
       clearTimeout(hardTimer);
       reject(err);
     });
+    child.kill("SIGTERM");
+    // Defensive re-check: if the process exited synchronously between the
+    // exitCode check above and the kill call, the close listener may have
+    // fired already (or may have nothing left to fire on). Catch that
+    // case here.
+    if (child.exitCode !== null) {
+      clearTimeout(sigkillTimer);
+      clearTimeout(hardTimer);
+      resolveKill();
+    }
   });
 }
 
@@ -189,6 +218,11 @@ export async function connectRestartMcpSession(opts: {
   readonly workflowRunId: string;
 }): Promise<RestartMcpSession> {
   const env = isolatedHomeEnv(opts.homeRoot);
+  // Defensive: strip the fake-cursor override before spawning. If the
+  // operator has SHIP_TEST_FAKE_CURSOR=1 in their shell, the restarted
+  // MCP server would wire FakeCursorRunner and the scenario wouldn't
+  // exercise the real cloud resume path. Per cycle-1 review (Copilot).
+  delete env["SHIP_TEST_FAKE_CURSOR"];
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["--import", "tsx/esm", MCP_BIN],
@@ -197,10 +231,21 @@ export async function connectRestartMcpSession(opts: {
   });
   const client = new Client({ name: "ship-cloud-resume-restart", version: "0.0.0" });
   await client.connect(transport);
-  await client.callTool({
-    name: "get_workflow_run",
-    arguments: { workflowRunId: opts.workflowRunId },
-  });
+  // Wrap the first tool call: if it throws, close the client so the stdio
+  // subprocess doesn't linger as a zombie. Without this guard, the caller's
+  // `finally` block never sees a RestartMcpSession to close. Per cycle-1
+  // review (Claude P2).
+  try {
+    await client.callTool({
+      name: "get_workflow_run",
+      arguments: { workflowRunId: opts.workflowRunId },
+    });
+  } catch (err) {
+    await client.close().catch(() => {
+      /* swallow secondary close error */
+    });
+    throw err;
+  }
   return {
     client,
     close: async () => {
