@@ -13,7 +13,7 @@ Ship has four layers of testing (see [`docs/features/qe-sdet/spec.md`](features/
 | **L1** | Pure unit tests | `packages/**/src/**/*.test.ts` | Every `make check` (~600+ tests) |
 | **L2** | Integration tests with FakeCursor | `packages/test-harness/scenarios/*.scenario.test.ts`, `packages/core/src/service.test.ts` | Every `make check` |
 | **L3** | Live e2e against real SDK + local cursor | `e2e/scenarios/*.e2e.test.ts` (non-cloud), gated `SHIP_LIVE=1 + CURSOR_API_KEY` | Operator-run; CI skips by default |
-| **L4** | Live e2e against real SDK + cursor cloud + real GitHub | `e2e/scenarios/*.e2e.test.ts` (cloud variants + open_pr live), gated `SHIP_LIVE=1 + GITHUB_TOKEN + SHIP_E2E_SANDBOX_REPO` (open_pr) or `+ SHIP_CLOUD=1` (cloud) | Operator-run; cost real money + leave artifacts on GitHub |
+| **L4** | Live e2e against real SDK + cursor cloud + real GitHub | `e2e/scenarios/cloud-*.e2e.test.ts` + `cancel-live-ship.e2e.test.ts`, gated `SHIP_LIVE=1 + SHIP_CLOUD=1 + CURSOR_API_KEY + GITHUB_TOKEN` | Operator-run; cost real money + leave artifacts on GitHub |
 
 CI runs L1 + L2 on every push (ubuntu + windows). L3/L4 stay opt-in because they consume Cursor credits, push branches to a real GitHub repo, and leave PRs behind. Cleanup is best-effort in `finally` blocks but not guaranteed.
 
@@ -73,13 +73,13 @@ gh auth status   # confirms gh can resolve a token
 
 Each tier has its own env-var gate. The full table:
 
-| Var | L3 (local cursor) | L3 (cloud) | L4 (open_pr live) |
-|---|---|---|---|
-| `SHIP_LIVE=1` | required | required | required |
-| `CURSOR_API_KEY` | required | required | required |
-| `GITHUB_TOKEN` | not used | required | required |
-| `SHIP_E2E_SANDBOX_REPO` | not used | hardcoded in helpers | required |
-| `SHIP_CLOUD=1` | — | required | — |
+| Var | L3 (local cursor) | L3/L4 (cloud) |
+|---|---|---|
+| `SHIP_LIVE=1` | required | required |
+| `CURSOR_API_KEY` | required | required |
+| `GITHUB_TOKEN` | not used | required |
+| `SHIP_E2E_SANDBOX_REPO` | not used | required for `cancel-live-ship`; hardcoded in cloud helpers for cloud scenarios |
+| `SHIP_CLOUD=1` | — | required |
 
 Scenarios skip cleanly (via `describe.skipIf(...)`) when their gates aren't set — they don't fail.
 
@@ -111,21 +111,17 @@ Covers:
 - `hello-world.e2e.test.ts` — basic ship→cursor→succeeded path against the fixture repo
 - `subagent-invocation.e2e.test.ts` — phase-03 subagent passthrough
 
-### Run the open_pr L4 suite (~10-15 min, ~6 cursor credits + 3-4 GitHub PRs)
+### Run the live cancel scenario (~3 min, 1 partial cursor credit)
 
 ```sh
 export SHIP_LIVE=1
 export CURSOR_API_KEY=cur_...
 export GITHUB_TOKEN=ghp_...
 export SHIP_E2E_SANDBOX_REPO=owner/your-sandbox
-pnpm exec vitest run --config e2e/vitest.e2e.config.ts open-pr ship-then-open-pr cancel-live-ship
+pnpm exec vitest run --config e2e/vitest.e2e.config.ts cancel-live-ship
 ```
 
-The `open-pr` substring filter matches every `e2e/scenarios/*open-pr*.e2e.test.ts` — namely `open-pr.e2e.test.ts`, `idempotent-open-pr.e2e.test.ts`, and `open-pr-failure-paths.e2e.test.ts` (3 subtests, each runs a ship). Plus the two explicit filters (`ship-then-open-pr`, `cancel-live-ship`), the suite fires ~6 live cursor runs and opens 3-4 PRs on the sandbox. Covers:
-- `open-pr.e2e.test.ts` — ship → open_pr → PR exists on sandbox
-- `idempotent-open-pr.e2e.test.ts` — re-invoke open_pr is a no-op
-- `open-pr-failure-paths.e2e.test.ts` — bad-state rejection (workdir not git, branch empty, etc.)
-- `ship-then-open-pr.e2e.test.ts` — sequencing
+Covers:
 - `cancel-live-ship.e2e.test.ts` — cancel an in-flight run, assert terminal `cancelled`
 
 ### Run the cloud L3 suite (~5-10 min, 3 cursor cloud credits + 3 GitHub branches)
@@ -157,7 +153,7 @@ export SHIP_E2E_SANDBOX_REPO=owner/your-sandbox
 pnpm exec vitest run --config e2e/vitest.e2e.config.ts
 ```
 
-Budget ~20-25 min wall + ~11 cursor credits (8 local + 3 cloud) + several throwaway branches/PRs.
+Budget ~10-15 min wall + ~6 cursor credits (2 local + 1 partial cancel + 3 cloud) + several throwaway branches/PRs.
 
 ## Cleanup
 
@@ -183,15 +179,15 @@ Every scenario tries to clean up its own artifacts in `finally`. Failures can le
 
 Rough costs per full L4+cloud sweep:
 
-- ~11 cursor credits (8 local + 3 cloud; cloud credits count heavier)
+- ~6 cursor credits (2 local + 1 partial cancel + 3 cloud; cloud credits count heavier)
   - L3 local: 2 (hello-world + subagent-invocation, 1 ship each)
-  - L4 open_pr: ~6 (open-pr + idempotent + 3× failure-paths + ship-then-open-pr + partial cancel-live-ship)
+  - L4 live cancel: 1 partial (cancel-live-ship)
   - L3 cloud: 3 (cloud-happy-path + cloud-auto-create-pr-false + partial cloud-cancel-during-creating)
-- 4-6 PRs on the sandbox (auto-closed)
-- 8-10 branches pushed and deleted
-- ~20-25 min wall
+- 1-2 PRs on the sandbox (auto-closed; cloud-happy-path opens one via `autoCreatePR`)
+- 4-6 branches pushed and deleted
+- ~10-15 min wall
 
-If you're iterating on a single scenario, run just that one via the path-suffix arg shown above. The full sweep is for "before merge of a major cursor-runner / open-pr change" verification.
+If you're iterating on a single scenario, run just that one via the path-suffix arg shown above. The full sweep is for "before merge of a major cursor-runner change" verification.
 
 ## When to add a new scenario
 
@@ -205,7 +201,7 @@ Naming convention: `<feature-or-flow>.e2e.test.ts`. Add a gate combination that'
 ## Cross-refs
 
 - Test taxonomy: [`docs/features/qe-sdet/spec.md`](features/qe-sdet/spec.md)
-- Shared L4 helpers: [`e2e/scenarios/live-open-pr-helpers.ts`](../e2e/scenarios/live-open-pr-helpers.ts)
+- Shared live-CLI helpers: [`e2e/scenarios/live-cli-helpers.ts`](../e2e/scenarios/live-cli-helpers.ts)
 - Shared cloud helpers: [`e2e/scenarios/cloud-e2e-helpers.ts`](../e2e/scenarios/cloud-e2e-helpers.ts)
 - Event tailer (real-time agent output during a live run): [`e2e/scenarios/event-tailer.ts`](../e2e/scenarios/event-tailer.ts)
 - Phase 04 § Validation L3 (the cloud scenarios this doc is principally about): [`docs/features/ship-v2/phases/04-cursor-cloud-runner.md`](features/ship-v2/phases/04-cursor-cloud-runner.md)
