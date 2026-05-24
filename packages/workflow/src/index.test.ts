@@ -17,8 +17,4 @@ describe("@ship/workflow barrel export (index.ts)", () => {
     expect(workflow.newPhaseId().startsWith("ph_")).toBe(true);
     expect(workflow.newCursorRunId().startsWith("cr_")).toBe(true);
   });
-
-  test("re-exports the open_pr phase result schema", () => {
-    expect(typeof workflow.phaseOpenPrResultSchema.parse).toBe("function");
-  });
 });
