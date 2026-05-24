@@ -184,7 +184,12 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
         try {
           model = JSON.parse(row.model_json) as ModelSelection;
         } catch {
-          return [];
+          // Malformed model_json — keep the row resumable. The caller
+          // (ShipService.resumeOrphanedRuns) falls back to its
+          // configured `defaultModel`, so filtering the row out here
+          // would prevent recovery of an otherwise-valid orphan over a
+          // soft data issue. Treat model as undefined and proceed.
+          model = undefined;
         }
       }
       return [

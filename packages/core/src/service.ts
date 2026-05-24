@@ -115,7 +115,15 @@ export interface ShipService {
   // with "database connection is not open" against the closed handle.
   // Resolves immediately if nothing is in flight.
   drainBackground(): Promise<void>;
-  /** Resolves when the eager startup `resumeOrphanedRuns` scan finishes. */
+  /**
+   * Resolves once the eager startup `resumeOrphanedRuns` sweep has
+   * settled — every orphaned cloud cursor row has either been re-attached
+   * AND finalized (terminal state reached), short-circuited (workflow
+   * was already terminal), or finalized as a resume-failure. Useful for
+   * tests that want determinism + for hosts that need `listRuns` /
+   * `getRun` to reflect post-resume state at t0. The sweep itself is
+   * fire-and-forget at construction; this is the await handle.
+   */
   resumeReady(): Promise<void>;
   /**
    * Re-attaches every orphaned cloud cursor run (`status IN ('running','pending')`)
@@ -994,6 +1002,17 @@ async function resumeOneOrphanedCloudRun(
     return;
   }
 
+  // If the parent workflow already reached a terminal state before the
+  // process crashed (e.g. the user called cancelRun, which updates
+  // workflow + phase rows but leaves cursor_runs marked running), the
+  // cursor row is a stale revivor. Re-attaching would override the
+  // user's cancel intent and continue cloud-side mutations / cost.
+  if (workflowRun.status !== "pending" && workflowRun.status !== "running") {
+    ctx.activeRuns.delete(row.workflowRunId);
+    closeOrphanedCursorRowToMatchTerminalWorkflow(ctx, row, workflowRun.status);
+    return;
+  }
+
   const phase = workflowRun.phases.find((p) => p.kind === "implement" && p.cursorRunId === row.id);
   if (phase === undefined) {
     ctx.activeRuns.delete(row.workflowRunId);
@@ -1129,6 +1148,38 @@ function parseImplementPhaseCloudSpec(inputJson: string): CloudRunSpec | undefin
   } catch {
     return undefined;
   }
+}
+
+// Sync cleanup for a cursor_run row whose parent workflow already
+// reached a terminal state before the process crashed. No attach is
+// attempted; we just mirror the workflow's terminal onto the cursor
+// row so its status isn't a stale lie. Cloud-side cancel (the agent
+// may still be running on Cursor's VM) is intentionally out of scope —
+// a separate enhancement; the immediate concern Codex flagged is
+// not re-attaching, which this closes off.
+function closeOrphanedCursorRowToMatchTerminalWorkflow(
+  ctx: ResumeContext,
+  row: ResumableCloudCursorRun,
+  workflowStatus: TerminalWorkflowStatus,
+): void {
+  const cursorRow = ctx.store.getCursorRun(row.id);
+  if (cursorRow === null) return;
+  if (
+    cursorRow.status === "succeeded" ||
+    cursorRow.status === "failed" ||
+    cursorRow.status === "cancelled"
+  ) {
+    return;
+  }
+  const endedAt = ctx.clock();
+  const startedAtMs = new Date(cursorRow.startedAt).getTime();
+  const endedAtMs = new Date(endedAt).getTime();
+  const durationMs = Math.max(0, endedAtMs - startedAtMs);
+  ctx.store.updateCursorRunStatus(row.id, {
+    durationMs,
+    endedAt,
+    status: workflowStatus,
+  });
 }
 
 async function finalizeResumeFailure(

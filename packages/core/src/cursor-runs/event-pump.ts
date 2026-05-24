@@ -54,6 +54,11 @@ export function startEventPump(opts: EventPumpOptions): EventPumpHandle {
 
   timer = setInterval(heartbeat, intervalMs);
 
+  // Initial heartbeat at start so short-lived runs (<intervalMs) still
+  // bump `updated_at` at least once. Wrapped in the same try/catch path
+  // as the timer-driven heartbeat (it shares the `heartbeat` closure).
+  heartbeat();
+
   return {
     heartbeat,
     stop: stopInternal,

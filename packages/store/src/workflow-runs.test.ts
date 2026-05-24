@@ -316,9 +316,9 @@ describe("workflow runs (via createStore)", () => {
     });
 
     test("unknown id throws WorkflowRunNotFoundError", () => {
-      expect(() => store.touchWorkflowRunUpdatedAt(newWorkflowRunId())).toThrow(
-        WorkflowRunNotFoundError,
-      );
+      expect(() => {
+        store.touchWorkflowRunUpdatedAt(newWorkflowRunId());
+      }).toThrow(WorkflowRunNotFoundError);
     });
   });
 });

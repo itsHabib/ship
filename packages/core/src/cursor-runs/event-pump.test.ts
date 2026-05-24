@@ -47,6 +47,21 @@ describe("startEventPump", () => {
     store.close();
   });
 
+  test("initial heartbeat fires at startup (short-lived runs still bump)", () => {
+    const before = store.getRun("wf_test_001")?.updatedAt;
+    const pump = startEventPump({
+      intervalMs: 60_000, // long interval; only the initial bump matters here
+      store,
+      workflowRunId: "wf_test_001",
+    });
+    // No timer advance — the initial heartbeat at start should already
+    // have bumped updated_at, even though the first interval tick is
+    // 60s away.
+    const afterStart = store.getRun("wf_test_001")?.updatedAt;
+    expect(afterStart).not.toBe(before);
+    pump.stop();
+  });
+
   test("heartbeat bumps workflow_runs.updated_at on the interval", () => {
     const before = store.getRun("wf_test_001")?.updatedAt;
     const pump = startEventPump({

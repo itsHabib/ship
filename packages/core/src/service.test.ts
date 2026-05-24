@@ -1312,4 +1312,67 @@ describe("ShipService.resumeOrphanedRuns", () => {
     expect(h.cloudCursor.attachCalls).toHaveLength(0);
     h.store.close();
   });
+
+  test("skips attach + finalizes cursor row when workflow already terminal", async () => {
+    // P1 from cycle-1 review (codex): cancelRun updates workflow + phase
+    // but leaves cursor_runs marked running. On restart, resumeOrphanedRuns
+    // must NOT revive a cancelled workflow — that overrides the user's
+    // cancel intent and continues cloud-side mutations/cost.
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    // No attach script enqueued. If the code attempts attach, the fake
+    // throws (loud-fail per FakeCursorRunner contract) — assertion below
+    // also defends.
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000004",
+        phaseId: "ph_00000000000000000000000004",
+        workflowRunId: "wf_00000000000000000000000004",
+      },
+    );
+    // Workflow was cancelled before the crash; cursor_run row is the
+    // stale revivor.
+    store.updateWorkflowRunStatus("wf_00000000000000000000000004", "cancelled");
+
+    const service = createShipService({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+
+    // No attach attempted — user's cancel intent preserved.
+    expect(cloudCursor.attachCalls).toHaveLength(0);
+    // Cursor row closed out to match the workflow's terminal status.
+    const cursorRow = store.getCursorRun("cr_00000000000000000000000004");
+    expect(cursorRow?.status).toBe("cancelled");
+    expect(cursorRow?.endedAt).toBeDefined();
+    expect(cursorRow?.durationMs).toBeDefined();
+    expect(cursorRow?.durationMs ?? -1).toBeGreaterThanOrEqual(0);
+
+    store.close();
+  });
 });
