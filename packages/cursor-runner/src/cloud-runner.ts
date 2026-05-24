@@ -45,10 +45,12 @@ const API_KEY_ENV = "CURSOR_API_KEY";
 
 function assertSingleCloudRepo(cloudSpec: CloudRunSpec | undefined): void {
   if (cloudSpec === undefined) return;
-  // Narrow to a typed array form. `repos?: unknown[]` (vs `unknown`) signals
-  // the intended shape — an array we expect to size-check — rather than
-  // leaving the cast looking like a scalar guard.
-  const repos = (cloudSpec as { repos?: unknown[] }).repos;
+  // Cast to a structural shape with `repos?: unknown` (NOT `unknown[]`) so
+  // TypeScript accepts the conversion from the stricter `CloudRunSpec`
+  // (where `repos` is a typed tuple). Tightening to `unknown[]` triggers
+  // TS2352 "neither type sufficiently overlaps". The `Array.isArray` guard
+  // below proves array-ness at runtime, which is what we actually need.
+  const repos = (cloudSpec as { repos?: unknown }).repos;
   if (!Array.isArray(repos) || repos.length !== 1) {
     throw new InvalidCloudReposError(Array.isArray(repos) ? repos.length : 0);
   }
@@ -144,7 +146,7 @@ export class CloudCursorRunner implements CursorRunner {
     // `{ cloud: {} }` (undefined), `{ cloud: { repos: null } }`, `{ repos: [] }`, and
     // multi-repo arrays. Reaching `.length` on a non-array would throw a generic
     // TypeError; we want the typed `InvalidCloudReposError` at every entry point.
-    const repos = (input.cloud as { repos?: unknown[] }).repos;
+    const repos = (input.cloud as { repos?: unknown }).repos;
     if (!Array.isArray(repos) || repos.length !== 1) {
       throw new InvalidCloudReposError(Array.isArray(repos) ? repos.length : 0);
     }
