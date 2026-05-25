@@ -2,7 +2,7 @@
 
 ## What this package owns
 
-Zod wire schemas for Ship's MCP tool boundary — the contract between `@ship/mcp-server` and MCP clients. No server logic, no I/O. Validates tool inputs at the MCP edge and types `ShipService` method arguments re-exported from `@ship/core`.
+Zod wire schemas for Ship's MCP tool boundary — the contract between `@ship/mcp-server` and MCP clients. No server logic, no I/O. Validates tool inputs at the MCP edge; types are consumed by `@ship/mcp-server` and re-exported through `@ship/core` so CLI callers need not depend on both packages for typing alone.
 
 ## Public surface
 

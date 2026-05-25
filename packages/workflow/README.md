@@ -40,6 +40,6 @@ SHIP_PROP_ITER=1000 pnpm --filter @ship/workflow test   # heavier property run
 
 **Property-based tests** in `src/transitions.properties.test.ts` (fast-check) cover transition invariants (I1–I8), schema round-trips, and `cursorRunRuntimeSchema` acceptance. Default **100** examples; set **`SHIP_PROP_ITER`** for more. Optional **`SHIP_PROP_SEED`** fixes the seed for reproducing counterexamples.
 
-This file is the reference model for property-test style in the repo; the **`polish-1-property-track`** task expands coverage to sibling packages using the same conventions.
+This file is the reference model for property-test style in the repo. Sibling packages now follow the same conventions — see `mcp.properties.test.ts`, `service.properties.test.ts`, `cloud-runner.properties.test.ts`, and store property tests.
 
 Hand-written unit tests complement properties in `src/workflow.test.ts`.

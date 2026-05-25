@@ -17,7 +17,7 @@ Run locally: `cd packages/cli && npx tsx src/bin.ts <subcommand>`.
 
 ## How it composes
 
-Depends on `@ship/core` for `ShipService` and default wiring, `@ship/mcp` for input validation schemas, and re-exports boundary types from core so callers need not import `@ship/mcp` directly. Cursor execution flows through core → `@ship/cursor-runner`; persistence through core → `@ship/store`. Domain shapes come from `@ship/workflow`.
+Depends on `@ship/core` for `ShipService` and default wiring, `@ship/mcp` for input validation schemas (`ShipInput`, `cloudRunSpecSchema`), and re-exports boundary types from core where convenient. Cursor execution flows through core → `@ship/cursor-runner`; persistence through core → `@ship/store`. Domain shapes come from `@ship/workflow`.
 
 The MCP server (`@ship/mcp-server`) exposes the same service surface asynchronously via `startShip`; the CLI intentionally stays blocking for terminal ergonomics.
 

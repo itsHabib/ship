@@ -1,6 +1,6 @@
 # Ship
 
-Repo-native dev-workflow MCP toolkit. Ship hands a task doc to a Cursor agent (local worktree or cloud), persists workflow state in SQLite, and exposes inspect/cancel/resume verbs over MCP. The repo dogfoods itself — feature work lands via `mcp__ship__ship` against task docs in worktrees.
+Repo-native dev-workflow MCP toolkit. Ship hands a task doc to a Cursor agent (local worktree or cloud), persists workflow state in SQLite, and exposes inspect/cancel verbs over MCP. Cloud-run resume happens at process startup inside `@ship/core`, not as an MCP tool. The repo dogfoods itself — feature work lands via `mcp__ship__ship` against task docs in worktrees.
 
 ## Status
 

@@ -40,4 +40,4 @@ Replace this package to move off SQLite — Postgres, libsql, or an external wor
 pnpm --filter @ship/store test
 ```
 
-Property tests in `src/cursor-runs.properties.test.ts` cover resumable-run query invariants. Tests use `:memory:` — no filesystem cleanup.
+Property tests in `src/cursor-runs.properties.test.ts` and `src/workflow-runs.properties.test.ts` cover resumable-run query and list-filter invariants. Tests use `:memory:` — no filesystem cleanup.

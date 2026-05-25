@@ -10,7 +10,7 @@ Dev-only test substrate for the Ship monorepo. Provides in-memory SQLite stores,
 - **`createServiceFromHarness(harness)`** — returns a wired `ShipService` (`ServiceBundle`).
 - **`createTestClock()`** — controllable `Date.now` for timeout/resume tests.
 - **Fixtures** — `sampleTaskDoc`, `sampleWorktree`, `samplePolicy`, factory helpers for workflow/phase/cursor-run inputs.
-- **`waitForTerminalRun(caller, workflowRunId)`** — polls MCP-style until a run reaches terminal state (used in scenario tests).
+- **`waitForTerminalRun(client, workflowRunId)`** — polls MCP-style until a run reaches terminal state (used in scenario tests).
 
 Scenario tests live in `scenarios/*.scenario.test.ts` (happy path, cancel mid-flight, cloud resume, list filters).
 

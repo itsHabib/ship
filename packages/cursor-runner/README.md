@@ -28,4 +28,4 @@ Replace this package to change the agent runtime — Claude Code SDK, a subproce
 pnpm --filter @ship/cursor-runner test
 ```
 
-Set `CURSOR_API_KEY` for live SDK calls in manual runs. All unit tests use `FakeCursorRunner` or harness wiring — no keys required in CI.
+Property tests in `src/cloud-runner.properties.test.ts` and `src/_shared.properties.test.ts` cover cloud-spec and shared runner invariants. Set `CURSOR_API_KEY` for live SDK calls in manual runs. All unit tests use `FakeCursorRunner` or harness wiring — no keys required in CI.
