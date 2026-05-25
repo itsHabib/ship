@@ -112,12 +112,21 @@ importers:
       '@ship/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@stryker-mutator/core':
+        specifier: 9.6.1
+        version: 9.6.1(@types/node@22.19.17)
+      '@stryker-mutator/vitest-runner':
+        specifier: 9.6.1
+        version: 9.6.1(@stryker-mutator/core@9.6.1(@types/node@22.19.17))(vitest@2.1.9(@types/node@22.19.17))
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
       tsx:
         specifier: ^4.19.0
         version: 4.21.0
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.19.17)
 
   packages/core:
     dependencies:
@@ -165,6 +174,15 @@ importers:
       '@fast-check/vitest':
         specifier: 0.3.0
         version: 0.3.0(vitest@2.1.9(@types/node@22.19.17))
+      '@stryker-mutator/core':
+        specifier: 9.6.1
+        version: 9.6.1(@types/node@22.19.17)
+      '@stryker-mutator/vitest-runner':
+        specifier: 9.6.1
+        version: 9.6.1(@stryker-mutator/core@9.6.1(@types/node@22.19.17))(vitest@2.1.9(@types/node@22.19.17))
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.19.17)
 
   packages/mcp:
     dependencies:
@@ -178,6 +196,15 @@ importers:
       '@fast-check/vitest':
         specifier: 0.3.0
         version: 0.3.0(vitest@2.1.9(@types/node@22.19.17))
+      '@stryker-mutator/core':
+        specifier: 9.6.1
+        version: 9.6.1(@types/node@22.19.17)
+      '@stryker-mutator/vitest-runner':
+        specifier: 9.6.1
+        version: 9.6.1(@stryker-mutator/core@9.6.1(@types/node@22.19.17))(vitest@2.1.9(@types/node@22.19.17))
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.19.17)
 
   packages/mcp-server:
     dependencies:
@@ -206,12 +233,21 @@ importers:
       '@ship/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@stryker-mutator/core':
+        specifier: 9.6.1
+        version: 9.6.1(@types/node@22.19.17)
+      '@stryker-mutator/vitest-runner':
+        specifier: 9.6.1
+        version: 9.6.1(@stryker-mutator/core@9.6.1(@types/node@22.19.17))(vitest@2.1.9(@types/node@22.19.17))
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
       tsx:
         specifier: ^4.19.0
         version: 4.21.0
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.19.17)
 
   packages/store:
     dependencies:
@@ -225,9 +261,18 @@ importers:
       '@fast-check/vitest':
         specifier: 0.3.0
         version: 0.3.0(vitest@2.1.9(@types/node@22.19.17))
+      '@stryker-mutator/core':
+        specifier: 9.6.1
+        version: 9.6.1(@types/node@22.19.17)
+      '@stryker-mutator/vitest-runner':
+        specifier: 9.6.1
+        version: 9.6.1(@stryker-mutator/core@9.6.1(@types/node@22.19.17))(vitest@2.1.9(@types/node@22.19.17))
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.19.17)
 
   packages/test-harness:
     dependencies:
@@ -256,6 +301,15 @@ importers:
       '@fast-check/vitest':
         specifier: 0.3.0
         version: 0.3.0(vitest@2.1.9(@types/node@22.19.17))
+      '@stryker-mutator/core':
+        specifier: 9.6.1
+        version: 9.6.1(@types/node@22.19.17)
+      '@stryker-mutator/vitest-runner':
+        specifier: 9.6.1
+        version: 9.6.1(@stryker-mutator/core@9.6.1(@types/node@22.19.17))(vitest@2.1.9(@types/node@22.19.17))
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.19.17)
 
 packages:
 
