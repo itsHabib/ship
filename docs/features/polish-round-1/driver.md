@@ -14,7 +14,7 @@ batches:
   - id: 1
     label: parallel-safe — mutation + property tracks
     depends_on: []
-    status: pending
+    status: done
     streams:
       - task_id: tsk_01KSE9N9H9K1JMV4EJXAHX4WE8
         task_slug: polish-1-mutation-track
@@ -30,7 +30,10 @@ batches:
           - packages/store/stryker.conf.json        # NEW
           - packages/workflow/stryker.conf.json     # NEW
           - README.md                               # 1-line addition only
-        status: pending
+        status: done
+        pr_number: 87
+        merge_commit: 0894d5054382eadb1779b37d4253f4e8b4aa8335
+        merged_at: 2026-05-25T03:02:42Z
       - task_id: tsk_01KSE9NXBMRKRXZFHN68TKJS61
         task_slug: polish-1-property-track
         spec_path: docs/features/polish-round-1/polish-1-property-track.md
@@ -44,12 +47,15 @@ batches:
           - packages/core/src/service.properties.test.ts             # NEW
           - packages/mcp/src/mcp.properties.test.ts                  # NEW
           # potentially packages/*/package.json if fast-check needs hoisting
-        status: pending
+        status: done
+        pr_number: 86
+        merge_commit: 62187f3449336c2f2e35ac86b80eb203251b2fb5
+        merged_at: 2026-05-25T03:18:49Z
 
   - id: 2
     label: after batch 1 — README rewrite
     depends_on: [1]
-    status: pending
+    status: done
     streams:
       - task_id: tsk_01KSE9PJCQS10J2SENCC1MNBPM
         task_slug: polish-1-readme-track
@@ -65,7 +71,10 @@ batches:
           - packages/test-harness/README.md        # NEW
           - packages/core/README.md                # refresh
           - packages/workflow/README.md            # refresh
-        status: pending
+        status: done
+        pr_number: 88
+        merge_commit: 37706e295a337196c4cf492a29f5fa0a12f27855
+        merged_at: 2026-05-25T03:39:05Z
 
 conflict_notes:
   - kind: file_overlap
