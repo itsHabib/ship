@@ -8,7 +8,7 @@ Workflow orchestration — `ShipService`, artifact I/O (NDJSON events, rendered 
 
 **Service**
 
-- **`createShipService(deps, config)`** / **`ShipService`** — main orchestrator.
+- **`createShipService(deps)`** / **`ShipService`** — main orchestrator. `deps: ShipServiceDeps` bundles store, cursor runner, fs, clock, ids, and config; returns a `ShipService`.
 - **`ship(input)`** — blocking implement run (CLI path); waits for terminal state, returns `ShipOutput`.
 - **`startShip(input)`** — async MCP kickoff (V2 phase 01): registers active run, returns `{ workflowRunId, status: "running" }` immediately, continues in background.
 - **`resumeOrphanedRuns()`** — on startup, re-attaches cloud cursor rows from `store.listResumableCloudCursorRuns()` via `CloudCursorRunner.attach` (V2 phase 08).
@@ -18,7 +18,7 @@ Workflow orchestration — `ShipService`, artifact I/O (NDJSON events, rendered 
 **Failure diagnostics (PR #82)**
 
 - Terminal failures walk the `Error.cause` chain (max depth 10) into a structured **`errorChain`** on persisted rows and `ShipOutput`.
-- **`safeStringifyFailureResult`** guards `result.json` against BigInt, circular refs, and non-JSON values.
+- `result.json` is guarded against BigInt, circular refs, and non-JSON values (internal serializer — no public symbol, but the contract holds).
 
 **Wiring & artifacts**
 

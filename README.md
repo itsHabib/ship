@@ -23,7 +23,7 @@ make check   # typecheck + lint + format-check + test (604+ L1/L2 tests, no API 
 4. Poll terminal: `mcp__ship__get_workflow_run { workflowRunId }` or read `ship://runs/{id}`.
 5. Commit, push, open PR with `gh pr create`.
 
-CLI equivalent (blocking): `cd packages/cli && npx tsx src/bin.ts ship <docPath>`.
+CLI equivalent (blocking): `cd packages/cli && npx tsx src/bin.ts ship <docPath> --repo <name>` (`--repo` is required; `--workdir` / `--branch` are optional).
 
 ## Architecture
 
