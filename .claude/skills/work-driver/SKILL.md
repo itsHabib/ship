@@ -32,10 +32,10 @@ Anti-signal: design-only work where Ship doesn't fire (the design doc IS the del
   - Otherwise → **ad-hoc form** (one or more spec docs, one stream each).
 - `N` (optional, ad-hoc only): stream count. If omitted, infer from the number of doc paths supplied. Ignored in manifest form (stream count comes from the manifest).
 - `--batch N` (manifest form only): run only that batch from the manifest. Useful for operator-paced runs or recovering from a partial failure.
-- `--runtime local|cloud` (optional, default `local`): which Ship runtime to fire each stream against.
+- `--runtime local|cloud` (optional, default `cloud`): which Ship runtime to fire each stream against. **Cloud-first is the default** — the cloud runner is the dogfood target and the path that gets exercised on every fresh PR; local stays available for fast-iteration or offline work, but you opt in explicitly with `--runtime local`.
   - Ad-hoc form: applies to every stream in the invocation.
   - Manifest form: overrides the per-stream `runtime` field in the manifest when present (use sparingly; the manifest is usually authoritative). Manifest form admits **mixed-runtime batches** — some streams `runtime: local`, others `runtime: cloud` within the same batch.
-  - `cloud` skips local-only steps (Step 1 pre-flight, Step 2 worktree creation, Step 4's local commit / format / push). See § "Cloud-runtime variant" below for the full delta.
+  - `cloud` skips local-only steps (Step 1 pre-flight, Step 2 worktree creation, Step 4's local commit / format / push). See § "Local-runtime variant" below for the full delta.
 
 ### Manifest form (the common case after `/work-driver-prep`)
 
@@ -106,7 +106,7 @@ If autodetection in Step Arguments identified the input as a manifest (single `.
 For each stream `i` of `N`:
 
 1. **Dossier task**: `mcp__dossier__task_create { project: "<slug>", phase: "<phase>", slug: "impl-<i>-...", title, body }`.
-2. **Worktree** (local-runtime only): invoke `/worktree-add <branch-name>` (the `/worktree-*` skill family — replaces the deprecated `mcp__tower__add_worktree`). Creates `<repo>/.claude/worktrees/<branch>/` and returns path + branch. **Skip for `runtime: cloud`** — cursor cloud's VM is the workspace; there's no local worktree to create. See § "Cloud-runtime variant" for the full delta.
+2. **Worktree** (local-runtime only): invoke `/worktree-add <branch-name>` (the `/worktree-*` skill family — replaces the deprecated `mcp__tower__add_worktree`). Creates `<repo>/.claude/worktrees/<branch>/` and returns path + branch. **Skip for `runtime: cloud`** — cursor cloud's VM is the workspace; there's no local worktree to create. See § "Local-runtime variant" for the full delta.
 3. **Ship**: `mcp__ship__ship { workdir, docPath, repo, branch, runtime?, cloud? }` — V2-async, returns `{ workflowRunId, status: "running" }` immediately. For `runtime: cloud` pass `cloud: { repos: [{ url }], autoCreatePR: true, workOnCurrentBranch: false }`. As of phase 09, `workdir` becomes optional + `docPath` no longer needs to live inside `workdir` for cloud calls; pre-phase-09 you still need to satisfy those local-first guards (pass any valid local checkout path + put the doc inside it).
 
 **Recovery**: if any `mcp__ship__ship` call times out at transport layer, the run still persisted server-side. Recover the ID via `mcp__ship__list_workflow_runs { status: ["pending", "running"], limit: N }` and match by `docPath`.
@@ -204,9 +204,9 @@ For each completed stream:
    - **Cursor leaves scratch in the worktree root** — typically a `task-doc.md` (and sometimes a `pr-c-task.md` or similar). `git worktree remove` refuses with "contains modified or untracked files". `/worktree-remove` handles dirty state interactively (commit-WIP / stash / discard); for blind force-remove, `rm <worktree>/task-doc.md` first and re-run.
    - **Windows long-path gotcha**: `node_modules` can hit Windows' 260-char path limit. If removal fails with "Filename too long" or "Function not implemented", `Remove-Item -Recurse -Force -LiteralPath <worktree>/node_modules` first (PowerShell with long-path support) then retry; if even that fails, drop to `cmd /c "rmdir /s /q <worktree>"`.
 
-## Cloud-runtime variant (`--runtime cloud`)
+## Local-runtime variant (`--runtime local`)
 
-Concise summary of which steps differ from the local default:
+Cloud is the default (see § "Arguments"). When the operator explicitly passes `--runtime local`, the steps below replace the cloud-runtime baseline. The same table covers the cloud → local delta in the other direction; read whichever column matches your invocation.
 
 | Step | Local | Cloud |
 |---|---|---|
