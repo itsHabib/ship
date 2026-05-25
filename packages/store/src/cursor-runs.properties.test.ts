@@ -106,12 +106,10 @@ describe("cursor-runs properties (fast-check)", () => {
     expect(store.getCursorRun(cursorRunId)).toEqual(recorded);
   });
 
-  test.prop([workflowStatusArbitrary, cursorTerminalArbitrary, fc.boolean()], {
-    numRuns: ITER,
-  })(
-    "C2: listResumableCloudCursorRuns excludes terminal cursor or workflow rows",
-    (workflowStatus, cursorTerminal, includeRunId) => {
-      const wfId = seedWorkflow(workflowStatus);
+  test.prop([cursorTerminalArbitrary, fc.boolean()], { numRuns: ITER })(
+    "C2: listResumableCloudCursorRuns excludes terminal cursor rows",
+    (_cursorTerminal, includeRunId) => {
+      const wfId = seedWorkflow();
       const cursorRunId = newCursorRunId();
       store.recordCursorRun({
         agentId: "bc-resume",
@@ -124,7 +122,7 @@ describe("cursor-runs properties (fast-check)", () => {
 
       store.updateCursorRunStatus(cursorRunId, {
         endedAt: currentNow,
-        status: cursorTerminal,
+        status: _cursorTerminal,
         durationMs: 1,
       });
 
@@ -140,7 +138,7 @@ describe("cursor-runs properties (fast-check)", () => {
   );
 
   test.prop([workflowStatusArbitrary, fc.boolean()], { numRuns: ITER })(
-    "C3: resumable cloud rows appear iff cursor is running and run_id is persisted",
+    "C3: resumable cloud rows appear iff cursor is running and run_id is persisted (any workflow status)",
     (workflowStatus, includeRunId) => {
       const wfId = seedWorkflow(workflowStatus);
       const cursorRunId = newCursorRunId();
@@ -155,6 +153,25 @@ describe("cursor-runs properties (fast-check)", () => {
 
       const resumable = store.listResumableCloudCursorRuns();
       expect(resumable.some((r) => r.id === cursorRunId)).toBe(includeRunId);
+    },
+  );
+
+  test.prop([fc.constantFrom("succeeded", "failed", "cancelled" as const)], { numRuns: ITER })(
+    "C4: stale running cloud cursor on terminal workflow remains listable for core cleanup",
+    (terminalWorkflowStatus) => {
+      const wfId = seedWorkflow(terminalWorkflowStatus);
+      const cursorRunId = newCursorRunId();
+      store.recordCursorRun({
+        agentId: "bc-stale",
+        artifactsDir: "/runs/stale",
+        id: cursorRunId,
+        runId: "run-stale-001",
+        runtime: "cloud",
+        workflowRunId: wfId,
+      });
+
+      const resumable = store.listResumableCloudCursorRuns();
+      expect(resumable.some((r) => r.id === cursorRunId)).toBe(true);
     },
   );
 });

@@ -7,7 +7,7 @@ import { describe, expect } from "vitest";
 
 import type { CursorRunInput } from "./runner.js";
 
-import { modelArgFromInput } from "./cloud-runner.js";
+import { modelArgFromInput } from "./_shared.js";
 
 function readPositiveIntEnv(key: string, fallback: number): number {
   const raw = process.env[key];
