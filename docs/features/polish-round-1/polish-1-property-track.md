@@ -87,11 +87,13 @@ Reuse the existing `createHarness` pattern (`:memory:` store + `FakeCursorRunner
 
 ## Test plan
 
-- `pnpm --filter @ship/store test --run properties` — runs the two new property test files
-- `pnpm --filter @ship/cursor-runner test --run properties` — runs the two new property test files
-- `pnpm --filter @ship/workflow test --run properties` — the extended properties file
-- `pnpm --filter @ship/core test --run properties` — the new properties file
-- `pnpm --filter @ship/mcp test --run properties` — the new properties file
+- `pnpm --filter @ship/store test -- properties` — Vitest filename filter on "properties", runs the two new files
+- `pnpm --filter @ship/cursor-runner test -- properties` — runs the two new files
+- `pnpm --filter @ship/workflow test -- properties` — the extended properties file
+- `pnpm --filter @ship/core test -- properties` — the new properties file
+- `pnpm --filter @ship/mcp test -- properties` — the new properties file
+
+(The package `test` scripts run `vitest run`; the `--` forwards `properties` as a positional filename pattern to Vitest. If a package's script doesn't already include `run`, use `pnpm --filter <pkg> exec vitest run properties` instead.)
 
 Spot-check determinism: run each property file twice with the same seed env, confirm identical assertion counts.
 

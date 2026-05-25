@@ -77,8 +77,8 @@ Files to create:
 
 ## Test plan
 
-- Manual grep: `grep -r "open_pr\|pre-implementation\|Phase 1 only" README.md packages/*/README.md` returns nothing.
-- Manual grep: `grep -rL "What .* owns\|Public surface\|How it composes" packages/*/README.md` returns nothing (every package README has the section headers).
+- Manual grep: `grep -rE "open_pr|pre-implementation|Phase 1 only" README.md packages/*/README.md` returns nothing. (Use `-E` for portable alternation across GNU + BSD grep.)
+- Manual grep: `grep -rLE "What .* owns|Public surface|How it composes" packages/*/README.md` returns nothing (every package README has the section headers).
 - `markdown-link-check` (if available) on every README, otherwise spot-check key cross-links by hand.
 
 ## Non-goals
