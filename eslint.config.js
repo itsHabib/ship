@@ -122,7 +122,7 @@ export default tseslint.config(
   },
 
   {
-    files: ["**/transitions.properties.test.ts"],
+    files: ["**/*.properties.test.ts"],
     rules: {
       // `test.prop` from `@fast-check/vitest` is not counted as a test by SonarJS.
       "sonarjs/no-empty-test-file": "off",

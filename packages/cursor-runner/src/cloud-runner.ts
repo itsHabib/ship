@@ -80,7 +80,7 @@ function mapAgentNotFoundError(
   return undefined;
 }
 
-function modelArgFromInput(input: CursorRunInput): SdkModelSelection {
+export function modelArgFromInput(input: CursorRunInput): SdkModelSelection {
   // Cast needed because workflow's ModelSelection accepts both string and
   // boolean param values, but the SDK's SdkModelSelection narrows to its
   // own ModelParameter shape. Empirically Cursor's cloud API REJECTS
