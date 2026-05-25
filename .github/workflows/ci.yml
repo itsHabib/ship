@@ -30,12 +30,11 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Verify no ignored build scripts
         shell: bash
         run: |
-          if pnpm install --frozen-lockfile 2>&1 | grep -i "ignored build scripts"; then
+          set -o pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee install.log
+          if grep -i "ignored build scripts" install.log; then
             echo "::error::pnpm reported ignored build scripts. Add to pnpm.onlyBuiltDependencies."
             exit 1
           fi
