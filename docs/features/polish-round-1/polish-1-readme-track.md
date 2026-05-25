@@ -77,8 +77,18 @@ Files to create:
 
 ## Test plan
 
-- Manual grep: `grep -rE "open_pr|pre-implementation|Phase 1 only" README.md packages/*/README.md` returns nothing. (Use `-E` for portable alternation across GNU + BSD grep.)
-- Manual grep: `grep -rLE "What .* owns|Public surface|How it composes" packages/*/README.md` returns nothing (every package README has the section headers).
+- Stale-content check: `grep -rE "open_pr|pre-implementation|Phase 1 only" README.md packages/*/README.md` returns nothing. (Use `-E` for portable alternation across GNU + BSD grep.)
+- **Per-header section check** (every package README must contain ALL required headers, not just one). `grep -L` against an alternation pattern would pass a README containing only one header, so check each header independently:
+  ```bash
+  for header in "What .* owns" "Public surface" "How it composes" "When to swap" "Develop"; do
+    missing=$(grep -LE "$header" packages/*/README.md)
+    if [ -n "$missing" ]; then
+      echo "MISSING '$header' in:"; echo "$missing"
+    fi
+  done
+  ```
+  Acceptance: zero output across all 5 headers.
+- `markdown-link-check` (if available) on every README, otherwise spot-check key cross-links by hand.
 - `markdown-link-check` (if available) on every README, otherwise spot-check key cross-links by hand.
 
 ## Non-goals

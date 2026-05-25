@@ -83,6 +83,7 @@ Add one line to top-level `README.md`'s "Develop" section pointing at `gh workfl
 
 ## Test plan
 
+- `pnpm --filter @ship/core exec stryker run` — re-verify the existing core mutation path still finishes end-to-end after the CI reorg (acceptance covers all 7 packages, not just the 6 new ones)
 - `pnpm --filter @ship/cli exec stryker run` — end-to-end run, captures survivor count
 - `pnpm --filter @ship/cursor-runner exec stryker run` — same
 - `pnpm --filter @ship/mcp exec stryker run` — same
