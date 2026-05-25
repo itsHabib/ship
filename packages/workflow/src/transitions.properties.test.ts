@@ -10,7 +10,9 @@ import type { Phase, PhaseKind, PhaseStatus, WorkflowStatus } from "./workflow.j
 
 import {
   canTransition,
+  cursorRunRuntimeSchema,
   isTerminal,
+  modelSelectionSchema,
   phaseKindSchema,
   phaseSchema,
   phaseStatusSchema,
@@ -163,6 +165,44 @@ describe("transition properties (fast-check)", () => {
       const raw: unknown = JSON.parse(JSON.stringify(once));
       const twice = phaseSchema.parse(raw);
       expect(twice).toEqual(once);
+    },
+  );
+
+  test.prop([fc.string()], { numRuns: ITER })(
+    "I5: isTerminal is true iff status is succeeded, failed, or cancelled",
+    (status) => {
+      const terminal = status === "succeeded" || status === "failed" || status === "cancelled";
+      expect(isTerminal(status as WorkflowStatus)).toBe(terminal);
+    },
+  );
+
+  test.prop([kindArbitrary], { numRuns: ITER })(
+    "I6: phaseKindSchema round-trips via JSON (including open_pr tombstone)",
+    (kind) => {
+      const raw: unknown = JSON.parse(JSON.stringify(kind));
+      expect(phaseKindSchema.parse(raw)).toBe(kind);
+      expect(phaseKindSchema.parse(kind)).toBe(kind);
+    },
+  );
+
+  test.prop([fc.constantFrom("local", "cloud"), fc.string()], { numRuns: ITER })(
+    "I7: cursorRunRuntimeSchema accepts local/cloud and rejects other strings",
+    (valid, other) => {
+      expect(cursorRunRuntimeSchema.parse(valid)).toBe(valid);
+      if (other !== "local" && other !== "cloud") {
+        expect(cursorRunRuntimeSchema.safeParse(other).success).toBe(false);
+      }
+    },
+  );
+
+  test.prop([fc.string({ minLength: 1 }), fc.boolean()], { numRuns: ITER })(
+    "I8: modelSelectionSchema wire round-trip omits JSON-inexpressible optional keys",
+    (modelId, includeParams) => {
+      const value = includeParams
+        ? { id: modelId, params: [{ id: "fast", value: true as const }] }
+        : { id: modelId };
+      const wire: unknown = JSON.parse(JSON.stringify(value));
+      expect(modelSelectionSchema.parse(wire)).toEqual(modelSelectionSchema.parse(value));
     },
   );
 });

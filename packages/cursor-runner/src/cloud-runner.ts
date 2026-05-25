@@ -4,14 +4,7 @@
  * pipeline shape; see phase 04 design (`04-cursor-cloud-runner.md`).
  */
 
-import type {
-  CloudAgentOptions,
-  Run,
-  RunResult,
-  SDKAgent,
-  SDKMessage,
-  ModelSelection as SdkModelSelection,
-} from "@cursor/sdk";
+import type { CloudAgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
 
 import {
   Agent,
@@ -30,7 +23,12 @@ import type {
   CursorRunResult,
 } from "./runner.js";
 
-import { attachInputAsRunInput, mapRunResult, mapTerminalResult } from "./_shared.js";
+import {
+  attachInputAsRunInput,
+  mapRunResult,
+  mapTerminalResult,
+  modelArgFromInput,
+} from "./_shared.js";
 import { cloudDebugLog } from "./debug.js";
 import {
   CursorAgentNotFoundError,
@@ -78,23 +76,6 @@ function mapAgentNotFoundError(
     });
   }
   return undefined;
-}
-
-function modelArgFromInput(input: CursorRunInput): SdkModelSelection {
-  // Cast needed because workflow's ModelSelection accepts both string and
-  // boolean param values, but the SDK's SdkModelSelection narrows to its
-  // own ModelParameter shape. Empirically Cursor's cloud API REJECTS
-  // boolean values with a 400 "[validation_error] Expected string,
-  // received boolean" — so coerce booleans to their string form before
-  // calling the SDK. The structural overlap is asserted by
-  // model-selection-compat.test.ts.
-  const params = input.model.params?.map((p) => ({
-    id: p.id,
-    value: typeof p.value === "boolean" ? String(p.value) : p.value,
-  }));
-  const out: SdkModelSelection = { id: input.model.id };
-  if (params !== undefined) out.params = params;
-  return out;
 }
 
 function cloudAgentOptions(spec: CloudRunSpec): CloudAgentOptions {

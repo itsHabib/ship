@@ -19,6 +19,7 @@
     "better-sqlite3": "^12.9.0"
   },
   "devDependencies": {
+    "@fast-check/vitest": "0.3.0",
     "@stryker-mutator/core": "9.6.1",
     "@stryker-mutator/vitest-runner": "9.6.1",
     "@types/better-sqlite3": "^7.6.13",

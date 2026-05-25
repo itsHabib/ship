@@ -146,6 +146,9 @@ importers:
         specifier: workspace:*
         version: link:../workflow
     devDependencies:
+      '@fast-check/vitest':
+        specifier: 0.3.0
+        version: 0.3.0(vitest@2.1.9(@types/node@22.19.17))
       '@ship/test-harness':
         specifier: workspace:*
         version: link:../test-harness
@@ -168,6 +171,9 @@ importers:
         specifier: workspace:*
         version: link:../workflow
     devDependencies:
+      '@fast-check/vitest':
+        specifier: 0.3.0
+        version: 0.3.0(vitest@2.1.9(@types/node@22.19.17))
       '@stryker-mutator/core':
         specifier: 9.6.1
         version: 9.6.1(@types/node@22.19.17)
@@ -187,6 +193,9 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
     devDependencies:
+      '@fast-check/vitest':
+        specifier: 0.3.0
+        version: 0.3.0(vitest@2.1.9(@types/node@22.19.17))
       '@stryker-mutator/core':
         specifier: 9.6.1
         version: 9.6.1(@types/node@22.19.17)
@@ -249,6 +258,9 @@ importers:
         specifier: ^12.9.0
         version: 12.9.0
     devDependencies:
+      '@fast-check/vitest':
+        specifier: 0.3.0
+        version: 0.3.0(vitest@2.1.9(@types/node@22.19.17))
       '@stryker-mutator/core':
         specifier: 9.6.1
         version: 9.6.1(@types/node@22.19.17)

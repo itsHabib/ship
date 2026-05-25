@@ -3,7 +3,7 @@
  * runners (phase 04 — ED-1).
  */
 
-import type { RunResult } from "@cursor/sdk";
+import type { RunResult, ModelSelection as SdkModelSelection } from "@cursor/sdk";
 
 import type {
   CloudRunSpec,
@@ -37,6 +37,17 @@ export function attachInputAsRunInput(
     ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
     ...(input.signal !== undefined && { signal: input.signal }),
   };
+}
+
+/** Coerce workflow model params to SDK string values (cloud API rejects booleans). */
+export function modelArgFromInput(input: CursorRunInput): SdkModelSelection {
+  const params = input.model.params?.map((p) => ({
+    id: p.id,
+    value: typeof p.value === "boolean" ? String(p.value) : p.value,
+  }));
+  const out: SdkModelSelection = { id: input.model.id };
+  if (params !== undefined) out.params = params;
+  return out;
 }
 
 // Cloud spec is forwarded by the cloud runner only — local-runner deliberately
