@@ -20,6 +20,7 @@ make check        # typecheck + lint + format-check + test
 make test-watch
 make lint-fix
 make format
+gh workflow run mutation.yml   # on-demand Stryker across all shipping packages
 ```
 
 Or via pnpm directly:

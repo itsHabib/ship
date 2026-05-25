@@ -46,8 +46,8 @@ credentials.json
 coverage/
 
 # Stryker mutation reports (regenerated locally / in CI artifacts)
-packages/core/reports/
-packages/core/.stryker-tmp/
+packages/*/reports/
+packages/*/.stryker-tmp/
 
 # Claude Code (CLI harness state — local only, except .claude/skills/
 # which holds project-local skills that should be versioned with the repo).
