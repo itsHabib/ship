@@ -113,6 +113,19 @@ async function readResultJson(fs: MemoryShipFs, path: string): Promise<ParsedFai
   return JSON.parse(raw) as ParsedFailureResult;
 }
 
+async function waitForFirstRunId(store: Store, timeoutMs = 1000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const runs = store.listRuns({ limit: 1 });
+    const id = runs[0]?.id;
+    if (id !== undefined) return id;
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+  throw new Error("waitForFirstRunId: no run appeared within timeout");
+}
+
 const shipInputArbitrary: fc.Arbitrary<ShipInput> = fc.record({
   workdir: fc.constant(WORKDIR),
   repo: fc.constant("ship"),
@@ -149,14 +162,8 @@ describe("ShipService properties (fast-check)", () => {
       const shipPromise = h.service.ship(input);
 
       if (doCancel) {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 20);
-        });
-        const runs = h.store.listRuns({ limit: 5 });
-        const id = runs[0]?.id;
-        if (id !== undefined) {
-          await h.service.cancelRun(id);
-        }
+        const id = await waitForFirstRunId(h.store);
+        await h.service.cancelRun(id);
       }
 
       const out = await shipPromise;
@@ -178,14 +185,7 @@ describe("ShipService properties (fast-check)", () => {
       });
 
       const shipPromise = h.service.ship(input);
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 30);
-      });
-
-      const runs = h.store.listRuns({ limit: 5 });
-      const id = runs[0]?.id;
-      expect(id).toBeDefined();
-      if (id === undefined) return;
+      const id = await waitForFirstRunId(h.store);
 
       const first = await h.service.cancelRun(id);
       const second = await h.service.cancelRun(id);
@@ -214,15 +214,19 @@ describe("ShipService properties (fast-check)", () => {
         return origWriteFile(path, data);
       };
 
-      const out = await h.service.ship({
-        workdir: WORKDIR,
-        repo: "ship",
-        docPath: "docs.md",
-      });
+      try {
+        const out = await h.service.ship({
+          workdir: WORKDIR,
+          repo: "ship",
+          docPath: "docs.md",
+        });
 
-      expect(out.status).toBe("failed");
-      const parsed = await readResultJson(h.fs, out.artifacts.resultPath);
-      expect(parsed.errorChain.length).toBe(Math.min(depth + 1, 10));
+        expect(out.status).toBe("failed");
+        const parsed = await readResultJson(h.fs, out.artifacts.resultPath);
+        expect(parsed.errorChain.length).toBe(Math.min(depth + 1, 10));
+      } finally {
+        h.fs.writeFile = origWriteFile;
+      }
     },
   );
 });

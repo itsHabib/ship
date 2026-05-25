@@ -108,7 +108,7 @@ describe("cursor-runs properties (fast-check)", () => {
 
   test.prop([cursorTerminalArbitrary, fc.boolean()], { numRuns: ITER })(
     "C2: listResumableCloudCursorRuns excludes terminal cursor rows",
-    (_cursorTerminal, includeRunId) => {
+    (cursorTerminal, includeRunId) => {
       const wfId = seedWorkflow();
       const cursorRunId = newCursorRunId();
       store.recordCursorRun({
@@ -122,7 +122,7 @@ describe("cursor-runs properties (fast-check)", () => {
 
       store.updateCursorRunStatus(cursorRunId, {
         endedAt: currentNow,
-        status: _cursorTerminal,
+        status: cursorTerminal,
         durationMs: 1,
       });
 
