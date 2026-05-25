@@ -1,25 +1,46 @@
 # `@ship/core`
 
-Workflow state machine, `ShipService`, and related Ship internals.
+## What this package owns
 
-## Mutation testing
+Workflow orchestration — `ShipService`, artifact I/O (NDJSON events, rendered prompt, `result.json`), and default production wiring consumed by `@ship/cli` and `@ship/mcp-server`. Owns the implement-phase state machine: validate input, record rows, launch cursor, finalize terminal state.
 
-This package runs [Stryker](https://stryker-mutator.io/) against Vitest to find test gaps (mutations that survive because no test fails).
+## Public surface
 
-**Local run** (from repo root):
+**Service**
+
+- **`createShipService(deps)`** / **`ShipService`** — main orchestrator. `deps: ShipServiceDeps` bundles store, cursor runner, fs, clock, ids, and config; returns a `ShipService`.
+- **`ship(input)`** — blocking implement run (CLI path); waits for terminal state, returns `ShipOutput`.
+- **`startShip(input)`** — async MCP kickoff (V2 phase 01): registers active run, returns `{ workflowRunId, status: "running" }` immediately, continues in background.
+- **`resumeOrphanedRuns()`** — on startup, re-attaches cloud cursor rows from `store.listResumableCloudCursorRuns()` via `CloudCursorRunner.attach` (V2 phase 08).
+- **`resumeReady()`** — await the eager startup resume sweep before accepting new work.
+- **`getRun` / `listRuns` / `cancelRun` / `drainBackground`** — inspect, filter, cancel, and flush in-flight continuations before `store.close()`.
+
+**Failure diagnostics (PR #82)**
+
+- Terminal failures walk the `Error.cause` chain (max depth 10) into a structured **`errorChain`** on persisted rows and `ShipOutput`.
+- `result.json` is guarded against BigInt, circular refs, and non-JSON values (internal serializer — no public symbol, but the contract holds).
+
+**Wiring & artifacts**
+
+- `createDefaultShipService`, `DEFAULT_MODEL`, `ShipServiceFactory`
+- `ShipFs`, artifact path helpers, `renderImplementationPrompt`, domain errors
+- Re-exports `ShipInput`, `ShipOutput`, `ListRunsFilter`, etc. so CLI/MCP-server avoid extra deps
+
+## How it composes
+
+Orchestrates `@ship/store` (persistence), `@ship/cursor-runner` (local + cloud agents), `@ship/workflow` (domain + transitions), and `@ship/mcp` (wire schemas). Does not import `@cursor/sdk` directly — ED-2 isolation keeps SDK usage in `cursor-runner`. Tests use `@ship/test-harness` for in-memory wiring.
+
+## When to swap it
+
+Core is the center of gravity. Replacing it means reimplementing the workflow state machine and artifact contract. Swapping `@ship/store` or `@ship/cursor-runner` is the intended seam — inject alternate `Store` or `CursorRunner` implementations via `ShipServiceDeps` without changing MCP or CLI surfaces.
+
+## Develop / test
 
 ```bash
-pnpm --filter @ship/core exec stryker run
+pnpm --filter @ship/core test
+pnpm --filter @ship/core exec stryker run   # mutation testing; reports under reports/mutation/
 ```
 
-Reports are written under `reports/mutation/` (open `mutation.html` in a browser; `mutation.json` is also emitted).
-
-Stryker’s default `@stryker-mutator/*` plugin glob does not resolve `@stryker-mutator/vitest-runner` under pnpm’s layout, so `stryker.conf.json` uses `appendPlugins` to load it explicitly.
-
-`stryker.conf.json` also sets `"inPlace": true` (no sandbox copy). The default sandbox mode breaks pnpm-workspace symlinks: `@ship/test-harness` resolves back to the *original* `@ship/core`, while tests in the sandboxed `src/` import from the *sandbox copy*. The two paths produce different class identities, so `instanceof` checks against errors thrown by harness-instantiated services fail. `inPlace: true` keeps a single source-of-truth on disk; Stryker stamps a backup under `.stryker-tmp/backup-*` and restores after the run.
-
-**CI:** Mutation testing runs on every push + PR as part of the standard `CI` workflow (`.github/workflows/ci.yml`), ubuntu-only (one OS is enough signal at this cost). Surviving mutants do NOT fail the build — `stryker.conf.json` sets `thresholds.break: null` so mutation runs are informational. Real test gaps surface in the HTML report and become chips per the protocol below.
-
-**Follow-up:** Review surviving mutants in the HTML report. Real gaps become work items (chips) with reproducer (mutator name + line). Deliberately ignored cases use `// @stryker-disable-next-line <mutator>` plus a `// reason:` line per repo comment convention.
+Stryker runs in-place (`stryker.conf.json` `"inPlace": true`) because pnpm workspace symlinks break sandbox `instanceof` checks against `@ship/test-harness`-thrown errors. CI runs mutation on ubuntu as informational signal (`thresholds.break: null`).
 
 Config: `stryker.conf.json`.
