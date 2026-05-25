@@ -40,5 +40,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify no ignored build scripts
+        run: |
+          if pnpm install --frozen-lockfile 2>&1 | grep -i "ignored build scripts"; then
+            echo "::error::pnpm reported ignored build scripts. Add to pnpm.onlyBuiltDependencies."
+            exit 1
+          fi
+
       - name: Mutation testing (@ship/${{ matrix.package }})
         run: pnpm --filter @ship/${{ matrix.package }} exec stryker run

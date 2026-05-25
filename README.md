@@ -20,8 +20,9 @@ make check        # typecheck + lint + format-check + test
 make test-watch
 make lint-fix
 make format
-gh workflow run mutation.yml   # on-demand Stryker across all shipping packages
 ```
+
+On-demand mutation testing across all shipping packages: `gh workflow run mutation.yml` (requires GitHub CLI auth).
 
 Or via pnpm directly:
 
