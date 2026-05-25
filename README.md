@@ -22,6 +22,8 @@ make lint-fix
 make format
 ```
 
+On-demand mutation testing across all shipping packages: `gh workflow run mutation.yml` (requires GitHub CLI auth).
+
 Or via pnpm directly:
 
 ```bash

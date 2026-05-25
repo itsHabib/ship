@@ -18,7 +18,10 @@
   },
   "devDependencies": {
     "@ship/test-harness": "workspace:*",
+    "@stryker-mutator/core": "9.6.1",
+    "@stryker-mutator/vitest-runner": "9.6.1",
     "@types/node": "^22.0.0",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "vitest": "2.1.9"
   }
 }

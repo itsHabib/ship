@@ -1,22 +1,30 @@
-name: CI
+name: Mutation testing
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  mutation:
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        package:
+          - core
+          - cli
+          - cursor-runner
+          - mcp
+          - mcp-server
+          - store
+          - workflow
     steps:
       - uses: actions/checkout@v4
 
@@ -39,17 +47,5 @@ jobs:
             exit 1
           fi
 
-      - name: Typecheck
-        run: pnpm run typecheck
-
-      - name: Lint
-        run: pnpm run lint
-
-      - name: Format check
-        run: pnpm run format:check
-
-      - name: Test
-        run: pnpm run test
-
-      - name: Coverage gates
-        run: pnpm run coverage
+      - name: Mutation testing (@ship/${{ matrix.package }})
+        run: pnpm --filter @ship/${{ matrix.package }} exec stryker run
