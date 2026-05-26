@@ -35,8 +35,10 @@ Thumbs.db
 .keys
 .keys.*
 *.key
+*.pem
 *.secret
 credentials.json
+secrets/
 # Vim undo files (e.g. `..keys.un~` for an edited `.keys` file would
 # otherwise leak partial credential content if accidentally staged).
 *.un~

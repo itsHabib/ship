@@ -1,8 +1,22 @@
 {
   "name": "ship",
   "private": true,
-  "version": "0.0.0",
-  "description": "Repo-native dev-workflow MCP toolkit. Pre-implementation.",
+  "version": "0.1.0",
+  "description": "Repo-native dev-workflow MCP toolkit. Drives Cursor agents against task docs and persists workflow state in SQLite — exposes inspect/cancel verbs over MCP.",
+  "license": "MIT",
+  "author": "Michael Habib <itshabib@users.noreply.github.com>",
+  "homepage": "https://github.com/itsHabib/ship#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itsHabib/ship.git"
+  },
+  "keywords": [
+    "mcp",
+    "cursor",
+    "workflow",
+    "dev-tooling",
+    "agents"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.0.0"

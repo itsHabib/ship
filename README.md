@@ -80,3 +80,7 @@ Cached external references sit at `docs/<topic>.md`. Test-layer taxonomy (L1–L
 ## Workbench
 
 Ship sits in a portfolio dev-workbench alongside dossier (project memory), huddle (multi-seat coordination), and `/worktree-*` skills. The **Dev workbench** section in [CLAUDE.md](CLAUDE.md) documents when to call each verb — use it as the operator reference for MCP tools and skills beyond Ship itself.
+
+## License
+
+Licensed under [MIT](LICENSE).
