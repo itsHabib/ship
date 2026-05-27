@@ -129,6 +129,22 @@ Takes a list of dossier tasks (or a phase slug) and emits one spec doc per task 
 
 **Pair with:** `/work-driver` (consumes the emitted manifest).
 
+### `/shipped` — retrospective recap of a chunk of work
+
+Backward-looking on what merged, forward-looking on what's available next. Pulls ground truth from a `/work-driver` manifest when one's present (`docs/features/*/driver.md` with `merged_at` in frontmatter), falls back to `gh pr list` / `git log --merges` / dossier `task_list` against a `--since` window otherwise. Output sections: `## Shipped` (merged PRs + weighted-LOC + dossier closures), `## What changed about main` (new capabilities the operator can reach today), `## Open` (todo / chips / stale in_progress), `## Next moves` (1-3 concrete recs).
+
+**Triggers:** "what just shipped", "what did we ship", "what merged today", "post-run summary", "what now", explicit `/shipped`.
+
+**Pair with:** `/work-driver` as the natural end-of-run recap. Distinct from `/status` — `/status` is in-flight; `/shipped` is retrospective on landed work.
+
+### `/status` — tight in-flight status update
+
+Four sections, hard 1-3 sentence cap each: `## What happened` (concrete outcomes since last update), `## What's next` (1-2 immediate moves), `## What I recommend` (one specific rec + reason), `## What I need from you` (blocking asks only). Skips empty sections rather than padding. Operator-facing, not process narration.
+
+**Triggers:** "give me an update", "status", "where are we", "sitrep", "summarize the situation", explicit `/status`.
+
+**Pair with:** `/shipped` for the post-run version. `/status` is the mid-flight ping; `/shipped` is the retrospective.
+
 ### `/worktree-*` — manage secondary git worktrees
 
 Thin skill family over plain `git worktree`. Use these instead of reaching for an MCP — they cover the verbs that mattered (add, list, remove, transfer, where) without an external state store. Default convention: branch name is user-chosen (no forced prefix); path is `<repo>/.claude/worktrees/<branch>/`.
