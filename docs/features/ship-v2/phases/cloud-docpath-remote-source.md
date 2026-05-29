@@ -52,7 +52,7 @@ The returned `ValidatedDoc` carries an optional **`content`**: set to the fetche
 ### F3 — Owner/repo/ref derivation
 
 - owner/repo parsed from `cloud.repos[0].url` (handles `https://github.com/<owner>/<repo>(.git)?`).
-- ref = `cloud.repos[0].startingRef` when set, else the repo's default branch (one octokit `repos.get` call, cached per run), NOT the agent's new working branch (the doc must pre-exist at the ref the agent clones from).
+- ref precedence: `cloud.repos[0].startingRef` when set → else, when the call attaches to an existing PR (`cloud.repos[0].prUrl` set and/or `workOnCurrentBranch: true`), the **PR head branch** (resolved from the prUrl) → else the repo's default branch (one octokit `repos.get`, cached per run). Never the agent's *new* working branch. Cycle-2 catch: `cloud-runner.ts` forwards both `prUrl` and `workOnCurrentBranch` into cloud options, so a doc living only on the PR branch would otherwise be missed or embed stale default-branch content.
 
 ### F4 — Auth
 
@@ -68,7 +68,7 @@ octokit token from env (`GITHUB_TOKEN` || `GH_TOKEN`). Public repos resolve toke
 
 - **ED-1** — Local-first, remote-fallback (F1). Not remote-only. Rationale: zero regression + preserves uncommitted-local-spec shipping.
 - **ED-2** — `DocSource` is an injected interface (F2); octokit impl in default wiring; fake in test-harness. Core stays provider-blind per `feedback_backend_interfaces.md`.
-- **ED-3** — Doc is fetched at `startingRef ?? defaultBranch`, never the agent's new branch — the doc must pre-exist where the agent clones from (F3).
+- **ED-3** — Ref precedence: `startingRef` → PR head (when `prUrl` / `workOnCurrentBranch`) → default branch (F3). Never the agent's *new* working branch. Cycle-2 catch: attach-to-PR calls operate on the PR branch, so a doc only on that branch must be fetched from the PR head, not default.
 - **ED-4** — `RemoteDocFetchError` is distinct from `DocNotFoundError`; the both-miss path names both causes so the operator knows whether to commit-the-doc or fix-a-path.
 - **ED-5** — Local runs are out of scope; `resolveValidatedDoc` (the workdir-containment path) is untouched — it returns `{ absoluteDocPath }` with `content` undefined, so `prepareArtifacts` reads from disk exactly as today. Remote sourcing is cloud-only.
 - **ED-6** — `ValidatedDoc` gains an optional `content?: string`; `prepareArtifacts` switches its single read to `validated.content ?? fs.readFile(validated.absoluteDocPath)`. This is the one change to a path shared with local runs (cycle-1 review catch): a remote-fetched doc has no local file to re-read, so its content travels on the resolver's return value. Only the remote-hit branch sets `content`; every other path leaves it undefined → disk read unchanged → byte-identical `task-doc.md` for local callers.
