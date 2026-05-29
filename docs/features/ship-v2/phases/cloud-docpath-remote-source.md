@@ -13,7 +13,7 @@ Date: 2026-05-29
 Files this phase touches:
 
 - `packages/core/src/validate.ts` — `resolveValidatedDocForCloud` gains a remote-fallback path (local hit → embed local; local miss → fetch from repo@ref).
-- `packages/core/src/service.ts` — `prepareRun` (cloud branch) passes the repo + ref through to the resolver; `prepareArtifacts` is unchanged (still embeds `validated` content).
+- `packages/core/src/service.ts` — `prepareRun` (cloud branch) passes the repo + ref through to the resolver; `prepareArtifacts` gets a **one-line change** (`validated.content ?? fs.readFile(absoluteDocPath)`) so a remote-fetched doc with no local file still embeds + writes `task-doc.md` — see ED-6.
 - `packages/core/src/doc-source/` (new) — `remoteDocSource.ts`: thin `@octokit/rest` wrapper that fetches a blob at `{ owner, repo, path, ref }`. Behind an interface so it's swappable + fakeable.
 - `packages/core/src/errors.ts` — new `RemoteDocFetchError` (network/auth/404 from the remote fetch, distinct from local `DocNotFoundError`); `DocNotFoundError` message gains cloud-aware guidance.
 - `packages/core/src/service.ts` wiring — inject the doc source via `ShipServiceDeps` (default = octokit-backed; tests inject a fake).
@@ -43,7 +43,7 @@ No new MCP surface, no new runtime, no change to `pool`/`machine` (operator: kee
 2. Else, if a remote repo + ref are known → fetch `docPath` (repo-root-relative) from `repo@ref` via `docSource`. Embed the fetched content.
 3. Else → throw with both causes named.
 
-The returned shape carries the resolved content (or its local realpath) so `prepareArtifacts` embeds + writes `task-doc.md` identically regardless of source.
+The returned `ValidatedDoc` carries an optional **`content`**: set to the fetched bytes on a remote hit (path 2), left undefined on a local hit (path 1, where `absoluteDocPath` suffices). `prepareArtifacts` then embeds `validated.content ?? fs.readFile(validated.absoluteDocPath)` — local callers re-read from disk byte-for-byte as today, and the remote case embeds the fetched content with no local file. (Cycle-1 review caught that the original "prepareArtifacts unchanged" claim was wrong: a remote doc has no local path to re-read.)
 
 ### F2 — Remote source is an injected, fakeable seam
 
@@ -70,7 +70,8 @@ octokit token from env (`GITHUB_TOKEN` || `GH_TOKEN`). Public repos resolve toke
 - **ED-2** — `DocSource` is an injected interface (F2); octokit impl in default wiring; fake in test-harness. Core stays provider-blind per `feedback_backend_interfaces.md`.
 - **ED-3** — Doc is fetched at `startingRef ?? defaultBranch`, never the agent's new branch — the doc must pre-exist where the agent clones from (F3).
 - **ED-4** — `RemoteDocFetchError` is distinct from `DocNotFoundError`; the both-miss path names both causes so the operator knows whether to commit-the-doc or fix-a-path.
-- **ED-5** — Local runs are out of scope; `resolveValidatedDoc` (the workdir-containment path) is untouched. Remote sourcing is cloud-only.
+- **ED-5** — Local runs are out of scope; `resolveValidatedDoc` (the workdir-containment path) is untouched — it returns `{ absoluteDocPath }` with `content` undefined, so `prepareArtifacts` reads from disk exactly as today. Remote sourcing is cloud-only.
+- **ED-6** — `ValidatedDoc` gains an optional `content?: string`; `prepareArtifacts` switches its single read to `validated.content ?? fs.readFile(validated.absoluteDocPath)`. This is the one change to a path shared with local runs (cycle-1 review catch): a remote-fetched doc has no local file to re-read, so its content travels on the resolver's return value. Only the remote-hit branch sets `content`; every other path leaves it undefined → disk read unchanged → byte-identical `task-doc.md` for local callers.
 
 ## Validation
 
@@ -97,7 +98,7 @@ Single PR (~350 weighted):
 
 1. `DocSource` interface + `errors.ts` (`RemoteDocFetchError`, `DocNotFoundError` message update).
 2. `remoteDocSource.ts` octokit impl + URL/ref derivation helpers.
-3. `resolveValidatedDocForCloud` local-first-remote-fallback (F1); `service.ts` cloud `prepareRun` passes repo/ref/docSource through.
+3. `resolveValidatedDocForCloud` local-first-remote-fallback (F1); `service.ts` cloud `prepareRun` passes repo/ref/docSource through; `prepareArtifacts` content-fallback (ED-6).
 4. Default wiring injects the octokit-backed source; `@ship/test-harness` fake.
 5. Unit tests (the four paths + parse table) + L3 scenario.
 
