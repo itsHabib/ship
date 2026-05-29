@@ -13,6 +13,7 @@ import {
   IntegrationNotConnectedError,
   UnknownAgentError,
 } from "@cursor/sdk";
+import { isAbsolute } from "node:path";
 import { inspect } from "node:util";
 
 import type {
@@ -42,6 +43,10 @@ import {
 } from "./errors.js";
 
 const API_KEY_ENV = "CURSOR_API_KEY";
+
+function isUnsafeCloudArtifactPath(sdkPath: string): boolean {
+  return isAbsolute(sdkPath) || sdkPath.replace(/\\/g, "/").split("/").includes("..");
+}
 
 function assertSingleCloudRepo(cloudSpec: CloudRunSpec | undefined): void {
   if (cloudSpec === undefined) return;
@@ -435,11 +440,16 @@ async function captureCloudArtifacts(agent: SDKAgent): Promise<readonly Artifact
   try {
     const listed = await agent.listArtifacts();
     if (!Array.isArray(listed)) return [];
-    return listed.map((a) => ({
-      path: a.path,
-      sizeBytes: a.sizeBytes,
-      updatedAt: a.updatedAt,
-    }));
+    return listed.flatMap((a) => {
+      if (isUnsafeCloudArtifactPath(a.path)) return [];
+      return [
+        {
+          path: a.path,
+          sizeBytes: a.sizeBytes,
+          updatedAt: a.updatedAt,
+        },
+      ];
+    });
   } catch (err) {
     try {
       const message = err instanceof Error ? err.message : String(err);

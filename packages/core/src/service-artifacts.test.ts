@@ -178,7 +178,8 @@ describe("ShipService — cloud artifacts", () => {
     expect(h.fs.snapshot().binaryFiles.get(expected)?.equals(payload)).toBe(true);
   });
 
-  test("path traversal in sdk path is rejected before download", async () => {
+  test("path traversal in sdk path is rejected before download (no runner call)", async () => {
+    const downloadSpy = vi.spyOn(h.cloudCursor, "downloadArtifact");
     h.cloudCursor.enqueue({
       events: [],
       result: {
@@ -193,6 +194,8 @@ describe("ShipService — cloud artifacts", () => {
     await expect(
       h.service.downloadArtifact(out.workflowRunId, "../escape.txt"),
     ).rejects.toBeInstanceOf(ArtifactPathEscapesRunDirError);
+    expect(downloadSpy).not.toHaveBeenCalled();
+    downloadSpy.mockRestore();
   });
 
   test("size guard trips without calling downloadArtifact on runner", async () => {

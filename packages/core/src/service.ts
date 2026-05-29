@@ -49,6 +49,7 @@ import type { CloudDocResolveOptions } from "./validate.js";
 
 import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import {
+  assertSafeCloudArtifactPath,
   DEFAULT_ARTIFACT_MAX_BYTES,
   resolveCloudArtifactDestUnderRoot,
   resolveContainedCloudArtifactDest,
@@ -871,6 +872,23 @@ function assertArtifactSizePreflight(
   }
 }
 
+function assertDownloadedArtifactSize(
+  bytes: Buffer,
+  workflowRunId: string,
+  sdkPath: string,
+  maxBytes: number,
+  force: boolean | undefined,
+): void {
+  if (!force && bytes.length > maxBytes) {
+    throw new ArtifactTooLargeError({
+      maxBytes,
+      path: sdkPath,
+      sizeBytes: bytes.length,
+      workflowRunId,
+    });
+  }
+}
+
 async function fetchCloudArtifactBytes(
   runner: CursorRunner,
   agentId: string,
@@ -899,6 +917,7 @@ async function downloadArtifactImpl(
   const { config, fs, store } = deps;
   const cursorRun = resolveCloudCursorRunForDownload(store, workflowRunId, sdkPath);
   const ref = manifestRefForPath(cursorRun.artifacts ?? [], workflowRunId, sdkPath);
+  assertSafeCloudArtifactPath(sdkPath);
   const maxBytes = config.artifactMaxBytes ?? DEFAULT_ARTIFACT_MAX_BYTES;
   assertArtifactSizePreflight(ref, workflowRunId, sdkPath, maxBytes, opts?.force);
   const runner = config.cloudCursor;
@@ -906,6 +925,7 @@ async function downloadArtifactImpl(
     throw new CloudRunnerNotConfiguredError();
   }
   const bytes = await fetchCloudArtifactBytes(runner, cursorRun.agentId, workflowRunId, sdkPath);
+  assertDownloadedArtifactSize(bytes, workflowRunId, sdkPath, maxBytes, opts?.force);
   const dest =
     opts?.outDir !== undefined
       ? await resolveContainedCloudArtifactDestForOutDir(fs, opts.outDir, sdkPath)
