@@ -5,6 +5,7 @@
  */
 
 import type { CloudAgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
+import type { ArtifactRef } from "@ship/workflow";
 
 import {
   Agent,
@@ -122,6 +123,34 @@ function mapCloudRunResult(result: RunResult, input: CursorRunInput): CursorRunR
 
 /** Construct once, reuse across runs. The runner holds no per-run state. */
 export class CloudCursorRunner implements CursorRunner {
+  async downloadArtifact(agentId: string, path: string): Promise<Buffer> {
+    const apiKey = process.env[API_KEY_ENV];
+    if (apiKey === undefined || apiKey === "") {
+      throw new MissingApiKeyError();
+    }
+    let agent: SDKAgent | undefined;
+    try {
+      agent = await Agent.resume(agentId, { apiKey });
+      return await agent.downloadArtifact(path);
+    } catch (err) {
+      const notFound = mapAgentNotFoundError(err, { agentId, runId: "" });
+      if (notFound !== undefined) {
+        throw notFound;
+      }
+      throw new CursorRunFailedError(`downloadArtifact failed for agentId=${agentId}`, {
+        cause: err,
+      });
+    } finally {
+      if (agent !== undefined) {
+        try {
+          await agent[Symbol.asyncDispose]();
+        } catch {
+          /* swallow */
+        }
+      }
+    }
+  }
+
   async run(input: CursorRunInput): Promise<CursorRunHandle> {
     if (input.runtime !== "cloud") {
       throw new WrongRunnerError('CloudCursorRunner requires input.runtime === "cloud"');
@@ -351,7 +380,7 @@ export class CloudCursorRunner implements CursorRunner {
       } catch (streamErr) {
         const wr = await this.#tryWait(sdkRun);
         if (wr !== undefined) {
-          callbacks.finalizeOk(mapCloudRunResult(wr, input));
+          await this.#finalizeOkWithArtifacts(agent, mapCloudRunResult(wr, input), callbacks);
           return;
         }
         callbacks.finalizeError(
@@ -373,7 +402,7 @@ export class CloudCursorRunner implements CursorRunner {
         );
         return;
       }
-      callbacks.finalizeOk(mapCloudRunResult(waitResult, input));
+      await this.#finalizeOkWithArtifacts(agent, mapCloudRunResult(waitResult, input), callbacks);
     } finally {
       try {
         await agent[Symbol.asyncDispose]();
@@ -390,6 +419,35 @@ export class CloudCursorRunner implements CursorRunner {
     } catch {
       return undefined;
     }
+  }
+
+  async #finalizeOkWithArtifacts(
+    agent: SDKAgent,
+    terminal: CursorRunResult,
+    callbacks: { finalizeOk: (terminal: CursorRunResult) => void },
+  ): Promise<void> {
+    const artifacts = await captureCloudArtifacts(agent);
+    callbacks.finalizeOk(artifacts !== undefined ? { ...terminal, artifacts } : terminal);
+  }
+}
+
+async function captureCloudArtifacts(agent: SDKAgent): Promise<readonly ArtifactRef[] | undefined> {
+  try {
+    const listed = await agent.listArtifacts();
+    if (!Array.isArray(listed)) return [];
+    return listed.map((a) => ({
+      path: a.path,
+      sizeBytes: a.sizeBytes,
+      updatedAt: a.updatedAt,
+    }));
+  } catch (err) {
+    try {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[ship-cloud-warn] listArtifacts failed: ${message}\n`);
+    } catch {
+      /* swallow — diagnostic logging must never affect control flow */
+    }
+    return [];
   }
 }
 

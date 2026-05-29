@@ -75,6 +75,22 @@ export const modelSelectionSchema = z
   .strict();
 export type ModelSelection = z.infer<typeof modelSelectionSchema>;
 
+/** ISO-8601 with offset, e.g. `"2026-05-06T12:00:00Z"`. Internal helper. */
+const isoDateTime = z.string().datetime({ offset: true });
+
+/**
+ * Reference to one cloud-produced artifact (SDK `SDKArtifact` shape).
+ * Manifest refs only — bytes are fetched on demand via `download_artifact`.
+ */
+export const artifactRefSchema = z
+  .object({
+    path: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative(),
+    updatedAt: isoDateTime,
+  })
+  .strict();
+export type ArtifactRef = z.infer<typeof artifactRefSchema>;
+
 /** Sentinel value for cloud runs with no local checkout (phase 09). */
 export const CLOUD_WORKTREE_SENTINEL = "(cloud)" as const;
 
@@ -102,9 +118,6 @@ export const worktreeRefSchema = z
   })
   .strict();
 export type WorktreeRef = z.infer<typeof worktreeRefSchema>;
-
-/** ISO-8601 with offset, e.g. `"2026-05-06T12:00:00Z"`. Internal helper. */
-const isoDateTime = z.string().datetime({ offset: true });
 
 /**
  * Reference to a single Cursor SDK run. Created when `agent.send()` resolves.
@@ -135,6 +148,8 @@ export const cursorRunRefSchema = z
     status: cursorRunStatusSchema,
     durationMs: z.number().int().nonnegative().optional(),
     artifactsDir: z.string().min(1),
+    /** Cloud SDK artifact manifest (refs only). Omitted for local runs. */
+    artifacts: z.array(artifactRefSchema).optional(),
   })
   .strict();
 export type CursorRunRef = z.infer<typeof cursorRunRefSchema>;

@@ -4,13 +4,14 @@
  */
 
 import type {
+  ArtifactRef,
   CursorRunRef,
   CursorRunRuntime,
   CursorRunStatus,
   ModelSelection,
 } from "@ship/workflow";
 
-import { cursorRunRefSchema } from "@ship/workflow";
+import { artifactRefSchema, cursorRunRefSchema } from "@ship/workflow";
 
 import type { Db } from "./db.js";
 
@@ -36,6 +37,8 @@ export interface UpdateCursorRunInput {
   status?: CursorRunStatus;
   endedAt?: string;
   durationMs?: number;
+  /** Cloud artifact manifest (refs only). Serialized to `artifacts_json`. */
+  artifacts?: readonly ArtifactRef[];
 }
 
 /** Row shape consumed by `ShipService.resumeOrphanedRuns`. */
@@ -75,10 +78,11 @@ interface CursorRunRow {
   ended_at: string | null;
   duration_ms: number | null;
   artifacts_dir: string;
+  artifacts_json: string | null;
 }
 
 const CURSOR_RUN_COLUMNS =
-  "id, workflow_run_id, agent_id, run_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir";
+  "id, workflow_run_id, agent_id, run_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir, artifacts_json";
 
 /**
  * Constructs the `cursor_runs` ops. Caches static prepared statements
@@ -151,6 +155,10 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
       sets.push("duration_ms = ?");
       params.push(patch.durationMs);
     }
+    if (patch.artifacts !== undefined) {
+      sets.push("artifacts_json = ?");
+      params.push(patch.artifacts.length === 0 ? null : JSON.stringify(patch.artifacts));
+    }
     params.push(id);
     // Wrap update + hydration in one txn so a post-state that fails Zod
     // (e.g. negative durationMs) rolls back rather than committing a row
@@ -208,10 +216,33 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
   return { get, listResumableCloud, record, updateStatus };
 }
 
+function parseArtifactsJsonColumn(row: CursorRunRow): ArtifactRef[] | undefined {
+  if (row.artifacts_json === null || row.artifacts_json === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.artifacts_json);
+  } catch (err: unknown) {
+    throw new StoreSchemaError(`cursor_runs id=${row.id} has malformed artifacts_json column`, {
+      cause: err,
+    });
+  }
+  const artifactsResult = artifactRefSchema.array().safeParse(parsed);
+  if (!artifactsResult.success) {
+    throw new StoreSchemaError(
+      `cursor_runs id=${row.id} artifacts_json failed schema validation: ${artifactsResult.error.message}`,
+      { cause: artifactsResult.error },
+    );
+  }
+  return artifactsResult.data.length > 0 ? artifactsResult.data : undefined;
+}
+
 /** True when at least one field of the patch is set. */
 function hasAnyPatchField(patch: UpdateCursorRunInput): boolean {
   return (
-    patch.status !== undefined || patch.endedAt !== undefined || patch.durationMs !== undefined
+    patch.status !== undefined ||
+    patch.endedAt !== undefined ||
+    patch.durationMs !== undefined ||
+    patch.artifacts !== undefined
   );
 }
 
@@ -252,6 +283,10 @@ function parseCursorRun(row: CursorRunRow): CursorRunRef {
   if (model !== undefined) candidate.model = model;
   if (row.ended_at !== null) candidate.endedAt = row.ended_at;
   if (row.duration_ms !== null) candidate.durationMs = row.duration_ms;
+  const artifacts = parseArtifactsJsonColumn(row);
+  if (artifacts !== undefined) {
+    (candidate as { artifacts?: ArtifactRef[] }).artifacts = artifacts;
+  }
 
   const result = cursorRunRefSchema.safeParse(candidate);
   if (!result.success) {

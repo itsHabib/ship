@@ -6,6 +6,7 @@
 
 // --- workflow.ts: schemas, helpers, constants ---
 export {
+  artifactRefSchema,
   canTransition,
   cursorWatchUrl,
   CLOUD_WORKTREE_SENTINEL,
@@ -29,6 +30,7 @@ export {
 
 // --- workflow.ts: inferred types ---
 export type {
+  ArtifactRef,
   CursorRunRef,
   CursorRunRuntime,
   CursorRunStatus,

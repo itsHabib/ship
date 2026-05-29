@@ -12,6 +12,11 @@
 
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import {
+  ArtifactGoneError,
+  ArtifactNotInManifestError,
+  ArtifactPathEscapesRunDirError,
+  ArtifactsUnavailableLocalError,
+  ArtifactTooLargeError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
   MissingRepoError,
@@ -30,6 +35,11 @@ const USER_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   DocPathEscapesWorkdirError,
   MissingRepoError,
   WorkflowRunNotFoundError,
+  ArtifactsUnavailableLocalError,
+  ArtifactNotInManifestError,
+  ArtifactPathEscapesRunDirError,
+  ArtifactTooLargeError,
+  ArtifactGoneError,
 ];
 
 /**

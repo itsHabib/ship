@@ -141,7 +141,7 @@ function makeMockAgent(opts: { run: MockRun; sendThrows?: unknown; agentId?: str
     agentId: opts.agentId ?? "agent-test-cloud-0001",
     close: vi.fn(),
     downloadArtifact: vi.fn(),
-    listArtifacts: vi.fn(),
+    listArtifacts: vi.fn().mockResolvedValue([]),
     model: undefined,
     reload: vi.fn(),
     send: sendSpy,
@@ -228,6 +228,9 @@ describe("CloudCursorRunner — attach", () => {
     const runner = new CloudCursorRunner();
     const handle = await runner.attach(cloudAttachBaseInput({ onEvent }));
     const result = await handle.result;
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
 
     expect(Agent.resume).toHaveBeenCalledWith("bc-test-cloud-0001", {
       apiKey: "test-key-cloud",
@@ -720,6 +723,9 @@ describe("CloudCursorRunner — happy path + status mapping", () => {
     const runner = new CloudCursorRunner();
     const handle = await runner.run(cloudBaseInput({ onEvent }));
     const result = await handle.result;
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
 
     expect(result).toMatchObject({
       branches: [],
@@ -729,6 +735,32 @@ describe("CloudCursorRunner — happy path + status mapping", () => {
     });
     expect(onEvent.mock.calls.map((c) => (c as [SDKMessage])[0])).toEqual([evA, evB]);
     expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("terminal: listArtifacts merged onto result (success path)", async () => {
+    const artifact = {
+      path: "build/out.bin",
+      sizeBytes: 99,
+      updatedAt: "2026-05-29T10:00:00.000Z",
+    };
+    const { run } = makeMockRun({
+      result: {
+        durationMs: 1,
+        id: "run-test-cloud-0001",
+        result: "ok",
+        status: "finished",
+      },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(agent.listArtifacts).mockResolvedValue([artifact]);
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handle = await runner.run(cloudBaseInput());
+    const result = await handle.result;
+
+    expect(vi.mocked(agent.listArtifacts)).toHaveBeenCalledTimes(1);
+    expect(result.artifacts).toEqual([artifact]);
   });
 
   test("error → failed; result resolves (does NOT throw); errorMessage populated", async () => {

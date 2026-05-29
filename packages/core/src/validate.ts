@@ -201,7 +201,8 @@ async function assertFile(
   if (!stat.isFile()) throw new DocNotFoundError(originalDocPath);
 }
 
-function isDescendantPath(descendant: string, ancestor: string): boolean {
+/** True when `descendant` is `ancestor` or a path under it (prefix-safe). */
+export function isDescendantPath(descendant: string, ancestor: string): boolean {
   // Normalize trailing separators on the ancestor so `/foo` doesn't
   // match `/foobar`. The descendant's prefix must equal `ancestor +
   // separator` OR equal `ancestor` itself (the doc IS the workdir;

@@ -6,7 +6,7 @@
  */
 
 import type { AgentDefinition, McpServerConfig, SDKMessage } from "@cursor/sdk";
-import type { ModelSelection } from "@ship/workflow";
+import type { ArtifactRef, ModelSelection } from "@ship/workflow";
 
 /** Input required to start a single Cursor run. Constructed by `core` per workflow run. */
 export interface CursorRunInput {
@@ -136,6 +136,12 @@ export interface CursorRunResult {
   }[];
   /** Cloud-only divergence signals (omitted when empty). */
   readonly warnings?: readonly string[];
+  /**
+   * Cloud terminal manifest (refs only). Captured at terminal via
+   * `listArtifacts()`; absent for local runs and when listing failed
+   * with no entries.
+   */
+  readonly artifacts?: readonly ArtifactRef[];
   /** Populated when `status === "failed"`. */
   readonly errorMessage?: string;
 }
@@ -148,4 +154,9 @@ export interface CursorRunResult {
 export interface CursorRunner {
   run(input: CursorRunInput): Promise<CursorRunHandle>;
   attach(input: CursorRunAttachInput): Promise<CursorRunHandle>;
+  /**
+   * Fetches artifact bytes from a cloud agent by id. Implemented only on
+   * {@link CloudCursorRunner}; local/fake runners omit this method.
+   */
+  downloadArtifact?(agentId: string, path: string): Promise<Buffer>;
 }
