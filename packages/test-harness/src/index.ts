@@ -11,6 +11,7 @@ export type {
   ServiceBundle,
 } from "./harness.js";
 export { createHarness, createServiceFromHarness } from "./harness.js";
+export { FakeDocSource } from "./fake-doc-source.js";
 
 // --- clock.ts ---
 export type { TestClock } from "./clock.js";

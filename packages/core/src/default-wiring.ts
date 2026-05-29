@@ -21,6 +21,7 @@ import { dirname } from "node:path";
 
 import type { ActiveRunsRegistry, ShipService } from "./service.js";
 
+import { createRemoteDocSource } from "./doc-source/index.js";
 import { createNodeShipFs } from "./fs/index.js";
 import { createShipService } from "./service.js";
 
@@ -125,6 +126,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
       fs,
       clock: infra.clock,
       activeRuns: infra.activeRuns,
+      docSource: createRemoteDocSource(),
       config: {
         runsDir: opts.runsDir,
         defaultModel: resolveConfiguredDefaultModel(opts),

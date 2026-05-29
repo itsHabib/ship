@@ -130,6 +130,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@octokit/request-error':
+        specifier: ^6.1.8
+        version: 6.1.8
       '@octokit/rest':
         specifier: ^21.0.2
         version: 21.1.1

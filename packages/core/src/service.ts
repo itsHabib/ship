@@ -40,8 +40,10 @@ import {
 import { basename } from "node:path";
 
 import type { EventWriter } from "./artifacts/ndjson.js";
+import type { DocSource } from "./doc-source/doc-source.js";
 import type { ShipFs } from "./fs/shape.js";
 import type { ValidatedDoc } from "./validate.js";
+import type { CloudDocResolveOptions } from "./validate.js";
 
 import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import { resolveRunArtifactPaths, type RunArtifactPaths } from "./artifacts/paths.js";
@@ -87,6 +89,8 @@ export interface ShipServiceDeps {
   // across factory constructions against the same dbPath. Omitted →
   // service creates its own private map.
   readonly activeRuns?: ActiveRunsRegistry;
+  /** Remote doc source for cloud runs (local-miss path). */
+  readonly docSource?: DocSource;
 }
 
 // Registry of in-flight runs. Each entry carries an `AbortController`
@@ -171,6 +175,7 @@ function enrichWorkflowRunView(store: Store, run: WorkflowRun | null): GetWorkfl
 
 export function createShipService(deps: ShipServiceDeps): ShipService {
   const { clock, config, fs, store } = deps;
+  const docSource = deps.docSource;
   const ids = deps.ids ?? {
     workflowRun: newWorkflowRunId,
     phase: newPhaseId,
@@ -198,6 +203,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     resolvedCursorRuntime: resolvePersistedRuntime(input),
     runner: selectRunner(config, input),
     store,
+    ...(docSource !== undefined ? { docSource } : {}),
   });
 
   const resumeCtx: ResumeContext = {
@@ -262,6 +268,7 @@ interface ShipContext {
   readonly activeRuns: ActiveRunsRegistry;
   readonly clock: () => string;
   readonly config: ShipServiceConfig;
+  readonly docSource?: DocSource;
   readonly fs: ShipFs;
   readonly ids: NonNullable<ShipServiceDeps["ids"]>;
   readonly input: ShipInput;
@@ -415,7 +422,7 @@ async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
     const validated = await resolveValidatedDocForCloud(
       ctx.fs,
       ctx.input.docPath,
-      ctx.input.workdir,
+      buildCloudDocResolveOptions(ctx),
     );
     return persistInitialState(ctx, validated);
   }
@@ -451,6 +458,20 @@ function resolveRepo(input: ShipInput): string {
     if (derived !== undefined) return derived;
   }
   throw new MissingRepoError();
+}
+
+function buildCloudDocResolveOptions(ctx: ShipContext): CloudDocResolveOptions {
+  const cloudRepo = ctx.input.cloud?.repos[0];
+  return {
+    repoSlug: resolveRepo(ctx.input),
+    ...(ctx.input.workdir !== undefined ? { workdir: ctx.input.workdir } : {}),
+    ...(cloudRepo?.startingRef !== undefined ? { startingRef: cloudRepo.startingRef } : {}),
+    ...(cloudRepo?.prUrl !== undefined ? { prUrl: cloudRepo.prUrl } : {}),
+    ...(ctx.input.cloud?.workOnCurrentBranch !== undefined
+      ? { workOnCurrentBranch: ctx.input.cloud.workOnCurrentBranch }
+      : {}),
+    ...(ctx.docSource !== undefined ? { docSource: ctx.docSource } : {}),
+  };
 }
 
 // Atomic `pending → running` transition for the workflow row + initial
@@ -638,7 +659,8 @@ async function runToTerminal(
 
 async function prepareArtifacts(ctx: ShipContext, prep: PreparedRun): Promise<string> {
   await ctx.fs.mkdir(prep.paths.dir, { recursive: true });
-  const taskDoc = await ctx.fs.readFile(prep.validated.absoluteDocPath, "utf-8");
+  const taskDoc =
+    prep.validated.content ?? (await ctx.fs.readFile(prep.validated.absoluteDocPath, "utf-8"));
   await ctx.fs.writeFile(prep.paths.taskDoc, taskDoc);
 
   const prompt = renderImplementationPrompt({

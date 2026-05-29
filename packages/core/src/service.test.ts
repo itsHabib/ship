@@ -14,6 +14,8 @@ import { CLOUD_WORKTREE_SENTINEL, cursorWatchUrl, isTerminal } from "@ship/workf
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
+import type { DocSource } from "./doc-source/doc-source.js";
+
 import {
   CloudRunnerNotConfiguredError,
   DocNotFoundError,
@@ -83,6 +85,7 @@ async function createHarness(opts?: {
   defaultModelId?: string;
   defaultModelParams?: { id: string; value: string }[];
   omitCloudCursor?: boolean;
+  docSource?: DocSource;
 }): Promise<Harness> {
   const fs = createMemoryShipFs();
   await fs.mkdir(RUNS_DIR, { recursive: true });
@@ -111,6 +114,7 @@ async function createHarness(opts?: {
     clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
     config,
     ids: deterministicIds(),
+    ...(opts?.docSource !== undefined ? { docSource: opts.docSource } : {}),
   });
 
   return { service, fs, store, cursor, cloudCursor, config };
@@ -1215,6 +1219,29 @@ describe("ShipService.ship — cloud parity", () => {
     await expect(
       h.service.ship({ workdir: WORKDIR, repo: "ship", docPath: "/outside/doc.md" }),
     ).rejects.toBeInstanceOf(DocPathEscapesWorkdirError);
+    h.store.close();
+  });
+
+  test("cloud run fetches remote doc when local file missing", async () => {
+    const remoteContent = "# Remote task\n\nFrom GitHub.\n";
+    const docSource: DocSource = {
+      resolveRef: () => Promise.resolve("main"),
+      fetch: () => Promise.resolve(remoteContent),
+    };
+    const h = await createHarness({ docSource });
+    h.cloudCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const out = await h.service.ship({
+      docPath: "docs/remote-task.md",
+      runtime: "cloud",
+      cloud: CLOUD_SPEC,
+    });
+    expect(out.status).toBe("succeeded");
+    const taskDoc = await h.fs.readFile(`${RUNS_DIR}/${out.workflowRunId}/task-doc.md`, "utf-8");
+    expect(taskDoc).toBe(remoteContent);
     h.store.close();
   });
 
