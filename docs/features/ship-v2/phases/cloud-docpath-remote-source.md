@@ -47,12 +47,17 @@ The returned `ValidatedDoc` carries an optional **`content`**: set to the fetche
 
 ### F2 — Remote source is an injected, fakeable seam
 
-`DocSource` interface: `fetch({ owner, repo, path, ref }): Promise<string>`. Default impl wraps `@octokit/rest` `repos.getContent`. Injected via `ShipServiceDeps.docSource` (defaults in `createDefaultShipService`). Tests inject a fake; no network in unit/L1/L2.
+`DocSource` exposes **both** the fetch and the ref-resolution it depends on, so every GitHub call sits behind one fakeable seam:
+
+- `fetch({ owner, repo, path, ref }): Promise<string>` — the blob.
+- `resolveRef({ owner, repo, startingRef?, prUrl?, workOnCurrentBranch? }): Promise<string>` — returns the concrete ref per F3's precedence; the default-branch + PR-head lookups live **here**, not in core.
+
+Default impl wraps `@octokit/rest` (`repos.getContent` + `repos.get` / PR lookup). Injected via `ShipServiceDeps.docSource` (defaults in `createDefaultShipService`). Tests inject a fake → **no network in unit/L1/L2**. (Cycle-3 catch: the ref lookups must be inside the seam too, else an injected fake still hits the network or forces core to know Octokit directly.)
 
 ### F3 — Owner/repo/ref derivation
 
 - owner/repo parsed from `cloud.repos[0].url` (handles `https://github.com/<owner>/<repo>(.git)?`).
-- ref precedence: `cloud.repos[0].startingRef` when set → else, when the call attaches to an existing PR (`cloud.repos[0].prUrl` set and/or `workOnCurrentBranch: true`), the **PR head branch** (resolved from the prUrl) → else the repo's default branch (one octokit `repos.get`, cached per run). Never the agent's *new* working branch. Cycle-2 catch: `cloud-runner.ts` forwards both `prUrl` and `workOnCurrentBranch` into cloud options, so a doc living only on the PR branch would otherwise be missed or embed stale default-branch content.
+- ref precedence: `cloud.repos[0].startingRef` when set → else, when the call attaches to an existing PR (`cloud.repos[0].prUrl` set and/or `workOnCurrentBranch: true`), the **PR head branch** (resolved from the prUrl) → else the repo's default branch (one octokit `repos.get`, cached per run). Never the agent's *new* working branch. All of this resolves through `docSource.resolveRef(...)` (F2) so it stays behind the fakeable seam. Cycle-2 catch: `cloud-runner.ts` forwards both `prUrl` and `workOnCurrentBranch` into cloud options, so a doc living only on the PR branch would otherwise be missed or embed stale default-branch content.
 
 ### F4 — Auth
 
@@ -67,7 +72,7 @@ octokit token from env (`GITHUB_TOKEN` || `GH_TOKEN`). Public repos resolve toke
 ## Engineering decisions
 
 - **ED-1** — Local-first, remote-fallback (F1). Not remote-only. Rationale: zero regression + preserves uncommitted-local-spec shipping.
-- **ED-2** — `DocSource` is an injected interface (F2); octokit impl in default wiring; fake in test-harness. Core stays provider-blind per `feedback_backend_interfaces.md`.
+- **ED-2** — `DocSource` is an injected interface owning **both** `fetch` and `resolveRef` (F2), so the default-branch + PR-head lookups are fakeable, not just the blob fetch; octokit impl in default wiring; fake in test-harness. Core stays provider-blind per `feedback_backend_interfaces.md`. (Cycle-3 catch: ref resolution belongs inside the seam.)
 - **ED-3** — Ref precedence: `startingRef` → PR head (when `prUrl` / `workOnCurrentBranch`) → default branch (F3). Never the agent's *new* working branch. Cycle-2 catch: attach-to-PR calls operate on the PR branch, so a doc only on that branch must be fetched from the PR head, not default.
 - **ED-4** — `RemoteDocFetchError` is distinct from `DocNotFoundError`; the both-miss path names both causes so the operator knows whether to commit-the-doc or fix-a-path.
 - **ED-5** — Local runs are out of scope; `resolveValidatedDoc` (the workdir-containment path) is untouched — it returns `{ absoluteDocPath }` with `content` undefined, so `prepareArtifacts` reads from disk exactly as today. Remote sourcing is cloud-only.
