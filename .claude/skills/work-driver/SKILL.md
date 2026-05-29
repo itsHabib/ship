@@ -249,7 +249,7 @@ Cloud is the default (see § "Arguments"). When the operator explicitly passes `
 
 ## Anti-patterns (don't do these)
 
-- Don't open standalone design-doc PRs (per `feedback_design_doc_inline.md`).
+- Don't skip the reviewer cycle on design-doc PRs or merge them unreviewed — design docs get the same bot review as impl PRs so the operator doesn't review them manually (per `feedback_design_doc_inline.md`; reversed 2026-05-29 — this line previously said "don't open design-doc PRs", which is now the anti-pattern).
 - Don't commit `.github/workflows/*.yml` blindly when operator said "CI deferred" — the auto-mode classifier may correctly block this.
 - Don't burn context on foreground `sleep` polling. Use `Bash --run_in_background` + a `Monitor`-style wait.
 - Don't expect `dossier.task_create`'s body to influence the agent's behavior. The agent only sees `docPath`.

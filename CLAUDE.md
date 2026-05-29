@@ -30,7 +30,7 @@ Subagents live in `.cursor/agents/`. See [docs/features/ship-v2/phases/03-subage
 - Ship owns workflow state, persistence, and the MCP surface above the other two.
 - inspired by lessons learned from ../orchestra ../cortex
 
-> **Per-feature phase-doc convention** (ship-specific, lives outside the dev-workbench block on purpose so `/dev-workbench` re-runs don't overwrite it): every dossier task that fires `ship.ship` must have a `docs/features/<feature>/phases/<NN>-<slug>.md` written first, with Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation-plan. The dossier task body is a registry pointer; the phase doc is the contract. See "## Session workflow" below.
+> **Per-feature phase-doc convention** (ship-specific, lives outside the dev-workbench block on purpose so `/dev-workbench` re-runs don't overwrite it): every dossier task that fires `ship.ship` must have a `docs/features/<feature>/phases/<slug>.md` written first — **named, not numbered** (phase numbers proved unhelpful; use a descriptive slug like `cloud-docpath-remote-source.md`). Each contains Status / Owner / Scope / Functional / Tradeoffs / EDs / Validation / Risks / Out-of-scope / Implementation-plan. The dossier task body is a registry pointer; the phase doc is the contract. Existing `NN-*.md` docs are historical — leave them; don't mass-renumber. See "## Session workflow" below.
 
 <!-- BEGIN dev-workbench (managed by /dev-workbench skill — re-run to refresh; hand-edits inside this block will be overwritten) -->
 ## Dev workbench
@@ -199,7 +199,7 @@ Not every flow uses every tool. A one-off CLI fix can skip dossier; an existing-
 
 When to use what during a feature session — extends "The loop" above:
 
-- **Design phase (no Ship).** When the phase doc IS the deliverable (design-only PR), Ship doesn't fire — the doc is written in chat / by hand inside the worktree and reviewed inline (per the operator's `feedback_design_doc_inline.md` memory entry: design docs skip the formal reviewer-cycle ceremony of impl PRs). One PR with light review expectations.
+- **Design phase (no Ship).** When the phase doc IS the deliverable, Ship doesn't fire — but the doc still goes up as its own PR with reviewers requested (per the operator's `feedback_design_doc_inline.md` memory entry): the reviewer bots review the design so the operator doesn't have to do it manually. Scale reviewer count to doc size per `feedback_reviewer_count_by_pr_size.md`.
 - **Impl phase (work-driver pattern).** When the phase doc is the INPUT — `mcp__ship__ship { workdir, docPath, repo, branch }` produces the implementation. The same driver pattern handles one stream or N parallel: fast-forward or rebase each worktree to `origin/main`, fire `mcp__ship__ship` per stream, poll terminal, commit + push (cursor doesn't auto-commit), open PR, coordinate review cycles per "Shipping Features" below, merge in dep order. Invoke `/work-driver` to load the codified steps — single-stream runs use the same loop with the merge-order step trivially no-op.
 - **One-off fixes (skip the workbench).** A typo, doc-drift, quick chip — direct commit on a short-lived branch. No Dossier, no Ship.
 
