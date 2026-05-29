@@ -2,6 +2,7 @@ export type { DocSource, DocSourceFetchParams, DocSourceResolveRefParams } from 
 export {
   parseGitHubOwnerRepo,
   parseGitHubPullNumber,
+  parseGitHubPullRepoSlug,
   parseGitHubRepoSlug,
   splitRepoSlug,
   type GitHubOwnerRepo,

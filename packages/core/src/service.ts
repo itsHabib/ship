@@ -49,6 +49,7 @@ import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import { resolveRunArtifactPaths, type RunArtifactPaths } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
+import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
 import {
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
@@ -433,37 +434,31 @@ async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
   return persistInitialState(ctx, validated);
 }
 
-function deriveRepoFromCloudUrl(url: string): string | undefined {
-  try {
-    const u = new URL(url);
-    let path = u.pathname;
-    if (path.startsWith("/")) path = path.slice(1);
-    if (path.endsWith("/")) path = path.slice(0, -1);
-    if (path.toLowerCase().endsWith(".git")) path = path.slice(0, -4);
-    const parts = path.split("/").filter((p) => p.length > 0);
-    if (parts.length >= 2 && parts[0] !== undefined && parts[1] !== undefined) {
-      return `${parts[0]}/${parts[1]}`;
-    }
-  } catch {
-    /* unparseable URL */
-  }
-  return undefined;
-}
-
 function resolveRepo(input: ShipInput): string {
   if (input.repo !== undefined) return input.repo;
   const url = input.cloud?.repos[0]?.url;
   if (url !== undefined) {
-    const derived = deriveRepoFromCloudUrl(url);
+    const derived = parseGitHubRepoSlug(url);
     if (derived !== undefined) return derived;
   }
+  throw new MissingRepoError();
+}
+
+/** Repo slug for remote doc fetch — derived from `cloud.repos[0].url` per F3. */
+function resolveDocRepoSlug(input: ShipInput): string {
+  const url = input.cloud?.repos[0]?.url;
+  if (url !== undefined) {
+    const derived = parseGitHubRepoSlug(url);
+    if (derived !== undefined) return derived;
+  }
+  if (input.repo !== undefined) return input.repo;
   throw new MissingRepoError();
 }
 
 function buildCloudDocResolveOptions(ctx: ShipContext): CloudDocResolveOptions {
   const cloudRepo = ctx.input.cloud?.repos[0];
   return {
-    repoSlug: resolveRepo(ctx.input),
+    repoSlug: resolveDocRepoSlug(ctx.input),
     ...(ctx.input.workdir !== undefined ? { workdir: ctx.input.workdir } : {}),
     ...(cloudRepo?.startingRef !== undefined ? { startingRef: cloudRepo.startingRef } : {}),
     ...(cloudRepo?.prUrl !== undefined ? { prUrl: cloudRepo.prUrl } : {}),

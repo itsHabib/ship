@@ -82,3 +82,10 @@ export function parseGitHubPullNumber(prUrl: string): number {
   }
   return Number(m[1]);
 }
+
+/** Parses `owner/repo` from a GitHub pull request URL. */
+export function parseGitHubPullRepoSlug(prUrl: string): string | undefined {
+  const m = /github\.com\/([^/]+)\/([^/]+)\/pull\/\d+\b/i.exec(prUrl);
+  if (m?.[1] === undefined || m[2] === undefined) return undefined;
+  return `${m[1]}/${m[2]}`;
+}

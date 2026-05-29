@@ -9,7 +9,7 @@ import { Octokit } from "@octokit/rest";
 import type { DocSource, DocSourceFetchParams, DocSourceResolveRefParams } from "./doc-source.js";
 
 import { RemoteDocFetchError } from "../errors.js";
-import { parseGitHubPullNumber } from "./parse-github-url.js";
+import { parseGitHubPullNumber, parseGitHubPullRepoSlug } from "./parse-github-url.js";
 
 export function createRemoteDocSource(token?: string): DocSource {
   const authToken = token ?? process.env["GITHUB_TOKEN"] ?? process.env["GH_TOKEN"];
@@ -34,18 +34,40 @@ async function resolveRef(
     return startingRef;
   }
   if ((prUrl !== undefined && prUrl !== "") || workOnCurrentBranch === true) {
-    if (prUrl === undefined || prUrl === "") {
-      return resolveDefaultBranch(octokit, owner, repo, defaultBranchCache, hasToken);
+    if (prUrl !== undefined && prUrl !== "") {
+      return resolvePullRequestRef(octokit, owner, repo, prUrl, hasToken);
     }
-    try {
-      const pullNumber = parseGitHubPullNumber(prUrl);
-      const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
-      return data.head.ref;
-    } catch (err) {
-      throw toRemoteDocFetchError(err, { owner, repo, ref: prUrl, hasToken });
-    }
+    return resolveDefaultBranch(octokit, owner, repo, defaultBranchCache, hasToken);
   }
   return resolveDefaultBranch(octokit, owner, repo, defaultBranchCache, hasToken);
+}
+
+async function resolvePullRequestRef(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prUrl: string,
+  hasToken: boolean,
+): Promise<string> {
+  try {
+    const pullSlug = parseGitHubPullRepoSlug(prUrl);
+    if (pullSlug !== undefined && pullSlug !== `${owner}/${repo}`) {
+      throw new RemoteDocFetchError({
+        owner,
+        repo,
+        ref: prUrl,
+        path: "(unknown)",
+        reason: `prUrl repo ${pullSlug} does not match configured repo ${owner}/${repo}`,
+        suggestToken: false,
+      });
+    }
+    const pullNumber = parseGitHubPullNumber(prUrl);
+    const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+    return data.head.ref;
+  } catch (err) {
+    if (err instanceof RemoteDocFetchError) throw err;
+    throw toRemoteDocFetchError(err, { owner, repo, ref: prUrl, hasToken });
+  }
 }
 
 async function resolveDefaultBranch(
@@ -101,7 +123,7 @@ async function fetchBlob(
     return data.content;
   } catch (err) {
     if (err instanceof RemoteDocFetchError) throw err;
-    throw toRemoteDocFetchError(err, { owner, repo, ref, path, hasToken });
+    throw toRemoteDocFetchError(err, { owner, repo, ref, path, hasToken, suggestTokenOn404: true });
   }
 }
 
@@ -111,12 +133,18 @@ interface RemoteDocFetchErrorContext {
   readonly ref: string;
   readonly path?: string;
   readonly hasToken: boolean;
+  /** When true, tokenless 404 on blob fetch suggests setting GITHUB_TOKEN (F4). */
+  readonly suggestTokenOn404?: boolean;
 }
 
 function toRemoteDocFetchError(err: unknown, ctx: RemoteDocFetchErrorContext): RemoteDocFetchError {
   if (err instanceof RequestError) {
     const reason = requestErrorReason(err);
-    const suggestToken = !ctx.hasToken && (err.status === 401 || err.status === 403);
+    const suggestToken =
+      !ctx.hasToken &&
+      (err.status === 401 ||
+        err.status === 403 ||
+        (ctx.suggestTokenOn404 === true && err.status === 404));
     return new RemoteDocFetchError({
       owner: ctx.owner,
       repo: ctx.repo,
