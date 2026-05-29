@@ -230,6 +230,10 @@ Trailers seen in this repo:
 
 Agents that don't emit a trailer as part of their standard commit flow aren't required to invent one — skipping is fine. Human-authored commits don't need a trailer. Trailer casing varies across agents; that's expected and not a thing to fix — GitHub's attribution resolution is case-insensitive, and `git log -i --grep` handles both variants.
 
+## Git staging
+
+Never use broad `git add` — no `git add -A`, `git add --all`, or `git add .`. Stage explicit paths (`git add path/to/file`). Broad-add sweeps in untracked / gitignore-missed junk: on 2026-05-29 a `git add -A` staged a `.keys~` credentials backup (a vim backup of the gitignored `.keys`) and only GitHub push protection caught it mid-push. Enumerating the files you mean to commit IS the safety check. (A PreToolUse hook to hard-enforce this was tried and rejected — it false-positives on any command that merely quotes a broad-add form, e.g. a PR body or commit message mentioning `git add .`. This is an agent-discipline rule, not a guardrail to automate.)
+
 ## PR sizing
 
 Target weighted-LOC bands per PR:
