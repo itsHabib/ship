@@ -4,7 +4,7 @@ Status: design draft
 Owner: ship (cursor)
 Date: 2026-05-29
 
-> A general operator capability: list and download the artifacts a cloud session produced — build outputs, logs, generated data, reports, screenshots, anything the agent wrote to its cloud workspace that isn't a git commit. Browser/UI-smash screenshots are **one consumer**, not the motivation; this doc designs the capability standalone. Source: cursor-cloud-followups item D. SDK surface confirmed in [`docs/cursor-sdk-typescript.md` § Artifacts](../../cursor-sdk-typescript.md).
+> A general operator capability: list and download the artifacts a cloud session produced — build outputs, logs, generated data, reports, screenshots, anything the agent wrote to its cloud workspace that isn't a git commit. Browser/UI-smash screenshots are **one consumer**, not the motivation; this doc designs the capability standalone. Source: cursor-cloud-followups item D. SDK surface confirmed in [`docs/cursor-sdk-typescript.md` § Artifacts](../../../cursor-sdk-typescript.md).
 
 ## Scope
 
@@ -31,9 +31,9 @@ Explicitly **not** about any one artifact type. Screenshots from a browser run, 
 
 ## Functional requirements
 
-### F1 — Capture the artifact manifest at cloud terminal
+### F1 — Capture the artifact manifest on terminal (success OR failure)
 
-On a cloud run reaching terminal success, `CloudCursorRunner` calls `agent.listArtifacts()` and includes the result on `CursorRunResult.artifacts` (`ArtifactRef[]` = `{ path, sizeBytes, updatedAt }`). Best-effort: a `listArtifacts` failure logs a warning and yields an empty manifest — it never fails the run (the agent's work already succeeded). Local runs: `artifacts` absent.
+On a cloud run reaching **any** terminal state — `succeeded` *or* `failed` — `CloudCursorRunner` calls `agent.listArtifacts()` (whenever the agent handle is still attachable) and includes the result on `CursorRunResult.artifacts` (`ArtifactRef[]` = `{ path, sizeBytes, updatedAt }`). **Failed runs are explicitly included**: a run that writes diagnostics (logs, crash repro, a failed browser run's screenshots) before failing must still expose them — those are often the *most* valuable outputs. Best-effort: a `listArtifacts` failure logs a warning and yields an empty manifest — it never changes the run's terminal status. Local runs and cancelled runs with no live agent handle: `artifacts` absent.
 
 ### F2 — Persist the manifest; `list_artifacts` reads it
 
