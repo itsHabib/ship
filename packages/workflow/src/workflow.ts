@@ -280,3 +280,11 @@ const ALLOWED_TRANSITIONS: Record<WorkflowStatus, readonly WorkflowStatus[]> = {
 export function canTransition(from: WorkflowStatus, to: WorkflowStatus): boolean {
   return ALLOWED_TRANSITIONS[from].includes(to);
 }
+
+/**
+ * Canonical Cursor cloud dashboard URL for a `bc-` agent id. Single edit
+ * point if Cursor changes the `/agents/<id>` scheme.
+ */
+export function cursorWatchUrl(agentId: string): string {
+  return `https://cursor.com/agents/${agentId}`;
+}

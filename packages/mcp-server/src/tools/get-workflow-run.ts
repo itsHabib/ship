@@ -19,7 +19,8 @@ export function registerGetWorkflowRunTool(server: McpServer, factory: ShipServi
   server.registerTool(
     "get_workflow_run",
     {
-      description: "Fetch the durable state of a workflow run by id.",
+      description:
+        "Fetch the durable state of a workflow run by id. Cloud runs may include watchUrl (live Cursor dashboard link) and cursorAgentId at the top level.",
       inputSchema: getWorkflowRunInputSchema.shape,
     },
     async (args) => {

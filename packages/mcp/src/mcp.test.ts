@@ -395,10 +395,29 @@ describe("getWorkflowRunOutputSchema", () => {
     expect(getWorkflowRunOutputSchema.parse(validWorkflowRun)).toEqual(validWorkflowRun);
   });
 
+  test("accepts optional cursorAgentId and watchUrl for cloud runs", () => {
+    const withWatch = {
+      ...validWorkflowRun,
+      cursorAgentId: "bc-test-agent-0001",
+      watchUrl: "https://cursor.com/agents/bc-test-agent-0001",
+    };
+    expect(getWorkflowRunOutputSchema.parse(withWatch)).toEqual(withWatch);
+  });
+
   test("rejects unknown keys", () => {
     expect(getWorkflowRunOutputSchema.safeParse({ ...validWorkflowRun, extra: 1 }).success).toBe(
       false,
     );
+  });
+
+  test("rejects invalid watchUrl", () => {
+    expect(
+      getWorkflowRunOutputSchema.safeParse({
+        ...validWorkflowRun,
+        cursorAgentId: "bc-x",
+        watchUrl: "not-a-url",
+      }).success,
+    ).toBe(false);
   });
 });
 
