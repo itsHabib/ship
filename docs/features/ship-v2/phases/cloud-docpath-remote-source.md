@@ -1,4 +1,4 @@
-# Phase 14 — Cloud docPath remote sourcing
+# Cloud docPath remote sourcing
 
 Status: design draft
 Owner: ship (cursor)
