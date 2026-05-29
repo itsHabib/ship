@@ -41,11 +41,11 @@ On a cloud run reaching **any** terminal state — `succeeded` *or* `failed` —
 
 ### F3 — `download_artifact` fetches on demand to disk
 
-MCP tool `download_artifact { workflowRunId, path }`: resolves the run's cloud `agentId` (from `cursor_runs.agent_id`), obtains the agent handle, `downloadArtifact(path)`, writes bytes to `<runsDir>/<wf>/artifacts/<path>`, returns `{ localPath, sizeBytes }`. CLI `ship artifacts download <wf> <path> [--out <dir>]`. Download is the only network/bytes operation — `list` never transfers contents.
+MCP tool `download_artifact { workflowRunId, path }`: looks `path` up in the **persisted manifest** and **preflights its `sizeBytes` against the cap (ED-5) before any transfer** — over-cap → error, no SDK call; then resolves the run's cloud `agentId` (from `cursor_runs.agent_id`), obtains the agent handle, `downloadArtifact(path)`, writes bytes to `<runsDir>/<wf>/artifacts/<path>`, returns `{ localPath, sizeBytes }`. CLI `ship artifacts download <wf> <path> [--out <dir>]`. Download is the only network/bytes operation — `list` never transfers contents.
 
 ### F4 — Path containment (no traversal escape)
 
-The SDK-provided `path` is untrusted. Before writing, the resolved destination must realpath-contain within `<runsDir>/<wf>/artifacts/`. Reuse the `isDescendantPath` guard from `validate.ts`. A `path` that escapes (`../`, absolute) → `ArtifactPathEscapesRunDirError`, no write.
+The SDK-provided `path` is untrusted. Containment runs **before** any mkdir/write and does **not** realpath the destination — it doesn't exist yet, and `ShipFs.realpath` rejects missing paths, which would break every first-time download (cycle-2 catch). Instead: (1) reject absolute paths and any path with a `..` segment outright; (2) lexically resolve the destination under `<runsDir>/<wf>/artifacts/` and assert it's a descendant of the **realpath'd artifacts root** (which does exist) via `isDescendantPath`; (3) only then mkdir + write. A path that escapes → `ArtifactPathEscapesRunDirError`, no write.
 
 ### F5 — Local-runtime + agent-expiry behavior
 
@@ -64,8 +64,8 @@ The SDK-provided `path` is untrusted. Before writing, the resolved destination m
 - **ED-1** — Address by SDK `path`, no Ship-side artifact id. Matches the SDK; one less mapping.
 - **ED-2** — Manifest captured at terminal, persisted as refs in `cursor_runs.artifacts_json`; bytes never persisted, downloaded on demand.
 - **ED-3** — `downloadArtifact` is an optional method on the `CursorRunner` interface, implemented only by `CloudCursorRunner`; `LocalCursorRunner` omits it → `ArtifactsUnavailableLocalError` at the service layer.
-- **ED-4** — Downloads land at `<runsDir>/<wf>/artifacts/<path>`, path-contained (F4) via the existing `isDescendantPath` guard.
-- **ED-5** — Size guard: refuse (with a clear error + the `--force` / config override) any artifact over a configurable cap (default e.g. 100 MB) so a runaway artifact can't OOM Ship. Surfaced, not silent.
+- **ED-4** — Downloads land at `<runsDir>/<wf>/artifacts/<path>`, path-contained (F4): reject absolute/`..` lexically, then `isDescendantPath` against the realpath'd artifacts **root** — never realpath the not-yet-existent destination file.
+- **ED-5** — Size guard is a **preflight** against the manifest's persisted `sizeBytes`, checked *before* `downloadArtifact` — the SDK buffers the whole artifact in memory, so a post-download refuse is useless against OOM (cycle-2 catch). Over the configurable cap (default ~100 MB) → clear error + `--force` / config override; no SDK call. Surfaced, not silent.
 
 ## Validation
 
