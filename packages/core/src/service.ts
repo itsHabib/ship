@@ -39,7 +39,7 @@ import {
   newPhaseId,
   newWorkflowRunId,
 } from "@ship/workflow";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 
 import type { EventWriter } from "./artifacts/ndjson.js";
 import type { DocSource } from "./doc-source/doc-source.js";
@@ -271,7 +271,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     },
     resumeOrphanedRuns: () => resumeOrphanedRunsTracked(resumeCtx),
     resumeReady: () => initialResume,
-    listArtifacts: (workflowRunId) => Promise.resolve(listArtifactsFromStore(store, workflowRunId)),
+    listArtifacts: async (workflowRunId) => listArtifactsFromStore(store, workflowRunId),
     downloadArtifact: (workflowRunId, path, opts) =>
       downloadArtifactImpl({ config, fs, store }, workflowRunId, path, opts),
   };
@@ -951,7 +951,10 @@ async function resolveContainedCloudArtifactDestForOutDir(
 ): Promise<string> {
   const dest = resolveCloudArtifactDestUnderRoot(outDir, sdkPath);
   await fs.mkdir(outDir, { recursive: true });
-  const realRoot = await fs.realpath(outDir);
+  // resolve() the realpath so it shares dest's drive/separators on Windows
+  // (dest is already resolve()'d); a raw realpath of a drive-less outDir
+  // false-positives a valid path as an escape. Mirrors the run-dir variant.
+  const realRoot = resolve(await fs.realpath(outDir));
   if (!isDescendantPath(dest, realRoot)) {
     throw new ArtifactPathEscapesRunDirError(sdkPath);
   }

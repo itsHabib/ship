@@ -155,8 +155,9 @@ export interface CursorRunner {
   run(input: CursorRunInput): Promise<CursorRunHandle>;
   attach(input: CursorRunAttachInput): Promise<CursorRunHandle>;
   /**
-   * Fetches artifact bytes from a cloud agent by id. Implemented only on
-   * {@link CloudCursorRunner}; local/fake runners omit this method.
+   * Fetches artifact bytes from a cloud agent by id. Implemented on
+   * {@link CloudCursorRunner} (and `FakeCursorRunner` for artifact tests);
+   * `LocalCursorRunner` omits this method.
    */
   downloadArtifact?(agentId: string, path: string): Promise<Buffer>;
 }

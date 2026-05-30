@@ -6,7 +6,7 @@ import type { ShipInput } from "@ship/mcp";
 
 import { CursorAgentNotFoundError } from "@ship/cursor-runner";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
-import { createStore } from "@ship/store";
+import { createStore, WorkflowRunNotFoundError } from "@ship/store";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { resolveCloudArtifactDest } from "./artifacts/paths.js";
@@ -249,5 +249,46 @@ describe("ShipService — cloud artifacts", () => {
     await expect(
       h.service.downloadArtifact(out.workflowRunId, "missing.txt"),
     ).rejects.toBeInstanceOf(ArtifactNotInManifestError);
+  });
+
+  test("download with outDir writes under the custom directory (contained)", async () => {
+    const payload = Buffer.from("custom-dir-bytes");
+    h.cloudCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 1, branches: [], artifacts: [ARTIFACT_REF] },
+      artifactBytes: { [ARTIFACT_REF.path]: payload },
+    });
+    const out = await h.service.ship(cloudInput());
+    const downloaded = await h.service.downloadArtifact(out.workflowRunId, ARTIFACT_REF.path, {
+      outDir: "/custom/out",
+    });
+    // Memory FS keys are POSIX-canonical; localPath is OS-native.
+    const storedKey = downloaded.localPath.replace(/\\/g, "/");
+    expect(storedKey).toContain("/custom/out");
+    expect(h.fs.snapshot().binaryFiles.get(storedKey)?.equals(payload)).toBe(true);
+  });
+
+  test("force bypasses the size guard and downloads anyway", async () => {
+    h.cloudCursor.enqueue({
+      events: [],
+      result: {
+        status: "succeeded",
+        durationMs: 1,
+        branches: [],
+        artifacts: [{ path: "big.bin", sizeBytes: 999, updatedAt: ARTIFACT_REF.updatedAt }],
+      },
+      artifactBytes: { "big.bin": Buffer.alloc(999) },
+    });
+    const out = await h.service.ship(cloudInput());
+    const downloaded = await h.service.downloadArtifact(out.workflowRunId, "big.bin", {
+      force: true,
+    });
+    expect(downloaded.sizeBytes).toBe(999);
+  });
+
+  test("listArtifacts on a missing run rejects (async, not a synchronous throw)", async () => {
+    await expect(h.service.listArtifacts("wf_does_not_exist")).rejects.toBeInstanceOf(
+      WorkflowRunNotFoundError,
+    );
   });
 });

@@ -72,6 +72,6 @@ function formatArtifactList(artifacts: readonly ArtifactRef[], json: boolean): s
 }
 
 function pad(value: string, width: number): string {
-  if (value.length >= width) return `${value.slice(0, Math.max(0, width - 1))}…`;
+  if (value.length > width) return `${value.slice(0, Math.max(0, width - 1))}…`;
   return value + " ".repeat(width - value.length);
 }
