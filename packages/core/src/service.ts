@@ -148,7 +148,9 @@ function resolveLatestCloudCursorAgentId(store: Store, run: WorkflowRun): string
     if (cursorRunId === undefined) continue;
     const cursorRun = store.getCursorRun(cursorRunId);
     if (cursorRun?.runtime !== "cloud") continue;
-    if (latest === undefined || cursorRun.startedAt > latest.startedAt) {
+    // Date.parse, not lexicographic >: the isoDateTime schema permits
+    // non-UTC offsets, where lexical order diverges from chronological.
+    if (latest === undefined || Date.parse(cursorRun.startedAt) > Date.parse(latest.startedAt)) {
       latest = cursorRun;
     }
   }
