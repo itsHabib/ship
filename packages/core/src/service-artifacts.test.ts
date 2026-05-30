@@ -175,7 +175,9 @@ describe("ShipService — cloud artifacts", () => {
     expect(downloaded.sizeBytes).toBe(payload.length);
     const expected = resolveCloudArtifactDest(RUNS_DIR, out.workflowRunId, ARTIFACT_REF.path);
     expect(downloaded.localPath).toBe(expected);
-    expect(h.fs.snapshot().binaryFiles.get(expected)?.equals(payload)).toBe(true);
+    // Memory FS canonicalizes keys to POSIX separators; localPath is OS-native.
+    const storedKey = expected.replace(/\\/g, "/");
+    expect(h.fs.snapshot().binaryFiles.get(storedKey)?.equals(payload)).toBe(true);
   });
 
   test("path traversal in sdk path is rejected before download (no runner call)", async () => {

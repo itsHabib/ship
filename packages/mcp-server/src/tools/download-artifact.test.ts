@@ -53,6 +53,8 @@ describe("download_artifact tool", () => {
     });
     const out = parseToolJson(raw) as { localPath: string; sizeBytes: number };
     expect(out.sizeBytes).toBe(3);
-    expect(h.bundle.fs.snapshot().binaryFiles.get(out.localPath)?.toString()).toBe("abc");
+    // Memory FS canonicalizes keys to POSIX separators; localPath is OS-native.
+    const storedKey = out.localPath.replace(/\\/g, "/");
+    expect(h.bundle.fs.snapshot().binaryFiles.get(storedKey)?.toString()).toBe("abc");
   });
 });

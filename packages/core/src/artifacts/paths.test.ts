@@ -47,7 +47,7 @@ describe("resolveRunArtifactPaths", () => {
 
   test("resolveCloudArtifactDest nests under artifacts/", () => {
     const dest = resolveCloudArtifactDest("/runs", "wf_1", "nested/file.txt");
-    expect(dest).toContain("/runs/wf_1/artifacts/nested/file.txt");
+    expect(dest).toContain(join("runs", "wf_1", "artifacts", "nested", "file.txt"));
   });
 
   test("the file constants match spec.md § ED-4", () => {

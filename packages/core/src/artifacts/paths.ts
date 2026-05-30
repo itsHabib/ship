@@ -97,7 +97,12 @@ export async function resolveContainedCloudArtifactDest(
   const dest = resolveCloudArtifactDest(runsDir, workflowRunId, sdkPath);
   const root = resolveCloudArtifactsRoot(runsDir, workflowRunId);
   await fs.mkdir(root, { recursive: true });
-  const realRoot = await fs.realpath(root);
+  // `dest` is `resolve()`'d (absolute, OS-native separators, drive-qualified
+  // on Windows). Resolve the realpath'd root the same way so the containment
+  // check compares like-for-like: a drive-less `runsDir` makes `resolve()`
+  // inject the cwd drive onto `dest` but not onto a raw `realpath`, which
+  // would false-positive a valid path as an escape on Windows.
+  const realRoot = resolve(await fs.realpath(root));
   if (!isDescendantPath(dest, realRoot)) {
     throw new ArtifactPathEscapesRunDirError(sdkPath);
   }
