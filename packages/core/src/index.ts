@@ -37,8 +37,16 @@ export {
   DocNotFoundError,
   DocPathEscapesWorkdirError,
   MissingRepoError,
+  RemoteDocFetchError,
   WorkdirNotFoundError,
 } from "./errors.js";
+
+export type {
+  DocSource,
+  DocSourceFetchParams,
+  DocSourceResolveRefParams,
+} from "./doc-source/index.js";
+export { createRemoteDocSource, parseGitHubRepoSlug } from "./doc-source/index.js";
 
 // --- fs ---
 export type { FileStat, MemoryShipFs, ShipFs } from "./fs/index.js";

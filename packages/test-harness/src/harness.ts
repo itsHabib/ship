@@ -15,6 +15,7 @@ import {
   createMemoryShipFs,
   createShipService,
   DEFAULT_MODEL,
+  type DocSource,
   type MemoryShipFs,
 } from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
@@ -24,6 +25,7 @@ import { newCursorRunId, newPhaseId, newWorkflowRunId } from "@ship/workflow";
 import type { TestClock } from "./clock.js";
 
 import { createTestClock } from "./clock.js";
+import { FakeDocSource } from "./fake-doc-source.js";
 
 /**
  * Construction options for `createHarness`.
@@ -110,6 +112,8 @@ export interface CreateServiceFromHarnessOptions {
   cursor?: CursorRunner;
   /** Optional cloud runner; forwarded into `ShipService` config when set. */
   cloudCursor?: CursorRunner;
+  /** Remote doc source; defaults to a fresh `FakeDocSource`. */
+  docSource?: DocSource;
 }
 
 /** Bundle returned by `createServiceFromHarness` — convenient for scenario assertions. */
@@ -147,6 +151,7 @@ export function createServiceFromHarness(
     clock: h.clock,
     config,
     ids: h.ids,
+    docSource: opts.docSource ?? new FakeDocSource(),
   });
   return { service, fs, config };
 }

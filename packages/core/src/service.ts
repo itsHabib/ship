@@ -40,13 +40,16 @@ import {
 import { basename } from "node:path";
 
 import type { EventWriter } from "./artifacts/ndjson.js";
+import type { DocSource } from "./doc-source/doc-source.js";
 import type { ShipFs } from "./fs/shape.js";
 import type { ValidatedDoc } from "./validate.js";
+import type { CloudDocResolveOptions } from "./validate.js";
 
 import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import { resolveRunArtifactPaths, type RunArtifactPaths } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
+import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
 import {
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
@@ -87,6 +90,8 @@ export interface ShipServiceDeps {
   // across factory constructions against the same dbPath. Omitted →
   // service creates its own private map.
   readonly activeRuns?: ActiveRunsRegistry;
+  /** Remote doc source for cloud runs (local-miss path). */
+  readonly docSource?: DocSource;
 }
 
 // Registry of in-flight runs. Each entry carries an `AbortController`
@@ -171,6 +176,7 @@ function enrichWorkflowRunView(store: Store, run: WorkflowRun | null): GetWorkfl
 
 export function createShipService(deps: ShipServiceDeps): ShipService {
   const { clock, config, fs, store } = deps;
+  const docSource = deps.docSource;
   const ids = deps.ids ?? {
     workflowRun: newWorkflowRunId,
     phase: newPhaseId,
@@ -198,6 +204,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     resolvedCursorRuntime: resolvePersistedRuntime(input),
     runner: selectRunner(config, input),
     store,
+    ...(docSource !== undefined ? { docSource } : {}),
   });
 
   const resumeCtx: ResumeContext = {
@@ -262,6 +269,7 @@ interface ShipContext {
   readonly activeRuns: ActiveRunsRegistry;
   readonly clock: () => string;
   readonly config: ShipServiceConfig;
+  readonly docSource?: DocSource;
   readonly fs: ShipFs;
   readonly ids: NonNullable<ShipServiceDeps["ids"]>;
   readonly input: ShipInput;
@@ -415,7 +423,7 @@ async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
     const validated = await resolveValidatedDocForCloud(
       ctx.fs,
       ctx.input.docPath,
-      ctx.input.workdir,
+      buildCloudDocResolveOptions(ctx),
     );
     return persistInitialState(ctx, validated);
   }
@@ -426,31 +434,39 @@ async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
   return persistInitialState(ctx, validated);
 }
 
-function deriveRepoFromCloudUrl(url: string): string | undefined {
-  try {
-    const u = new URL(url);
-    let path = u.pathname;
-    if (path.startsWith("/")) path = path.slice(1);
-    if (path.endsWith("/")) path = path.slice(0, -1);
-    if (path.toLowerCase().endsWith(".git")) path = path.slice(0, -4);
-    const parts = path.split("/").filter((p) => p.length > 0);
-    if (parts.length >= 2 && parts[0] !== undefined && parts[1] !== undefined) {
-      return `${parts[0]}/${parts[1]}`;
-    }
-  } catch {
-    /* unparseable URL */
-  }
-  return undefined;
-}
-
 function resolveRepo(input: ShipInput): string {
   if (input.repo !== undefined) return input.repo;
   const url = input.cloud?.repos[0]?.url;
   if (url !== undefined) {
-    const derived = deriveRepoFromCloudUrl(url);
+    const derived = parseGitHubRepoSlug(url);
     if (derived !== undefined) return derived;
   }
   throw new MissingRepoError();
+}
+
+/** Repo slug for remote doc fetch — derived from `cloud.repos[0].url` per F3. */
+function resolveDocRepoSlug(input: ShipInput): string {
+  const url = input.cloud?.repos[0]?.url;
+  if (url !== undefined) {
+    const derived = parseGitHubRepoSlug(url);
+    if (derived !== undefined) return derived;
+  }
+  if (input.repo !== undefined) return input.repo;
+  throw new MissingRepoError();
+}
+
+function buildCloudDocResolveOptions(ctx: ShipContext): CloudDocResolveOptions {
+  const cloudRepo = ctx.input.cloud?.repos[0];
+  return {
+    repoSlug: resolveDocRepoSlug(ctx.input),
+    ...(ctx.input.workdir !== undefined ? { workdir: ctx.input.workdir } : {}),
+    ...(cloudRepo?.startingRef !== undefined ? { startingRef: cloudRepo.startingRef } : {}),
+    ...(cloudRepo?.prUrl !== undefined ? { prUrl: cloudRepo.prUrl } : {}),
+    ...(ctx.input.cloud?.workOnCurrentBranch !== undefined
+      ? { workOnCurrentBranch: ctx.input.cloud.workOnCurrentBranch }
+      : {}),
+    ...(ctx.docSource !== undefined ? { docSource: ctx.docSource } : {}),
+  };
 }
 
 // Atomic `pending → running` transition for the workflow row + initial
@@ -638,7 +654,8 @@ async function runToTerminal(
 
 async function prepareArtifacts(ctx: ShipContext, prep: PreparedRun): Promise<string> {
   await ctx.fs.mkdir(prep.paths.dir, { recursive: true });
-  const taskDoc = await ctx.fs.readFile(prep.validated.absoluteDocPath, "utf-8");
+  const taskDoc =
+    prep.validated.content ?? (await ctx.fs.readFile(prep.validated.absoluteDocPath, "utf-8"));
   await ctx.fs.writeFile(prep.paths.taskDoc, taskDoc);
 
   const prompt = renderImplementationPrompt({

@@ -1,8 +1,15 @@
 /** Tests for `resolveValidatedDoc` against the in-memory fs. */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
-import { DocNotFoundError, DocPathEscapesWorkdirError, WorkdirNotFoundError } from "./errors.js";
+import type { DocSource, DocSourceResolveRefParams } from "./doc-source/doc-source.js";
+
+import {
+  DocNotFoundError,
+  DocPathEscapesWorkdirError,
+  RemoteDocFetchError,
+  WorkdirNotFoundError,
+} from "./errors.js";
 import { createMemoryShipFs } from "./fs/memory.js";
 import { resolveValidatedDoc, resolveValidatedDocForCloud } from "./validate.js";
 
@@ -12,12 +19,6 @@ describe("resolveValidatedDoc", () => {
     await fs.mkdir("/work/wt", { recursive: true });
     await fs.writeFile("/work/wt/docs.md", "task body");
     const out = await resolveValidatedDoc(fs, "/work/wt", "docs.md");
-    // The returned `absoluteDocPath` is post-realpath: validate.ts
-    // composes the doc against the workdir via a small `joinPath`
-    // (not `path.resolve`), then resolves it through `ShipFs.realpath`
-    // and returns that canonical form. Memory fs's realpath is the
-    // identity on a present file, so this rounds back to the same
-    // POSIX path the test wrote.
     expect(out.absoluteDocPath).toBe("/work/wt/docs.md");
   });
 
@@ -51,8 +52,6 @@ describe("resolveValidatedDoc", () => {
   });
 
   test("docPath that resolves outside workdir → DocPathEscapesWorkdirError", async () => {
-    // Memory fs has no symlinks so we exercise the path-prefix check
-    // directly via an absolute docPath that points outside the workdir.
     const fs = createMemoryShipFs();
     await fs.mkdir("/work", { recursive: true });
     await fs.writeFile("/elsewhere.md", "x");
@@ -70,7 +69,6 @@ describe("resolveValidatedDoc", () => {
   });
 
   test("workdir prefix-match doesn't false-positive sibling paths", async () => {
-    // Sibling dir `/work2` shouldn't be considered inside `/work`.
     const fs = createMemoryShipFs();
     await fs.mkdir("/work", { recursive: true });
     await fs.mkdir("/work2", { recursive: true });
@@ -81,12 +79,113 @@ describe("resolveValidatedDoc", () => {
   });
 });
 
+function makeFakeDocSource(overrides: Partial<DocSource>): DocSource {
+  return {
+    fetch: overrides.fetch ?? (() => Promise.resolve("# remote\n")),
+    resolveRef: overrides.resolveRef ?? (() => Promise.resolve("main")),
+  };
+}
+
 describe("resolveValidatedDocForCloud", () => {
-  test("absolute docPath outside any workdir succeeds", async () => {
+  test("absolute docPath outside any workdir succeeds (local hit)", async () => {
     const fs = createMemoryShipFs();
     await fs.mkdir("/elsewhere", { recursive: true });
     await fs.writeFile("/elsewhere/task.md", "# Cloud task\n");
     const out = await resolveValidatedDocForCloud(fs, "/elsewhere/task.md");
     expect(out.absoluteDocPath).toBe("/elsewhere/task.md");
+    expect(out.content).toBeUndefined();
+  });
+
+  test("local hit does not call docSource.fetch", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir("/work", { recursive: true });
+    await fs.writeFile("/work/task.md", "local");
+    let fetchCalled = false;
+    const docSource = makeFakeDocSource({
+      fetch: () => {
+        fetchCalled = true;
+        return Promise.resolve("remote");
+      },
+    });
+    const out = await resolveValidatedDocForCloud(fs, "task.md", {
+      workdir: "/work",
+      repoSlug: "acme/sandbox",
+      docSource,
+    });
+    expect(out.absoluteDocPath).toBe("/work/task.md");
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("remote hit returns content without local file", async () => {
+    const fs = createMemoryShipFs();
+    const docSource = makeFakeDocSource({
+      fetch: () => Promise.resolve("# from remote\n"),
+    });
+    const out = await resolveValidatedDocForCloud(fs, "docs/task.md", {
+      repoSlug: "acme/sandbox",
+      docSource,
+    });
+    expect(out.absoluteDocPath).toBe("docs/task.md");
+    expect(out.content).toBe("# from remote\n");
+  });
+
+  test("both-miss names local + remote causes", async () => {
+    const fs = createMemoryShipFs();
+    const docSource = makeFakeDocSource({
+      fetch: () =>
+        Promise.reject(
+          new RemoteDocFetchError({
+            owner: "acme",
+            repo: "sandbox",
+            ref: "main",
+            path: "docs/missing.md",
+            reason: "not found",
+            suggestToken: false,
+          }),
+        ),
+    });
+    await expect(
+      resolveValidatedDocForCloud(fs, "docs/missing.md", {
+        repoSlug: "acme/sandbox",
+        docSource,
+      }),
+    ).rejects.toThrow(/not found locally or remotely/);
+  });
+
+  test("private-no-token surfaces RemoteDocFetchError", async () => {
+    const fs = createMemoryShipFs();
+    const docSource = makeFakeDocSource({
+      fetch: () =>
+        Promise.reject(
+          new RemoteDocFetchError({
+            owner: "acme",
+            repo: "private",
+            ref: "main",
+            path: "docs/task.md",
+            reason: "authentication or permission denied",
+            suggestToken: true,
+          }),
+        ),
+    });
+    await expect(
+      resolveValidatedDocForCloud(fs, "docs/task.md", {
+        repoSlug: "acme/private",
+        docSource,
+      }),
+    ).rejects.toBeInstanceOf(RemoteDocFetchError);
+  });
+
+  test("resolveRef uses startingRef precedence", async () => {
+    const fs = createMemoryShipFs();
+    const resolveRef = vi.fn((params: DocSourceResolveRefParams) =>
+      Promise.resolve(params.startingRef ?? "main"),
+    );
+    const fetch = vi.fn(() => Promise.resolve("body"));
+    await resolveValidatedDocForCloud(fs, "docs/task.md", {
+      repoSlug: "acme/sandbox",
+      startingRef: "feature-branch",
+      docSource: { fetch, resolveRef },
+    });
+    expect(fetch).toHaveBeenCalledWith(expect.objectContaining({ ref: "feature-branch" }));
   });
 });

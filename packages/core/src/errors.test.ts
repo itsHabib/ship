@@ -7,6 +7,7 @@ import {
   DocNotFoundError,
   DocPathEscapesWorkdirError,
   MissingRepoError,
+  RemoteDocFetchError,
   WorkdirNotFoundError,
 } from "./errors.js";
 
@@ -26,6 +27,15 @@ describe("DocNotFoundError", () => {
     expect(err.name).toBe("DocNotFoundError");
     expect(err.docPath).toBe("docs/x.md");
     expect(err.message).toMatch(/task doc/);
+    expect(err.message).toMatch(/cloud runs/);
+  });
+
+  test("cloud both-miss message names local + remote", () => {
+    const err = new DocNotFoundError("docs/x.md", {
+      cloudBothMiss: { repoSlug: "acme/sandbox", ref: "main", remoteReason: "not found" },
+    });
+    expect(err.message).toMatch(/not found locally or remotely/);
+    expect(err.message).toMatch(/acme\/sandbox@main/);
   });
 });
 
@@ -44,6 +54,23 @@ describe("MissingRepoError", () => {
     const err = new MissingRepoError();
     expect(err.name).toBe("MissingRepoError");
     expect(err.message).toMatch(/repo is required/);
+  });
+});
+
+describe("RemoteDocFetchError", () => {
+  test("preserves fields + token hint", () => {
+    const err = new RemoteDocFetchError({
+      owner: "acme",
+      repo: "repo",
+      ref: "main",
+      path: "docs/x.md",
+      reason: "denied",
+      suggestToken: true,
+    });
+    expect(err.name).toBe("RemoteDocFetchError");
+    expect(err.owner).toBe("acme");
+    expect(err.suggestToken).toBe(true);
+    expect(err.message).toMatch(/GITHUB_TOKEN/);
   });
 });
 
