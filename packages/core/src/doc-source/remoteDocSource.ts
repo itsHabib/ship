@@ -51,7 +51,9 @@ async function resolvePullRequestRef(
 ): Promise<string> {
   try {
     const pullSlug = parseGitHubPullRepoSlug(prUrl);
-    if (pullSlug !== undefined && pullSlug !== `${owner}/${repo}`) {
+    // GitHub owner/repo are case-insensitive; compare lowercased so a
+    // differently-cased prUrl isn't mistaken for a fork mismatch.
+    if (pullSlug !== undefined && pullSlug.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) {
       throw new RemoteDocFetchError({
         owner,
         repo,
@@ -104,7 +106,8 @@ async function fetchBlob(
         ref,
         path,
         reason: "path is not a file",
-        suggestToken: !hasToken,
+        // Not an auth failure — a token won't change the result.
+        suggestToken: false,
       });
     }
     if (typeof data.content !== "string" || data.content === "") {
@@ -114,7 +117,8 @@ async function fetchBlob(
         ref,
         path,
         reason: "empty file content",
-        suggestToken: !hasToken,
+        // Not an auth failure — a token won't change the result.
+        suggestToken: false,
       });
     }
     if (data.encoding === "base64") {

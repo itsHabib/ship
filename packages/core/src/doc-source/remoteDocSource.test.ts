@@ -122,6 +122,14 @@ describe("resolveRef", () => {
     expect(mockOctokit.rest.pulls.get).not.toHaveBeenCalled();
   });
 
+  test("accepts a prUrl whose repo slug differs only in case", async () => {
+    mockOctokit.rest.pulls.get.mockResolvedValue({ data: { head: { ref: "feat" } } });
+    const src = createRemoteDocSource("tok");
+    await expect(
+      src.resolveRef({ owner: "o", repo: "r", prUrl: "https://github.com/O/R/pull/7" }),
+    ).resolves.toBe("feat");
+  });
+
   test("falls back to the default branch and caches it", async () => {
     mockOctokit.rest.repos.get.mockResolvedValue({ data: { default_branch: "trunk" } });
     const src = createRemoteDocSource("tok");

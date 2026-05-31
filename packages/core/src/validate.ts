@@ -68,6 +68,11 @@ async function resolveRemoteDoc(
   try {
     ref = await docSource.resolveRef(buildResolveRefParams(owner, repo, options));
   } catch (err) {
+    // Preserve a token hint from ref resolution (e.g. auth failure on the
+    // default-branch lookup), mirroring the fetch catch below.
+    if (err instanceof RemoteDocFetchError && err.suggestToken) {
+      throw err;
+    }
     throw toCloudDocNotFound(docPath, repoSlug, "(ref unresolved)", err);
   }
 
