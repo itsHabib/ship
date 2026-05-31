@@ -46,14 +46,19 @@ describe("runMigrations", () => {
     expect(tables).toContain("cursor_runs");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(2);
-    expect(applied.map((r) => r.name)).toEqual(["0001_init.sql", "0002_cursor_runs_run_id.sql"]);
+    expect(applied).toHaveLength(3);
+    expect(applied.map((r) => r.name)).toEqual([
+      "0001_init.sql",
+      "0002_cursor_runs_run_id.sql",
+      "0003_cursor_runs_artifacts_json.sql",
+    ]);
 
     const columns = db
       .prepare("PRAGMA table_info(cursor_runs)")
       .all()
       .map((r) => (r as { name: string }).name);
     expect(columns).toContain("run_id");
+    expect(columns).toContain("artifacts_json");
   });
 
   test("re-run on already-migrated DB is a no-op (two _migrations rows)", () => {
@@ -62,7 +67,7 @@ describe("runMigrations", () => {
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(2);
+    expect(applied).toHaveLength(3);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {

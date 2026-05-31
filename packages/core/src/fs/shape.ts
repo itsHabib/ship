@@ -16,6 +16,8 @@ export interface ShipFs {
   stat(path: string): Promise<FileStat>;
   readFile(path: string, encoding: "utf-8"): Promise<string>;
   writeFile(path: string, data: string): Promise<void>;
+  /** Binary write for cloud artifact downloads. */
+  writeFileBytes(path: string, data: Buffer): Promise<void>;
   /** Recursive mkdir. No-op if already present. */
   mkdir(path: string, opts: { recursive: true }): Promise<void>;
   /**

@@ -16,6 +16,8 @@ export type {
   CursorRunResult,
 } from "./runner.js";
 
+export type { ArtifactRef } from "@ship/workflow";
+
 // --- cloud-runner.ts ---
 export { CloudCursorRunner } from "./cloud-runner.js";
 

@@ -12,7 +12,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { registerRunsResource } from "./resources/runs.js";
 import { registerCancelWorkflowRunTool } from "./tools/cancel-workflow-run.js";
+import { registerDownloadArtifactTool } from "./tools/download-artifact.js";
 import { registerGetWorkflowRunTool } from "./tools/get-workflow-run.js";
+import { registerListArtifactsTool } from "./tools/list-artifacts.js";
 import { registerListWorkflowRunsTool } from "./tools/list-workflow-runs.js";
 import { registerShipTool } from "./tools/ship.js";
 
@@ -34,6 +36,8 @@ export function buildServer(shipFactory: ShipServiceFactory): McpServer {
   registerGetWorkflowRunTool(server, shipFactory);
   registerListWorkflowRunsTool(server, shipFactory);
   registerCancelWorkflowRunTool(server, shipFactory);
+  registerListArtifactsTool(server, shipFactory);
+  registerDownloadArtifactTool(server, shipFactory);
   registerRunsResource(server, shipFactory);
   return server;
 }

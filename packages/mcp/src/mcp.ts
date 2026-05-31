@@ -5,6 +5,7 @@
  */
 
 import {
+  artifactRefSchema,
   terminalCursorRunRefSchema,
   terminalWorkflowStatusSchema,
   workflowRunSchema,
@@ -247,3 +248,42 @@ export const cancelWorkflowRunOutputSchema = z
   })
   .strict();
 export type CancelWorkflowRunOutput = z.infer<typeof cancelWorkflowRunOutputSchema>;
+
+// =====================================================================
+// list_artifacts
+// =====================================================================
+
+export const listArtifactsInputSchema = z
+  .object({
+    workflowRunId: workflowRunIdSchema,
+  })
+  .strict();
+export type ListArtifactsInput = z.infer<typeof listArtifactsInputSchema>;
+
+export const listArtifactsOutputSchema = z
+  .object({
+    artifacts: z.array(artifactRefSchema),
+  })
+  .strict();
+export type ListArtifactsOutput = z.infer<typeof listArtifactsOutputSchema>;
+
+// =====================================================================
+// download_artifact
+// =====================================================================
+
+export const downloadArtifactInputSchema = z
+  .object({
+    workflowRunId: workflowRunIdSchema,
+    path: z.string().min(1),
+    force: z.boolean().optional(),
+  })
+  .strict();
+export type DownloadArtifactInput = z.infer<typeof downloadArtifactInputSchema>;
+
+export const downloadArtifactOutputSchema = z
+  .object({
+    localPath: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative(),
+  })
+  .strict();
+export type DownloadArtifactOutput = z.infer<typeof downloadArtifactOutputSchema>;

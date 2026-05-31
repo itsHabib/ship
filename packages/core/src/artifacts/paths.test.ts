@@ -3,7 +3,14 @@
 import { basename, join } from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { ARTIFACT_FILES, resolveRunArtifactPaths, resolveRunArtifactsDir } from "./paths.js";
+import { ArtifactPathEscapesRunDirError } from "../errors.js";
+import {
+  ARTIFACT_FILES,
+  assertSafeCloudArtifactPath,
+  resolveCloudArtifactDest,
+  resolveRunArtifactPaths,
+  resolveRunArtifactsDir,
+} from "./paths.js";
 
 describe("resolveRunArtifactsDir", () => {
   test("composes runsDir + workflowRunId via path.join (platform-correct separators)", () => {
@@ -27,6 +34,20 @@ describe("resolveRunArtifactPaths", () => {
   test("events path resolves to a file named events.ndjson directly", () => {
     const p = resolveRunArtifactPaths("/runs", "wf_basename");
     expect(basename(p.events)).toBe("events.ndjson");
+  });
+
+  test("reject absolute and .. artifact paths", () => {
+    expect(() => {
+      assertSafeCloudArtifactPath("/etc/passwd");
+    }).toThrow(ArtifactPathEscapesRunDirError);
+    expect(() => {
+      assertSafeCloudArtifactPath("../secret");
+    }).toThrow(ArtifactPathEscapesRunDirError);
+  });
+
+  test("resolveCloudArtifactDest nests under artifacts/", () => {
+    const dest = resolveCloudArtifactDest("/runs", "wf_1", "nested/file.txt");
+    expect(dest).toContain(join("runs", "wf_1", "artifacts", "nested", "file.txt"));
   });
 
   test("the file constants match spec.md § ED-4", () => {

@@ -18,6 +18,7 @@ import type {
 import type { GetWorkflowRunOutput, ShipInput, ShipOutput, ShipStartOutput } from "@ship/mcp";
 import type { ListRunsFilter, ResumableCloudCursorRun, Store } from "@ship/store";
 import type {
+  ArtifactRef,
   CursorRunRef,
   CursorRunRuntime,
   ModelSelection,
@@ -29,6 +30,7 @@ import type {
 } from "@ship/workflow";
 
 import { CursorAgentNotFoundError } from "@ship/cursor-runner";
+import { WorkflowRunNotFoundError } from "@ship/store";
 import {
   CLOUD_WORKTREE_SENTINEL,
   cursorWatchUrl,
@@ -37,7 +39,7 @@ import {
   newPhaseId,
   newWorkflowRunId,
 } from "@ship/workflow";
-import { basename } from "node:path";
+import { basename, resolve as resolvePath } from "node:path";
 
 import type { EventWriter } from "./artifacts/ndjson.js";
 import type { DocSource } from "./doc-source/doc-source.js";
@@ -46,16 +48,29 @@ import type { ValidatedDoc } from "./validate.js";
 import type { CloudDocResolveOptions } from "./validate.js";
 
 import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
-import { resolveRunArtifactPaths, type RunArtifactPaths } from "./artifacts/paths.js";
+import {
+  assertSafeCloudArtifactPath,
+  DEFAULT_ARTIFACT_MAX_BYTES,
+  resolveCloudArtifactDestUnderRoot,
+  resolveContainedCloudArtifactDest,
+  resolveRunArtifactPaths,
+  type RunArtifactPaths,
+} from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
 import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
 import {
+  ArtifactGoneError,
+  ArtifactNotInManifestError,
+  ArtifactPathEscapesRunDirError,
+  ArtifactsUnavailableLocalError,
+  ArtifactTooLargeError,
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
   MissingRepoError,
   WorkdirNotFoundError,
 } from "./errors.js";
+import { isDescendantPath } from "./validate.js";
 import { resolveValidatedDoc, resolveValidatedDocForCloud } from "./validate.js";
 
 /** Construction-time configuration for the service. */
@@ -72,6 +87,8 @@ export interface ShipServiceConfig {
   readonly cursor: CursorRunner;
   /** Optional cloud runner; required at dispatch time only for `runtime: "cloud"`. */
   readonly cloudCursor?: CursorRunner;
+  /** Preflight cap for `downloadArtifact` (ED-5). Default: 100 MiB. */
+  readonly artifactMaxBytes?: number;
 }
 
 /** All collaborators the service needs. Injected at construction time. */
@@ -135,6 +152,14 @@ export interface ShipService {
    * eagerly at service construction.
    */
   resumeOrphanedRuns(): Promise<void>;
+  /** Returns the persisted cloud artifact manifest (DB only). */
+  listArtifacts(workflowRunId: string): Promise<readonly ArtifactRef[]>;
+  /** Downloads one cloud artifact to `<runsDir>/<wf>/artifacts/<path>`. */
+  downloadArtifact(
+    workflowRunId: string,
+    path: string,
+    opts?: { readonly force?: boolean; readonly outDir?: string },
+  ): Promise<{ localPath: string; sizeBytes: number }>;
 }
 
 // Per-run entry stored in the `ActiveRunsRegistry`. `handle` is set
@@ -246,6 +271,12 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     },
     resumeOrphanedRuns: () => resumeOrphanedRunsTracked(resumeCtx),
     resumeReady: () => initialResume,
+    // Promise.resolve().then() defers the sync call into a microtask so any
+    // throw from listArtifactsFromStore becomes a rejection, not a sync throw.
+    listArtifacts: (workflowRunId) =>
+      Promise.resolve().then(() => listArtifactsFromStore(store, workflowRunId)),
+    downloadArtifact: (workflowRunId, path, opts) =>
+      downloadArtifactImpl({ config, fs, store }, workflowRunId, path, opts),
   };
 
   return service;
@@ -769,8 +800,168 @@ function persistSuccessRows(
     status: terminal,
     endedAt,
     durationMs: args.result.durationMs,
+    ...(args.result.artifacts !== undefined && { artifacts: [...args.result.artifacts] }),
   });
   if (!isCancelled) ctx.store.updateWorkflowRunStatus(args.workflowRunId, args.result.status);
+}
+
+function resolveImplementCursorRunId(run: WorkflowRun): string | undefined {
+  const phase = run.phases.find((p) => p.kind === "implement" && p.cursorRunId !== undefined);
+  return phase?.cursorRunId;
+}
+
+function listArtifactsFromStore(store: Store, workflowRunId: string): readonly ArtifactRef[] {
+  const run = store.getRun(workflowRunId);
+  if (run === null) {
+    throw new WorkflowRunNotFoundError(workflowRunId);
+  }
+  const cursorRunId = resolveImplementCursorRunId(run);
+  if (cursorRunId === undefined) {
+    return [];
+  }
+  const cursorRun = store.getCursorRun(cursorRunId);
+  return cursorRun?.artifacts ?? [];
+}
+
+function resolveCloudCursorRunForDownload(
+  store: Store,
+  workflowRunId: string,
+  sdkPath: string,
+): CursorRunRef {
+  const run = store.getRun(workflowRunId);
+  if (run === null) {
+    throw new WorkflowRunNotFoundError(workflowRunId);
+  }
+  const cursorRunId = resolveImplementCursorRunId(run);
+  if (cursorRunId === undefined) {
+    throw new ArtifactNotInManifestError(workflowRunId, sdkPath);
+  }
+  const cursorRun = store.getCursorRun(cursorRunId);
+  if (cursorRun === null) {
+    throw new ArtifactNotInManifestError(workflowRunId, sdkPath);
+  }
+  if (cursorRun.runtime !== "cloud") {
+    throw new ArtifactsUnavailableLocalError(workflowRunId);
+  }
+  return cursorRun;
+}
+
+function manifestRefForPath(
+  manifest: readonly ArtifactRef[],
+  workflowRunId: string,
+  sdkPath: string,
+): ArtifactRef {
+  const ref = manifest.find((a) => a.path === sdkPath);
+  if (ref === undefined) {
+    throw new ArtifactNotInManifestError(workflowRunId, sdkPath);
+  }
+  return ref;
+}
+
+function assertArtifactSizePreflight(
+  ref: ArtifactRef,
+  workflowRunId: string,
+  sdkPath: string,
+  maxBytes: number,
+  force: boolean | undefined,
+): void {
+  if (!force && ref.sizeBytes > maxBytes) {
+    throw new ArtifactTooLargeError({
+      maxBytes,
+      path: sdkPath,
+      sizeBytes: ref.sizeBytes,
+      workflowRunId,
+    });
+  }
+}
+
+function assertDownloadedArtifactSize(
+  bytes: Buffer,
+  workflowRunId: string,
+  sdkPath: string,
+  maxBytes: number,
+  force: boolean | undefined,
+): void {
+  if (!force && bytes.length > maxBytes) {
+    throw new ArtifactTooLargeError({
+      maxBytes,
+      path: sdkPath,
+      sizeBytes: bytes.length,
+      workflowRunId,
+    });
+  }
+}
+
+async function fetchCloudArtifactBytes(
+  runner: CursorRunner,
+  agentId: string,
+  workflowRunId: string,
+  sdkPath: string,
+): Promise<Buffer> {
+  if (runner.downloadArtifact === undefined) {
+    throw new CloudRunnerNotConfiguredError();
+  }
+  try {
+    return await runner.downloadArtifact(agentId, sdkPath);
+  } catch (err) {
+    if (err instanceof CursorAgentNotFoundError) {
+      throw new ArtifactGoneError(workflowRunId, sdkPath);
+    }
+    throw err;
+  }
+}
+
+async function downloadArtifactImpl(
+  deps: Pick<ShipServiceDeps, "store" | "fs" | "config">,
+  workflowRunId: string,
+  sdkPath: string,
+  opts?: { readonly force?: boolean; readonly outDir?: string },
+): Promise<{ localPath: string; sizeBytes: number }> {
+  const { config, fs, store } = deps;
+  const cursorRun = resolveCloudCursorRunForDownload(store, workflowRunId, sdkPath);
+  const ref = manifestRefForPath(cursorRun.artifacts ?? [], workflowRunId, sdkPath);
+  assertSafeCloudArtifactPath(sdkPath);
+  const maxBytes = config.artifactMaxBytes ?? DEFAULT_ARTIFACT_MAX_BYTES;
+  assertArtifactSizePreflight(ref, workflowRunId, sdkPath, maxBytes, opts?.force);
+  const runner = config.cloudCursor;
+  if (runner === undefined) {
+    throw new CloudRunnerNotConfiguredError();
+  }
+  const bytes = await fetchCloudArtifactBytes(runner, cursorRun.agentId, workflowRunId, sdkPath);
+  assertDownloadedArtifactSize(bytes, workflowRunId, sdkPath, maxBytes, opts?.force);
+  const dest =
+    opts?.outDir !== undefined
+      ? await resolveContainedCloudArtifactDestForOutDir(fs, opts.outDir, sdkPath)
+      : await resolveContainedCloudArtifactDest(fs, config.runsDir, workflowRunId, sdkPath);
+  const parent = parentDirOf(dest);
+  if (parent !== "") {
+    await fs.mkdir(parent, { recursive: true });
+  }
+  await fs.writeFileBytes(dest, bytes);
+  return { localPath: dest, sizeBytes: bytes.length };
+}
+
+function parentDirOf(filePath: string): string {
+  const idx = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
+  if (idx <= 0) return "";
+  return filePath.slice(0, idx);
+}
+
+async function resolveContainedCloudArtifactDestForOutDir(
+  fs: ShipFs,
+  outDir: string,
+  sdkPath: string,
+): Promise<string> {
+  const dest = resolveCloudArtifactDestUnderRoot(outDir, sdkPath);
+  await fs.mkdir(outDir, { recursive: true });
+  // resolve() the realpath so it shares dest's drive/separators on Windows
+  // (dest is already resolve()'d); a raw realpath of a drive-less outDir
+  // false-positives a valid path as an escape. Mirrors the run-dir variant.
+  const realRoot = resolvePath(await fs.realpath(outDir));
+  if (!isDescendantPath(dest, realRoot)) {
+    throw new ArtifactPathEscapesRunDirError(sdkPath);
+  }
+  return dest;
 }
 
 /**

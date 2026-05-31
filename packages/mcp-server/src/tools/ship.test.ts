@@ -162,7 +162,9 @@ describe("ship tool", () => {
     const names = list.tools.map((t) => t.name).sort((a, b) => a.localeCompare(b));
     expect(names).toEqual([
       "cancel_workflow_run",
+      "download_artifact",
       "get_workflow_run",
+      "list_artifacts",
       "list_workflow_runs",
       "ship",
     ]);

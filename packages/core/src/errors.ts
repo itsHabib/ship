@@ -110,3 +110,70 @@ export class MissingRepoError extends Error {
 export class ArtifactWriteFailedError extends Error {
   override readonly name = "ArtifactWriteFailedError";
 }
+
+/** `download_artifact` on a local-runtime workflow run. */
+export class ArtifactsUnavailableLocalError extends Error {
+  override readonly name = "ArtifactsUnavailableLocalError";
+  readonly workflowRunId: string;
+
+  constructor(workflowRunId: string) {
+    super(`cloud artifacts are not available for local workflow run ${workflowRunId}`);
+    this.workflowRunId = workflowRunId;
+  }
+}
+
+/** SDK `path` failed lexical containment checks (absolute or `..`). */
+export class ArtifactPathEscapesRunDirError extends Error {
+  override readonly name = "ArtifactPathEscapesRunDirError";
+  readonly path: string;
+
+  constructor(path: string) {
+    super(`artifact path escapes run artifacts directory: ${path}`);
+    this.path = path;
+  }
+}
+
+/** Persisted manifest lists the path but cloud agent bytes are gone. */
+export class ArtifactGoneError extends Error {
+  override readonly name = "ArtifactGoneError";
+  readonly workflowRunId: string;
+  readonly path: string;
+
+  constructor(workflowRunId: string, path: string) {
+    super(`cloud artifact no longer available: workflowRunId=${workflowRunId} path=${path}`);
+    this.workflowRunId = workflowRunId;
+    this.path = path;
+  }
+}
+
+/** Manifest `path` not found for this workflow run. */
+export class ArtifactNotInManifestError extends Error {
+  override readonly name = "ArtifactNotInManifestError";
+  readonly workflowRunId: string;
+  readonly path: string;
+
+  constructor(workflowRunId: string, path: string) {
+    super(`artifact path not in manifest: workflowRunId=${workflowRunId} path=${path}`);
+    this.workflowRunId = workflowRunId;
+    this.path = path;
+  }
+}
+
+/** Preflight size guard tripped (ED-5); no SDK download attempted. */
+export class ArtifactTooLargeError extends Error {
+  override readonly name = "ArtifactTooLargeError";
+  readonly workflowRunId: string;
+  readonly path: string;
+  readonly sizeBytes: number;
+  readonly maxBytes: number;
+
+  constructor(args: { workflowRunId: string; path: string; sizeBytes: number; maxBytes: number }) {
+    super(
+      `artifact exceeds size cap (${String(args.sizeBytes)} > ${String(args.maxBytes)} bytes): workflowRunId=${args.workflowRunId} path=${args.path}`,
+    );
+    this.workflowRunId = args.workflowRunId;
+    this.path = args.path;
+    this.sizeBytes = args.sizeBytes;
+    this.maxBytes = args.maxBytes;
+  }
+}

@@ -11,6 +11,7 @@ import type { FileStat, ShipFs } from "./shape.js";
 
 interface MemoryFs {
   readonly files: Map<string, string>;
+  readonly binaryFiles: Map<string, Buffer>;
   readonly dirs: Set<string>;
 }
 
@@ -29,11 +30,15 @@ const fileStat = (isFile: boolean): FileStat => ({
 
 export interface MemoryShipFs extends ShipFs {
   /** Read the snapshot of the in-memory store. Useful for test assertions. */
-  readonly snapshot: () => { files: Map<string, string>; dirs: Set<string> };
+  readonly snapshot: () => {
+    files: Map<string, string>;
+    binaryFiles: Map<string, Buffer>;
+    dirs: Set<string>;
+  };
 }
 
 export function createMemoryShipFs(): MemoryShipFs {
-  const fs: MemoryFs = { files: new Map(), dirs: new Set(["/"]) };
+  const fs: MemoryFs = { binaryFiles: new Map(), files: new Map(), dirs: new Set(["/"]) };
 
   const ensureParentDir = (path: string): void => {
     const parent = parentDir(path);
@@ -45,7 +50,7 @@ export function createMemoryShipFs(): MemoryShipFs {
   return {
     stat: (path) => {
       const norm = normalize(path);
-      if (fs.files.has(norm)) return Promise.resolve(fileStat(true));
+      if (fs.files.has(norm) || fs.binaryFiles.has(norm)) return Promise.resolve(fileStat(true));
       if (fs.dirs.has(norm)) return Promise.resolve(fileStat(false));
       return Promise.reject(ENOENT(path));
     },
@@ -62,6 +67,18 @@ export function createMemoryShipFs(): MemoryShipFs {
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
       fs.files.set(norm, data);
+      fs.binaryFiles.delete(norm);
+      return Promise.resolve();
+    },
+    writeFileBytes: (path, data) => {
+      const norm = normalize(path);
+      try {
+        ensureParentDir(norm);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      fs.binaryFiles.set(norm, Buffer.from(data));
+      fs.files.delete(norm);
       return Promise.resolve();
     },
     mkdir: (path, _opts) => {
@@ -118,10 +135,16 @@ export function createMemoryShipFs(): MemoryShipFs {
       const norm = normalize(path);
       // No symlinks in the memory FS — realpath is identity if the
       // path resolves to a known file or directory.
-      if (fs.files.has(norm) || fs.dirs.has(norm)) return Promise.resolve(norm);
+      if (fs.files.has(norm) || fs.binaryFiles.has(norm) || fs.dirs.has(norm)) {
+        return Promise.resolve(norm);
+      }
       return Promise.reject(ENOENT(path));
     },
-    snapshot: () => ({ files: new Map(fs.files), dirs: new Set(fs.dirs) }),
+    snapshot: () => ({
+      binaryFiles: new Map(fs.binaryFiles),
+      dirs: new Set(fs.dirs),
+      files: new Map(fs.files),
+    }),
   };
 }
 

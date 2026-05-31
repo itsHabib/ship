@@ -10,6 +10,7 @@ export function createNodeShipFs(): ShipFs {
     stat: (path) => stat(path),
     readFile: (path, encoding) => readFile(path, encoding),
     writeFile: (path, data) => writeFile(path, data, "utf-8"),
+    writeFileBytes: (path, data) => writeFile(path, data),
     mkdir: async (path, opts) => {
       await mkdir(path, opts);
     },

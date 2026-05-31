@@ -32,6 +32,11 @@ export type { ListRunsFilter } from "@ship/store";
 
 // --- errors ---
 export {
+  ArtifactGoneError,
+  ArtifactNotInManifestError,
+  ArtifactPathEscapesRunDirError,
+  ArtifactsUnavailableLocalError,
+  ArtifactTooLargeError,
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
   DocNotFoundError,
@@ -59,6 +64,10 @@ export { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 export type { ArtifactName, RunArtifactPaths } from "./artifacts/paths.js";
 export {
   ARTIFACT_FILES,
+  CLOUD_ARTIFACT_SUBDIR,
+  DEFAULT_ARTIFACT_MAX_BYTES,
+  resolveCloudArtifactsRoot,
+  resolveCloudArtifactDest,
   resolveRunArtifactsDir,
   resolveRunArtifactPaths,
 } from "./artifacts/paths.js";

@@ -6,6 +6,11 @@
  */
 
 import {
+  ArtifactGoneError,
+  ArtifactNotInManifestError,
+  ArtifactPathEscapesRunDirError,
+  ArtifactsUnavailableLocalError,
+  ArtifactTooLargeError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
   MissingRepoError,
@@ -39,6 +44,11 @@ const USER_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   WorkflowRunNotFoundError,
   InvalidArgumentError,
   RangeError,
+  ArtifactsUnavailableLocalError,
+  ArtifactNotInManifestError,
+  ArtifactPathEscapesRunDirError,
+  ArtifactTooLargeError,
+  ArtifactGoneError,
 ];
 
 // Commander argv errors arrive as plain `Error` with these phrases.

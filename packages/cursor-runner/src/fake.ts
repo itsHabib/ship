@@ -39,6 +39,8 @@ export interface FakeCursorScript {
   readonly cancelBehavior?: "complete" | "ignore" | "throw";
   /** `0` (default) → events fire in tight microtasks. `> 0` → real-time delay between events. */
   readonly delayMsBetweenEvents?: number;
+  /** Bytes returned by `downloadArtifact` for paths in `result.artifacts`. */
+  readonly artifactBytes?: Readonly<Record<string, Buffer>>;
 }
 
 /** Scripted attach outcome — either a resumable run or a not-found rejection. */
@@ -87,6 +89,7 @@ export class FakeCursorRunner implements CursorRunner {
   readonly #attachCalls: FakeCursorAttachCall[] = [];
   readonly #defaultScript: FakeCursorScript | undefined;
   readonly #defaultAttachScript: FakeCursorAttachScript | undefined;
+  readonly #artifactBytesByAgent = new Map<string, Map<string, Buffer>>();
   #runCounter = 0;
 
   constructor(opts: FakeCursorRunnerOptions = {}) {
@@ -132,14 +135,27 @@ export class FakeCursorRunner implements CursorRunner {
 
     this.#runCounter += 1;
     const callIndex = this.#runCounter;
+    const agentId = `agent-fake-${callIndex.toString().padStart(4, "0")}`;
+    if (script.artifactBytes !== undefined) {
+      this.#artifactBytesByAgent.set(agentId, new Map(Object.entries(script.artifactBytes)));
+    }
     return Promise.resolve(
       this.#buildScriptedHandle({
-        agentId: `agent-fake-${callIndex.toString().padStart(4, "0")}`,
+        agentId,
         input,
         runId: `run-fake-${callIndex.toString().padStart(4, "0")}`,
         script,
       }),
     );
+  }
+
+  downloadArtifact(agentId: string, path: string): Promise<Buffer> {
+    const perAgent = this.#artifactBytesByAgent.get(agentId);
+    const bytes = perAgent?.get(path);
+    if (bytes === undefined) {
+      throw new CursorAgentNotFoundError({ agentId, runId: "", runtime: "cloud" });
+    }
+    return Promise.resolve(bytes);
   }
 
   attach(input: CursorRunAttachInput): Promise<CursorRunHandle> {

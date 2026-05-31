@@ -142,6 +142,26 @@ describe("cursor runs (via createStore)", () => {
     expect(updated.durationMs).toBe(60_000);
   });
 
+  test("updateCursorRunStatus persists artifacts; getCursorRun round-trips them", () => {
+    const runId = seedRun();
+    const id = newCursorRunId();
+    store.recordCursorRun({
+      agentId: "bc-art",
+      artifactsDir: "/runs/wf_x",
+      id,
+      runtime: "cloud",
+      workflowRunId: runId,
+    });
+    const artifacts = [
+      { path: "out/report.txt", sizeBytes: 14, updatedAt: "2026-05-29T00:00:00.000Z" },
+      { path: "build/app.bin", sizeBytes: 2048, updatedAt: "2026-05-29T00:01:00.000Z" },
+    ];
+    const updated = store.updateCursorRunStatus(id, { artifacts });
+    expect(updated.artifacts).toEqual(artifacts);
+    // Read back exercises parseCursorRun's artifacts_json → ArtifactRef[] branch.
+    expect(store.getCursorRun(id)?.artifacts).toEqual(artifacts);
+  });
+
   test("updateCursorRunStatus: empty patch returns the current row", () => {
     const runId = seedRun();
     const id = newCursorRunId();
