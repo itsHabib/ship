@@ -17,6 +17,7 @@ export { createDefaultShipService, DEFAULT_MODEL } from "./default-wiring.js";
 // --- re-exports of MCP boundary types so consumers (cli, mcp-server) ---
 // don't need a direct `@ship/mcp` dep just to type ShipService's surface.
 export type {
+  GetWorkflowRunOutput,
   ListWorkflowRunsInput,
   ShipArtifacts,
   ShipInput,

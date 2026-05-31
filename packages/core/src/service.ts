@@ -15,7 +15,7 @@ import type {
   CursorRunResult,
   McpServerConfig,
 } from "@ship/cursor-runner";
-import type { ShipInput, ShipOutput, ShipStartOutput } from "@ship/mcp";
+import type { GetWorkflowRunOutput, ShipInput, ShipOutput, ShipStartOutput } from "@ship/mcp";
 import type { ListRunsFilter, ResumableCloudCursorRun, Store } from "@ship/store";
 import type {
   CursorRunRef,
@@ -31,6 +31,7 @@ import type {
 import { CursorAgentNotFoundError } from "@ship/cursor-runner";
 import {
   CLOUD_WORKTREE_SENTINEL,
+  cursorWatchUrl,
   DEFAULT_WORKFLOW_POLICY,
   newCursorRunId,
   newPhaseId,
@@ -103,7 +104,7 @@ export interface ShipService {
   // resolves with `{ workflowRunId, status: "running" }`. Callers poll
   // `getRun` for terminal state. CLI keeps using `ship` (blocking).
   startShip(input: ShipInput): Promise<ShipStartOutput>;
-  getRun(workflowRunId: string): Promise<WorkflowRun | null>;
+  getRun(workflowRunId: string): Promise<GetWorkflowRunOutput | null>;
   listRuns(filter: ListRunsFilter): Promise<WorkflowRun[]>;
   cancelRun(workflowRunId: string): Promise<{ workflowRunId: string; status: WorkflowStatus }>;
   // Awaits every in-flight `startShip` background continuation to fully
@@ -137,6 +138,35 @@ export interface ShipService {
 export interface ActiveRun {
   readonly controller: AbortController;
   handle?: CursorRunHandle;
+}
+
+/** Latest cloud `cursor_runs.agent_id` linked from the run's phases (by `startedAt`). */
+function resolveLatestCloudCursorAgentId(store: Store, run: WorkflowRun): string | undefined {
+  let latest: CursorRunRef | undefined;
+  for (const phase of run.phases) {
+    const cursorRunId = phase.cursorRunId;
+    if (cursorRunId === undefined) continue;
+    const cursorRun = store.getCursorRun(cursorRunId);
+    if (cursorRun?.runtime !== "cloud") continue;
+    // Date.parse, not lexicographic >: the isoDateTime schema permits
+    // non-UTC offsets, where lexical order diverges from chronological.
+    if (latest === undefined || Date.parse(cursorRun.startedAt) > Date.parse(latest.startedAt)) {
+      latest = cursorRun;
+    }
+  }
+  return latest?.agentId;
+}
+
+/** MCP `get_workflow_run` view: domain run plus derived cloud watch fields. */
+function enrichWorkflowRunView(store: Store, run: WorkflowRun | null): GetWorkflowRunOutput | null {
+  if (run === null) return null;
+  const agentId = resolveLatestCloudCursorAgentId(store, run);
+  if (agentId === undefined) return run;
+  return {
+    ...run,
+    cursorAgentId: agentId,
+    watchUrl: cursorWatchUrl(agentId),
+  };
 }
 
 export function createShipService(deps: ShipServiceDeps): ShipService {
@@ -186,7 +216,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
   const service: ShipService = {
     ship: (input) => runShip(makeCtx(input)),
     startShip: (input) => runShipStart(makeCtx(input), bgPending),
-    getRun: (id) => Promise.resolve(store.getRun(id)),
+    getRun: (id) => Promise.resolve(enrichWorkflowRunView(store, store.getRun(id))),
     listRuns: (filter) => Promise.resolve(store.listRuns(filter)),
     cancelRun: (id) => {
       try {

@@ -10,7 +10,7 @@ import type { WorkflowRun } from "@ship/workflow";
 
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore } from "@ship/store";
-import { CLOUD_WORKTREE_SENTINEL, isTerminal } from "@ship/workflow";
+import { CLOUD_WORKTREE_SENTINEL, cursorWatchUrl, isTerminal } from "@ship/workflow";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -1288,6 +1288,75 @@ describe("ShipService.getRun + listRuns", () => {
 
     const otherRepo = await h.service.listRuns({ repo: "elsewhere", limit: 10 });
     expect(otherRepo).toHaveLength(0);
+  });
+});
+
+describe("ShipService.getRun — cloud watchUrl enrichment", () => {
+  test("cloud run with cursor row exposes cursorAgentId and watchUrl", async () => {
+    const h = await createHarness();
+    h.cloudCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      runtime: "cloud",
+      cloud: { repos: [{ url: "https://github.com/owner/repo" }] },
+    });
+    const row = await h.service.getRun(out.workflowRunId);
+    expect(row?.cursorAgentId).toBe("agent-fake-0001");
+    expect(row?.watchUrl).toBe(cursorWatchUrl("agent-fake-0001"));
+    h.store.close();
+  });
+
+  test("local run omits cursorAgentId and watchUrl", async () => {
+    const h = await createHarness();
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    const row = await h.service.getRun(out.workflowRunId);
+    expect(row).not.toHaveProperty("cursorAgentId");
+    expect(row).not.toHaveProperty("watchUrl");
+    h.store.close();
+  });
+
+  test("cloud run before cursor row is linked omits watch fields", async () => {
+    const h = await createHarness();
+    const wfId = "wf_00000000000000000000000001";
+    const phaseId = "ph_00000000000000000000000001";
+    h.store.createWorkflowRun({
+      baseRef: "main",
+      docPath: "docs.md",
+      id: wfId,
+      policy: { agentTimeoutMs: 1, baseRef: "main", maxRunDurationMs: 1 },
+      repo: "ship",
+      worktree: {
+        baseRef: "main",
+        branch: CLOUD_WORKTREE_SENTINEL,
+        name: CLOUD_WORKTREE_SENTINEL,
+        path: CLOUD_WORKTREE_SENTINEL,
+        repo: "ship",
+      },
+    });
+    h.store.appendPhase({
+      id: phaseId,
+      inputJson: JSON.stringify({ docPath: "docs.md" }),
+      kind: "implement",
+      workflowRunId: wfId,
+    });
+    h.store.markRunStarted(wfId, phaseId, "2026-05-09T00:00:00.000Z");
+    const row = await h.service.getRun(wfId);
+    expect(row).not.toHaveProperty("cursorAgentId");
+    expect(row).not.toHaveProperty("watchUrl");
+    h.store.close();
   });
 });
 

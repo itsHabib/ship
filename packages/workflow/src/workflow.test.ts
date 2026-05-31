@@ -17,6 +17,7 @@ import {
   cursorRunRefSchema,
   cursorRunRuntimeSchema,
   cursorRunStatusSchema,
+  cursorWatchUrl,
   DEFAULT_WORKFLOW_POLICY,
   isTerminal,
   modelSelectionSchema,
@@ -475,5 +476,13 @@ describe("canTransition", () => {
 
   test("rejects running → pending (no rewind)", () => {
     expect(canTransition("running", "pending")).toBe(false);
+  });
+});
+
+describe("cursorWatchUrl", () => {
+  test("builds the canonical Cursor cloud dashboard URL", () => {
+    expect(cursorWatchUrl("bc-test-agent-0001")).toBe(
+      "https://cursor.com/agents/bc-test-agent-0001",
+    );
   });
 });

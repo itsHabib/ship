@@ -34,7 +34,8 @@ export function registerRunsResource(server: McpServer, factory: ShipServiceFact
     "ship-run",
     template,
     {
-      description: "Read the durable state of a workflow run by id.",
+      description:
+        "Read the durable state of a workflow run by id. Cloud runs may include watchUrl (live Cursor dashboard link) and cursorAgentId at the top level.",
       mimeType: MIME_JSON,
     },
     async (uri, variables) => {

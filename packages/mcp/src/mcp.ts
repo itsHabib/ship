@@ -181,8 +181,14 @@ export const getWorkflowRunInputSchema = z
   .strict();
 export type GetWorkflowRunInput = z.infer<typeof getWorkflowRunInputSchema>;
 
-/** Output of `get_workflow_run` — the full hydrated `WorkflowRun`. */
-export const getWorkflowRunOutputSchema = workflowRunSchema;
+/**
+ * Output of `get_workflow_run` — hydrated `WorkflowRun` plus derived
+ * cloud watch fields (omitted for local runs / before agent is recorded).
+ */
+export const getWorkflowRunOutputSchema = workflowRunSchema.extend({
+  cursorAgentId: z.string().min(1).optional(),
+  watchUrl: z.string().url().optional(),
+});
 export type GetWorkflowRunOutput = z.infer<typeof getWorkflowRunOutputSchema>;
 
 // =====================================================================
