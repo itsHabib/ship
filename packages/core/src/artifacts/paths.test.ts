@@ -99,9 +99,15 @@ describe("resolveContainedCloudArtifactDest", () => {
     const workflowRunId = "wf_dangling_escape";
     const artifactsRoot = join(runsDir, workflowRunId, "artifacts");
     await fs.mkdir(artifactsRoot, { recursive: true });
-    // Link to a target that does not exist: stat() (which follows) throws ENOENT,
-    // but writing through it must not be allowed — lstat still sees the link.
-    symlinkSync(join(tmpRoot, "outside-gone"), join(artifactsRoot, "link"), "junction");
+    // Create the junction to a real dir, then remove the target so the link
+    // dangles. NT junctions require the target to exist at creation time, so
+    // create-then-remove is the portable way to get a dangling link (the
+    // junction persists after the target is gone). stat() (follows) then throws
+    // ENOENT, but lstat still sees the link, so the write must be rejected.
+    const danglingTarget = join(tmpRoot, "outside-gone");
+    await fs.mkdir(danglingTarget, { recursive: true });
+    symlinkSync(danglingTarget, join(artifactsRoot, "link"), "junction");
+    rmSync(danglingTarget, { force: true, recursive: true });
 
     await expect(
       resolveContainedCloudArtifactDest(fs, runsDir, workflowRunId, "link/secret.txt"),
