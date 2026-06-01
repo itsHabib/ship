@@ -16,7 +16,7 @@ import type { CreateWorkflowRunInput, ListRunsFilter } from "./workflow-runs.js"
 
 import { createCursorRunOps } from "./cursor-runs.js";
 import { openDatabase } from "./db.js";
-import { runMigrations } from "./migrations.js";
+import { assertSchemaVersion, runMigrations } from "./migrations.js";
 import { createPhaseOps } from "./phases.js";
 import { createWorkflowRunOps } from "./workflow-runs.js";
 
@@ -32,6 +32,8 @@ import { createWorkflowRunOps } from "./workflow-runs.js";
 export interface CreateStoreOptions {
   dbPath: string;
   clock?: () => string;
+  /** Override migration directory; production callers omit this. */
+  migrationsDir?: string;
 }
 
 /**
@@ -128,14 +130,18 @@ function defaultClock(): string {
 /**
  * Construct a `Store`. Opens the SQLite connection, applies PRAGMAs, runs
  * migrations, wires the per-table ops modules. Throws `MigrationError` on
- * migration failure. On any init failure the handle is closed before
+ * migration failure and `SchemaSkewError` when the DB schema is behind the
+ * migrations shipped with this build. On any init failure the handle is closed
  * re-throwing.
  */
 export function createStore(opts: CreateStoreOptions): Store {
   const clock = opts.clock ?? defaultClock;
   const db = openDatabase(opts.dbPath);
   try {
-    runMigrations(db, { clock });
+    const migrationOpts =
+      opts.migrationsDir === undefined ? { clock } : { clock, migrationsDir: opts.migrationsDir };
+    runMigrations(db, migrationOpts);
+    assertSchemaVersion(db);
 
     const phaseOps = createPhaseOps(db, clock);
     const workflowRunOps = createWorkflowRunOps(db, clock, phaseOps);

@@ -11,13 +11,18 @@ import { fileURLToPath } from "node:url";
 
 import type { Db } from "./db.js";
 
-import { MigrationError } from "./errors.js";
+import { MigrationError, SchemaSkewError } from "./errors.js";
 
 // Resolved from `import.meta.url`. The package ships `.ts` directly with no
 // build step, so the relative `../migrations/` path holds at runtime.
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
 
 const MIGRATION_FILE_SUFFIX = ".sql";
+
+/** Lex-ordered migration filenames shipped with this build. */
+const SHIPPED_MIGRATIONS = listMigrationFiles(MIGRATIONS_DIR);
+
+export const SHIPPED_MIGRATION_COUNT = SHIPPED_MIGRATIONS.length;
 
 /**
  * Optional dependencies for `runMigrations`.
@@ -61,9 +66,7 @@ export function runMigrations(db: Db, opts: RunMigrationsOptions = {}): void {
   // hosts. `localeCompare` would let host locale (e.g. de-DE vs en-US)
   // reorder filenames containing non-ASCII characters; sticking to UTF-16
   // code-unit comparison keeps the apply sequence stable everywhere.
-  const files = readdirSync(dir)
-    .filter((f) => f.endsWith(MIGRATION_FILE_SUFFIX))
-    .sort(byteCompare);
+  const files = listMigrationFiles(dir);
   const insertStmt = db.prepare("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)");
   const selectAppliedStmt = db.prepare<[], MigrationRow>("SELECT name FROM _migrations");
 
@@ -87,6 +90,45 @@ export function runMigrations(db: Db, opts: RunMigrationsOptions = {}): void {
     }
   });
   txn.immediate();
+}
+
+/**
+ * Asserts `_migrations` reflects every migration file the build ships.
+ * Call after `runMigrations` so a behind DB fails at open time instead of
+ * surfacing as a downstream `no such column` on read.
+ */
+export function assertSchemaVersion(db: Db): void {
+  const applied = db
+    .prepare<[], MigrationRow>("SELECT name FROM _migrations ORDER BY name")
+    .all()
+    .map((r) => r.name);
+  const dbCount = applied.length;
+  const codeCount = SHIPPED_MIGRATION_COUNT;
+
+  if (dbCount < codeCount) {
+    throw new SchemaSkewError(dbCount, codeCount);
+  }
+
+  const appliedSet = new Set(applied);
+  for (const migration of SHIPPED_MIGRATIONS) {
+    if (!appliedSet.has(migration)) {
+      throw new SchemaSkewError(dbCount, codeCount);
+    }
+  }
+
+  // DB ahead of code (downgrade): applied rows exceed shipped files or include
+  // names this build does not ship — surface as a plain Error for now.
+  if (dbCount > codeCount) {
+    throw new Error(
+      `ship DB schema is ahead of the running code (DB at ${String(dbCount)}, code expects ${String(codeCount)}). Downgrade ship or migrate the DB forward.`,
+    );
+  }
+}
+
+function listMigrationFiles(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(MIGRATION_FILE_SUFFIX))
+    .sort(byteCompare);
 }
 
 function defaultClock(): string {

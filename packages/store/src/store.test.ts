@@ -5,17 +5,22 @@
 
 import type { WorkflowPolicy, WorktreeRef } from "@ship/workflow";
 
-import { newPhaseId, newWorkflowRunId } from "@ship/workflow";
+import { newCursorRunId, newPhaseId, newWorkflowRunId } from "@ship/workflow";
 import Database from "better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { Store } from "./store.js";
 
 import { openDatabase } from "./db.js";
+import { SchemaSkewError } from "./errors.js";
+import { runMigrations } from "./migrations.js";
 import { createStore } from "./store.js";
+
+const SHIPPED_MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
 
 const validWorktree: WorktreeRef = {
   baseRef: "main",
@@ -116,5 +121,100 @@ describe("createStore: in-memory + clock + close()", () => {
   test("close() makes subsequent calls throw", () => {
     store.close();
     expect(() => store.listRuns({})).toThrow();
+  });
+});
+
+function copyShippedMigrationsTo(dir: string, filenames: string[]): void {
+  mkdirSync(dir, { recursive: true });
+  for (const name of filenames) {
+    copyFileSync(join(SHIPPED_MIGRATIONS_DIR, name), join(dir, name));
+  }
+}
+
+describe("createStore: schema version guard", () => {
+  let tmpDir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "ship-store-schema-"));
+    dbPath = join(tmpDir, "state.db");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { force: true, recursive: true });
+  });
+
+  test("store_open_with_behind_db_throws_schema_skew_error", () => {
+    const migrationsDir = join(tmpDir, "migrations-subset");
+    copyShippedMigrationsTo(migrationsDir, ["0001_init.sql", "0002_cursor_runs_run_id.sql"]);
+
+    expect(() => createStore({ dbPath, migrationsDir })).toThrow(SchemaSkewError);
+    expect(() => createStore({ dbPath, migrationsDir })).toThrow(
+      /Restart ship to apply pending migrations/,
+    );
+  });
+
+  test("store_open_applies_pending_migration_then_reads_ok", () => {
+    const subsetDir = join(tmpDir, "migrations-subset");
+    copyShippedMigrationsTo(subsetDir, ["0001_init.sql", "0002_cursor_runs_run_id.sql"]);
+
+    const db = openDatabase(dbPath);
+    try {
+      runMigrations(db, { migrationsDir: subsetDir });
+    } finally {
+      db.close();
+    }
+
+    const sidecar = new Database(dbPath, { readonly: true });
+    try {
+      const columns = sidecar
+        .prepare("PRAGMA table_info(cursor_runs)")
+        .all()
+        .map((r) => (r as { name: string }).name);
+      expect(columns).not.toContain("artifacts_json");
+    } finally {
+      sidecar.close();
+    }
+
+    const store = createStore({ clock: () => "2026-05-08T00:00:00.000Z", dbPath });
+    try {
+      const sidecarAfter = new Database(dbPath, { readonly: true });
+      try {
+        const columns = sidecarAfter
+          .prepare("PRAGMA table_info(cursor_runs)")
+          .all()
+          .map((r) => (r as { name: string }).name);
+        expect(columns).toContain("artifacts_json");
+      } finally {
+        sidecarAfter.close();
+      }
+
+      const runId = newWorkflowRunId();
+      store.createWorkflowRun({
+        baseRef: "main",
+        docPath: "docs/x.md",
+        id: runId,
+        policy: validPolicy,
+        repo: "ship",
+        worktree: validWorktree,
+      });
+
+      const cursorRunId = newCursorRunId();
+      store.recordCursorRun({
+        agentId: "bc-art",
+        artifactsDir: "/runs/wf_x",
+        id: cursorRunId,
+        runtime: "cloud",
+        workflowRunId: runId,
+      });
+
+      const artifacts = [
+        { path: "out/report.txt", sizeBytes: 14, updatedAt: "2026-05-29T00:00:00.000Z" },
+      ];
+      store.updateCursorRunStatus(cursorRunId, { artifacts });
+      expect(store.getCursorRun(cursorRunId)?.artifacts).toEqual(artifacts);
+    } finally {
+      store.close();
+    }
   });
 });
