@@ -30,7 +30,6 @@ export interface CloudDocResolveOptions {
   readonly repoSlug?: string;
   readonly startingRef?: string;
   readonly prUrl?: string;
-  readonly workOnCurrentBranch?: boolean;
   readonly docSource?: DocSource;
 }
 
@@ -102,9 +101,6 @@ function buildResolveRefParams(
     repo,
     ...(options.startingRef !== undefined ? { startingRef: options.startingRef } : {}),
     ...(options.prUrl !== undefined ? { prUrl: options.prUrl } : {}),
-    ...(options.workOnCurrentBranch !== undefined
-      ? { workOnCurrentBranch: options.workOnCurrentBranch }
-      : {}),
   };
 }
 

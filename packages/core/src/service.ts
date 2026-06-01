@@ -493,9 +493,6 @@ function buildCloudDocResolveOptions(ctx: ShipContext): CloudDocResolveOptions {
     ...(ctx.input.workdir !== undefined ? { workdir: ctx.input.workdir } : {}),
     ...(cloudRepo?.startingRef !== undefined ? { startingRef: cloudRepo.startingRef } : {}),
     ...(cloudRepo?.prUrl !== undefined ? { prUrl: cloudRepo.prUrl } : {}),
-    ...(ctx.input.cloud?.workOnCurrentBranch !== undefined
-      ? { workOnCurrentBranch: ctx.input.cloud.workOnCurrentBranch }
-      : {}),
     ...(ctx.docSource !== undefined ? { docSource: ctx.docSource } : {}),
   };
 }

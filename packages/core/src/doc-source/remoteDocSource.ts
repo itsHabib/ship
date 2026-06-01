@@ -62,7 +62,21 @@ async function resolvePullRequestRef(
     }
     const pullNumber = parseGitHubPullNumber(prUrl);
     const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
-    const headRepo = data.head.repo.full_name;
+    // octokit types head.repo as a non-null Repository, but the GitHub API returns
+    // null when the fork's repo was deleted (documented; common for squash-merged
+    // fork PRs). Read through a nullable view so a deleted fork surfaces the clear
+    // error below instead of a raw "full_name of null" TypeError.
+    const headRepo = (data.head.repo as { full_name: string } | null)?.full_name;
+    if (headRepo === undefined) {
+      throw new RemoteDocFetchError({
+        owner,
+        repo,
+        ref: prUrl,
+        path: "(unknown)",
+        reason: "PR head repository is unavailable (fork may have been deleted)",
+        suggestToken: false,
+      });
+    }
     // Fork PRs: head.ref lives on the fork; fetching that ref from the base repo
     // misses. Cloud scope is single-repo today — fail loud instead of a silent 404.
     if (headRepo.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) {

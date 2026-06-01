@@ -18,7 +18,6 @@ export interface DocSourceResolveRefParams {
   readonly repo: string;
   readonly startingRef?: string;
   readonly prUrl?: string;
-  readonly workOnCurrentBranch?: boolean;
 }
 
 export interface DocSource {

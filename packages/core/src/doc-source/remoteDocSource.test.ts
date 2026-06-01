@@ -139,12 +139,23 @@ describe("resolveRef", () => {
       data: { head: { ref: "fork-branch", repo: { full_name: "forker/r" } } },
     });
     const src = createRemoteDocSource("tok");
-    await expect(
-      src.resolveRef({ owner: "o", repo: "r", prUrl: "https://github.com/o/r/pull/7" }),
-    ).rejects.toBeInstanceOf(RemoteDocFetchError);
-    await expect(
-      src.resolveRef({ owner: "o", repo: "r", prUrl: "https://github.com/o/r/pull/7" }),
-    ).rejects.toThrow(/cross-fork|single-repo/i);
+    const err = await src
+      .resolveRef({ owner: "o", repo: "r", prUrl: "https://github.com/o/r/pull/7" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RemoteDocFetchError);
+    expect((err as Error).message).toMatch(/cross-fork|single-repo/i);
+  });
+
+  test("rejects PR head with missing repo (deleted fork)", async () => {
+    mockOctokit.rest.pulls.get.mockResolvedValue({
+      data: { head: { ref: "gone", repo: null } },
+    });
+    const src = createRemoteDocSource("tok");
+    const err = await src
+      .resolveRef({ owner: "o", repo: "r", prUrl: "https://github.com/o/r/pull/7" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RemoteDocFetchError);
+    expect((err as Error).message).toMatch(/unavailable|deleted/i);
   });
 
   test("falls back to the default branch and caches it", async () => {
@@ -154,14 +165,6 @@ describe("resolveRef", () => {
     // Second call hits the per-run cache — no second repos.get.
     await expect(src.resolveRef({ owner: "o", repo: "r" })).resolves.toBe("trunk");
     expect(mockOctokit.rest.repos.get).toHaveBeenCalledTimes(1);
-  });
-
-  test("workOnCurrentBranch without prUrl resolves the default branch", async () => {
-    mockOctokit.rest.repos.get.mockResolvedValue({ data: { default_branch: "main" } });
-    const src = createRemoteDocSource("tok");
-    await expect(
-      src.resolveRef({ owner: "o", repo: "r", workOnCurrentBranch: true }),
-    ).resolves.toBe("main");
   });
 
   test("maps a default-branch lookup failure to RemoteDocFetchError", async () => {
