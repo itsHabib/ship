@@ -3,7 +3,7 @@
  * cannot hang on a stalled cloud SDK call.
  */
 
-import type { ArtifactRef } from "@ship/workflow";
+import { type ArtifactRef, artifactRefSchema } from "@ship/workflow";
 
 /** Best-effort cap on terminal `listArtifacts()` so finalize cannot hang. */
 export const LIST_ARTIFACTS_TIMEOUT_MS = 15_000;
@@ -50,18 +50,18 @@ export async function captureListedArtifacts(
   try {
     const listed = await withTimeout(listArtifacts(), LIST_ARTIFACTS_TIMEOUT_MS);
     if (!Array.isArray(listed)) return [];
-    return listed.flatMap((a) => {
-      if (
-        typeof a !== "object" ||
-        a === null ||
-        typeof (a as { path?: unknown }).path !== "string" ||
-        typeof (a as { sizeBytes?: unknown }).sizeBytes !== "number" ||
-        typeof (a as { updatedAt?: unknown }).updatedAt !== "string"
-      ) {
-        return [];
-      }
-      const item = a as { path: string; sizeBytes: number; updatedAt: string };
-      return [{ path: item.path, sizeBytes: item.sizeBytes, updatedAt: item.updatedAt }];
+    return listed.flatMap((a): ArtifactRef[] => {
+      if (typeof a !== "object" || a === null) return [];
+      const rec = a as Record<string, unknown>;
+      // Validate against the canonical schema (the same one @ship/store enforces
+      // on persist) so a malformed SDK entry is dropped here rather than throwing
+      // during finalize. Pick known fields first — artifactRefSchema is .strict().
+      const parsed = artifactRefSchema.safeParse({
+        path: rec["path"],
+        sizeBytes: rec["sizeBytes"],
+        updatedAt: rec["updatedAt"],
+      });
+      return parsed.success ? [parsed.data] : [];
     });
   } catch (err) {
     logListArtifactsFailure(err);

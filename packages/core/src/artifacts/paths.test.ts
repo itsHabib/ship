@@ -85,7 +85,23 @@ describe("resolveContainedCloudArtifactDest", () => {
     const artifactsRoot = join(runsDir, workflowRunId, "artifacts");
     await fs.mkdir(outsideDir, { recursive: true });
     await fs.mkdir(artifactsRoot, { recursive: true });
-    symlinkSync(outsideDir, join(artifactsRoot, "link"));
+    // "junction" so the directory link creates without admin on Windows CI.
+    symlinkSync(outsideDir, join(artifactsRoot, "link"), "junction");
+
+    await expect(
+      resolveContainedCloudArtifactDest(fs, runsDir, workflowRunId, "link/secret.txt"),
+    ).rejects.toBeInstanceOf(ArtifactPathEscapesRunDirError);
+  });
+
+  test("rejects a dangling symlink in the path that stat() reports as missing", async () => {
+    const fs = createNodeShipFs();
+    const runsDir = join(tmpRoot, "runs");
+    const workflowRunId = "wf_dangling_escape";
+    const artifactsRoot = join(runsDir, workflowRunId, "artifacts");
+    await fs.mkdir(artifactsRoot, { recursive: true });
+    // Link to a target that does not exist: stat() (which follows) throws ENOENT,
+    // but writing through it must not be allowed — lstat still sees the link.
+    symlinkSync(join(tmpRoot, "outside-gone"), join(artifactsRoot, "link"), "junction");
 
     await expect(
       resolveContainedCloudArtifactDest(fs, runsDir, workflowRunId, "link/secret.txt"),

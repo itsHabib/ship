@@ -54,6 +54,13 @@ export function createMemoryShipFs(): MemoryShipFs {
       if (fs.dirs.has(norm)) return Promise.resolve(fileStat(false));
       return Promise.reject(ENOENT(path));
     },
+    // No symlinks in the in-memory FS, so lstat and stat are identical.
+    lstat: (path) => {
+      const norm = normalize(path);
+      if (fs.files.has(norm) || fs.binaryFiles.has(norm)) return Promise.resolve(fileStat(true));
+      if (fs.dirs.has(norm)) return Promise.resolve(fileStat(false));
+      return Promise.reject(ENOENT(path));
+    },
     readFile: (path) => {
       const content = fs.files.get(normalize(path));
       if (content === undefined) return Promise.reject(ENOENT(path));

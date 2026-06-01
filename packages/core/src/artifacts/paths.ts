@@ -133,6 +133,18 @@ export async function assertContainedCloudArtifactDest(
   await assertExistingPrefixContained(fs, realRoot, resolvedDest, sdkPath);
 }
 
+// True when the entry exists per `lstat` (no symlink follow). Used to tell a
+// genuinely-missing path apart from a dangling/broken link that `stat` (which
+// follows) reports as missing.
+async function existsUnfollowed(fs: ShipFs, path: string): Promise<boolean> {
+  try {
+    await fs.lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function assertExistingPrefixContained(
   fs: ShipFs,
   realRoot: string,
@@ -149,6 +161,13 @@ async function assertExistingPrefixContained(
     try {
       await fs.stat(cursor);
     } catch {
+      // `stat` follows symlinks, so it throws for both a genuinely-missing entry
+      // and a dangling link. If `lstat` still sees an entry here, it's a link
+      // `stat` couldn't resolve — writing through it could escape the root, so
+      // reject rather than treat it as a fresh path under the root.
+      if (await existsUnfollowed(fs, cursor)) {
+        throw new ArtifactPathEscapesRunDirError(sdkPath);
+      }
       return;
     }
     const realCursor = resolve(await fs.realpath(cursor));
