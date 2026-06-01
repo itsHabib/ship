@@ -221,7 +221,8 @@ function sdkStatusFromRecentEvents(events: readonly Record<string, unknown>[]): 
 
 function durationMsFromImplementPhase(run: WorkflowRun): number | undefined {
   const phase = run.phases.find((p) => p.kind === "implement");
-  if (phase?.startedAt === undefined || phase?.endedAt === undefined) return undefined;
+  if (phase === undefined) return undefined;
+  if (phase.startedAt === undefined || phase.endedAt === undefined) return undefined;
   const ms = Date.parse(phase.endedAt) - Date.parse(phase.startedAt);
   return ms >= 0 ? ms : undefined;
 }
@@ -240,6 +241,40 @@ function parseRecentEventsNdjson(ndjson: string): Record<string, unknown>[] {
   return recentEvents;
 }
 
+async function readResultJsonDiagnostics(
+  fs: ShipFs,
+  resultPath: string,
+): Promise<{ runDurationMs?: number; sdkTerminalStatus?: string }> {
+  try {
+    return parseResultJsonDiagnostics(await fs.readFile(resultPath, "utf-8"));
+  } catch {
+    return {}; // result.json may be missing on early failures
+  }
+}
+
+async function readEventsDiagnostics(
+  fs: ShipFs,
+  eventsPath: string,
+): Promise<{ recentEvents?: Record<string, unknown>[]; sdkTerminalStatus?: string }> {
+  try {
+    const recentEvents = parseRecentEventsNdjson(await fs.readFile(eventsPath, "utf-8"));
+    if (recentEvents.length === 0) return {};
+    const sdkTerminalStatus = sdkStatusFromRecentEvents(recentEvents);
+    return sdkTerminalStatus === undefined ? { recentEvents } : { recentEvents, sdkTerminalStatus };
+  } catch {
+    return {}; // events.ndjson may not exist
+  }
+}
+
+// runDurationMs fallback when result.json didn't carry it: the persisted cursor
+// run first, then the implement-phase wall time.
+function fallbackRunDurationMs(store: Store, run: WorkflowRun): number | undefined {
+  const cursorRunId = run.phases.find((p) => p.kind === "implement")?.cursorRunId;
+  const fromStore =
+    cursorRunId === undefined ? undefined : store.getCursorRun(cursorRunId)?.durationMs;
+  return fromStore ?? durationMsFromImplementPhase(run);
+}
+
 async function loadRunDiagnostics(
   store: Store,
   fs: ShipFs,
@@ -255,32 +290,17 @@ async function loadRunDiagnostics(
     recentEvents?: Record<string, unknown>[];
   } = { maxRunDurationMs: run.policy.maxRunDurationMs };
 
-  try {
-    Object.assign(out, parseResultJsonDiagnostics(await fs.readFile(paths.result, "utf-8")));
-  } catch {
-    /* result.json may be missing on early failures */
-  }
+  Object.assign(out, await readResultJsonDiagnostics(fs, paths.result));
 
-  try {
-    const recentEvents = parseRecentEventsNdjson(await fs.readFile(paths.events, "utf-8"));
-    if (recentEvents.length > 0) out.recentEvents = recentEvents;
-    if (out.sdkTerminalStatus === undefined) {
-      const fromEvents = sdkStatusFromRecentEvents(recentEvents);
-      if (fromEvents !== undefined) out.sdkTerminalStatus = fromEvents;
-    }
-  } catch {
-    /* events.ndjson may not exist */
+  const events = await readEventsDiagnostics(fs, paths.events);
+  if (events.recentEvents !== undefined) out.recentEvents = events.recentEvents;
+  if (out.sdkTerminalStatus === undefined && events.sdkTerminalStatus !== undefined) {
+    out.sdkTerminalStatus = events.sdkTerminalStatus;
   }
 
   if (out.runDurationMs === undefined) {
-    const cursorRunId = run.phases.find((p) => p.kind === "implement")?.cursorRunId;
-    const durationMs =
-      cursorRunId === undefined ? undefined : store.getCursorRun(cursorRunId)?.durationMs;
-    if (durationMs !== undefined) out.runDurationMs = durationMs;
-  }
-  if (out.runDurationMs === undefined) {
-    const fromPhase = durationMsFromImplementPhase(run);
-    if (fromPhase !== undefined) out.runDurationMs = fromPhase;
+    const fallback = fallbackRunDurationMs(store, run);
+    if (fallback !== undefined) out.runDurationMs = fallback;
   }
 
   return out;

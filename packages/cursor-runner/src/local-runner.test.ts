@@ -363,7 +363,9 @@ describe("LocalCursorRunner — happy path + status mapping", () => {
       type: "status",
     } as unknown as SDKMessage;
     const { run } = makeMockRun({
-      events: [statusErrEv, toolErrEv],
+      // Natural stream order: tool_call error, then the terminal status:ERROR.
+      // The specific tool_call detail must survive the trailing status event.
+      events: [toolErrEv, statusErrEv],
       result: {
         durationMs: 27 * 60 * 1000,
         id: "run-test-0001",

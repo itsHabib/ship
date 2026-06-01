@@ -199,13 +199,20 @@ export class LocalCursorRunner implements CursorRunner {
       }
     };
 
+    // Bound retained events: a long run can stream thousands, but the failure
+    // mapper only needs the tail (last status + last error-bearing tool_call).
+    const MAX_CAPTURED_EVENTS = 256;
     const capturedEvents: SDKMessage[] = [];
+    const recordEvent = (ev: SDKMessage): void => {
+      capturedEvents.push(ev);
+      if (capturedEvents.length > MAX_CAPTURED_EVENTS) capturedEvents.shift();
+    };
     const mapOpts = (): MapRunResultOptions => ({ events: capturedEvents });
 
     try {
       try {
         for await (const ev of sdkRun.stream()) {
-          capturedEvents.push(ev);
+          recordEvent(ev);
           safelyEmit(ev);
         }
       } catch (streamErr) {

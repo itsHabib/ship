@@ -168,18 +168,34 @@ function toolCallErrorDetail(raw: Record<string, unknown>): string | undefined {
   return `${name} errored`;
 }
 
-function statusEventErrorDetail(raw: Record<string, unknown>): string | undefined {
+// A status event's free-text `message`, if present. The status enum itself
+// (e.g. "ERROR") is intentionally NOT returned: it is already surfaced via the
+// SDK-status line, and returning it would let the terminal status event clobber
+// the more specific tool_call detail it follows.
+function statusEventMessageDetail(raw: Record<string, unknown>): string | undefined {
   const status = raw["status"];
   if (status !== "ERROR" && status !== "EXPIRED" && status !== "CANCELLED") return undefined;
   const message = raw["message"];
-  if (typeof message === "string" && message.length > 0) return message;
-  return typeof status === "string" ? status : undefined;
+  return typeof message === "string" && message.length > 0 ? message : undefined;
 }
 
-function extractErrorDetailFromEvent(ev: SDKMessage): string | undefined {
+// The error detail a single event carries, tagged with its source so the caller
+// can prefer the specific tool_call cause over a coarser status message.
+interface EventErrorDetail {
+  readonly text: string;
+  readonly source: "tool_call" | "status";
+}
+
+function errorDetailFromEvent(ev: SDKMessage): EventErrorDetail | undefined {
   const raw = eventRecord(ev);
-  if (raw["type"] === "tool_call") return toolCallErrorDetail(raw);
-  if (raw["type"] === "status") return statusEventErrorDetail(raw);
+  if (raw["type"] === "tool_call") {
+    const text = toolCallErrorDetail(raw);
+    return text === undefined ? undefined : { text, source: "tool_call" };
+  }
+  if (raw["type"] === "status") {
+    const text = statusEventMessageDetail(raw);
+    return text === undefined ? undefined : { text, source: "status" };
+  }
   return undefined;
 }
 
@@ -195,13 +211,19 @@ function lastSdkStatusFromEvents(events: readonly SDKMessage[]): string | undefi
   return undefined;
 }
 
-function lastErrorDetailFromEvents(events: readonly SDKMessage[]): string | undefined {
-  let last: string | undefined;
+// Prefer the last failed tool_call's detail (the actionable cause, e.g.
+// "database is locked") over a status message, regardless of stream order — the
+// terminal status:ERROR naturally follows the tool_call error and must not win.
+function lastErrorDetailFromEvents(events: readonly SDKMessage[]): EventErrorDetail | undefined {
+  let toolCall: EventErrorDetail | undefined;
+  let statusMessage: EventErrorDetail | undefined;
   for (const ev of events) {
-    const detail = extractErrorDetailFromEvent(ev);
-    if (detail !== undefined) last = detail;
+    const detail = errorDetailFromEvent(ev);
+    if (detail === undefined) continue;
+    if (detail.source === "tool_call") toolCall = detail;
+    if (detail.source === "status") statusMessage = detail;
   }
-  return last;
+  return toolCall ?? statusMessage;
 }
 
 /** Fold SDK terminal state + streamed events into a single operator-facing message. */
@@ -220,9 +242,10 @@ export function buildTerminalErrorMessage(
     maxRunDurationMs !== undefined
       ? `after ${formatWallDuration(durationMs)} (cap ${formatWallDuration(maxRunDurationMs)})`
       : `after ${formatWallDuration(durationMs)}`;
-  const toolDetail = lastErrorDetailFromEvents(events);
-  if (toolDetail !== undefined) {
-    return `SDK status ${displayStatus} ${durationPart}; last tool_call errored: ${toolDetail}`;
+  const detail = lastErrorDetailFromEvents(events);
+  if (detail !== undefined) {
+    const label = detail.source === "tool_call" ? "last tool_call errored" : "detail";
+    return `SDK status ${displayStatus} ${durationPart}; ${label}: ${detail.text}`;
   }
   if (eventStatus !== undefined || result.status === "error") {
     return `SDK status ${displayStatus} ${durationPart}`;

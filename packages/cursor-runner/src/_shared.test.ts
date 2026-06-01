@@ -115,6 +115,38 @@ describe("buildTerminalErrorMessage", () => {
     expect(msg).toMatch(/SDK status ERROR/);
     expect(msg).toMatch(/27m.*cap 30m/);
   });
+
+  test("prefers the tool_call detail over a trailing terminal status event", () => {
+    // Natural stream order: the tool_call error precedes the terminal
+    // status:ERROR. The specific detail must win — guards the regression where
+    // the trailing status event overwrote it with the bare "ERROR" enum.
+    const toolErr = {
+      type: "tool_call",
+      status: "error",
+      result: "database is locked",
+    } as unknown as SDKMessage;
+    const statusErr = { type: "status", status: "ERROR" } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage(
+      { durationMs: 1000, status: "error" } as RunResult,
+      [toolErr, statusErr],
+    );
+    expect(msg).toContain("last tool_call errored: database is locked");
+    expect(msg).not.toMatch(/errored: ERROR/);
+  });
+
+  test("falls back to a terminal status message when no tool_call error is present", () => {
+    const statusErr = {
+      type: "status",
+      status: "EXPIRED",
+      message: "run exceeded time budget",
+    } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage(
+      { durationMs: 1000, status: "error" } as RunResult,
+      [statusErr],
+    );
+    expect(msg).toContain("detail: run exceeded time budget");
+    expect(msg).toMatch(/SDK status EXPIRED/);
+  });
 });
 
 describe("mapRunResult cloud-spec gating", () => {
