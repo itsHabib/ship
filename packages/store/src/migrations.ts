@@ -11,13 +11,18 @@ import { fileURLToPath } from "node:url";
 
 import type { Db } from "./db.js";
 
-import { MigrationError } from "./errors.js";
+import { MigrationError, SchemaAheadError, SchemaSkewError } from "./errors.js";
 
 // Resolved from `import.meta.url`. The package ships `.ts` directly with no
 // build step, so the relative `../migrations/` path holds at runtime.
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
 
 const MIGRATION_FILE_SUFFIX = ".sql";
+
+/** Lex-ordered migration filenames shipped with this build. */
+const SHIPPED_MIGRATIONS = listMigrationFiles(MIGRATIONS_DIR);
+
+export const SHIPPED_MIGRATION_COUNT = SHIPPED_MIGRATIONS.length;
 
 /**
  * Optional dependencies for `runMigrations`.
@@ -61,9 +66,7 @@ export function runMigrations(db: Db, opts: RunMigrationsOptions = {}): void {
   // hosts. `localeCompare` would let host locale (e.g. de-DE vs en-US)
   // reorder filenames containing non-ASCII characters; sticking to UTF-16
   // code-unit comparison keeps the apply sequence stable everywhere.
-  const files = readdirSync(dir)
-    .filter((f) => f.endsWith(MIGRATION_FILE_SUFFIX))
-    .sort(byteCompare);
+  const files = listMigrationFiles(dir);
   const insertStmt = db.prepare("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)");
   const selectAppliedStmt = db.prepare<[], MigrationRow>("SELECT name FROM _migrations");
 
@@ -87,6 +90,42 @@ export function runMigrations(db: Db, opts: RunMigrationsOptions = {}): void {
     }
   });
   txn.immediate();
+}
+
+/**
+ * Asserts `_migrations` reflects every migration file the build ships.
+ * Call after `runMigrations` so a behind DB fails at open time instead of
+ * surfacing as a downstream `no such column` on read.
+ */
+export function assertSchemaVersion(db: Db): void {
+  const applied = db
+    .prepare<[], MigrationRow>("SELECT name FROM _migrations ORDER BY name")
+    .all()
+    .map((r) => r.name);
+  const dbCount = applied.length;
+  const codeCount = SHIPPED_MIGRATION_COUNT;
+  const appliedSet = new Set(applied);
+
+  // Behind = the DB is missing a migration this build ships. Set-membership is
+  // the real signal (a DB could match on count yet differ by name); the count
+  // in the error is informational. Checked before the count comparison so a
+  // genuine missing-migration always reports as behind, not ahead.
+  const missing = SHIPPED_MIGRATIONS.filter((m) => !appliedSet.has(m));
+  if (missing.length > 0) {
+    throw new SchemaSkewError(dbCount, codeCount);
+  }
+
+  // Ahead = every shipped migration is applied, plus extras this build doesn't
+  // know about (a downgrade). Typed so callers can discriminate.
+  if (dbCount > codeCount) {
+    throw new SchemaAheadError(dbCount, codeCount);
+  }
+}
+
+function listMigrationFiles(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(MIGRATION_FILE_SUFFIX))
+    .sort(byteCompare);
 }
 
 function defaultClock(): string {

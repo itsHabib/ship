@@ -21,6 +21,8 @@ export {
   CursorRunNotFoundError,
   MigrationError,
   PhaseNotFoundError,
+  SchemaAheadError,
+  SchemaSkewError,
   StoreSchemaError,
   WorkflowRunNotFoundError,
 } from "./errors.js";

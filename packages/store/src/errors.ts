@@ -69,3 +69,42 @@ export class MigrationError extends Error {
     this.migrationName = migrationName;
   }
 }
+
+/**
+ * Thrown when `createStore` opens a DB whose applied migration count is
+ * behind the migrations shipped with the running build. Distinct from
+ * `MigrationError` (apply failure) — this is a post-migrate version check.
+ */
+export class SchemaSkewError extends Error {
+  override readonly name = "SchemaSkewError";
+  readonly dbMigrationCount: number;
+  readonly codeMigrationCount: number;
+
+  constructor(dbMigrationCount: number, codeMigrationCount: number) {
+    super(
+      `ship DB schema is behind the running code (DB at ${String(dbMigrationCount)}, code expects ${String(codeMigrationCount)}). Restart ship to apply pending migrations.`,
+    );
+    this.dbMigrationCount = dbMigrationCount;
+    this.codeMigrationCount = codeMigrationCount;
+  }
+}
+
+/**
+ * Thrown when `createStore` opens a DB whose applied migrations are *ahead* of
+ * the build (a downgrade: every shipped migration is applied, plus extras this
+ * build doesn't ship). Distinct from `SchemaSkewError` (behind) so callers can
+ * discriminate the two skew directions.
+ */
+export class SchemaAheadError extends Error {
+  override readonly name = "SchemaAheadError";
+  readonly dbMigrationCount: number;
+  readonly codeMigrationCount: number;
+
+  constructor(dbMigrationCount: number, codeMigrationCount: number) {
+    super(
+      `ship DB schema is ahead of the running code (DB at ${String(dbMigrationCount)}, code expects ${String(codeMigrationCount)}). Downgrade ship or migrate the DB forward.`,
+    );
+    this.dbMigrationCount = dbMigrationCount;
+    this.codeMigrationCount = codeMigrationCount;
+  }
+}
