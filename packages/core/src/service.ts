@@ -209,6 +209,23 @@ function parseResultJsonDiagnostics(raw: string): {
   return out;
 }
 
+function sdkStatusFromRecentEvents(events: readonly Record<string, unknown>[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev?.["type"] === "status" && typeof ev["status"] === "string") {
+      return ev["status"];
+    }
+  }
+  return undefined;
+}
+
+function durationMsFromImplementPhase(run: WorkflowRun): number | undefined {
+  const phase = run.phases.find((p) => p.kind === "implement");
+  if (phase?.startedAt === undefined || phase?.endedAt === undefined) return undefined;
+  const ms = Date.parse(phase.endedAt) - Date.parse(phase.startedAt);
+  return ms >= 0 ? ms : undefined;
+}
+
 function parseRecentEventsNdjson(ndjson: string): Record<string, unknown>[] {
   const lines = ndjson.split("\n").filter((line) => line.trim().length > 0);
   const tail = lines.slice(-DIAGNOSTIC_RECENT_EVENTS_LIMIT);
@@ -244,18 +261,26 @@ async function loadRunDiagnostics(
     /* result.json may be missing on early failures */
   }
 
+  try {
+    const recentEvents = parseRecentEventsNdjson(await fs.readFile(paths.events, "utf-8"));
+    if (recentEvents.length > 0) out.recentEvents = recentEvents;
+    if (out.sdkTerminalStatus === undefined) {
+      const fromEvents = sdkStatusFromRecentEvents(recentEvents);
+      if (fromEvents !== undefined) out.sdkTerminalStatus = fromEvents;
+    }
+  } catch {
+    /* events.ndjson may not exist */
+  }
+
   if (out.runDurationMs === undefined) {
     const cursorRunId = run.phases.find((p) => p.kind === "implement")?.cursorRunId;
     const durationMs =
       cursorRunId === undefined ? undefined : store.getCursorRun(cursorRunId)?.durationMs;
     if (durationMs !== undefined) out.runDurationMs = durationMs;
   }
-
-  try {
-    const recentEvents = parseRecentEventsNdjson(await fs.readFile(paths.events, "utf-8"));
-    if (recentEvents.length > 0) out.recentEvents = recentEvents;
-  } catch {
-    /* events.ndjson may not exist */
+  if (out.runDurationMs === undefined) {
+    const fromPhase = durationMsFromImplementPhase(run);
+    if (fromPhase !== undefined) out.runDurationMs = fromPhase;
   }
 
   return out;
