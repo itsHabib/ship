@@ -33,6 +33,30 @@ export class CursorRunFailedError extends Error {
   override readonly name: string = "CursorRunFailedError";
 }
 
+function causeMessage(cause: unknown): string {
+  if (cause instanceof Error && cause.message !== "") return cause.message;
+  if (typeof cause === "string") return cause;
+  if (typeof cause === "number" || typeof cause === "boolean" || typeof cause === "bigint") {
+    return String(cause);
+  }
+  if (cause === null || cause === undefined) return "";
+  try {
+    return JSON.stringify(cause);
+  } catch {
+    return "[unstringifiable cause]";
+  }
+}
+
+/**
+ * Pre-run / stream failure with the underlying SDK message folded into
+ * `.message` so single-level `errorMessage` consumers see the real cause.
+ */
+export function cursorRunFailedError(message: string, cause: unknown): CursorRunFailedError {
+  const detail = causeMessage(cause);
+  const combined = detail !== "" && !message.includes(detail) ? `${message}: ${detail}` : message;
+  return new CursorRunFailedError(combined, { cause });
+}
+
 /** Cloud inputs passed to {@link CloudCursorRunner} without `cloud` config. */
 export class MissingCloudSpecError extends CursorRunFailedError {
   override readonly name: string = "MissingCloudSpecError";

@@ -40,6 +40,9 @@ export interface CursorRunInput {
 
   /** Cloud-specific config. Required when runtime === "cloud"; ignored otherwise. */
   readonly cloud?: CloudRunSpec;
+
+  /** Ship policy cap — used when folding SDK terminal errors into `errorMessage`. */
+  readonly maxRunDurationMs?: number;
 }
 
 /** Input required to re-attach to an in-flight Cursor run (cloud resume). */
@@ -144,6 +147,8 @@ export interface CursorRunResult {
   readonly artifacts?: readonly ArtifactRef[];
   /** Populated when `status === "failed"`. */
   readonly errorMessage?: string;
+  /** Raw SDK `RunResult.status` or last streamed `status` event (e.g. `error`, `ERROR`). */
+  readonly sdkTerminalStatus?: string;
 }
 
 /**

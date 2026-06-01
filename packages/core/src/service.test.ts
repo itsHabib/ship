@@ -10,7 +10,12 @@ import type { WorkflowRun } from "@ship/workflow";
 
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore } from "@ship/store";
-import { CLOUD_WORKTREE_SENTINEL, cursorWatchUrl, isTerminal } from "@ship/workflow";
+import {
+  CLOUD_WORKTREE_SENTINEL,
+  cursorWatchUrl,
+  DEFAULT_WORKFLOW_POLICY,
+  isTerminal,
+} from "@ship/workflow";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -1315,6 +1320,42 @@ describe("ShipService.getRun + listRuns", () => {
 
     const otherRepo = await h.service.listRuns({ repo: "elsewhere", limit: 10 });
     expect(otherRepo).toHaveLength(0);
+  });
+});
+
+describe("ShipService.getRun — failure diagnostics enrichment", () => {
+  test("failed run exposes duration cap, SDK terminal status, and recent events", async () => {
+    const h = await createHarness();
+    const statusEv = { type: "status", status: "ERROR", run_id: "r1" };
+    const toolEv = {
+      type: "tool_call",
+      status: "error",
+      result: "database is locked",
+      name: "shell",
+    };
+    h.cursor.enqueue({
+      events: [statusEv, toolEv] as never[],
+      result: {
+        status: "failed",
+        durationMs: 27 * 60 * 1000,
+        errorMessage:
+          "SDK status ERROR after 27m (cap 30m); last tool_call errored: database is locked",
+        sdkTerminalStatus: "ERROR",
+        branches: [],
+      },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    expect(out.status).toBe("failed");
+    const view = await h.service.getRun(out.workflowRunId);
+    expect(view?.runDurationMs).toBe(27 * 60 * 1000);
+    expect(view?.maxRunDurationMs).toBe(DEFAULT_WORKFLOW_POLICY.maxRunDurationMs);
+    expect(view?.sdkTerminalStatus).toBe("ERROR");
+    expect(view?.recentEvents?.length).toBeGreaterThanOrEqual(2);
+    h.store.close();
   });
 });
 

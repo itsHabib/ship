@@ -185,16 +185,112 @@ function resolveLatestCloudCursorAgentId(store: Store, run: WorkflowRun): string
   return latest?.agentId;
 }
 
-/** MCP `get_workflow_run` view: domain run plus derived cloud watch fields. */
-function enrichWorkflowRunView(store: Store, run: WorkflowRun | null): GetWorkflowRunOutput | null {
+const DIAGNOSTIC_RECENT_EVENTS_LIMIT = 20;
+
+interface RunDiagnosticsFields {
+  readonly runDurationMs?: number;
+  readonly maxRunDurationMs?: number;
+  readonly sdkTerminalStatus?: string;
+  readonly recentEvents?: readonly Record<string, unknown>[];
+}
+
+function parseResultJsonDiagnostics(raw: string): {
+  runDurationMs?: number;
+  sdkTerminalStatus?: string;
+} {
+  const parsed = JSON.parse(raw) as { durationMs?: number; sdkTerminalStatus?: string };
+  const out: { runDurationMs?: number; sdkTerminalStatus?: string } = {};
+  if (typeof parsed.durationMs === "number" && parsed.durationMs >= 0) {
+    out.runDurationMs = parsed.durationMs;
+  }
+  if (typeof parsed.sdkTerminalStatus === "string" && parsed.sdkTerminalStatus.length > 0) {
+    out.sdkTerminalStatus = parsed.sdkTerminalStatus;
+  }
+  return out;
+}
+
+function parseRecentEventsNdjson(ndjson: string): Record<string, unknown>[] {
+  const lines = ndjson.split("\n").filter((line) => line.trim().length > 0);
+  const tail = lines.slice(-DIAGNOSTIC_RECENT_EVENTS_LIMIT);
+  const recentEvents: Record<string, unknown>[] = [];
+  for (const line of tail) {
+    try {
+      recentEvents.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      /* skip malformed lines */
+    }
+  }
+  return recentEvents;
+}
+
+async function loadRunDiagnostics(
+  store: Store,
+  fs: ShipFs,
+  runsDir: string,
+  run: WorkflowRun,
+): Promise<RunDiagnosticsFields | undefined> {
+  if (run.status !== "failed") return undefined;
+  const paths = resolveRunArtifactPaths(runsDir, run.id);
+  const out: {
+    runDurationMs?: number;
+    maxRunDurationMs?: number;
+    sdkTerminalStatus?: string;
+    recentEvents?: Record<string, unknown>[];
+  } = { maxRunDurationMs: run.policy.maxRunDurationMs };
+
+  try {
+    Object.assign(out, parseResultJsonDiagnostics(await fs.readFile(paths.result, "utf-8")));
+  } catch {
+    /* result.json may be missing on early failures */
+  }
+
+  if (out.runDurationMs === undefined) {
+    const cursorRunId = run.phases.find((p) => p.kind === "implement")?.cursorRunId;
+    const durationMs =
+      cursorRunId === undefined ? undefined : store.getCursorRun(cursorRunId)?.durationMs;
+    if (durationMs !== undefined) out.runDurationMs = durationMs;
+  }
+
+  try {
+    const recentEvents = parseRecentEventsNdjson(await fs.readFile(paths.events, "utf-8"));
+    if (recentEvents.length > 0) out.recentEvents = recentEvents;
+  } catch {
+    /* events.ndjson may not exist */
+  }
+
+  return out;
+}
+
+/** MCP `get_workflow_run` view: domain run plus derived cloud watch + failure diagnostics. */
+async function enrichWorkflowRunView(
+  deps: { readonly store: Store; readonly fs: ShipFs; readonly runsDir: string },
+  run: WorkflowRun | null,
+): Promise<GetWorkflowRunOutput | null> {
   if (run === null) return null;
-  const agentId = resolveLatestCloudCursorAgentId(store, run);
-  if (agentId === undefined) return run;
-  return {
-    ...run,
-    cursorAgentId: agentId,
-    watchUrl: cursorWatchUrl(agentId),
-  };
+  let view: GetWorkflowRunOutput = { ...run };
+  const agentId = resolveLatestCloudCursorAgentId(deps.store, run);
+  if (agentId !== undefined) {
+    view = { ...view, cursorAgentId: agentId, watchUrl: cursorWatchUrl(agentId) };
+  }
+  const diagnostics = await loadRunDiagnostics(deps.store, deps.fs, deps.runsDir, run);
+  if (diagnostics !== undefined) {
+    view = {
+      ...view,
+      ...(diagnostics.runDurationMs !== undefined && {
+        runDurationMs: diagnostics.runDurationMs,
+      }),
+      ...(diagnostics.maxRunDurationMs !== undefined && {
+        maxRunDurationMs: diagnostics.maxRunDurationMs,
+      }),
+      ...(diagnostics.sdkTerminalStatus !== undefined && {
+        sdkTerminalStatus: diagnostics.sdkTerminalStatus,
+      }),
+      ...(diagnostics.recentEvents !== undefined && {
+        recentEvents: [...diagnostics.recentEvents],
+      }),
+    };
+  }
+  return view;
 }
 
 export function createShipService(deps: ShipServiceDeps): ShipService {
@@ -246,7 +342,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
   const service: ShipService = {
     ship: (input) => runShip(makeCtx(input)),
     startShip: (input) => runShipStart(makeCtx(input), bgPending),
-    getRun: (id) => Promise.resolve(enrichWorkflowRunView(store, store.getRun(id))),
+    getRun: (id) => enrichWorkflowRunView({ store, fs, runsDir: config.runsDir }, store.getRun(id)),
     listRuns: (filter) => Promise.resolve(store.listRuns(filter)),
     cancelRun: (id) => {
       try {
@@ -347,10 +443,12 @@ interface BuildCursorRunInputArgs {
 
 function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput {
   const { ctx, prep, prompt, model, controller, onEvent } = args;
+  const policy = ctx.store.getRun(prep.workflowRunId)?.policy ?? DEFAULT_WORKFLOW_POLICY;
   const base = {
     cwd: prep.effectiveWorkdir,
     prompt,
     model,
+    maxRunDurationMs: policy.maxRunDurationMs,
     ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
     ...(ctx.config.agents !== undefined && { agents: ctx.config.agents }),
     agentName: `ship/${prep.workflowRunId}`,

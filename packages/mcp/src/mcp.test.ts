@@ -419,6 +419,18 @@ describe("getWorkflowRunOutputSchema", () => {
       }).success,
     ).toBe(false);
   });
+
+  test("accepts failure diagnostics and round-trips them", () => {
+    const withDiagnostics = {
+      ...validWorkflowRun,
+      status: "failed" as const,
+      runDurationMs: 1_620_000,
+      maxRunDurationMs: DEFAULT_WORKFLOW_POLICY.maxRunDurationMs,
+      sdkTerminalStatus: "ERROR",
+      recentEvents: [{ type: "status", status: "ERROR" }],
+    };
+    expect(getWorkflowRunOutputSchema.parse(withDiagnostics)).toEqual(withDiagnostics);
+  });
 });
 
 describe("listWorkflowRunsInputSchema", () => {
