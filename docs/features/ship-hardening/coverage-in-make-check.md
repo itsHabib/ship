@@ -16,7 +16,7 @@ Band: **amazing** (near one-liner).
 
 ## Goal
 
-Cursor agents validate with `make check` (`typecheck lint format-check test`), but CI's coverage gate (lines 90% / branches 85%) lives only in `make ci`'s `coverage` target. Result: all three cloud-phase PRs (#94/#95/#96) came back "green" from the agent yet failed CI on coverage — each needed a follow-up. The agent structurally can't see the gate it must pass. Close the skew: one validation command that includes coverage.
+Cursor agents validate with `make check` (`typecheck lint format-check test`), but CI's coverage gate lives only in `make ci`'s `coverage` target. Coverage is enforced **per-package** (each package's `vitest` config carries its own thresholds — observed during the drive as separate store / cli / core gate failures), not as one global number. Result: all three cloud-phase PRs (#94/#95/#96) came back "green" from the agent yet failed CI on a per-package coverage gate — each needed a follow-up. The agent structurally can't see the gate it must pass. Close the skew: one validation command that includes coverage.
 
 ## Behavior / fix
 
@@ -30,7 +30,7 @@ Alternative (a), if (b) is rejected: leave `make check` as-is but update the cur
 
 ## Acceptance
 
-- `make check` fails when coverage is below threshold (lines 90% / branches 85%), on the same DB/test set CI uses.
+- `make check` fails when any package's coverage is below its per-package threshold, on the same test set CI uses.
 - A cursor agent running the repo's stated validation command sees the coverage gate before pushing.
 - CI (`make ci`) stays green and non-redundant.
 
