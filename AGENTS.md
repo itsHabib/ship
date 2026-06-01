@@ -26,3 +26,4 @@ This is a pnpm monorepo (Node.js ≥22, pnpm 10.13.1). The VM comes with both pr
 - L4 live/cloud tests (`make e2e`) require `CURSOR_API_KEY`, `GITHUB_TOKEN`, and `SHIP_E2E_SANDBOX_REPO`. These are opt-in.
 - `better-sqlite3` is a native addon; the `pnpm.onlyBuiltDependencies` allowlist in root `package.json` handles non-interactive builds.
 - There is a cyclic workspace dependency warning between `@ship/core` and `@ship/test-harness` — this is intentional and harmless (test-harness imports core for fake wiring).
+- **Local runtime parallelism:** at most **2** concurrent local `ship` runs against the same `state.db` (`<UserConfigDir>/ship/state.db`). Three or more local streams contend on ship-store and the Cursor SDK's SQLite; failures surface as `local run contention — reduce parallelism`. Cloud runs do not share a local DB — use cloud when fanning out more than two streams.

@@ -19,10 +19,13 @@ export type {
 
 export {
   CursorRunNotFoundError,
+  LOCAL_RUN_CONTENTION_HINT,
+  LOCAL_RUNTIME_PARALLELISM_LIMIT,
   MigrationError,
   PhaseNotFoundError,
   SchemaAheadError,
   SchemaSkewError,
+  StoreContentionError,
   StoreSchemaError,
   WorkflowRunNotFoundError,
 } from "./errors.js";

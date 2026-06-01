@@ -108,3 +108,26 @@ export class SchemaAheadError extends Error {
     this.codeMigrationCount = codeMigrationCount;
   }
 }
+
+/** Operator-facing hint when SQLite lock contention exceeds `busy_timeout`. */
+export const LOCAL_RUN_CONTENTION_HINT = "local run contention — reduce parallelism";
+
+/** Supported concurrent local-runtime `ship` runs against one `state.db`. */
+export const LOCAL_RUNTIME_PARALLELISM_LIMIT = 2;
+
+/**
+ * Thrown when a store operation hits `SQLITE_BUSY` / `database is locked` after
+ * `busy_timeout` backoff. Distinct from transient internal retries — callers
+ * should surface this message to operators instead of a raw SQLite string.
+ */
+export class StoreContentionError extends Error {
+  override readonly name = "StoreContentionError";
+
+  constructor(cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `${LOCAL_RUN_CONTENTION_HINT} (ship store: ${detail}; safe limit: at most ${String(LOCAL_RUNTIME_PARALLELISM_LIMIT)} concurrent local runtime runs)`,
+      { cause },
+    );
+  }
+}

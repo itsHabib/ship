@@ -15,7 +15,7 @@ import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
 import type { CreateWorkflowRunInput, ListRunsFilter } from "./workflow-runs.js";
 
 import { createCursorRunOps } from "./cursor-runs.js";
-import { openDatabase } from "./db.js";
+import { openDatabase, withStoreContentionGuard } from "./db.js";
 import { assertSchemaVersion, runMigrations } from "./migrations.js";
 import { createPhaseOps } from "./phases.js";
 import { createWorkflowRunOps } from "./workflow-runs.js";
@@ -148,8 +148,8 @@ export function createStore(opts: CreateStoreOptions): Store {
     const cursorRunOps = createCursorRunOps(db, clock);
 
     return {
-      appendPhase: phaseOps.append,
-      cancelRun: workflowRunOps.cancel,
+      appendPhase: (input) => withStoreContentionGuard(() => phaseOps.append(input)),
+      cancelRun: (id) => withStoreContentionGuard(() => workflowRunOps.cancel(id)),
       close: () => {
         // wal_checkpoint(TRUNCATE) can throw SQLITE_BUSY under contention;
         // that's non-fatal for shutdown (SQLite reclaims sidecars on the
@@ -164,17 +164,28 @@ export function createStore(opts: CreateStoreOptions): Store {
         }
         db.close();
       },
-      createWorkflowRun: workflowRunOps.create,
-      getCursorRun: cursorRunOps.get,
-      getRun: workflowRunOps.get,
-      listResumableCloudCursorRuns: cursorRunOps.listResumableCloud,
-      listRuns: workflowRunOps.list,
-      markRunStarted: workflowRunOps.markRunStarted,
-      recordCursorRun: cursorRunOps.record,
-      touchWorkflowRunUpdatedAt: workflowRunOps.touchUpdatedAt,
-      updateCursorRunStatus: cursorRunOps.updateStatus,
-      updatePhase: phaseOps.update,
-      updateWorkflowRunStatus: workflowRunOps.updateStatus,
+      createWorkflowRun: (input) => withStoreContentionGuard(() => workflowRunOps.create(input)),
+      getCursorRun: (id) => withStoreContentionGuard(() => cursorRunOps.get(id)),
+      getRun: (id) => withStoreContentionGuard(() => workflowRunOps.get(id)),
+      listResumableCloudCursorRuns: () =>
+        withStoreContentionGuard(() => cursorRunOps.listResumableCloud()),
+      listRuns: (filter) => withStoreContentionGuard(() => workflowRunOps.list(filter)),
+      markRunStarted: (workflowRunId, phaseId, startedAt) => {
+        withStoreContentionGuard(() => {
+          workflowRunOps.markRunStarted(workflowRunId, phaseId, startedAt);
+        });
+      },
+      recordCursorRun: (input) => withStoreContentionGuard(() => cursorRunOps.record(input)),
+      touchWorkflowRunUpdatedAt: (workflowRunId) => {
+        withStoreContentionGuard(() => {
+          workflowRunOps.touchUpdatedAt(workflowRunId);
+        });
+      },
+      updateCursorRunStatus: (id, patch) =>
+        withStoreContentionGuard(() => cursorRunOps.updateStatus(id, patch)),
+      updatePhase: (id, patch) => withStoreContentionGuard(() => phaseOps.update(id, patch)),
+      updateWorkflowRunStatus: (id, status) =>
+        withStoreContentionGuard(() => workflowRunOps.updateStatus(id, status)),
     };
   } catch (err: unknown) {
     db.close();

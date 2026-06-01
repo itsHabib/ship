@@ -112,6 +112,7 @@ describe("buildTerminalErrorMessage", () => {
       30 * 60 * 1000,
     );
     expect(msg).toContain("database is locked");
+    expect(msg).toContain("local run contention — reduce parallelism");
     expect(msg).toMatch(/SDK status ERROR/);
     expect(msg).toMatch(/27m.*cap 30m/);
   });
