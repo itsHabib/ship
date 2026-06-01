@@ -30,7 +30,6 @@ export interface CloudDocResolveOptions {
   readonly repoSlug?: string;
   readonly startingRef?: string;
   readonly prUrl?: string;
-  readonly workOnCurrentBranch?: boolean;
   readonly docSource?: DocSource;
 }
 
@@ -51,7 +50,7 @@ export async function resolveValidatedDocForCloud(
 
   const { docSource, repoSlug } = options;
   if (repoSlug === undefined || docSource === undefined) {
-    throw new DocNotFoundError(docPath);
+    throw new DocNotFoundError(docPath, { cloud: true });
   }
 
   return resolveRemoteDoc(docPath, repoSlug, docSource, options);
@@ -102,9 +101,6 @@ function buildResolveRefParams(
     repo,
     ...(options.startingRef !== undefined ? { startingRef: options.startingRef } : {}),
     ...(options.prUrl !== undefined ? { prUrl: options.prUrl } : {}),
-    ...(options.workOnCurrentBranch !== undefined
-      ? { workOnCurrentBranch: options.workOnCurrentBranch }
-      : {}),
   };
 }
 

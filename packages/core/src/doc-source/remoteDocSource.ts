@@ -29,15 +29,12 @@ async function resolveRef(
   defaultBranchCache: Map<string, string>,
   hasToken: boolean,
 ): Promise<string> {
-  const { owner, repo, startingRef, prUrl, workOnCurrentBranch } = params;
+  const { owner, repo, startingRef, prUrl } = params;
   if (startingRef !== undefined && startingRef !== "") {
     return startingRef;
   }
-  if ((prUrl !== undefined && prUrl !== "") || workOnCurrentBranch === true) {
-    if (prUrl !== undefined && prUrl !== "") {
-      return resolvePullRequestRef(octokit, owner, repo, prUrl, hasToken);
-    }
-    return resolveDefaultBranch(octokit, owner, repo, defaultBranchCache, hasToken);
+  if (prUrl !== undefined && prUrl !== "") {
+    return resolvePullRequestRef(octokit, owner, repo, prUrl, hasToken);
   }
   return resolveDefaultBranch(octokit, owner, repo, defaultBranchCache, hasToken);
 }
@@ -65,6 +62,33 @@ async function resolvePullRequestRef(
     }
     const pullNumber = parseGitHubPullNumber(prUrl);
     const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+    // octokit types head.repo as a non-null Repository, but the GitHub API returns
+    // null when the fork's repo was deleted (documented; common for squash-merged
+    // fork PRs). Read through a nullable view so a deleted fork surfaces the clear
+    // error below instead of a raw "full_name of null" TypeError.
+    const headRepo = (data.head.repo as { full_name: string } | null)?.full_name;
+    if (headRepo === undefined) {
+      throw new RemoteDocFetchError({
+        owner,
+        repo,
+        ref: prUrl,
+        path: "(unknown)",
+        reason: "PR head repository is unavailable (fork may have been deleted)",
+        suggestToken: false,
+      });
+    }
+    // Fork PRs: head.ref lives on the fork; fetching that ref from the base repo
+    // misses. Cloud scope is single-repo today — fail loud instead of a silent 404.
+    if (headRepo.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) {
+      throw new RemoteDocFetchError({
+        owner,
+        repo,
+        ref: prUrl,
+        path: "(unknown)",
+        reason: `PR head is on fork ${headRepo}; cross-fork doc fetch is not supported (cloud is single-repo)`,
+        suggestToken: false,
+      });
+    }
     return data.head.ref;
   } catch (err) {
     if (err instanceof RemoteDocFetchError) throw err;
