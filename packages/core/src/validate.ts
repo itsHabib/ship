@@ -51,7 +51,7 @@ export async function resolveValidatedDocForCloud(
 
   const { docSource, repoSlug } = options;
   if (repoSlug === undefined || docSource === undefined) {
-    throw new DocNotFoundError(docPath);
+    throw new DocNotFoundError(docPath, { cloud: true });
   }
 
   return resolveRemoteDoc(docPath, repoSlug, docSource, options);

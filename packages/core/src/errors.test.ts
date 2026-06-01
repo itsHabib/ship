@@ -22,12 +22,19 @@ describe("WorkdirNotFoundError", () => {
 });
 
 describe("DocNotFoundError", () => {
-  test("preserves docPath + has expected name", () => {
+  test("local context has no cloud guidance", () => {
     const err = new DocNotFoundError("docs/x.md");
     expect(err.name).toBe("DocNotFoundError");
     expect(err.docPath).toBe("docs/x.md");
     expect(err.message).toMatch(/task doc/);
+    expect(err.message).not.toMatch(/cloud runs/);
+    expect(err.message).not.toMatch(/commit the doc/);
+  });
+
+  test("cloud context includes cloud guidance", () => {
+    const err = new DocNotFoundError("docs/x.md", { cloud: true });
     expect(err.message).toMatch(/cloud runs/);
+    expect(err.message).toMatch(/commit the doc/);
   });
 
   test("cloud both-miss message names local + remote", () => {
@@ -36,6 +43,7 @@ describe("DocNotFoundError", () => {
     });
     expect(err.message).toMatch(/not found locally or remotely/);
     expect(err.message).toMatch(/acme\/sandbox@main/);
+    expect(err.message).toMatch(/commit the doc/);
   });
 });
 

@@ -23,11 +23,17 @@ export class WorkdirNotFoundError extends Error {
   }
 }
 
+const CLOUD_DOC_GUIDANCE =
+  "For cloud runs, commit the doc to the repo branch or pass a local workdir containing it.";
+
 export class DocNotFoundError extends Error {
   override readonly name = "DocNotFoundError";
   readonly docPath: string;
 
-  constructor(docPath: string, opts?: { readonly cloudBothMiss?: CloudDocBothMissContext }) {
+  constructor(
+    docPath: string,
+    opts?: { readonly cloud?: true; readonly cloudBothMiss?: CloudDocBothMissContext },
+  ) {
     if (opts?.cloudBothMiss !== undefined) {
       const { repoSlug, ref, remoteReason } = opts.cloudBothMiss;
       const remoteDetail =
@@ -36,11 +42,10 @@ export class DocNotFoundError extends Error {
         `task doc not found locally or remotely: ${docPath} (not on local filesystem${remoteDetail}). ` +
           "For cloud runs without a local copy, commit the doc to the branch or pass workdir with the file locally.",
       );
+    } else if (opts?.cloud === true) {
+      super(`task doc not found or not a file: ${docPath}. ${CLOUD_DOC_GUIDANCE}`);
     } else {
-      super(
-        `task doc not found or not a file: ${docPath}. ` +
-          "For cloud runs, commit the doc to the repo branch or pass a local workdir containing it.",
-      );
+      super(`task doc not found or not a file: ${docPath}`);
     }
     this.docPath = docPath;
   }
