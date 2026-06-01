@@ -14,6 +14,12 @@ export interface FileStat {
 export interface ShipFs {
   /** Throws if the path doesn't exist (matches `node:fs` behavior). */
   stat(path: string): Promise<FileStat>;
+  /**
+   * Like `stat` but does NOT follow symlinks. Lets the artifact-containment
+   * check tell a genuinely-missing path apart from a dangling symlink (which
+   * `stat` follows and reports as missing, yet could still point outside root).
+   */
+  lstat(path: string): Promise<FileStat>;
   readFile(path: string, encoding: "utf-8"): Promise<string>;
   writeFile(path: string, data: string): Promise<void>;
   /** Binary write for cloud artifact downloads. */

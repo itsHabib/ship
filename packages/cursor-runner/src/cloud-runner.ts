@@ -31,6 +31,7 @@ import {
   mapTerminalResult,
   modelArgFromInput,
 } from "./_shared.js";
+import { captureListedArtifacts } from "./artifacts-capture.js";
 import { cloudDebugLog } from "./debug.js";
 import {
   CursorAgentNotFoundError,
@@ -437,28 +438,11 @@ export class CloudCursorRunner implements CursorRunner {
 }
 
 async function captureCloudArtifacts(agent: SDKAgent): Promise<readonly ArtifactRef[] | undefined> {
-  try {
-    const listed = await agent.listArtifacts();
-    if (!Array.isArray(listed)) return [];
-    return listed.flatMap((a) => {
-      if (isUnsafeCloudArtifactPath(a.path)) return [];
-      return [
-        {
-          path: a.path,
-          sizeBytes: a.sizeBytes,
-          updatedAt: a.updatedAt,
-        },
-      ];
-    });
-  } catch (err) {
-    try {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[ship-cloud-warn] listArtifacts failed: ${message}\n`);
-    } catch {
-      /* swallow — diagnostic logging must never affect control flow */
-    }
-    return [];
-  }
+  const listed = await captureListedArtifacts(() => agent.listArtifacts());
+  return listed.flatMap((a) => {
+    if (isUnsafeCloudArtifactPath(a.path)) return [];
+    return [a];
+  });
 }
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {
