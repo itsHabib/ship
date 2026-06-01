@@ -141,10 +141,10 @@ describe("resolveRef", () => {
     const src = createRemoteDocSource("tok");
     await expect(
       src.resolveRef({ owner: "o", repo: "r", prUrl: "https://github.com/o/r/pull/7" }),
-    ).rejects.toMatchObject({
-      name: "RemoteDocFetchError",
-      message: expect.stringMatching(/fork PR|cross-fork|single-repo/i),
-    });
+    ).rejects.toBeInstanceOf(RemoteDocFetchError);
+    await expect(
+      src.resolveRef({ owner: "o", repo: "r", prUrl: "https://github.com/o/r/pull/7" }),
+    ).rejects.toThrow(/cross-fork|single-repo/i);
   });
 
   test("falls back to the default branch and caches it", async () => {

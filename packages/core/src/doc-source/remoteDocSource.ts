@@ -62,14 +62,10 @@ async function resolvePullRequestRef(
     }
     const pullNumber = parseGitHubPullNumber(prUrl);
     const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
-    const headRepo = data.head.repo?.full_name;
+    const headRepo = data.head.repo.full_name;
     // Fork PRs: head.ref lives on the fork; fetching that ref from the base repo
     // misses. Cloud scope is single-repo today — fail loud instead of a silent 404.
-    if (
-      headRepo !== undefined &&
-      headRepo !== "" &&
-      headRepo.toLowerCase() !== `${owner}/${repo}`.toLowerCase()
-    ) {
+    if (headRepo.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) {
       throw new RemoteDocFetchError({
         owner,
         repo,
