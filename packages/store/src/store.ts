@@ -140,8 +140,10 @@ export function createStore(opts: CreateStoreOptions): Store {
   try {
     const migrationOpts =
       opts.migrationsDir === undefined ? { clock } : { clock, migrationsDir: opts.migrationsDir };
-    runMigrations(db, migrationOpts);
-    assertSchemaVersion(db);
+    withStoreContentionGuard(() => {
+      runMigrations(db, migrationOpts);
+      assertSchemaVersion(db);
+    });
 
     const phaseOps = createPhaseOps(db, clock);
     const workflowRunOps = createWorkflowRunOps(db, clock, phaseOps);
