@@ -39,17 +39,5 @@ jobs:
             exit 1
           fi
 
-      - name: Typecheck
-        run: pnpm run typecheck
-
-      - name: Lint
-        run: pnpm run lint
-
-      - name: Format check
-        run: pnpm run format:check
-
-      - name: Test
-        run: pnpm run test
-
-      - name: Coverage gates
-        run: pnpm run coverage
+      - name: Check
+        run: make check
