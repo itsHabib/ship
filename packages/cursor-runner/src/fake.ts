@@ -11,6 +11,7 @@
  */
 
 import type { SDKMessage } from "@cursor/sdk";
+import type { ArtifactRef } from "@ship/workflow";
 
 import type {
   CursorRunAttachInput,
@@ -21,6 +22,7 @@ import type {
 } from "./runner.js";
 
 import { attachInputAsRunInput } from "./_shared.js";
+import { captureListedArtifacts } from "./artifacts-capture.js";
 import { CursorAgentNotFoundError } from "./errors.js";
 
 /** A single scripted run. The fake pops one of these per `run()` call. */
@@ -29,6 +31,11 @@ export interface FakeCursorScript {
   readonly events: readonly SDKMessage[];
   /** What `handle.result` resolves to once emission finishes naturally. */
   readonly result: CursorRunResult;
+  /**
+   * When set, invoked at terminal (cloud `listArtifacts` parity) with the
+   * same timeout as `CloudCursorRunner`. Overrides `result.artifacts`.
+   */
+  readonly listArtifacts?: () => Promise<readonly ArtifactRef[] | undefined>;
   /**
    * What `handle.cancel()` does mid-flight:
    * - `"complete"` (default): stop emission, resolve as `cancelled`.
@@ -295,6 +302,11 @@ export class FakeCursorRunner implements CursorRunner {
       }
     }
     if (!isTerminated()) {
+      if (script.listArtifacts !== undefined) {
+        const artifacts = await captureListedArtifacts(script.listArtifacts);
+        finalize({ ...script.result, artifacts });
+        return;
+      }
       finalize(script.result);
     }
   }

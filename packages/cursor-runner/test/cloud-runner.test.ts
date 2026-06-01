@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CloudRunSpec, CursorRunInput } from "../src/runner.js";
 
 import { mapTerminalResult } from "../src/_shared.js";
+import { LIST_ARTIFACTS_TIMEOUT_MS } from "../src/artifacts-capture.js";
 import { CloudCursorRunner } from "../src/cloud-runner.js";
 import {
   CursorAgentNotFoundError,
@@ -761,6 +762,35 @@ describe("CloudCursorRunner — happy path + status mapping", () => {
 
     expect(vi.mocked(agent.listArtifacts)).toHaveBeenCalledTimes(1);
     expect(result.artifacts).toEqual([artifact]);
+  });
+
+  test("terminal: stalled listArtifacts times out and proceeds without artifacts", async () => {
+    vi.useFakeTimers();
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { run } = makeMockRun({
+      result: {
+        durationMs: 1,
+        id: "run-test-cloud-0001",
+        result: "ok",
+        status: "finished",
+      },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(agent.listArtifacts).mockReturnValue(new Promise(() => undefined));
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const handlePromise = runner.run(cloudBaseInput());
+    await vi.advanceTimersByTimeAsync(LIST_ARTIFACTS_TIMEOUT_MS + 1);
+    const handle = await handlePromise;
+    const result = await handle.result;
+
+    expect(result.status).toBe("succeeded");
+    expect(result.artifacts).toEqual([]);
+    expect(stderrSpy.mock.calls.join("")).toContain("listArtifacts timed out");
+
+    stderrSpy.mockRestore();
+    vi.useRealTimers();
   });
 
   test("error → failed; result resolves (does NOT throw); errorMessage populated", async () => {

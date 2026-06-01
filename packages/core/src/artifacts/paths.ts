@@ -3,7 +3,7 @@
  * is the only place those names live in code.
  */
 
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import type { ShipFs } from "../fs/shape.js";
 
@@ -94,19 +94,68 @@ export async function resolveContainedCloudArtifactDest(
   workflowRunId: string,
   sdkPath: string,
 ): Promise<string> {
-  const dest = resolveCloudArtifactDest(runsDir, workflowRunId, sdkPath);
   const root = resolveCloudArtifactsRoot(runsDir, workflowRunId);
-  await fs.mkdir(root, { recursive: true });
+  return resolveContainedCloudArtifactDestUnderRoot(fs, root, sdkPath);
+}
+
+/** Containment check for a custom artifacts root (e.g. `download --out`). */
+export async function resolveContainedCloudArtifactDestUnderRoot(
+  fs: ShipFs,
+  artifactsRoot: string,
+  sdkPath: string,
+): Promise<string> {
+  const dest = resolveCloudArtifactDestUnderRoot(artifactsRoot, sdkPath);
+  await fs.mkdir(artifactsRoot, { recursive: true });
+  await assertContainedCloudArtifactDest(fs, artifactsRoot, dest, sdkPath);
+  return dest;
+}
+
+/**
+ * Rejects destinations whose lexical path or any existing intermediate
+ * segment resolves outside the realpath'd artifacts root (symlink escape).
+ */
+export async function assertContainedCloudArtifactDest(
+  fs: ShipFs,
+  artifactsRoot: string,
+  dest: string,
+  sdkPath: string,
+): Promise<void> {
   // `dest` is `resolve()`'d (absolute, OS-native separators, drive-qualified
   // on Windows). Resolve the realpath'd root the same way so the containment
   // check compares like-for-like: a drive-less `runsDir` makes `resolve()`
   // inject the cwd drive onto `dest` but not onto a raw `realpath`, which
   // would false-positive a valid path as an escape on Windows.
-  const realRoot = resolve(await fs.realpath(root));
-  if (!isDescendantPath(dest, realRoot)) {
+  const realRoot = resolve(await fs.realpath(artifactsRoot));
+  const resolvedDest = resolve(dest);
+  if (!isDescendantPath(resolvedDest, realRoot)) {
     throw new ArtifactPathEscapesRunDirError(sdkPath);
   }
-  return dest;
+  await assertExistingPrefixContained(fs, realRoot, resolvedDest, sdkPath);
+}
+
+async function assertExistingPrefixContained(
+  fs: ShipFs,
+  realRoot: string,
+  dest: string,
+  sdkPath: string,
+): Promise<void> {
+  const rel = relative(realRoot, dest);
+  if (rel.length === 0 || rel === ".") return;
+
+  const segments = rel.split(/[/\\]/).filter((s) => s.length > 0 && s !== ".");
+  let cursor = realRoot;
+  for (const segment of segments) {
+    cursor = join(cursor, segment);
+    try {
+      await fs.stat(cursor);
+    } catch {
+      return;
+    }
+    const realCursor = resolve(await fs.realpath(cursor));
+    if (!isDescendantPath(realCursor, realRoot)) {
+      throw new ArtifactPathEscapesRunDirError(sdkPath);
+    }
+  }
 }
 
 /** Default preflight cap for cloud artifact downloads (ED-5). */

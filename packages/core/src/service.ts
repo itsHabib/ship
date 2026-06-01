@@ -39,7 +39,7 @@ import {
   newPhaseId,
   newWorkflowRunId,
 } from "@ship/workflow";
-import { basename, resolve as resolvePath } from "node:path";
+import { basename } from "node:path";
 
 import type { EventWriter } from "./artifacts/ndjson.js";
 import type { DocSource } from "./doc-source/doc-source.js";
@@ -51,8 +51,8 @@ import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import {
   assertSafeCloudArtifactPath,
   DEFAULT_ARTIFACT_MAX_BYTES,
-  resolveCloudArtifactDestUnderRoot,
   resolveContainedCloudArtifactDest,
+  resolveContainedCloudArtifactDestUnderRoot,
   resolveRunArtifactPaths,
   type RunArtifactPaths,
 } from "./artifacts/paths.js";
@@ -62,7 +62,6 @@ import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
 import {
   ArtifactGoneError,
   ArtifactNotInManifestError,
-  ArtifactPathEscapesRunDirError,
   ArtifactsUnavailableLocalError,
   ArtifactTooLargeError,
   ArtifactWriteFailedError,
@@ -70,7 +69,6 @@ import {
   MissingRepoError,
   WorkdirNotFoundError,
 } from "./errors.js";
-import { isDescendantPath } from "./validate.js";
 import { resolveValidatedDoc, resolveValidatedDocForCloud } from "./validate.js";
 
 /** Construction-time configuration for the service. */
@@ -915,9 +913,9 @@ async function downloadArtifactImpl(
   opts?: { readonly force?: boolean; readonly outDir?: string },
 ): Promise<{ localPath: string; sizeBytes: number }> {
   const { config, fs, store } = deps;
+  assertSafeCloudArtifactPath(sdkPath);
   const cursorRun = resolveCloudCursorRunForDownload(store, workflowRunId, sdkPath);
   const ref = manifestRefForPath(cursorRun.artifacts ?? [], workflowRunId, sdkPath);
-  assertSafeCloudArtifactPath(sdkPath);
   const maxBytes = config.artifactMaxBytes ?? DEFAULT_ARTIFACT_MAX_BYTES;
   assertArtifactSizePreflight(ref, workflowRunId, sdkPath, maxBytes, opts?.force);
   const runner = config.cloudCursor;
@@ -949,16 +947,7 @@ async function resolveContainedCloudArtifactDestForOutDir(
   outDir: string,
   sdkPath: string,
 ): Promise<string> {
-  const dest = resolveCloudArtifactDestUnderRoot(outDir, sdkPath);
-  await fs.mkdir(outDir, { recursive: true });
-  // resolve() the realpath so it shares dest's drive/separators on Windows
-  // (dest is already resolve()'d); a raw realpath of a drive-less outDir
-  // false-positives a valid path as an escape. Mirrors the run-dir variant.
-  const realRoot = resolvePath(await fs.realpath(outDir));
-  if (!isDescendantPath(dest, realRoot)) {
-    throw new ArtifactPathEscapesRunDirError(sdkPath);
-  }
-  return dest;
+  return resolveContainedCloudArtifactDestUnderRoot(fs, outDir, sdkPath);
 }
 
 /**

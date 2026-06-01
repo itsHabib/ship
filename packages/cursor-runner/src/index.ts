@@ -20,6 +20,7 @@ export type { ArtifactRef } from "@ship/workflow";
 
 // --- cloud-runner.ts ---
 export { CloudCursorRunner } from "./cloud-runner.js";
+export { LIST_ARTIFACTS_TIMEOUT_MS } from "./artifacts-capture.js";
 
 // --- local-runner.ts ---
 export { LocalCursorRunner } from "./local-runner.js";

@@ -1,13 +1,17 @@
 /** Tests for the per-run artifact path resolver. */
 
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { ArtifactPathEscapesRunDirError } from "../errors.js";
+import { createNodeShipFs } from "../fs/node.js";
 import {
   ARTIFACT_FILES,
   assertSafeCloudArtifactPath,
   resolveCloudArtifactDest,
+  resolveContainedCloudArtifactDest,
   resolveRunArtifactPaths,
   resolveRunArtifactsDir,
 } from "./paths.js";
@@ -59,5 +63,32 @@ describe("resolveRunArtifactPaths", () => {
       result: "result.json",
       summary: "summary.md",
     });
+  });
+});
+
+describe("resolveContainedCloudArtifactDest", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "ship-paths-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { force: true, recursive: true });
+  });
+
+  test("rejects a symlinked intermediate directory that resolves outside the artifacts root", async () => {
+    const fs = createNodeShipFs();
+    const runsDir = join(tmpRoot, "runs");
+    const outsideDir = join(tmpRoot, "outside");
+    const workflowRunId = "wf_symlink_escape";
+    const artifactsRoot = join(runsDir, workflowRunId, "artifacts");
+    await fs.mkdir(outsideDir, { recursive: true });
+    await fs.mkdir(artifactsRoot, { recursive: true });
+    symlinkSync(outsideDir, join(artifactsRoot, "link"));
+
+    await expect(
+      resolveContainedCloudArtifactDest(fs, runsDir, workflowRunId, "link/secret.txt"),
+    ).rejects.toBeInstanceOf(ArtifactPathEscapesRunDirError);
   });
 });

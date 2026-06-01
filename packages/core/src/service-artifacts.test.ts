@@ -4,7 +4,7 @@
 
 import type { ShipInput } from "@ship/mcp";
 
-import { CursorAgentNotFoundError } from "@ship/cursor-runner";
+import { CursorAgentNotFoundError, LIST_ARTIFACTS_TIMEOUT_MS } from "@ship/cursor-runner";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore, WorkflowRunNotFoundError } from "@ship/store";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -180,6 +180,25 @@ describe("ShipService — cloud artifacts", () => {
     expect(h.fs.snapshot().binaryFiles.get(storedKey)?.equals(payload)).toBe(true);
   });
 
+  test("unsafe sdk path not in manifest rejects on path check before manifest lookup", async () => {
+    const downloadSpy = vi.spyOn(h.cloudCursor, "downloadArtifact");
+    h.cloudCursor.enqueue({
+      events: [],
+      result: {
+        status: "succeeded",
+        durationMs: 1,
+        branches: [],
+        artifacts: [ARTIFACT_REF],
+      },
+    });
+    const out = await h.service.ship(cloudInput());
+    await expect(
+      h.service.downloadArtifact(out.workflowRunId, "../not-in-manifest.txt"),
+    ).rejects.toBeInstanceOf(ArtifactPathEscapesRunDirError);
+    expect(downloadSpy).not.toHaveBeenCalled();
+    downloadSpy.mockRestore();
+  });
+
   test("path traversal in sdk path is rejected before download (no runner call)", async () => {
     const downloadSpy = vi.spyOn(h.cloudCursor, "downloadArtifact");
     h.cloudCursor.enqueue({
@@ -290,5 +309,25 @@ describe("ShipService — cloud artifacts", () => {
     await expect(h.service.listArtifacts("wf_does_not_exist")).rejects.toBeInstanceOf(
       WorkflowRunNotFoundError,
     );
+  });
+
+  test("stalled listArtifacts at terminal times out; finalize completes without artifacts", async () => {
+    vi.useFakeTimers();
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    h.cloudCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 1, branches: [] },
+      listArtifacts: (): Promise<never> => new Promise(() => undefined),
+    });
+    const shipPromise = h.service.ship(cloudInput());
+    await vi.advanceTimersByTimeAsync(LIST_ARTIFACTS_TIMEOUT_MS + 1);
+    const out = await shipPromise;
+
+    expect(out.status).toBe("succeeded");
+    expect(await h.service.listArtifacts(out.workflowRunId)).toEqual([]);
+    expect(stderrSpy.mock.calls.join("")).toContain("listArtifacts timed out");
+
+    stderrSpy.mockRestore();
+    vi.useRealTimers();
   });
 });
