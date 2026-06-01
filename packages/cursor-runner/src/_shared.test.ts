@@ -126,10 +126,10 @@ describe("buildTerminalErrorMessage", () => {
       result: "database is locked",
     } as unknown as SDKMessage;
     const statusErr = { type: "status", status: "ERROR" } as unknown as SDKMessage;
-    const msg = buildTerminalErrorMessage(
-      { durationMs: 1000, status: "error" } as RunResult,
-      [toolErr, statusErr],
-    );
+    const msg = buildTerminalErrorMessage({ durationMs: 1000, status: "error" } as RunResult, [
+      toolErr,
+      statusErr,
+    ]);
     expect(msg).toContain("last tool_call errored: database is locked");
     expect(msg).not.toMatch(/errored: ERROR/);
   });
@@ -140,10 +140,9 @@ describe("buildTerminalErrorMessage", () => {
       status: "EXPIRED",
       message: "run exceeded time budget",
     } as unknown as SDKMessage;
-    const msg = buildTerminalErrorMessage(
-      { durationMs: 1000, status: "error" } as RunResult,
-      [statusErr],
-    );
+    const msg = buildTerminalErrorMessage({ durationMs: 1000, status: "error" } as RunResult, [
+      statusErr,
+    ]);
     expect(msg).toContain("detail: run exceeded time budget");
     expect(msg).toMatch(/SDK status EXPIRED/);
   });

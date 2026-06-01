@@ -152,6 +152,9 @@ function stringifyToolCallResult(result: unknown): string {
     return String(result);
   }
   if (result === undefined || result === null) return "";
+  // JSON.stringify returns undefined for function/symbol; handle explicitly so
+  // the stringify below always yields a string for the remaining object case.
+  if (typeof result === "function" || typeof result === "symbol") return "tool_call error";
   try {
     return JSON.stringify(result);
   } catch {
