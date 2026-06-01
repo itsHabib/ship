@@ -186,9 +186,19 @@ export type GetWorkflowRunInput = z.infer<typeof getWorkflowRunInputSchema>;
  * Output of `get_workflow_run` — hydrated `WorkflowRun` plus derived
  * cloud watch fields (omitted for local runs / before agent is recorded).
  */
+const recentRunEventSchema = z.record(z.string(), z.unknown());
+
 export const getWorkflowRunOutputSchema = workflowRunSchema.extend({
   cursorAgentId: z.string().min(1).optional(),
   watchUrl: z.string().url().optional(),
+  /** Cursor run wall time from `result.json` / cursor row (failed runs). */
+  runDurationMs: z.number().int().nonnegative().optional(),
+  /** Policy cap from the run row (`policy.maxRunDurationMs`), surfaced for failed runs. */
+  maxRunDurationMs: z.number().int().positive().optional(),
+  /** Raw SDK terminal status from `result.json` (e.g. `error`, `ERROR`). */
+  sdkTerminalStatus: z.string().min(1).optional(),
+  /** Tail of `events.ndjson` so operators need not open the file. */
+  recentEvents: z.array(recentRunEventSchema).optional(),
 });
 export type GetWorkflowRunOutput = z.infer<typeof getWorkflowRunOutputSchema>;
 

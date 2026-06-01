@@ -813,7 +813,7 @@ describe("CloudCursorRunner — happy path + status mapping", () => {
     expect(result.errorMessage).toBe("model rejected the task");
   });
 
-  test("error without RunResult.result → falls back to a generic errorMessage", async () => {
+  test("error without RunResult.result → surfaces SDK status (not generic fallback)", async () => {
     const { run } = makeMockRun({
       result: { durationMs: 0, id: "run-test-cloud-0001", status: "error" },
     });
@@ -824,7 +824,7 @@ describe("CloudCursorRunner — happy path + status mapping", () => {
     const handle = await runner.run(cloudBaseInput());
     const result = await handle.result;
     expect(result.status).toBe("failed");
-    expect(result.errorMessage).toMatch(/Cursor SDK reported error/);
+    expect(result.errorMessage).toMatch(/SDK status ERROR/);
   });
 
   test("cancelled → cancelled; summary preserved if SDK populated it", async () => {

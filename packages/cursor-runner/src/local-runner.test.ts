@@ -331,10 +331,7 @@ describe("LocalCursorRunner — happy path + status mapping", () => {
     expect(result.errorMessage).toBe("model rejected the task");
   });
 
-  test("error without RunResult.result → falls back to a generic errorMessage", async () => {
-    // Construct without `result` field so the runner sees `undefined`
-    // via the optional getter — this is what the SDK does in some
-    // failure modes.
+  test("error without RunResult.result → surfaces SDK status (not generic fallback)", async () => {
     const { run } = makeMockRun({
       result: { durationMs: 0, id: "run-test-0001", status: "error" },
     });
@@ -345,7 +342,47 @@ describe("LocalCursorRunner — happy path + status mapping", () => {
     const handle = await runner.run(baseInput());
     const result = await handle.result;
     expect(result.status).toBe("failed");
-    expect(result.errorMessage).toMatch(/Cursor SDK reported error/);
+    expect(result.errorMessage).toMatch(/SDK status ERROR/);
+    expect(result.sdkTerminalStatus).toBe("error");
+  });
+
+  test("error with error-bearing tool_call event → errorMessage folds tool detail + SDK status", async () => {
+    const toolErrEv = {
+      agent_id: "agent-test-0001",
+      call_id: "call-err-1",
+      name: "shell",
+      result: "database is locked",
+      run_id: "run-test-0001",
+      status: "error",
+      type: "tool_call",
+    } as unknown as SDKMessage;
+    const statusErrEv = {
+      agent_id: "agent-test-0001",
+      run_id: "run-test-0001",
+      status: "ERROR",
+      type: "status",
+    } as unknown as SDKMessage;
+    const { run } = makeMockRun({
+      // Natural stream order: tool_call error, then the terminal status:ERROR.
+      // The specific tool_call detail must survive the trailing status event.
+      events: [toolErrEv, statusErrEv],
+      result: {
+        durationMs: 27 * 60 * 1000,
+        id: "run-test-0001",
+        status: "error",
+      },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new LocalCursorRunner();
+    const handle = await runner.run(baseInput({ maxRunDurationMs: 30 * 60 * 1000 }));
+    const result = await handle.result;
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain("database is locked");
+    expect(result.errorMessage).toMatch(/SDK status ERROR/);
+    expect(result.errorMessage).toMatch(/27m.*cap 30m/);
+    expect(result.sdkTerminalStatus).toBe("ERROR");
   });
 
   test("cancelled → cancelled; summary preserved if SDK populated it", async () => {
@@ -479,6 +516,7 @@ describe("LocalCursorRunner — onEvent contract", () => {
     const runner = new LocalCursorRunner();
     const handle = await runner.run(baseInput());
     await expect(handle.result).rejects.toThrow(/run\.wait\(\) rejected/);
+    await expect(handle.result).rejects.toThrow(/SDK runtime crashed/);
     await expect(handle.result).rejects.toMatchObject({ cause: waitErr });
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });

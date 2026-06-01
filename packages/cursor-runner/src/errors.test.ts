@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import {
   CursorAgentNotFoundError,
   CursorRunFailedError,
+  cursorRunFailedError,
   LocalResumeNotSupportedError,
   MissingApiKeyError,
 } from "./errors.js";
@@ -36,6 +37,13 @@ describe("CursorRunFailedError", () => {
   test("preserves the original SDK error in cause", () => {
     const sdkError = new Error("AuthenticationError: bad key");
     const wrapped = new CursorRunFailedError("Agent.create rejected", { cause: sdkError });
+    expect(wrapped.cause).toBe(sdkError);
+  });
+
+  test("cursorRunFailedError folds cause message into .message", () => {
+    const sdkError = new Error("database is locked");
+    const wrapped = cursorRunFailedError("run.wait() rejected after a clean stream", sdkError);
+    expect(wrapped.message).toContain("database is locked");
     expect(wrapped.cause).toBe(sdkError);
   });
 

@@ -10,6 +10,7 @@ import type { AgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor
 
 import { Agent } from "@cursor/sdk";
 
+import type { MapRunResultOptions } from "./_shared.js";
 import type {
   CursorRunAttachInput,
   CursorRunHandle,
@@ -21,6 +22,7 @@ import type {
 import { mapRunResult } from "./_shared.js";
 import {
   CursorRunFailedError,
+  cursorRunFailedError,
   LocalResumeNotSupportedError,
   MissingApiKeyError,
   WrongRunnerError,
@@ -197,9 +199,20 @@ export class LocalCursorRunner implements CursorRunner {
       }
     };
 
+    // Bound retained events: a long run can stream thousands, but the failure
+    // mapper only needs the tail (last status + last error-bearing tool_call).
+    const MAX_CAPTURED_EVENTS = 256;
+    const capturedEvents: SDKMessage[] = [];
+    const recordEvent = (ev: SDKMessage): void => {
+      capturedEvents.push(ev);
+      if (capturedEvents.length > MAX_CAPTURED_EVENTS) capturedEvents.shift();
+    };
+    const mapOpts = (): MapRunResultOptions => ({ events: capturedEvents });
+
     try {
       try {
         for await (const ev of sdkRun.stream()) {
+          recordEvent(ev);
           safelyEmit(ev);
         }
       } catch (streamErr) {
@@ -207,13 +220,11 @@ export class LocalCursorRunner implements CursorRunner {
         // anyway — if the SDK has a terminal for us, prefer it.
         const result = await this.#tryWait(sdkRun);
         if (result !== undefined) {
-          callbacks.finalizeOk(mapRunResult(result, input));
+          callbacks.finalizeOk(mapRunResult(result, input, undefined, mapOpts()));
           return;
         }
         callbacks.finalizeError(
-          new CursorRunFailedError("stream errored without a terminal RunResult", {
-            cause: streamErr,
-          }),
+          cursorRunFailedError("stream errored without a terminal RunResult", streamErr),
         );
         return;
       }
@@ -225,13 +236,11 @@ export class LocalCursorRunner implements CursorRunner {
         waitResult = await sdkRun.wait();
       } catch (waitErr) {
         callbacks.finalizeError(
-          new CursorRunFailedError("run.wait() rejected after a clean stream", {
-            cause: waitErr,
-          }),
+          cursorRunFailedError("run.wait() rejected after a clean stream", waitErr),
         );
         return;
       }
-      callbacks.finalizeOk(mapRunResult(waitResult, input));
+      callbacks.finalizeOk(mapRunResult(waitResult, input, undefined, mapOpts()));
     } finally {
       try {
         await agent[Symbol.asyncDispose]();

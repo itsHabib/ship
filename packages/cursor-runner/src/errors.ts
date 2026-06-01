@@ -33,6 +33,41 @@ export class CursorRunFailedError extends Error {
   override readonly name: string = "CursorRunFailedError";
 }
 
+// Renders the directly-stringifiable primitive causes; returns undefined when
+// `cause` is a non-primitive (object/function/symbol) the caller must handle.
+function renderPrimitiveCause(cause: unknown): string | undefined {
+  if (cause instanceof Error && cause.message !== "") return cause.message;
+  if (typeof cause === "string") return cause;
+  if (typeof cause === "number" || typeof cause === "boolean" || typeof cause === "bigint") {
+    return String(cause);
+  }
+  if (cause === null || cause === undefined) return "";
+  return undefined;
+}
+
+function causeMessage(cause: unknown): string {
+  const primitive = renderPrimitiveCause(cause);
+  if (primitive !== undefined) return primitive;
+  // JSON.stringify returns undefined for function/symbol; handle them explicitly
+  // so the stringify below always yields a string for the remaining object case.
+  if (typeof cause === "function" || typeof cause === "symbol") return "[unstringifiable cause]";
+  try {
+    return JSON.stringify(cause);
+  } catch {
+    return "[unstringifiable cause]";
+  }
+}
+
+/**
+ * Pre-run / stream failure with the underlying SDK message folded into
+ * `.message` so single-level `errorMessage` consumers see the real cause.
+ */
+export function cursorRunFailedError(message: string, cause: unknown): CursorRunFailedError {
+  const detail = causeMessage(cause);
+  const combined = detail !== "" && !message.includes(detail) ? `${message}: ${detail}` : message;
+  return new CursorRunFailedError(combined, { cause });
+}
+
 /** Cloud inputs passed to {@link CloudCursorRunner} without `cloud` config. */
 export class MissingCloudSpecError extends CursorRunFailedError {
   override readonly name: string = "MissingCloudSpecError";

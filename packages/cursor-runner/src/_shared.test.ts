@@ -1,13 +1,17 @@
 /** Tests for `deriveCloudWarnings` and `mapTerminalResult` warning wiring. */
 
-import type { RunResult } from "@cursor/sdk";
+import type { RunResult, SDKMessage } from "@cursor/sdk";
 
 import { describe, expect, test } from "vitest";
 
-import type { CloudRunSpec } from "./runner.js";
-import type { CursorRunInput } from "./runner.js";
+import type { CloudRunSpec, CursorRunInput } from "./runner.js";
 
-import { deriveCloudWarnings, mapRunResult, mapTerminalResult } from "./_shared.js";
+import {
+  buildTerminalErrorMessage,
+  deriveCloudWarnings,
+  mapRunResult,
+  mapTerminalResult,
+} from "./_shared.js";
 
 const baseSpec = {
   repos: [{ url: "https://github.com/acme/sandbox" }],
@@ -84,6 +88,63 @@ describe("mapTerminalResult warnings field", () => {
     const mapped = mapTerminalResult(result, "cancelled", spec);
     expect(mapped).not.toHaveProperty("warnings");
     expect(mapped.status).toBe("cancelled");
+  });
+});
+
+describe("buildTerminalErrorMessage", () => {
+  test("prefers RunResult.result when present", () => {
+    const msg = buildTerminalErrorMessage(
+      { status: "error", result: "model rejected" } as RunResult,
+      [],
+    );
+    expect(msg).toBe("model rejected");
+  });
+
+  test("folds last tool_call error and SDK status", () => {
+    const toolErr = {
+      type: "tool_call",
+      status: "error",
+      result: "database is locked",
+    } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage(
+      { durationMs: 27 * 60 * 1000, status: "error" } as RunResult,
+      [toolErr],
+      30 * 60 * 1000,
+    );
+    expect(msg).toContain("database is locked");
+    expect(msg).toMatch(/SDK status ERROR/);
+    expect(msg).toMatch(/27m.*cap 30m/);
+  });
+
+  test("prefers the tool_call detail over a trailing terminal status event", () => {
+    // Natural stream order: the tool_call error precedes the terminal
+    // status:ERROR. The specific detail must win — guards the regression where
+    // the trailing status event overwrote it with the bare "ERROR" enum.
+    const toolErr = {
+      type: "tool_call",
+      status: "error",
+      result: "database is locked",
+    } as unknown as SDKMessage;
+    const statusErr = { type: "status", status: "ERROR" } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage({ durationMs: 1000, status: "error" } as RunResult, [
+      toolErr,
+      statusErr,
+    ]);
+    expect(msg).toContain("last tool_call errored: database is locked");
+    expect(msg).not.toMatch(/errored: ERROR/);
+  });
+
+  test("falls back to a terminal status message when no tool_call error is present", () => {
+    const statusErr = {
+      type: "status",
+      status: "EXPIRED",
+      message: "run exceeded time budget",
+    } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage({ durationMs: 1000, status: "error" } as RunResult, [
+      statusErr,
+    ]);
+    expect(msg).toContain("detail: run exceeded time budget");
+    expect(msg).toMatch(/SDK status EXPIRED/);
   });
 });
 
