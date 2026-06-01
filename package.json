@@ -31,7 +31,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "pnpm -r --workspace-concurrency=1 exec vitest run --coverage",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run test"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run coverage"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
