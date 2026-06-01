@@ -7,7 +7,7 @@ import type { WorkflowPolicy, WorktreeRef } from "@ship/workflow";
 
 import { newCursorRunId, newPhaseId, newWorkflowRunId } from "@ship/workflow";
 import Database from "better-sqlite3";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { Store } from "./store.js";
 
 import { openDatabase } from "./db.js";
-import { SchemaSkewError } from "./errors.js";
+import { SchemaAheadError, SchemaSkewError } from "./errors.js";
 import { runMigrations } from "./migrations.js";
 import { createStore } from "./store.js";
 
@@ -152,6 +152,32 @@ describe("createStore: schema version guard", () => {
     expect(() => createStore({ dbPath, migrationsDir })).toThrow(
       /Restart ship to apply pending migrations/,
     );
+  });
+
+  test("store_open_with_ahead_db_throws_schema_ahead_error", () => {
+    // Migrate the DB with every shipped migration PLUS a phantom extra, then
+    // open against the real (shorter) migrations dir → DB is ahead of the build.
+    const aheadDir = join(tmpDir, "migrations-ahead");
+    mkdirSync(aheadDir, { recursive: true });
+    for (const name of readdirSync(SHIPPED_MIGRATIONS_DIR).filter((f) => f.endsWith(".sql"))) {
+      copyFileSync(join(SHIPPED_MIGRATIONS_DIR, name), join(aheadDir, name));
+    }
+    writeFileSync(
+      join(aheadDir, "9999_phantom_future.sql"),
+      "CREATE TABLE phantom_future (id TEXT PRIMARY KEY);",
+      "utf8",
+    );
+
+    const db = openDatabase(dbPath);
+    try {
+      runMigrations(db, { migrationsDir: aheadDir });
+    } finally {
+      db.close();
+    }
+
+    // Default createStore uses the real shipped migrations dir (no phantom).
+    expect(() => createStore({ dbPath })).toThrow(SchemaAheadError);
+    expect(() => createStore({ dbPath })).toThrow(/ahead of the running code/);
   });
 
   test("store_open_applies_pending_migration_then_reads_ok", () => {

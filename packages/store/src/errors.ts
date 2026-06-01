@@ -88,3 +88,23 @@ export class SchemaSkewError extends Error {
     this.codeMigrationCount = codeMigrationCount;
   }
 }
+
+/**
+ * Thrown when `createStore` opens a DB whose applied migrations are *ahead* of
+ * the build (a downgrade: every shipped migration is applied, plus extras this
+ * build doesn't ship). Distinct from `SchemaSkewError` (behind) so callers can
+ * discriminate the two skew directions.
+ */
+export class SchemaAheadError extends Error {
+  override readonly name = "SchemaAheadError";
+  readonly dbMigrationCount: number;
+  readonly codeMigrationCount: number;
+
+  constructor(dbMigrationCount: number, codeMigrationCount: number) {
+    super(
+      `ship DB schema is ahead of the running code (DB at ${String(dbMigrationCount)}, code expects ${String(codeMigrationCount)}). Downgrade ship or migrate the DB forward.`,
+    );
+    this.dbMigrationCount = dbMigrationCount;
+    this.codeMigrationCount = codeMigrationCount;
+  }
+}

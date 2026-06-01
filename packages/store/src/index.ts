@@ -21,6 +21,7 @@ export {
   CursorRunNotFoundError,
   MigrationError,
   PhaseNotFoundError,
+  SchemaAheadError,
   SchemaSkewError,
   StoreSchemaError,
   WorkflowRunNotFoundError,
