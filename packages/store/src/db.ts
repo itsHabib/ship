@@ -35,6 +35,10 @@ export function openDatabase(dbPath: string): Db {
     configureConnection(db, dbPath);
   } catch (err: unknown) {
     db.close();
+    // The PRAGMA setup (and migrations on open) can hit lock contention under
+    // concurrent local runs; surface the operator-facing hint instead of a raw
+    // SQLITE_BUSY on the startup path.
+    if (isSqliteBusyError(err)) throw new StoreContentionError(err);
     throw err;
   }
   return db;
@@ -46,9 +50,12 @@ export function openDatabase(dbPath: string): Db {
  * DBs.
  */
 function configureConnection(db: Db, dbPath: string): void {
+  // Install busy_timeout FIRST: the WAL pragma below can itself need a write lock
+  // at startup, so under concurrent local runs it must wait the full timeout
+  // rather than better-sqlite3's short constructor default before surfacing busy.
+  db.pragma(`busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  db.pragma(`busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
 
   const journalMode = db.pragma("journal_mode", { simple: true }) as string;
   if (journalMode !== "wal" && journalMode !== "memory") {
