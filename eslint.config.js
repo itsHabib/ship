@@ -11,6 +11,11 @@ export default tseslint.config(
       "**/build/**",
       "**/coverage/**",
       ".pnpm-store/**",
+      // In-repo git worktrees (both the `.worktrees/` and `.claude/worktrees/`
+      // conventions) are separate checkouts — a local worktree must never
+      // pollute `eslint .` (CI uses a fresh checkout and never sees them).
+      "**/.worktrees/**",
+      "**/.claude/worktrees/**",
       "spike/**",
       "**/*.config.js",
       "**/*.config.ts",

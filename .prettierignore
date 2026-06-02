@@ -4,6 +4,8 @@ dist
 build
 coverage
 spike
+.worktrees
+.claude/worktrees
 pnpm-lock.yaml
 *.tsbuildinfo
 
