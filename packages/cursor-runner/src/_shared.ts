@@ -5,6 +5,8 @@
 
 import type { RunResult, SDKMessage, ModelSelection as SdkModelSelection } from "@cursor/sdk";
 
+import { LOCAL_RUN_CONTENTION_HINT } from "@ship/workflow";
+
 import type {
   CloudRunSpec,
   CursorRunAttachInput,
@@ -229,6 +231,17 @@ function lastErrorDetailFromEvents(events: readonly SDKMessage[]): EventErrorDet
   return toolCall ?? statusMessage;
 }
 
+function isSqliteLockText(text: string): boolean {
+  return /database is locked/i.test(text) || /SQLITE_BUSY/i.test(text);
+}
+
+/** Prefix SDK/SQLite lock failures with the operator-facing contention hint. */
+export function withLocalRunContentionHint(message: string): string {
+  if (!isSqliteLockText(message)) return message;
+  if (message.includes(LOCAL_RUN_CONTENTION_HINT)) return message;
+  return `${LOCAL_RUN_CONTENTION_HINT} (${message})`;
+}
+
 /** Fold SDK terminal state + streamed events into a single operator-facing message. */
 export function buildTerminalErrorMessage(
   result: RunResult,
@@ -236,7 +249,7 @@ export function buildTerminalErrorMessage(
   maxRunDurationMs?: number,
 ): string {
   if (result.result !== undefined && result.result !== "") {
-    return result.result;
+    return withLocalRunContentionHint(result.result);
   }
   const eventStatus = lastSdkStatusFromEvents(events);
   const displayStatus = (eventStatus ?? result.status).toUpperCase();
@@ -248,7 +261,9 @@ export function buildTerminalErrorMessage(
   const detail = lastErrorDetailFromEvents(events);
   if (detail !== undefined) {
     const label = detail.source === "tool_call" ? "last tool_call errored" : "detail";
-    return `SDK status ${displayStatus} ${durationPart}; ${label}: ${detail.text}`;
+    return withLocalRunContentionHint(
+      `SDK status ${displayStatus} ${durationPart}; ${label}: ${detail.text}`,
+    );
   }
   if (eventStatus !== undefined || result.status === "error") {
     return `SDK status ${displayStatus} ${durationPart}`;

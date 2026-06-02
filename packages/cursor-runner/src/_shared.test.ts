@@ -2,6 +2,7 @@
 
 import type { RunResult, SDKMessage } from "@cursor/sdk";
 
+import { LOCAL_RUN_CONTENTION_HINT } from "@ship/workflow";
 import { describe, expect, test } from "vitest";
 
 import type { CloudRunSpec, CursorRunInput } from "./runner.js";
@@ -112,6 +113,7 @@ describe("buildTerminalErrorMessage", () => {
       30 * 60 * 1000,
     );
     expect(msg).toContain("database is locked");
+    expect(msg).toContain(LOCAL_RUN_CONTENTION_HINT);
     expect(msg).toMatch(/SDK status ERROR/);
     expect(msg).toMatch(/27m.*cap 30m/);
   });

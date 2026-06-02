@@ -82,11 +82,11 @@ describe("createStore: connection setup PRAGMAs (file-backed)", () => {
     }
   });
 
-  test("openDatabase sets busy_timeout = 5000 on the connection", () => {
+  test("openDatabase sets busy_timeout on the connection", () => {
     // busy_timeout is per-connection; read PRAGMA back on a handle from openDatabase directly.
     const db = openDatabase(dbPath);
     try {
-      expect(db.pragma("busy_timeout", { simple: true })).toBe(5000);
+      expect(db.pragma("busy_timeout", { simple: true })).toBe(30_000);
     } finally {
       db.close();
     }
