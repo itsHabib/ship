@@ -5,6 +5,8 @@
 
 import type { RunResult, SDKMessage, ModelSelection as SdkModelSelection } from "@cursor/sdk";
 
+import { LOCAL_RUN_CONTENTION_HINT } from "@ship/workflow";
+
 import type {
   CloudRunSpec,
   CursorRunAttachInput,
@@ -228,8 +230,6 @@ function lastErrorDetailFromEvents(events: readonly SDKMessage[]): EventErrorDet
   }
   return toolCall ?? statusMessage;
 }
-
-const LOCAL_RUN_CONTENTION_HINT = "local run contention — reduce parallelism";
 
 function isSqliteLockText(text: string): boolean {
   return /database is locked/i.test(text) || /SQLITE_BUSY/i.test(text);

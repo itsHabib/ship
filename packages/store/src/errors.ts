@@ -5,6 +5,8 @@
  * Internal-invariant violations surface as plain `Error`.
  */
 
+import { LOCAL_RUN_CONTENTION_HINT } from "@ship/workflow";
+
 /**
  * Thrown when a `WorkflowRun` referenced by id does not exist. Read methods
  * (`getRun`, `listRuns`) return `null` / `[]` instead — `not-found` is only
@@ -109,8 +111,10 @@ export class SchemaAheadError extends Error {
   }
 }
 
-/** Operator-facing hint when SQLite lock contention exceeds `busy_timeout`. */
-export const LOCAL_RUN_CONTENTION_HINT = "local run contention — reduce parallelism";
+// Re-exported from @ship/workflow so the hint string is shared with
+// cursor-runner (which can't depend on @ship/store) without duplicating the
+// literal, which would drift.
+export { LOCAL_RUN_CONTENTION_HINT };
 
 /** Supported concurrent local-runtime `ship` runs against one `state.db`. */
 export const LOCAL_RUNTIME_PARALLELISM_LIMIT = 2;

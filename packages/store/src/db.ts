@@ -18,8 +18,7 @@ export type Db = BetterSqlite3Database;
 
 /**
  * Milliseconds SQLite blocks on `SQLITE_BUSY` before surfacing an error.
- * Raised from 5s after 2026-06-01 triple local-run contention (three
- * overlapping 30m streams against one `state.db`).
+ * Raised from 5s to tolerate concurrent local streams against one `state.db`.
  */
 export const BUSY_TIMEOUT_MS = 30_000;
 

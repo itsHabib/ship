@@ -94,6 +94,9 @@ export type ArtifactRef = z.infer<typeof artifactRefSchema>;
 /** Sentinel value for cloud runs with no local checkout (phase 09). */
 export const CLOUD_WORKTREE_SENTINEL = "(cloud)" as const;
 
+/** Operator-facing hint when local SQLite lock contention exceeds busy_timeout. */
+export const LOCAL_RUN_CONTENTION_HINT = "local run contention — reduce parallelism";
+
 /**
  * Reference to a Tower-managed worktree. Captured at run-creation and
  * immutable for the run's lifetime.

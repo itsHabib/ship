@@ -15,6 +15,7 @@ export {
   cursorRunStatusSchema,
   DEFAULT_WORKFLOW_POLICY,
   isTerminal,
+  LOCAL_RUN_CONTENTION_HINT,
   modelSelectionSchema,
   phaseKindSchema,
   phaseSchema,
