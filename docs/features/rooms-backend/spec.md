@@ -41,9 +41,9 @@ Consequences, all of which fall out of the existing cloud path:
   interface RoomRunSpec {
     readonly repos: readonly [{ readonly url: string; readonly startingRef?: string }]; // single-repo, like cloud
     readonly image?: string;     // defaults to the host's agent-alpine-cursor.ext4
-    readonly pushBranch?: string; // branch rooms pushes to. Default: `rooms/<slug(agentName)>-<short-uuid>`.
-                                  // NB: workflowRunId is NOT on CursorRunInput — derive from agentName
-                                  // (conventionally `ship/<workflowRunId>`), falling back to a uuid.
+    readonly pushBranch?: string; // branch rooms pushes to. Default ALWAYS appends a uuid:
+                                  // `rooms/<slug(agentName) || "run">-<short-uuid>` (workflowRunId is NOT on
+                                  // CursorRunInput; agentName is conventionally `ship/<workflowRunId>`).
   }
   // No autoCreatePR for rooms v0 — the runner never opens a PR; downstream does
   // (see "The model"). Revisit if/when a room gains a PR-scope token + opens its own PR.
@@ -59,9 +59,9 @@ Implements `CursorRunner`. Unlike Local/Cloud it does **not** call `@cursor/sdk`
     --task <tmpfile(input.prompt)> --model <modelArgFromInput> \
     --push-branch <room.pushBranch ?? derived> --out <hostdir>
   ```
-  (`--base-sha HEAD` is safe: rooms pins `refs/rooms/base` at clone, so a symbolic ref resolves to the concrete commit.)
+  (`--base-sha HEAD` is safe: rooms pins `refs/rooms/base` at clone, so a symbolic ref resolves to the concrete commit.) `<hostdir>` is a unique per-run temp dir ship creates (e.g. under `os.tmpdir()`); ship removes it after parsing on success, leaves it on error for debugging. rooms clears it at run start regardless.
 - **IDs:** rooms has no SDK agent, so `run` returns synthetic `agentId = "room-<uuid>"` / `runId = "run-<uuid>"` on the `CursorRunHandle` (persisted to `cursor_runs.agent_id`/`run_id`; opaque — never round-tripped to an SDK, since `attach` is unsupported).
-- **Terminal + events:** rooms writes the contract artifacts and `--out` collects them to `<hostdir>` before teardown. `RoomCursorRunner` first asserts `result.json.schema_version` matches the rooms runner contract (bail with a clear error on drift — guards CLI/contract drift), then replays `events.ndjson` through `input.onEvent` (each line is an `SDKMessage`), **then** resolves `handle.result`. Ordering guarantee: the `onEvent` replay completes before `result` resolves (local/cloud stream live; rooms replays terminally). Result: `CursorRunResult { status, summary (from summary.md), durationMs, branches: [{ repoUrl: room.repos[0].url, branch: result.json.pushed_branch }] }`; `errorMessage` from `summary.md`/`result.json` when `status === "failed"`.
+- **Terminal + events:** rooms writes the contract artifacts and `--out` collects them to `<hostdir>` before teardown. `RoomCursorRunner` reads the files directly; it first asserts `result.json.schema_version === 1` (rooms' `SCHEMA_VERSION`, `rooms/src/artifacts.rs` — pin that literal; bail with a clear error on drift), then replays `events.ndjson` through `input.onEvent` (each line is an `SDKMessage`), **then** resolves `handle.result`. Ordering guarantee: the `onEvent` replay completes before `result` resolves (local/cloud stream live; rooms replays terminally). Result: `CursorRunResult { status, summary (from summary.md), durationMs: ended_at − started_at (both on result.json), branches: [{ repoUrl: room.repos[0].url, branch: result.json.pushed_branch }] }`; `errorMessage` from `summary.md`/`result.json` when `status === "failed"`. (`rooms collect --from <hostdir>` is an available standalone validator; the runner reads + asserts directly rather than shelling it.)
 - `attach`: throws `RoomResumeNotSupportedError` (no resume for v0 — rooms VMs are disposable; mirrors `LocalCursorRunner.attach`).
 - No `downloadArtifact` (omitted, like local).
 
@@ -77,7 +77,7 @@ Implements `CursorRunner`. Unlike Local/Cloud it does **not** call `@cursor/sdk`
 ### rooms-side (separate repo) — ✅ MERGED (rooms#39 + rooms#40), as built
 - `rooms run --runner cursor --push-branch <b>`: on a **successful** agent run, the runner commits + pushes over the SSH connection rooms holds — `git checkout -B <b>`, `git add -A` *inside the disposable guest workspace* (a fresh clone in a throwaway VM, not a dev tree), commit with a `Co-authored-by: Cursor` trailer, push. "Nothing to push" is `HEAD == refs/rooms/base` (a ref pinned at clone — correct even when `--base-sha` is symbolic like `HEAD`). Auth: `GH_TOKEN` forwarded **only on the push SSH invocation** (never to the agent run / `--command`) via a git credential helper reading it from env — token never in argv; the tabled `secret-injection-via-vsock` task hardens the channel later.
 - `result.json` gains `pushed_branch` (the pushed ref).
-- `--out <hostdir>`: collects `/workspace/out` to the host before teardown via **tar-over-ssh, validating the archive before extraction** (rejects symlink/hardlink/device members and `..`/absolute paths so a guest-planted member can't escape `<hostdir>`; dir cleared each run). ship reads `events.ndjson`/`summary.md`/`result.json`; `rooms collect --from <hostdir>` validates the layout. This is the *only* artifact pull-back — no patch is pulled (the push carries the code).
+- `--out <hostdir>`: collects `/workspace/out` to the host before teardown via **tar-over-ssh, validating the archive before extraction** (rejects symlink/hardlink/device members and `..`/absolute paths so a guest-planted member can't escape `<hostdir>`; dir cleared each run). ship reads `events.ndjson`/`summary.md`/`result.json` directly from `<hostdir>`; `rooms collect --from <hostdir>` is a standalone validator, not invoked by the runner. This is the *only* artifact pull-back — no patch is pulled (the push carries the code).
 
 ## Tradeoffs
 - **Mirror cloud vs mirror local** → cloud (room self-persists; reuses cloud's `branches[]` shape + the downstream-PR flow; no host git-env coupling).
