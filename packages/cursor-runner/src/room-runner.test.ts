@@ -26,7 +26,7 @@ import {
   RoomSchemaVersionError,
   WrongRunnerError,
 } from "./errors.js";
-import { RoomCursorRunner } from "./room-runner.js";
+import { RoomCursorRunner, ROOMS_CHILD_STDIO } from "./room-runner.js";
 
 const REPO_URL = "https://github.com/itsHabib/roxiq";
 
@@ -319,13 +319,15 @@ describe("RoomCursorRunner.run — terminal result", () => {
     expect(result.status).toBe("succeeded");
   });
 
-  test("nonzero subprocess exit downgrades a stale succeeded result.json to failed", async () => {
+  test("nonzero subprocess exit downgrades a stale succeeded result.json to failed; clears branches", async () => {
     // rooms writes result.json from the agent's exit BEFORE a push error
-    // surfaces, then exits nonzero. The run must not report succeeded.
+    // surfaces, then exits nonzero. The run must not report succeeded, and the
+    // stale pushed_branch must not surface as a phantom ref to `gh pr create`.
     const f = fakeRooms({ exitCode: 1, result: successResult() });
     const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
     expect(result.status).toBe("failed");
     expect(result.errorMessage).toContain("code 1");
+    expect(result.branches).toEqual([]);
   });
 
   test("nonzero exit prefers the summary as errorMessage when present", async () => {
@@ -507,6 +509,14 @@ describe("RoomCursorRunner — env + onEvent edge branches", () => {
       restoreEnv("GH_TOKEN", savedGh);
       restoreEnv("GITHUB_TOKEN", savedGithub);
     }
+  });
+
+  test("default spawn keeps the child off our stdout (JSON-RPC framing safety)", () => {
+    // The async ship path spawns rooms in the same process as the MCP server's
+    // StdioServerTransport (JSON-RPC on stdout); fd 1 must NOT be inherited.
+    expect(ROOMS_CHILD_STDIO[1]).toBe("ignore");
+    expect(ROOMS_CHILD_STDIO[0]).toBe("ignore");
+    expect(ROOMS_CHILD_STDIO[2]).toBe("inherit");
   });
 
   test("onEvent that throws or returns a rejecting promise is swallowed; run still succeeds", async () => {

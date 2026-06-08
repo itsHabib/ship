@@ -76,8 +76,20 @@ export type RoomsSpawn = (
   options: RoomsSpawnOptions,
 ) => RoomsChild;
 
+// fd 1 (stdout) is "ignore", NOT "inherit": ship's MCP server frames JSON-RPC
+// on its own stdout, and the async `ship` path spawns rooms IN THE SAME PROCESS
+// (see core `runShipStart`), so an inherited child stdout would interleave into
+// the JSON-RPC stream and corrupt message framing. The runner reads every
+// artifact from `--out`, never from the subprocess's stdout, so nothing is
+// lost. stderr inherits for operator-visible rooms logs (not on the wire).
+export const ROOMS_CHILD_STDIO: readonly ["ignore", "ignore", "inherit"] = [
+  "ignore",
+  "ignore",
+  "inherit",
+];
+
 const defaultRoomsSpawn: RoomsSpawn = (command, args, options) =>
-  nodeSpawn(command, [...args], { env: options.env, stdio: ["ignore", "inherit", "inherit"] });
+  nodeSpawn(command, [...args], { env: options.env, stdio: [...ROOMS_CHILD_STDIO] });
 
 /** Construction-time configuration. All optional; production omits them. */
 export interface RoomCursorRunnerOptions {
@@ -476,7 +488,11 @@ function applyExitCode(result: CursorRunResult, exitCode: number | null): Cursor
     result.summary !== undefined && result.summary !== ""
       ? result.summary
       : `rooms exited with ${detail}`;
-  return { ...result, errorMessage, status: "failed" };
+  // Clear branches: result.json's `pushed_branch` was written from the agent
+  // exit BEFORE the push error surfaced, so on a non-clean exit it may name a
+  // branch that was never actually pushed. Don't hand a phantom ref to a
+  // downstream `gh pr create`.
+  return { ...result, branches: [], errorMessage, status: "failed" };
 }
 
 // GH_TOKEN (← GH_TOKEN ?? GITHUB_TOKEN) + the inherited CURSOR_API_KEY /
