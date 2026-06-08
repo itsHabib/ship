@@ -14,7 +14,7 @@ import type { CursorRunner } from "@ship/cursor-runner";
 import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
 
-import { CloudCursorRunner, LocalCursorRunner } from "@ship/cursor-runner";
+import { CloudCursorRunner, LocalCursorRunner, RoomCursorRunner } from "@ship/cursor-runner";
 import { createStore } from "@ship/store";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -76,6 +76,11 @@ export interface DefaultShipServiceOpts {
    * `cloudCursor` field) to exercise not-configured errors.
    */
   readonly cloudCursor?: CursorRunner;
+  /**
+   * Rooms runner override. Production omits this and gets
+   * `RoomCursorRunner`. Tests may inject a `FakeCursorRunner`.
+   */
+  readonly roomCursor?: CursorRunner;
 }
 
 // Memoizing factory shape. Returns the same `ShipService` across calls.
@@ -120,6 +125,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     const infra = getOrCreateSharedInfra(opts.dbPath);
     const cursor = opts.cursor ?? new LocalCursorRunner();
     const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
+    const roomCursor = opts.roomCursor ?? new RoomCursorRunner();
     const fs = createNodeShipFs();
     cached = createShipService({
       store: infra.store,
@@ -132,6 +138,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
         defaultModel: resolveConfiguredDefaultModel(opts),
         cursor,
         cloudCursor,
+        roomCursor,
       },
     });
     return cached;

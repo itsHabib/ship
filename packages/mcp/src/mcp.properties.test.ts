@@ -88,11 +88,11 @@ describe("MCP schema properties (fast-check)", () => {
     },
   );
 
-  test.prop([fc.constantFrom("local", "cloud"), fc.string()], { numRuns: ITER })(
-    "M3: cursorRunRuntimeSchema accepts local/cloud and rejects other strings",
+  test.prop([fc.constantFrom("local", "cloud", "rooms"), fc.string()], { numRuns: ITER })(
+    "M3: cursorRunRuntimeSchema accepts local/cloud/rooms and rejects other strings",
     (valid, other) => {
       expect(cursorRunRuntimeSchema.parse(valid)).toBe(valid);
-      if (other !== "local" && other !== "cloud") {
+      if (other !== "local" && other !== "cloud" && other !== "rooms") {
         expect(cursorRunRuntimeSchema.safeParse(other).success).toBe(false);
       }
     },
