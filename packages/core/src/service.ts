@@ -857,24 +857,34 @@ interface FinalizeSuccessArgs {
   readonly workflowRunId: string;
 }
 
+// When the runner reports a non-cancelled failure, classify it and fold the
+// category/detail into the result; otherwise pass the result through untouched.
+function classifyFinalizedResult(
+  ctx: ShipContext,
+  args: FinalizeSuccessArgs,
+  isCancelled: boolean,
+  terminal: TerminalWorkflowStatus,
+): { readonly result: CursorRunResult; readonly classified?: ClassifiedFailure } {
+  if (terminal !== "failed" || isCancelled) return { result: args.result };
+  const classified = classifyFailedRun(ctx, args.workflowRunId, args.result);
+  return {
+    classified,
+    result: {
+      ...args.result,
+      errorMessage: classified.errorMessage,
+      failureCategory: classified.category,
+      failureDetail: classified.detail,
+    },
+  };
+}
+
 async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
   const { ctx, paths } = args;
   const endedAt = ctx.clock();
 
   const isCancelled = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
   const terminal: TerminalWorkflowStatus = isCancelled ? "cancelled" : args.result.status;
-
-  let result = args.result;
-  let classified: ClassifiedFailure | undefined;
-  if (terminal === "failed" && !isCancelled) {
-    classified = classifyFailedRun(ctx, args.workflowRunId, args.result);
-    result = {
-      ...args.result,
-      errorMessage: classified.errorMessage,
-      failureCategory: classified.category,
-      failureDetail: classified.detail,
-    };
-  }
+  const { result, classified } = classifyFinalizedResult(ctx, args, isCancelled, terminal);
 
   const writeOutcome = await tryWriteSuccessArtifacts(ctx, paths, result);
   if (!writeOutcome.ok) {
@@ -891,23 +901,29 @@ async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
     });
   }
 
+  // Re-read cancel state: a cancelRun() may have landed during the async
+  // artifact write above. Honor the latest intent so the runner's terminal
+  // status doesn't overwrite a concurrent cancel.
+  const cancelledNow = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
+  const effectiveTerminal: TerminalWorkflowStatus = cancelledNow ? "cancelled" : terminal;
+
   persistSuccessRows({
     ctx,
     args,
-    terminal,
+    terminal: effectiveTerminal,
     endedAt,
-    isCancelled,
+    isCancelled: cancelledNow,
     result,
-    ...(classified !== undefined && { failureCategory: classified.category }),
+    ...(classified !== undefined && !cancelledNow && { failureCategory: classified.category }),
   });
 
   const updatedRun = ctx.store.getRun(args.workflowRunId);
   const cursorRunRef = ctx.store.getCursorRun(args.cursorRunId);
   return buildShipOutput({
     workflowRunId: args.workflowRunId,
-    status: terminal,
+    status: effectiveTerminal,
     worktree: updatedRun?.worktree ?? args.worktree,
-    cursorRun: assertTerminalCursorRunRef(cursorRunRef, terminal),
+    cursorRun: assertTerminalCursorRunRef(cursorRunRef, effectiveTerminal),
     paths,
     summary: result.summary,
   });
@@ -997,12 +1013,23 @@ function errorMessageFromUnknown(err: unknown): string | undefined {
   return undefined;
 }
 
+// `sdk-throw` means the cursor SDK itself rejected. Errors ship raises while
+// finalizing (e.g. a failed artifact write routed in via finalizeSuccess) are
+// not SDK failures, so they classify as `unknown` rather than mislabeling the
+// SDK. An explicit `infra` category can split these out later (tombstone
+// discipline: add, never repurpose).
+function isSdkThrow(err: unknown): boolean {
+  if (err instanceof StoreContentionError) return false;
+  if (err instanceof ArtifactWriteFailedError) return false;
+  return true;
+}
+
 function classifyThrownFailure(err: unknown): ClassifiedFailure {
   const isStoreContention = err instanceof StoreContentionError;
   const category = classifyFailure({
     events: [],
     isStoreContention,
-    thrownError: !isStoreContention,
+    thrownError: isSdkThrow(err),
   });
   const rawMessage = errorMessageFromUnknown(err);
   const detail = buildFailureDetail({

@@ -26,7 +26,12 @@ import type {
   CursorRunResult,
 } from "./runner.js";
 
-import { attachInputAsRunInput, mapRunResult, modelArgFromInput } from "./_shared.js";
+import {
+  attachInputAsRunInput,
+  mapRunResult,
+  MAX_CLASSIFICATION_EVENTS,
+  modelArgFromInput,
+} from "./_shared.js";
 import { captureListedArtifacts } from "./artifacts-capture.js";
 import { cloudDebugLog } from "./debug.js";
 import {
@@ -366,11 +371,10 @@ export class CloudCursorRunner implements CursorRunner {
       }
     };
 
-    const MAX_CAPTURED_EVENTS = 256;
     const capturedEvents: SDKMessage[] = [];
     const recordEvent = (ev: SDKMessage): void => {
       capturedEvents.push(ev);
-      if (capturedEvents.length > MAX_CAPTURED_EVENTS) capturedEvents.shift();
+      if (capturedEvents.length > MAX_CLASSIFICATION_EVENTS) capturedEvents.shift();
     };
     const mapOpts = (): MapRunResultOptions => ({ events: capturedEvents });
 

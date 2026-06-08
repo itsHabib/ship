@@ -21,7 +21,7 @@ import type {
   CursorRunResult,
 } from "./runner.js";
 
-import { attachInputAsRunInput } from "./_shared.js";
+import { attachInputAsRunInput, MAX_CLASSIFICATION_EVENTS } from "./_shared.js";
 import { captureListedArtifacts } from "./artifacts-capture.js";
 import { CursorAgentNotFoundError } from "./errors.js";
 
@@ -314,7 +314,8 @@ export class FakeCursorRunner implements CursorRunner {
 
 function finalizeFakeResult(script: FakeCursorScript, terminal: CursorRunResult): CursorRunResult {
   if (script.events.length === 0) return terminal;
-  return { ...terminal, classificationEvents: [...script.events] };
+  // Mirror the runners' tail-retention so tests reflect production eviction.
+  return { ...terminal, classificationEvents: script.events.slice(-MAX_CLASSIFICATION_EVENTS) };
 }
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {

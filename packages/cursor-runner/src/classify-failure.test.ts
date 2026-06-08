@@ -76,6 +76,53 @@ describe("classifyFailure", () => {
     ).toBe("agent-collapse-on-running-tool");
   });
 
+  test("running tool_call later completed (same call_id) is not agent-collapse", () => {
+    const events = [
+      {
+        type: "tool_call",
+        status: "running",
+        name: "shell",
+        call_id: "c1",
+        ts: "2026-06-01T12:00:00.000Z",
+      },
+      {
+        type: "tool_call",
+        status: "completed",
+        name: "shell",
+        call_id: "c1",
+        ts: "2026-06-01T12:05:00.000Z",
+      },
+    ] as unknown as SDKMessage[];
+    // The tool finished — no running tool_call remains, so a long run is not a
+    // collapse. 0.85×cap is collapse-duration but below near-cap → unknown.
+    expect(classifyFailure({ durationMs: 0.85 * CAP_MS, events, maxRunDurationMs: CAP_MS })).toBe(
+      "unknown",
+    );
+  });
+
+  test("a still-running call_id is agent-collapse even when another completed", () => {
+    const events = [
+      {
+        type: "tool_call",
+        status: "completed",
+        name: "grep",
+        call_id: "c1",
+        ts: "2026-06-01T12:00:00.000Z",
+      },
+      {
+        type: "tool_call",
+        status: "running",
+        name: "shell",
+        call_id: "c2",
+        ts: "2026-06-01T12:01:00.000Z",
+      },
+      { type: "status", status: "ERROR", ts: "2026-06-01T12:25:00.000Z" },
+    ] as unknown as SDKMessage[];
+    expect(classifyFailure({ durationMs: 25 * 60 * 1000, events, maxRunDurationMs: CAP_MS })).toBe(
+      "agent-collapse-on-running-tool",
+    );
+  });
+
   test("sdkTerminalStatus expired (any case) → timeout-near-cap", () => {
     expect(classifyFailure({ events: [], sdkTerminalStatus: "EXPIRED" })).toBe("timeout-near-cap");
     expect(classifyFailure({ events: [], sdkTerminalStatus: "expired" })).toBe("timeout-near-cap");

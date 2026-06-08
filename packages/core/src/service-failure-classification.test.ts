@@ -139,6 +139,34 @@ describe("ShipService failure classification wiring", () => {
     expect(row?.phases[0]?.errorMessage).toMatch(/^contention; /);
   });
 
+  test("artifact write failure on a succeeded run classifies as unknown, not sdk-throw", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: {
+        branches: [],
+        durationMs: 1000,
+        status: "succeeded",
+        summary: "done",
+      },
+    });
+    const origWrite = h.fs.writeFile.bind(h.fs);
+    h.fs.writeFile = (path, data) => {
+      if (path.endsWith("result.json")) return Promise.reject(new Error("disk full"));
+      return origWrite(path, data);
+    };
+
+    const out = await h.service.ship({
+      docPath: "docs.md",
+      repo: "ship",
+      workdir: WORKDIR,
+    });
+    expect(out.status).toBe("failed");
+    const row = h.store.getRun(out.workflowRunId);
+    // ArtifactWriteFailedError is ship-internal, not an SDK reject → unknown.
+    expect(row?.phases[0]?.failureCategory).toBe("unknown");
+    expect(row?.phases[0]?.errorMessage).toMatch(/^unknown; /);
+  });
+
   test("cloud EXPIRED via finalizeSuccess lands timeout-near-cap when wired through core", async () => {
     const capMs = DEFAULT_WORKFLOW_POLICY.maxRunDurationMs;
     h.cursor.enqueue({

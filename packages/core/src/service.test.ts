@@ -508,7 +508,8 @@ describe("ShipService.ship — failure mapping", () => {
 
     expect(out.status).toBe("failed");
     const row = h.store.getRun(out.workflowRunId);
-    expect(row?.phases[0]?.errorMessage).toMatch(/^sdk-throw; /);
+    // ArtifactWriteFailedError is ship-internal, not an SDK reject → unknown.
+    expect(row?.phases[0]?.errorMessage).toMatch(/^unknown; /);
     expect(row?.phases[0]?.errorMessage).toMatch(/persist run artifacts|ENOSPC/);
   });
 

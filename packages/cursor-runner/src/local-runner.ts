@@ -19,7 +19,7 @@ import type {
   CursorRunResult,
 } from "./runner.js";
 
-import { mapRunResult } from "./_shared.js";
+import { mapRunResult, MAX_CLASSIFICATION_EVENTS } from "./_shared.js";
 import {
   CursorRunFailedError,
   cursorRunFailedError,
@@ -201,11 +201,10 @@ export class LocalCursorRunner implements CursorRunner {
 
     // Bound retained events: a long run can stream thousands, but the failure
     // mapper only needs the tail (last status + last error-bearing tool_call).
-    const MAX_CAPTURED_EVENTS = 256;
     const capturedEvents: SDKMessage[] = [];
     const recordEvent = (ev: SDKMessage): void => {
       capturedEvents.push(ev);
-      if (capturedEvents.length > MAX_CAPTURED_EVENTS) capturedEvents.shift();
+      if (capturedEvents.length > MAX_CLASSIFICATION_EVENTS) capturedEvents.shift();
     };
     const mapOpts = (): MapRunResultOptions => ({ events: capturedEvents });
 
