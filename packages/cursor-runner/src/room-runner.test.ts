@@ -359,6 +359,104 @@ describe("RoomCursorRunner — cancel + attach", () => {
       }),
     ).rejects.toBeInstanceOf(RoomResumeNotSupportedError);
   });
+
+  test("signal aborted after the child spawned cancels the run", async () => {
+    const controller = new AbortController();
+    const f = fakeRooms({ autoClose: false, closeOnKill: true, result: successResult() });
+    const handle = await new RoomCursorRunner({ spawn: f.spawn }).run(
+      roomsInput({ signal: controller.signal }),
+    );
+    // Wait until the orchestrator has actually spawned, so the abort hits the
+    // signal listener -> killChild path (not the pre-spawn cancel-flag path).
+    while (f.calls.length === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    controller.abort();
+    expect((await handle.result).status).toBe("cancelled");
+  });
+});
+
+describe("RoomCursorRunner — status + duration mapping branches", () => {
+  test('result.json status "cancelled" maps to cancelled', async () => {
+    const f = fakeRooms({ result: successResult({ pushed_branch: "", status: "cancelled" }) });
+    const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
+    expect(result.status).toBe("cancelled");
+  });
+
+  test("unknown status with nonzero exit_code maps to failed", async () => {
+    const f = fakeRooms({
+      result: successResult({ exit_code: 2, pushed_branch: "", status: "??" }),
+    });
+    const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
+    expect(result.status).toBe("failed");
+  });
+
+  test("missing/invalid timestamps and a summary-less success yield durationMs 0 + no summary", async () => {
+    // Omit started_at/ended_at and summary.md entirely.
+    const f = fakeRooms({
+      result: { pushed_branch: "rooms/x", schema_version: 1, status: "success" },
+    });
+    const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
+    expect(result.status).toBe("succeeded");
+    expect(result.durationMs).toBe(0);
+    expect(result.summary).toBeUndefined();
+  });
+
+  test("ended_at before started_at clamps durationMs to 0", async () => {
+    const f = fakeRooms({
+      result: successResult({
+        ended_at: "2026-06-07T00:00:00.000Z",
+        started_at: "2026-06-07T00:00:30.000Z",
+      }),
+    });
+    const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
+    expect(result.durationMs).toBe(0);
+  });
+
+  test("failed run without a summary derives errorMessage from status + exit_code", async () => {
+    const f = fakeRooms({
+      result: successResult({ exit_code: 3, pushed_branch: "", status: "failed" }),
+    });
+    const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain('status "failed"');
+    expect(result.errorMessage).toContain("exit_code 3");
+  });
+});
+
+describe("RoomCursorRunner — env + onEvent edge branches", () => {
+  test("no GH_TOKEN / GITHUB_TOKEN in env: GH_TOKEN is not injected", async () => {
+    const savedGh = process.env["GH_TOKEN"];
+    const savedGithub = process.env["GITHUB_TOKEN"];
+    Reflect.deleteProperty(process.env, "GH_TOKEN");
+    Reflect.deleteProperty(process.env, "GITHUB_TOKEN");
+    try {
+      const f = fakeRooms({ result: successResult() });
+      await (
+        await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())
+      ).result;
+      expect(f.calls[0]!.env["GH_TOKEN"]).toBeUndefined();
+    } finally {
+      restoreEnv("GH_TOKEN", savedGh);
+      restoreEnv("GITHUB_TOKEN", savedGithub);
+    }
+  });
+
+  test("onEvent that throws or returns a rejecting promise is swallowed; run still succeeds", async () => {
+    const f = fakeRooms({ events: '{"type":"a"}\n{"type":"b"}\n', result: successResult() });
+    let seen = 0;
+    const handle = await new RoomCursorRunner({ spawn: f.spawn }).run(
+      roomsInput({
+        onEvent: () => {
+          seen += 1;
+          if (seen === 1) throw new Error("sync consumer broke");
+          return Promise.reject(new Error("async consumer broke"));
+        },
+      }),
+    );
+    expect((await handle.result).status).toBe("succeeded");
+    expect(seen).toBe(2);
+  });
 });
 
 function argVal(args: readonly string[], flag: string): string | undefined {
