@@ -6,6 +6,7 @@
 **Related:** dossier project `ship` (`prj_01KRAE24JC3JCZPNHQQQWGKFY1`); prior point-fixes [#103](https://github.com/itsHabib/ship/pull/103) (surface-failed-run-diagnostics), [#105](https://github.com/itsHabib/ship/pull/105) (ship-store-write-contention); feedback task `failed-run-errormessage-omits-inflight-tool-call` (`tsk_01KT3CYEFSM41WS3VEQM5NMG0K`).
 
 **Revisions:** **v2** (2026-06-02) — addressed the #111 design-review verdict. The bots endorsed the core bet (D1 shared enum, D4 pino, the phase split) but caught that v1's §5/§7 mis-stated ship's actual finalize plumbing. v2: classification + persistence move into `core`'s finalize, fed a bounded diagnostic carried on `CursorRunResult`, covering the real failed-run path (today `finalizeSuccess`) **and** cloud (§4 D5 / §5 / §7); the Phase-1 gate is reconciled with the phase split (§9 / §11); `cancelled` is dropped from the failure taxonomy (§5 / §7); all four §10 questions resolved.
+**v3** (2026-06-02) — addressed the cycle-2 confirm review (claude: APPROVE). Both finalize paths now classify (`finalizeFailure` is the primary path for `sdk-throw`/`contention`); cloud `EXPIRED` reclassified as a failure (was `→ cancelled`); classifier takes `isStoreContention`/`thrownError` flags from `core` (no `cursor-runner`→`@ship/store` edge) and drops `isCancelled` (caller pre-screens); `durationMs` not `runDurationMs`; ε thresholds defined; tombstone enum literals; `pino-pretty` devDep + prod-JSON-only; stdout test extends the existing e2e stdio suite. (§4 D4/D5, §5, §6, §7, §8, §10, §11)
 
 > **Reviewers — focus areas:**
 > - §4 D1 (one shared `failure-category` enum threaded through every surface) — the load-bearing decision.
@@ -88,13 +89,13 @@ The alternative is per-surface ad-hoc strings (status quo — what #103/#105 eac
 
 **D3 — Logger behind a narrow interface, pino as default impl.** Per the operator's backend-interface convention (intersection-of-capabilities). The interface exposes only `debug/info/warn/error({fields}, msg)` + `child(fields)`. Provider-specific pino features stay inside the impl. Cost: a thin indirection layer. Worth it for swappability + test fakes.
 
-**D4 — pino over winston/bunyan.** pino is the closest Node analog to Go's zap: JSON-first, low-overhead, child loggers, async. winston is heavier and slower; bunyan is less maintained. Cost: pino's pretty-printing is a separate transport (`pino-pretty`) — a dev dependency.
+**D4 — pino over winston/bunyan.** pino is the closest Node analog to Go's zap: JSON-first, low-overhead, child loggers, async. winston is heavier and slower; bunyan is less maintained. Cost: pretty-printing is a separate transport (`pino-pretty`). Keep it a **devDependency** and gate pretty on **dev** (not bare TTY) — **production always emits JSON**, so the transport is never loaded at runtime where it isn't installed (codex @91).
 
-**D5 — Classify in `core`'s finalize, fed a bounded diagnostic the runner attaches to `CursorRunResult`.** *(corrected per the #111 review — load-bearing)* v1 named `cursor-runner` `mapErrorResult` + `core` `finalizeFailure` as the classify/persist sites. The bots established that's wrong about ship's actual plumbing: (a) a *failed* `CursorRunResult` is finalized through **`finalizeSuccess`** (a failed result isn't a thrown error), not `finalizeFailure`; (b) `mapErrorResult` (cursor-runner) has **no store access** — the only handoff to `core` is `CursorRunResult`; (c) the **cloud** runner forwards events to `onEvent` but doesn't retain them, so cloud failures would have no signals to classify. Corrected: `classifyFailure` is a **pure function exported from `@ship/cursor-runner`** (where the SDK signal shapes live), **called by `core` at finalize** (where store access is) — `core` already depends on `cursor-runner` via `CursorRunResult`, so no new edge (claude §10 Q2). Both runners attach a **bounded diagnostic** (last-N events / `lastSdkStatus` / `cause`) to `CursorRunResult`; `core` runs `classifyFailure` over it, persists the category, and builds `errorMessage`. Cost: `CursorRunResult` + `result.json` grow a small diagnostic; one store column. Worth it — covers local **and** cloud **and** the real `finalizeSuccess` path; read paths stay cheap; category is stable across resume.
+**D5 — Classify in `core`'s finalize, fed a bounded diagnostic the runner attaches to `CursorRunResult`.** *(corrected per the #111 review — load-bearing)* v1 named `cursor-runner` `mapErrorResult` + `core` `finalizeFailure` as the classify/persist sites. The bots established that's wrong about ship's actual plumbing: (a) a *failed* `CursorRunResult` is finalized through **`finalizeSuccess`** (a failed result isn't a thrown error), not `finalizeFailure`; (b) `mapErrorResult` (cursor-runner) has **no store access** — the only handoff to `core` is `CursorRunResult`; (c) the **cloud** runner forwards events to `onEvent` but doesn't retain them, so cloud failures would have no signals to classify. Corrected: `classifyFailure` is a **pure function exported from `@ship/cursor-runner`** (where the SDK signal shapes live), **called by `core` at finalize** (where store access is) — `core` already depends on `cursor-runner` via `CursorRunResult`, so no new edge (claude §10 Q2). Both runners attach a **bounded diagnostic** (last-N events / `lastSdkStatus` / `cause`) to `CursorRunResult`; `core` runs `classifyFailure` over it, persists the category, and builds `errorMessage`. Cost: `CursorRunResult` + `result.json` grow a small diagnostic; one store column. Worth it — read paths stay cheap; category is stable across resume. **Both** `core` finalize paths call the classifier — `finalizeSuccess` (failed `CursorRunResult`) and `finalizeFailure` (thrown SDK/store error, no result), the primary path for `sdk-throw`/`contention` (codex @160). `core` passes `isStoreContention`/`thrownError` flags so `cursor-runner` needs no `@ship/store` dep (Copilot @163). And Phase 1 reclassifies cloud `EXPIRED` (today mapped to `cancelled`) as a failure so it reaches the classifier (codex @168 / claude) — a behavioral change, see §7.
 
 ## 5. Data model
 
-- **`@ship/workflow`:** `failureCategorySchema = z.enum(["contention", "timeout-near-cap", "agent-collapse-on-running-tool", "sdk-throw", "logic", "unknown"])`. **`cancelled` is intentionally NOT here** (review consensus — codex/Copilot/cursor): cancellation is already `run.status === "cancelled"`, finalized on the success/cancelled path, and never reaches the failure classifier — including it made the contract ambiguous and would never be assigned. `unknown` is the honest fallback when no signal classifies.
+- **`@ship/workflow`:** `failureCategorySchema = z.enum(["contention", "timeout-near-cap", "agent-collapse-on-running-tool", "sdk-throw", "logic", "unknown"])`. **`cancelled` is intentionally NOT here** (review consensus — codex/Copilot/cursor): cancellation is already `run.status === "cancelled"`, finalized on the success/cancelled path, and never reaches the failure classifier — including it made the contract ambiguous and would never be assigned. `unknown` is the honest fallback when no signal classifies. Persisted in SQLite → literals are **tombstones**: never rename/delete one, only add (mirrors `phaseKindSchema`), so historical rows keep hydrating (Copilot @99).
 - **`CursorRunResult` + `result.json`:** gain `failureCategory?` **and** a bounded `failureDetail?` (last-activity / errorMessage summary). This is the runner→core handoff that lets `core` persist the category and answer *why* without re-reading `events.ndjson`. (v1 wrongly said `result.json` was unchanged — codex.)
 - **Store:** a **new nullable `failure_category` column** on the finalize-target row (claude §10 Q1 — a column, not a JSON blob, so Phase-3 stats can filter/aggregate in SQL), set at finalize. A migration; the startup-schema-skew guard from #100 covers the upgrade path.
 - **`@ship/logger`:** no persisted model — it writes to stderr. `LogFields` (`{ workflowRunId?, cursorRunId?, phase?, failureCategory?, … }`) is the structured-field convention, not a stored entity.
@@ -132,24 +133,24 @@ failureCategory?: FailureCategory;   // present on failed runs; absent otherwise
 // (existing post-#103 fields stay: runDurationMs, maxRunDurationMs, sdkTerminalStatus, recentEvents, watchUrl)
 ```
 
-**Classifier — `@ship/cursor-runner`, exported; called by `core`'s finalize** (claude §10 Q2):
+**Classifier — pure function in `@ship/cursor-runner`, exported; called by `core`'s finalize:**
 
 ```ts
 function classifyFailure(input: {
-  sdkTerminalStatus?: string;        // raw SDK status, ANY case — normalized internally
-  isCancelled?: boolean;             // core's cancel flag — authoritative over the status string
-  runDurationMs?: number;
+  sdkTerminalStatus?: string;     // raw SDK status, ANY case — normalized internally
+  isStoreContention?: boolean;    // set by `core` (it catches StoreContentionError) — keeps cursor-runner free of an @ship/store dep (Copilot @163)
+  thrownError?: boolean;          // true when the failure is a thrown SDK error (reject path) → sdk-throw
+  durationMs?: number;            // matches CursorRunResult.durationMs (NOT the get_workflow_run output field `runDurationMs`) (Copilot @151)
   maxRunDurationMs?: number;
-  events: readonly SDKMessage[];     // bounded window; empty array is valid → may yield `unknown` (total)
-  cause?: unknown;                   // StoreContentionError, thrown SDK error
+  events: readonly SDKMessage[];  // bounded window; empty array is valid → may yield `unknown` (total)
 }): FailureCategory;
 ```
 
 - **Total**: every failed run maps to a category; empty `events` is valid input and yields `unknown` — never `undefined`/throw.
-- **Normalize `sdkTerminalStatus` internally** (`.toLowerCase()`): local runs persist lower-case `"error"`, cloud emits `"ERROR"`/`"EXPIRED"` (Copilot @136, claude).
-- Uses `runDurationMs` consistently (not `durationMs`).
+- **No `cause`/`isCancelled` in the signature** (claude): `core` owns both guards — it catches `StoreContentionError` and sets `isStoreContention` (so `cursor-runner` never imports `@ship/store`), and it pre-screens cancellation, so `classifyFailure` is **never called for a cancelled run** (Option A) and has no `cancelled` return.
+- **Normalize `sdkTerminalStatus` internally** (`.toLowerCase()`): local persists lower-case `"error"`, cloud emits `"ERROR"`/`"EXPIRED"`.
 
-**Runner→core handoff (`CursorRunResult`):** gains `failureCategory?` + bounded `failureDetail?`. The **cloud** runner must retain a bounded event window (it currently drops events after `onEvent`) so cloud failures are classifiable (codex @138).
+**Runner→core handoff (`CursorRunResult`):** gains `failureCategory?` + bounded `failureDetail?`. The **cloud** runner must retain a bounded event window — the local runner already keeps a 256-event ring buffer; `mapCloudRunResult` currently passes none (codex @138, claude).
 
 **(Stretch) stats surface:** either a new `ship stats` CLI / `get_run_stats` MCP read, or a `failureCategory` filter on `list_workflow_runs`. Defined in the phase-3 doc when it unblocks.
 
@@ -157,17 +158,21 @@ function classifyFailure(input: {
 
 **Failure classification (the load-bearing path):**
 
-1. A run finishes with a failed `CursorRunResult`. The runner has attached a bounded diagnostic (last-N events, `lastSdkStatus`, `cause`) to the result. `core`'s finalize — **the same finalizer the failed result actually flows through (today `finalizeSuccess`)** — calls `classifyFailure(result, { isCancelled })`.
-2. `classifyFailure` maps signals → a category, in priority order (status compared **case-insensitively**):
-   - `cause instanceof StoreContentionError` / SQLite-busy text → `contention`.
-   - a thrown SDK error (reject path) → `sdk-throw`. For cloud setup/provisioning failures, `failureDetail` carries the `stage` from `cloud-runner` (claude).
-   - latest **error-bearing `tool_call`** in the window → `logic` (keep #103's detail). **Scan for the latest *failed tool_call*, not literally the last event** — a trailing `status:ERROR` is normal and must not mask it (cursor @153 / #103 parity).
-   - no error event **but** a `tool_call` stuck `running` near the cap → `agent-collapse-on-running-tool`; `failureDetail` = `…last activity: shell 'make check' running 4m12s, never completed`.
-   - status is `expired` **or** `runDurationMs` within ε of `maxRunDurationMs` → `timeout-near-cap` (EXPIRED is explicitly mapped — cursor @156).
+1. A run finishes failed via one of **two** finalize paths — **both must classify** (codex @160):
+   - **`finalizeSuccess`** — a *failed* `CursorRunResult` resolved normally (the dominant agent-failure path). `core` runs `classifyFailure` over the result's bounded diagnostic.
+   - **`finalizeFailure`** — a *thrown* SDK or store error with **no** `CursorRunResult` (`Agent.create`/`send` rejects, a `StoreContentionError`). `core` calls `classifyFailure` with `{ thrownError: true }` and/or `{ isStoreContention: true }` (set when it caught the error). This is the **primary** path for `sdk-throw` and `contention`.
+2. `classifyFailure` maps signals → a category, priority order (status compared **case-insensitively**):
+   - `isStoreContention` → `contention`.
+   - `thrownError` → `sdk-throw`. For cloud setup/provisioning failures, `failureDetail` carries the `stage` from `cloud-runner`.
+   - latest **failed `tool_call`** in the window → `logic` (keep #103's detail). **Scan for the latest *failed tool_call*, not literally the last event** — a trailing `status:ERROR` is normal and must not mask it (#103 parity).
+   - no error event **but** a `tool_call` stuck `running` with `durationMs > 0.8 × maxRunDurationMs` AND last-running-tool age > 30s → `agent-collapse-on-running-tool`; `failureDetail` = `…last activity: shell 'make check' running 4m12s, never completed`.
+   - status normalizes to `expired` **or** `durationMs ≥ 0.95 × maxRunDurationMs` → `timeout-near-cap`.
    - otherwise → `unknown`.
-   Cancellation never reaches here — `isCancelled` / `run.status === "cancelled"` is handled on the success/cancelled path *before* the failure classifier, so the old `sdk-throw`-before-`cancelled` ordering question (cursor @152) is moot.
-3. `core` persists the category (new column) + builds `errorMessage = "<category prefix>; <failureDetail>"`. The bounded `failureDetail` ships in **Phase 1** — it's what makes the Phase-1 gate achievable for `logic`/`sdk-throw`/`unknown` (codex @158; see §9).
-4. Emit one structured log line: `log.error({ workflowRunId, cursorRunId, failureCategory, runDurationMs }, "run failed")`.
+   Cancellation never reaches here — `core` pre-screens it (handled on the success/cancelled path), so there's no `cancelled` category and no ordering ambiguity.
+3. `core` persists the category (new column) + builds `errorMessage = "<category prefix>; <failureDetail>"`. The bounded `failureDetail` ships in **Phase 1** so the gate holds for `logic`/`sdk-throw`/`unknown` (see §9).
+4. Emit one structured log line: `log.error({ workflowRunId, cursorRunId, failureCategory, durationMs }, "run failed")`.
+
+> **Cloud `EXPIRED` is a behavioral change, not just a new field (codex @168 / claude).** `cloud-runner.ts` currently maps an `EXPIRED` SDK result to `mapTerminalResult(…, "cancelled")` → `core` finalizes it on the success/cancelled path, so it never reaches the classifier. Phase 1 must **reclassify cloud `EXPIRED` as a failure** (route it through `mapErrorResult`) so it lands `timeout-near-cap`.
 
 **Read path:** `get_workflow_run` returns the persisted `failureCategory` + `errorMessage` (no re-derivation). `ship diagnose <wf>` (Phase 2) prints category + duration-vs-cap + last activity + watchUrl.
 
@@ -176,7 +181,7 @@ function classifyFailure(input: {
 ## 8. Failure / safety model
 
 - **Logging must never throw into business logic.** The logger swallows its own write errors — mirrors the existing `try/catch` around `[ship-cloud-*]` writes.
-- **stdout protection is a hard invariant**, asserted by a **spawn-the-MCP-server integration test** (claude): boot the server, issue one `list_workflow_runs`, and assert every stdout line is valid JSON-RPC. Stronger than a unit assert on the logger's stream — it catches a `console.log` sneaking in via any transitive dependency.
+- **stdout protection is a hard invariant.** Assert it by **extending the existing stdio integration suite** (`e2e/integration/mcp-server.integration.test.ts`, which already connects over stdio and would fail on any non-JSON-RPC stdout line — Copilot @180): add an assertion that every stdout line is valid JSON-RPC. Stronger than a unit assert on the logger's stream — it catches a `console.log` from any transitive dependency. No new harness needed.
 - **CLI user-facing error exits stay as-is.** The `process.stderr.write(err.message)` + `process.exit(1)` sites in `cli/commands/*` are user-facing error output, **not** diagnostics — the §9 migration explicitly excludes them (claude).
 - **Classifier is total** — every terminal failure maps to *some* category (`unknown` is the catch-all); it never throws and never returns undefined; empty `events` is valid input.
 
@@ -201,10 +206,17 @@ All four v1 open questions were resolved in the design review:
 1. **Category persistence → new nullable `failure_category` column** (not a JSON blob) so Phase-3 stats filter/aggregate in SQL (claude). §5.
 2. **Classifier home → `@ship/cursor-runner`, exported, called by `core`'s finalize** — no new dependency edge (`core` already depends on `cursor-runner`), and it sits where the SDK signals are while `core` owns persistence (claude). §4 D5 / §6.
 3. **Token/cost axis → deferred** as its own TDD; orthogonal to correctness observability.
-4. **`agent-collapse-on-running-tool` threshold → `runDurationMs > 0.8 × maxRunDurationMs` AND last running `tool_call` age > 30s** (percentage + absolute floor, so short dev caps don't false-positive) (claude). Pin in the Phase-2 task.
+4. **Thresholds defined** (claude / Copilot @167): `agent-collapse-on-running-tool` = `durationMs > 0.8 × maxRunDurationMs` AND last-running-`tool_call` age > 30s (percentage + absolute floor, so short dev caps don't false-positive); `timeout-near-cap` = `durationMs ≥ 0.95 × maxRunDurationMs` with no running-tool signal.
+
+**Cycle-2 pins (resolved in v3):**
+
+5. **Both finalize paths classify** — `finalizeSuccess` (failed result) **and** `finalizeFailure` (thrown error, no result); the latter is the primary path for `sdk-throw`/`contention` (codex @160). §4 D5 / §7.
+6. **Cloud `EXPIRED` reclassified as a failure** (route through `mapErrorResult`, not `→ cancelled`) so it reaches the classifier — a Phase-1 behavioral change (codex @168 / claude). §7.
+7. **Dep direction** — `core` passes `isStoreContention`/`thrownError` flags; `cursor-runner` imports no `@ship/store` (Copilot @163). **`isCancelled` contract — Option A**: `core` pre-screens cancellation, `classifyFailure` is never called for a cancelled run (claude). §6.
+8. **Persistence uses `durationMs`** (matches `CursorRunResult`); the `get_workflow_run` output field stays `runDurationMs` (Copilot @151). `failure_category` literals are tombstones (Copilot @99). `pino-pretty` stays a devDep; prod is JSON-only (codex @91).
 
 Remaining genuinely-open: none blocking Phase 1. The cloud bounded-event-window size is a Phase-1 impl detail (a small N; tune if it misses signals).
 
 ## 11. Validation plan
 
-The Phase-1 gate is the binary signal: **take the next failed ship run and answer "why did it fail?" from the persisted `failureCategory` + bounded `failureDetail` alone** (log line + `result.json`). Pass = no `events.ndjson` grep required and the category is correct. That flips go/no-go on Phases 2–3. Secondary: the **spawn-the-MCP-server stdout-purity** integration test passes (no JSON-RPC corruption), and `make check` (incl. coverage) stays green through the site migration.
+The Phase-1 gate is the binary signal: **take the next failed ship run and answer "why did it fail?" from the persisted `failureCategory` + bounded `failureDetail` alone** (log line + `result.json`). Pass = no `events.ndjson` grep required and the category is correct. That flips go/no-go on Phases 2–3. Secondary: the stdout-purity assertion added to the existing `e2e/integration/mcp-server.integration.test.ts` passes (no JSON-RPC corruption), and `make check` (incl. coverage) stays green through the site migration.
