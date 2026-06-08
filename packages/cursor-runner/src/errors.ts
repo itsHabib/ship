@@ -179,6 +179,22 @@ export class InvalidRoomReposError extends CursorRunFailedError {
 }
 
 /**
+ * Rooms run with no resolvable guest image. The `rooms` CLI requires
+ * `--image` (no default), so {@link RoomCursorRunner} rejects up front when
+ * neither `room.image` nor the runner's `defaultImage` is set — a clear
+ * pre-run error instead of an opaque clap failure inside the subprocess.
+ */
+export class MissingRoomImageError extends CursorRunFailedError {
+  override readonly name: string = "MissingRoomImageError";
+
+  constructor() {
+    super(
+      "rooms requires a guest image: set room.image or construct RoomCursorRunner with a defaultImage",
+    );
+  }
+}
+
+/**
  * Thrown by {@link RoomCursorRunner.attach} — rooms microVMs are disposable,
  * so resume is not supported (ED-5). Mirrors {@link LocalResumeNotSupportedError}.
  */

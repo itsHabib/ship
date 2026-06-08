@@ -15,10 +15,11 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import type { RoomsChild, RoomsSpawn } from "./room-runner.js";
-import type { CursorRunInput, RoomRunSpec } from "./runner.js";
+import type { CursorRunHandle, CursorRunInput, RoomRunSpec } from "./runner.js";
 
 import {
   InvalidRoomReposError,
+  MissingRoomImageError,
   MissingRoomSpecError,
   RoomArtifactError,
   RoomResumeNotSupportedError,
@@ -50,6 +51,8 @@ interface FakeRoomsOpts {
   readonly autoClose?: boolean;
   /** Default true: `kill()` emits `close`. */
   readonly closeOnKill?: boolean;
+  /** Exit code emitted on `close` for the auto-close path. Default 0; `null` = killed by signal. */
+  readonly exitCode?: number | null;
   /** When set, emit `error` instead of writing/closing (spawn failure). */
   readonly spawnError?: Error;
 }
@@ -92,8 +95,9 @@ function fakeRooms(opts: FakeRoomsOpts = {}): { spawn: RoomsSpawn; calls: Record
     }
     writeArtifacts(outDir, opts);
     if (opts.autoClose !== false) {
+      const code = opts.exitCode === undefined ? 0 : opts.exitCode;
       setImmediate(() => {
-        if (!child.killed) child.emit("close", 0, null);
+        if (!child.killed) child.emit("close", code, null);
       });
     }
     return child as RoomsChild;
@@ -123,7 +127,8 @@ function roomsInput(overrides: Partial<CursorRunInput> = {}): CursorRunInput {
     model: { id: "composer-2.5" },
     onEvent: () => undefined,
     prompt: "do the thing",
-    room: { repos: [{ url: REPO_URL }] },
+    // image is required by the rooms CLI; default it so each test need not.
+    room: { image: "agent-alpine-cursor.ext4", repos: [{ url: REPO_URL }] },
     runtime: "rooms",
     ...overrides,
   };
@@ -184,7 +189,7 @@ describe("RoomCursorRunner.run — argv + env", () => {
       expect(argVal(call.args, "--base-sha")).toBe("HEAD");
       expect(argVal(call.args, "--model")).toBe("composer-2.5");
       expect(argVal(call.args, "--push-branch")).toMatch(/^rooms\/ship-wf-test-[0-9a-f]{8}$/);
-      expect(call.args).not.toContain("--image");
+      expect(argVal(call.args, "--image")).toBe("agent-alpine-cursor.ext4");
       // Token never in argv.
       expect(call.args.join(" ")).not.toContain("ghs_secret_value");
       // Token forwarded on env.
@@ -212,10 +217,10 @@ describe("RoomCursorRunner.run — argv + env", () => {
     }
   });
 
-  test("passes --image from room.image, then constructor defaultImage, else omits", async () => {
+  test("--image comes from room.image, falls back to constructor defaultImage", async () => {
     const fromSpec = fakeRooms({ result: successResult() });
     await (
-      await new RoomCursorRunner({ spawn: fromSpec.spawn }).run(
+      await new RoomCursorRunner({ defaultImage: "default.ext4", spawn: fromSpec.spawn }).run(
         roomsInput({ room: { image: "spec.ext4", repos: [{ url: REPO_URL }] } }),
       )
     ).result;
@@ -224,10 +229,20 @@ describe("RoomCursorRunner.run — argv + env", () => {
     const fromDefault = fakeRooms({ result: successResult() });
     await (
       await new RoomCursorRunner({ defaultImage: "default.ext4", spawn: fromDefault.spawn }).run(
-        roomsInput(),
+        roomsInput({ room: { repos: [{ url: REPO_URL }] } }),
       )
     ).result;
     expect(argVal(fromDefault.calls[0]!.args, "--image")).toBe("default.ext4");
+  });
+
+  test("rejects with MissingRoomImageError when neither room.image nor defaultImage is set", async () => {
+    const f = fakeRooms({ result: successResult() });
+    await expect(
+      new RoomCursorRunner({ spawn: f.spawn }).run(
+        roomsInput({ room: { repos: [{ url: REPO_URL }] } }),
+      ),
+    ).rejects.toBeInstanceOf(MissingRoomImageError);
+    expect(f.calls).toHaveLength(0);
   });
 
   test("honors an explicit room.pushBranch and room.startingRef", async () => {
@@ -236,7 +251,11 @@ describe("RoomCursorRunner.run — argv + env", () => {
     await (
       await runner.run(
         roomsInput({
-          room: { pushBranch: "rooms/custom", repos: [{ startingRef: "abc123", url: REPO_URL }] },
+          room: {
+            image: "agent.ext4",
+            pushBranch: "rooms/custom",
+            repos: [{ startingRef: "abc123", url: REPO_URL }],
+          },
         }),
       )
     ).result;
@@ -299,6 +318,40 @@ describe("RoomCursorRunner.run — terminal result", () => {
     const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
     expect(result.status).toBe("succeeded");
   });
+
+  test("nonzero subprocess exit downgrades a stale succeeded result.json to failed", async () => {
+    // rooms writes result.json from the agent's exit BEFORE a push error
+    // surfaces, then exits nonzero. The run must not report succeeded.
+    const f = fakeRooms({ exitCode: 1, result: successResult() });
+    const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain("code 1");
+  });
+
+  test("nonzero exit prefers the summary as errorMessage when present", async () => {
+    const f = fakeRooms({ exitCode: 1, result: successResult(), summary: "push rejected" });
+    const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toBe("push rejected");
+  });
+
+  test("null exit code (killed by signal) without a cancel maps to failed", async () => {
+    const f = fakeRooms({ exitCode: null, result: successResult() });
+    const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toContain("a signal");
+  });
+
+  test("nonzero exit leaves an already-failed result.json untouched", async () => {
+    const f = fakeRooms({
+      exitCode: 1,
+      result: successResult({ exit_code: 1, pushed_branch: "", status: "failed" }),
+      summary: "agent failed",
+    });
+    const result = await (await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput())).result;
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toBe("agent failed");
+  });
 });
 
 describe("RoomCursorRunner.run — artifact contract failures (reject result)", () => {
@@ -334,6 +387,20 @@ describe("RoomCursorRunner — cancel + attach", () => {
     await handle.cancel();
     const result = await handle.result;
     expect(result.status).toBe("cancelled");
+  });
+
+  test("cancel landing during artifact replay resolves cancelled, not succeeded", async () => {
+    // onEvent (fired during the events.ndjson replay inside collectRoomRun)
+    // requests cancel — the post-collection recheck must win.
+    const f = fakeRooms({ events: '{"type":"a"}\n', result: successResult() });
+    const ref: { handle?: CursorRunHandle } = {};
+    const input = roomsInput({
+      onEvent: () => {
+        void ref.handle?.cancel();
+      },
+    });
+    ref.handle = await new RoomCursorRunner({ spawn: f.spawn }).run(input);
+    expect((await ref.handle.result).status).toBe("cancelled");
   });
 
   test("pre-aborted signal resolves cancelled without spawning", async () => {

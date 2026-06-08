@@ -45,6 +45,7 @@ export {
   LocalResumeNotSupportedError,
   MissingApiKeyError,
   MissingCloudSpecError,
+  MissingRoomImageError,
   MissingRoomSpecError,
   RoomArtifactError,
   RoomResumeNotSupportedError,

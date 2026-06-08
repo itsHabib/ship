@@ -30,6 +30,7 @@ import {
   cursorRunFailedError,
   CursorRunFailedError,
   InvalidRoomReposError,
+  MissingRoomImageError,
   MissingRoomSpecError,
   RoomArtifactError,
   RoomResumeNotSupportedError,
@@ -84,7 +85,7 @@ export interface RoomCursorRunnerOptions {
   readonly roomsBin?: string;
   /** Spawn seam override (tests). Default: `node:child_process` spawn. */
   readonly spawn?: RoomsSpawn;
-  /** Guest image when `room.image` is unset. When neither is set, `--image` is omitted (rooms picks its default). */
+  /** Fallback guest image when `room.image` is unset. The rooms CLI requires `--image`, so `run()` rejects with `MissingRoomImageError` when neither is set. */
   readonly defaultImage?: string;
 }
 
@@ -114,14 +115,20 @@ export class RoomCursorRunner implements CursorRunner {
     if (!Array.isArray(repos) || repos.length !== 1) {
       return Promise.reject(new InvalidRoomReposError(Array.isArray(repos) ? repos.length : 0));
     }
-    return Promise.resolve(this.#buildHandle(input, input.room));
+    // The rooms CLI requires --image (no default). Reject up front rather than
+    // letting clap fail inside the subprocess.
+    const image = input.room.image ?? this.#defaultImage;
+    if (image === undefined || image === "") {
+      return Promise.reject(new MissingRoomImageError());
+    }
+    return Promise.resolve(this.#buildHandle(input, input.room, image));
   }
 
   attach(input: CursorRunAttachInput): Promise<CursorRunHandle> {
     return Promise.reject(new RoomResumeNotSupportedError({ agentId: input.agentId }));
   }
 
-  #buildHandle(input: CursorRunInput, room: RoomRunSpec): CursorRunHandle {
+  #buildHandle(input: CursorRunInput, room: RoomRunSpec, image: string): CursorRunHandle {
     const agentId = `room-${randomUUID()}`;
     const runId = `run-${randomUUID()}`;
     let terminated = false;
@@ -160,7 +167,7 @@ export class RoomCursorRunner implements CursorRunner {
       }
     }
 
-    void this.#runPipeline(input, room, {
+    void this.#runPipeline(input, room, image, {
       finalizeError: (err) => {
         if (terminated) return;
         terminated = true;
@@ -186,12 +193,8 @@ export class RoomCursorRunner implements CursorRunner {
   async #runPipeline(
     input: CursorRunInput,
     room: RoomRunSpec,
-    cb: {
-      finalizeOk: (terminal: CursorRunResult) => void;
-      finalizeError: (err: unknown) => void;
-      isCancelRequested: () => boolean;
-      setChild: (child: RoomsChild) => void;
-    },
+    image: string,
+    cb: RoomPipelineCallbacks,
   ): Promise<void> {
     let tmpRoot: string | undefined;
     try {
@@ -209,7 +212,7 @@ export class RoomCursorRunner implements CursorRunner {
 
       const args = buildRoomsArgs({
         baseSha: room.repos[0].startingRef ?? "HEAD",
-        image: room.image ?? this.#defaultImage,
+        image,
         model: input.model.id,
         outDir,
         pushBranch: room.pushBranch ?? derivePushBranch(input.agentName),
@@ -220,45 +223,26 @@ export class RoomCursorRunner implements CursorRunner {
       cb.setChild(child);
       this.#wireChild(child, { cb, input, outDir, repoUrl: room.repos[0].url, tmpRoot });
     } catch (err) {
+      // Setup failed before any artifacts were written — nothing to debug, so
+      // clean up the temp dir we may have created.
+      if (tmpRoot !== undefined) await safeRemove(tmpRoot);
       cb.finalizeError(cursorRunFailedError("rooms run setup failed", err));
     }
   }
 
-  #wireChild(
-    child: RoomsChild,
-    ctx: {
-      cb: {
-        finalizeOk: (terminal: CursorRunResult) => void;
-        finalizeError: (err: unknown) => void;
-        isCancelRequested: () => boolean;
-      };
-      input: CursorRunInput;
-      outDir: string;
-      repoUrl: string;
-      tmpRoot: string;
-    },
-  ): void {
+  #wireChild(child: RoomsChild, ctx: RoomCollectContext): void {
     child.on("error", (err: Error): void => {
       ctx.cb.finalizeError(cursorRunFailedError("rooms subprocess failed", err));
     });
-    child.on("close", (): void => {
-      void this.#collectAndFinalize(ctx);
+    child.on("close", (code: number | null): void => {
+      void this.#collectAndFinalize(ctx, code);
     });
   }
 
-  async #collectAndFinalize(ctx: {
-    cb: {
-      finalizeOk: (terminal: CursorRunResult) => void;
-      finalizeError: (err: unknown) => void;
-      isCancelRequested: () => boolean;
-    };
-    input: CursorRunInput;
-    outDir: string;
-    repoUrl: string;
-    tmpRoot: string;
-  }): Promise<void> {
+  async #collectAndFinalize(ctx: RoomCollectContext, exitCode: number | null): Promise<void> {
     if (ctx.cb.isCancelRequested()) {
       ctx.cb.finalizeOk(cancelledResult());
+      await safeRemove(ctx.tmpRoot);
       return;
     }
     try {
@@ -267,8 +251,18 @@ export class RoomCursorRunner implements CursorRunner {
         outDir: ctx.outDir,
         repoUrl: ctx.repoUrl,
       });
-      ctx.cb.finalizeOk(result);
-      if (result.status === "succeeded") await safeRemove(ctx.tmpRoot);
+      // A cancel that landed while artifacts were being read/replayed wins —
+      // don't resolve a killed run as succeeded.
+      if (ctx.cb.isCancelRequested()) {
+        ctx.cb.finalizeOk(cancelledResult());
+        await safeRemove(ctx.tmpRoot);
+        return;
+      }
+      // A nonzero rooms exit (e.g. the push failed after the agent succeeded)
+      // overrides a stale `succeeded` in result.json.
+      const finalResult = applyExitCode(result, exitCode);
+      ctx.cb.finalizeOk(finalResult);
+      if (finalResult.status === "succeeded") await safeRemove(ctx.tmpRoot);
     } catch (err) {
       ctx.cb.finalizeError(
         err instanceof CursorRunFailedError
@@ -277,6 +271,21 @@ export class RoomCursorRunner implements CursorRunner {
       );
     }
   }
+}
+
+interface RoomPipelineCallbacks {
+  finalizeOk: (terminal: CursorRunResult) => void;
+  finalizeError: (err: unknown) => void;
+  isCancelRequested: () => boolean;
+  setChild: (child: RoomsChild) => void;
+}
+
+interface RoomCollectContext {
+  cb: Pick<RoomPipelineCallbacks, "finalizeOk" | "finalizeError" | "isCancelRequested">;
+  input: CursorRunInput;
+  outDir: string;
+  repoUrl: string;
+  tmpRoot: string;
 }
 
 // --- artifact collection (replay events, THEN build result) ---
@@ -426,22 +435,48 @@ function emitRoomEvent(line: string, onEvent: CursorRunInput["onEvent"]): void {
 
 function buildRoomsArgs(args: {
   baseSha: string;
-  image: string | undefined;
+  image: string;
   model: string;
   outDir: string;
   pushBranch: string;
   repoUrl: string;
   taskPath: string;
 }): string[] {
-  const out = ["run", "--runner", "cursor"];
-  if (args.image !== undefined && args.image !== "") out.push("--image", args.image);
-  out.push("--repo", args.repoUrl);
-  out.push("--base-sha", args.baseSha);
-  out.push("--task", args.taskPath);
-  out.push("--model", args.model);
-  out.push("--push-branch", args.pushBranch);
-  out.push("--out", args.outDir);
-  return out;
+  return [
+    "run",
+    "--runner",
+    "cursor",
+    "--image",
+    args.image,
+    "--repo",
+    args.repoUrl,
+    "--base-sha",
+    args.baseSha,
+    "--task",
+    args.taskPath,
+    "--model",
+    args.model,
+    "--push-branch",
+    args.pushBranch,
+    "--out",
+    args.outDir,
+  ];
+}
+
+// Fold a nonzero rooms subprocess exit into the result. rooms writes
+// `result.json` from the agent's exit status BEFORE a push error surfaces, so
+// a push failure can leave a stale `succeeded` there while the process exits
+// nonzero. A non-clean exit downgrades a `succeeded` result to `failed`;
+// results that already reported failed/cancelled are left untouched.
+function applyExitCode(result: CursorRunResult, exitCode: number | null): CursorRunResult {
+  if (exitCode === 0) return result;
+  if (result.status !== "succeeded") return result;
+  const detail = exitCode === null ? "a signal" : `code ${String(exitCode)}`;
+  const errorMessage =
+    result.summary !== undefined && result.summary !== ""
+      ? result.summary
+      : `rooms exited with ${detail}`;
+  return { ...result, errorMessage, status: "failed" };
 }
 
 // GH_TOKEN (← GH_TOKEN ?? GITHUB_TOKEN) + the inherited CURSOR_API_KEY /

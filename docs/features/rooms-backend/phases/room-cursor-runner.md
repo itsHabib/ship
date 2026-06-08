@@ -9,7 +9,7 @@
 
 | Bucket | Files | Weighted |
 |---|---|---|
-| source (1×) | `packages/cursor-runner/src/room-runner.ts` (new), `runner.ts` (`RoomRunSpec` + `runtime: "rooms"`), `errors.ts` (4 new errors), `index.ts` (exports) | ~270 |
+| source (1×) | `packages/cursor-runner/src/room-runner.ts` (new), `runner.ts` (`RoomRunSpec` + `runtime: "rooms"`), `errors.ts` (6 new errors), `index.ts` (exports) | ~270 |
 | tests (0.5×) | `room-runner.test.ts` (new), `fake.test.ts` (rooms-path test) | ~95 |
 | docs (0×) | this doc | 0 |
 
@@ -26,11 +26,11 @@
 3. Create a per-run host temp dir (`<os.tmpdir()>/ship-rooms-<uuid>/`) containing the rendered task file and an `out/` subdir handed to `--out`. (The task file lives **outside** `out/` because rooms clears `--out` at run start.)
 4. Spawn:
    ```
-   rooms run --runner cursor --image <room.image ?? defaultImage?> --repo <room.repos[0].url>
+   rooms run --runner cursor --image <room.image ?? defaultImage> --repo <room.repos[0].url>
      --base-sha <room.repos[0].startingRef ?? "HEAD"> --task <taskfile> --model <input.model.id>
      --push-branch <room.pushBranch ?? derived> --out <out/>
    ```
-   `--image` is omitted when neither `room.image` nor a configured `defaultImage` is set (the rooms host applies its own default). `GH_TOKEN` (← `GH_TOKEN ?? GITHUB_TOKEN`) + the inherited `CURSOR_API_KEY` / `ANTHROPIC_API_KEY` go on the **subprocess env**, never argv.
+   The rooms CLI requires `--image` (no default), so `run()` rejects with `MissingRoomImageError` when neither `room.image` nor a configured `defaultImage` is set — a clear pre-run error instead of an opaque clap failure inside the subprocess. `GH_TOKEN` (← `GH_TOKEN ?? GITHUB_TOKEN`) + the inherited `CURSOR_API_KEY` / `ANTHROPIC_API_KEY` go on the **subprocess env**, never argv.
 5. Derived push branch: `rooms/<slug(agentName) || "run">-<short-uuid>` (`agentName` is conventionally `ship/<workflowRunId>`).
 6. On subprocess exit, read `out/`: assert `result.json.schema_version === 1` (pin the literal — bail with `RoomSchemaVersionError` on drift), **replay `events.ndjson` through `onEvent`**, **then** resolve `handle.result`. Replay-before-resolve mirrors the local/cloud live-stream ordering with a terminal replay.
 7. Build `CursorRunResult { status, summary (summary.md), durationMs: ended_at − started_at, branches: pushed_branch ? [{ repoUrl, branch: pushed_branch }] : [] }`; `errorMessage` (from summary/result.json) + `sdkTerminalStatus` (raw rooms status) when failed.
