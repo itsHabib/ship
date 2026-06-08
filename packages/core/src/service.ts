@@ -1013,11 +1013,12 @@ function errorMessageFromUnknown(err: unknown): string | undefined {
   return undefined;
 }
 
-// `sdk-throw` means the cursor SDK itself rejected. Errors ship raises while
-// finalizing (e.g. a failed artifact write routed in via finalizeSuccess) are
-// not SDK failures, so they classify as `unknown` rather than mislabeling the
-// SDK. An explicit `infra` category can split these out later (tombstone
-// discipline: add, never repurpose).
+// `sdk-throw` is the default bucket for a thrown error that isn't a known
+// ship-internal type. Errors ship raises while finalizing (store contention, a
+// failed artifact write routed in via finalizeSuccess) are excluded here and
+// classify as `unknown` instead of being attributed to the SDK; every other
+// thrown error is treated as SDK-origin. An explicit `infra` category can split
+// the internal ones out later (tombstone discipline: add, never repurpose).
 function isSdkThrow(err: unknown): boolean {
   if (err instanceof StoreContentionError) return false;
   if (err instanceof ArtifactWriteFailedError) return false;
@@ -1071,7 +1072,12 @@ function persistSuccessRows(p: PersistSuccessRowsArgs): void {
     status: terminal,
     endedAt,
   };
-  if (result.errorMessage !== undefined) phasePatch.errorMessage = result.errorMessage;
+  // Suppress the failure errorMessage on a cancel (mirrors failureCategory): a
+  // cancel landing during the artifact write must not leave stale failure text
+  // on a cancelled phase.
+  if (result.errorMessage !== undefined && !isCancelled) {
+    phasePatch.errorMessage = result.errorMessage;
+  }
   if (failureCategory !== undefined) phasePatch.failureCategory = failureCategory;
   ctx.store.updatePhase(args.phaseId, phasePatch);
   ctx.store.updateCursorRunStatus(args.cursorRunId, {

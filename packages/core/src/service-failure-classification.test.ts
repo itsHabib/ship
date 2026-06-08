@@ -167,6 +167,40 @@ describe("ShipService failure classification wiring", () => {
     expect(row?.phases[0]?.errorMessage).toMatch(/^unknown; /);
   });
 
+  test("cancel landing during artifact write keeps the run cancelled without failure text", async () => {
+    // Failed result so classifyFinalizedResult rewrites errorMessage/category.
+    h.cursor.enqueue({
+      events: [{ type: "tool_call", status: "error", result: "boom" }] as never[],
+      result: {
+        branches: [],
+        durationMs: 1000,
+        sdkTerminalStatus: "ERROR",
+        status: "failed",
+      },
+    });
+    // Flip the run to cancelled during the result.json write — simulates a
+    // concurrent cancelRun() landing in the async gap before persist.
+    const origWrite = h.fs.writeFile.bind(h.fs);
+    h.fs.writeFile = (path, data) => {
+      if (path.endsWith("result.json")) {
+        h.store.updateWorkflowRunStatus("wf_test_001", "cancelled");
+      }
+      return origWrite(path, data);
+    };
+
+    const out = await h.service.ship({
+      docPath: "docs.md",
+      repo: "ship",
+      workdir: WORKDIR,
+    });
+    expect(out.status).toBe("cancelled");
+    const row = h.store.getRun(out.workflowRunId);
+    expect(row?.status).toBe("cancelled");
+    expect(row?.phases[0]?.status).toBe("cancelled");
+    expect(row?.phases[0]?.errorMessage).toBeUndefined();
+    expect(row?.phases[0]?.failureCategory).toBeUndefined();
+  });
+
   test("cloud EXPIRED via finalizeSuccess lands timeout-near-cap when wired through core", async () => {
     const capMs = DEFAULT_WORKFLOW_POLICY.maxRunDurationMs;
     h.cursor.enqueue({
