@@ -81,7 +81,7 @@ describe("manifestToReceipts", () => {
       "---",
     ].join("\n");
     const [receipt] = manifestToReceipts(text);
-    expect(receipt?.key).toBe("demo:7:keyless");
+    expect(receipt?.key).toBe("demo:7:keyless:0");
   });
 
   it("falls back to branch then pr for the key", () => {
@@ -97,5 +97,24 @@ describe("manifestToReceipts", () => {
     ].join("\n");
     const keys = manifestToReceipts(text).map((receipt) => receipt.key);
     expect(keys).toEqual(["feat/x", "pr-99"]);
+  });
+
+  it("skips a manifest with syntactically invalid YAML instead of throwing", () => {
+    expect(manifestToReceipts("---\nbatches: [unterminated\n---\n")).toEqual([]);
+  });
+
+  it("synthesizes a unique key per anonymous stream (no silent collision)", () => {
+    const text = [
+      "---",
+      "batches:",
+      "  - id: 1",
+      "    streams:",
+      "      - status: pending",
+      "      - status: pending",
+      "---",
+    ].join("\n");
+    const keys = manifestToReceipts(text).map((receipt) => receipt.key);
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(2);
   });
 });

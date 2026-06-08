@@ -13,7 +13,7 @@
 import type { Stats } from "node:fs";
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 
 import type { Receipt, ReceiptOutcome } from "./schema.js";
@@ -45,7 +45,7 @@ export function runResultToReceipt(input: RunInput): Receipt | null {
 
   const result = parsed.data;
   const prUrl = firstPrUrl(result.branches);
-  return buildReceipt({
+  const raw: Record<string, unknown> = {
     key: input.runId,
     source: "ship-run",
     outcome: runOutcome(result.status),
@@ -59,7 +59,18 @@ export function runResultToReceipt(input: RunInput): Receipt | null {
     cost_tokens: null,
     dispatched_at: input.dispatchedAt,
     terminal_at: input.terminalAt,
-  });
+  };
+  // Isolate per-run: a single result that fails schema validation (e.g. a
+  // malformed PR URL) yields null and is skipped — it never aborts the load.
+  return tryBuild(raw);
+}
+
+function tryBuild(raw: Record<string, unknown>): Receipt | null {
+  try {
+    return buildReceipt(raw);
+  } catch {
+    return null;
+  }
 }
 
 /** Read every `<runs-dir>/<runId>/result.json` into ship-run receipts. */
@@ -93,7 +104,9 @@ export function resolveDefaultRunsDir(
 
 function configHome(env: NodeJS.ProcessEnv, platform: string, home: string): string {
   const xdg = env["XDG_CONFIG_HOME"];
-  if (xdg !== undefined && xdg !== "") {
+  // Match the ship CLI: only an ABSOLUTE XDG_CONFIG_HOME is honored; a relative
+  // value falls through to the platform default rather than scanning cwd-relative.
+  if (xdg !== undefined && xdg !== "" && isAbsolute(xdg)) {
     return xdg;
   }
   if (platform === "win32") {
@@ -115,7 +128,7 @@ function loadOneRun(runsDir: string, runId: string): Receipt | null {
     // The run dir is created at dispatch (birthtime); result.json is written at
     // terminal (mtime). Using the dir's mtime for dispatch would read ~terminal,
     // since writing result.json bumps the dir's mtime.
-    dispatchedAt: statIso(dir, (stats) => stats.birthtime),
+    dispatchedAt: plausibleDispatch(statIso(dir, (stats) => stats.birthtime)),
     terminalAt: statIso(resultPath, (stats) => stats.mtime),
   });
 }
@@ -145,6 +158,19 @@ function statIso(path: string, pick: (stats: Stats) => Date): string | undefined
   } catch {
     return undefined;
   }
+}
+
+/**
+ * `birthtime` is unreliable on filesystems that don't track creation time (some
+ * Linux mounts), where it reads back as the epoch. Drop a degenerate pre-2000
+ * value rather than persist a bogus 1970 dispatch. (We deliberately do NOT drop
+ * birthtime≈mtime — a genuinely fast run has them nearly equal.)
+ */
+export function plausibleDispatch(iso: string | undefined): string | undefined {
+  if (iso === undefined) {
+    return undefined;
+  }
+  return iso < "2000-01-01" ? undefined : iso;
 }
 
 function runOutcome(status: string | undefined): ReceiptOutcome {
@@ -180,5 +206,6 @@ function prNumberFromUrl(prUrl: string | undefined): number | undefined {
   if (match?.[1] === undefined) {
     return undefined;
   }
-  return Number.parseInt(match[1], 10);
+  const parsed = Number.parseInt(match[1], 10);
+  return parsed > 0 ? parsed : undefined;
 }

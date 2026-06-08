@@ -54,8 +54,16 @@ function runBuild(args: string[]): void {
   });
 
   const out = values.out;
-  const manifestPaths = collectManifestPaths(values.manifest ?? [], values["manifests-dir"]);
-  const driverReceipts = manifestPaths.flatMap((path) => manifestToReceipts(readText(path)));
+  const explicit = values.manifest ?? [];
+  const dir = values["manifests-dir"];
+  const discovered = dir === undefined ? [] : findDriverManifests(dir);
+  const explicitSet = new Set(explicit);
+  const manifestPaths = [...new Set([...explicit, ...discovered])];
+  // Explicit `--manifest` paths the user named warn on read failure; paths found
+  // by directory walk are skipped silently (a transient unreadable file is noise).
+  const driverReceipts = manifestPaths.flatMap((path) =>
+    manifestToReceipts(explicitSet.has(path) ? readTextOrWarn(path) : readText(path)),
+  );
   const runReceipts =
     values["no-runs"] === true ? [] : loadShipRunReceipts(runsDir(values["runs-dir"]));
 
@@ -77,11 +85,6 @@ function runsDir(override: string | undefined): string {
     return override;
   }
   return resolveDefaultRunsDir(process.env, platform(), homedir());
-}
-
-function collectManifestPaths(explicit: string[], dir: string | undefined): string[] {
-  const fromDir = dir === undefined ? [] : findDriverManifests(dir);
-  return [...new Set([...explicit, ...fromDir])];
 }
 
 function findDriverManifests(root: string): string[] {
@@ -113,6 +116,15 @@ function readText(path: string): string {
   try {
     return readFileSync(path, "utf8");
   } catch {
+    return "";
+  }
+}
+
+function readTextOrWarn(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    process.stderr.write(`ship-receipt: cannot read manifest ${path} — skipping\n`);
     return "";
   }
 }

@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { loadShipRunReceipts, resolveDefaultRunsDir, runResultToReceipt } from "./runs.js";
+import {
+  loadShipRunReceipts,
+  plausibleDispatch,
+  resolveDefaultRunsDir,
+  runResultToReceipt,
+} from "./runs.js";
 
 describe("runResultToReceipt", () => {
   it("maps a succeeded run to an execution receipt", () => {
@@ -75,6 +80,43 @@ describe("runResultToReceipt", () => {
       }),
     ).toBeNull();
   });
+
+  it("returns null instead of throwing when the receipt fails validation", () => {
+    // empty runId fails the schema's non-empty key — isolate it, never abort the load
+    expect(
+      runResultToReceipt({
+        runId: "",
+        result: { status: "succeeded" },
+        dispatchedAt: undefined,
+        terminalAt: undefined,
+      }),
+    ).toBeNull();
+  });
+
+  it("ignores a non-positive PR number parsed from a URL", () => {
+    const receipt = runResultToReceipt({
+      runId: "z",
+      result: { status: "succeeded", branches: [{ prUrl: "https://github.com/o/r/pull/0" }] },
+      dispatchedAt: undefined,
+      terminalAt: undefined,
+    });
+    expect(receipt?.pr_number).toBeUndefined();
+    expect(receipt?.pr_url).toBe("https://github.com/o/r/pull/0");
+  });
+});
+
+describe("plausibleDispatch", () => {
+  it("drops a degenerate pre-2000 (epoch) birthtime", () => {
+    expect(plausibleDispatch("1970-01-01T00:00:00.000Z")).toBeUndefined();
+  });
+
+  it("keeps a plausible modern timestamp", () => {
+    expect(plausibleDispatch("2026-06-08T04:00:00.000Z")).toBe("2026-06-08T04:00:00.000Z");
+  });
+
+  it("passes undefined through", () => {
+    expect(plausibleDispatch(undefined)).toBeUndefined();
+  });
 });
 
 describe("resolveDefaultRunsDir", () => {
@@ -99,6 +141,12 @@ describe("resolveDefaultRunsDir", () => {
   it("falls back to ~/AppData/Roaming on win32 without APPDATA", () => {
     expect(resolveDefaultRunsDir({}, "win32", "C:\\Users\\u")).toBe(
       join("C:\\Users\\u", "AppData", "Roaming", "ship", "runs"),
+    );
+  });
+
+  it("ignores a relative XDG_CONFIG_HOME and uses the platform default", () => {
+    expect(resolveDefaultRunsDir({ XDG_CONFIG_HOME: "rel/dir" }, "linux", "/home/u")).toBe(
+      join("/home/u", ".config", "ship", "runs"),
     );
   });
 

@@ -56,6 +56,7 @@ type Stream = z.infer<typeof streamSchema>;
 
 interface ManifestContext {
   batch_id: number | undefined;
+  index: number;
   project: string | undefined;
   phase: string | undefined;
   repo: string | undefined;
@@ -71,7 +72,7 @@ export function manifestToReceipts(text: string): Receipt[] {
     return [];
   }
 
-  const parsed = manifestSchema.safeParse(parseYaml(frontmatter));
+  const parsed = manifestSchema.safeParse(parseYamlSafe(frontmatter));
   if (!parsed.success) {
     return [];
   }
@@ -81,9 +82,10 @@ export function manifestToReceipts(text: string): Receipt[] {
   const phase = manifest.source?.phase;
 
   return manifest.batches.flatMap((batch) =>
-    batch.streams.map((stream) =>
+    batch.streams.map((stream, index) =>
       streamToReceipt(stream, {
         batch_id: batch.id,
+        index,
         project,
         phase,
         repo: manifest.repo,
@@ -147,7 +149,19 @@ function streamKey(stream: Stream, ctx: ManifestContext): string {
   if (stream.pr_number !== undefined) {
     return `pr-${String(stream.pr_number)}`;
   }
-  return `${ctx.project ?? "unknown"}:${String(ctx.batch_id ?? 0)}:${stream.task_slug ?? "stream"}`;
+  // No natural key — synthesize a per-stream-unique one. The trailing index
+  // (position within the batch) guarantees two anonymous streams in the same
+  // batch don't collide and silently clobber each other on upsert.
+  return `${ctx.project ?? "unknown"}:${String(ctx.batch_id ?? 0)}:${stream.task_slug ?? "stream"}:${String(ctx.index)}`;
+}
+
+/** Parse YAML, returning null on a syntax error so one broken manifest is skipped, not fatal. */
+function parseYamlSafe(text: string): unknown {
+  try {
+    return parseYaml(text);
+  } catch {
+    return null;
+  }
 }
 
 /** Extract the leading `---`-fenced YAML frontmatter block, or null if absent. */
