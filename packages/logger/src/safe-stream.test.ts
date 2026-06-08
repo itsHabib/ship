@@ -43,9 +43,8 @@ describe("wrapStreamWithErrorSwallowing", () => {
     }).not.toThrow();
   });
 
-  test("swallows destination stream error events", () => {
-    const destination = new Writable();
-    wrapStreamWithErrorSwallowing(destination);
-    expect(() => destination.emit("error", new Error("stream broke"))).not.toThrow();
+  test("swallows wrapper stream error events", () => {
+    const wrapped = wrapStreamWithErrorSwallowing(new Writable());
+    expect(() => wrapped.emit("error", new Error("stream broke"))).not.toThrow();
   });
 });

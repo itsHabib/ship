@@ -83,8 +83,10 @@ describe("createLogger", () => {
 
   test("does not mutate global process.stderr.write", () => {
     const originalWrite = process.stderr.write;
+    const originalListenerCount = process.stderr.listenerCount("error");
     createLogger({ level: "info", pretty: false });
     expect(process.stderr.write).toBe(originalWrite);
+    expect(process.stderr.listenerCount("error")).toBe(originalListenerCount);
   });
 
   test("swallows write errors", () => {
@@ -108,6 +110,17 @@ describe("createLogger", () => {
     log.warn({}, "filtered by env level");
 
     expect(chunks).toHaveLength(0);
+  });
+
+  test("falls back to info when SHIP_LOG_LEVEL is invalid", () => {
+    process.env["SHIP_LOG_LEVEL"] = "bogus";
+    const { chunks, stream } = captureStream();
+    const log = createLogger({ pretty: false, stream });
+
+    expect(() => {
+      log.info({}, "invalid level fallback");
+    }).not.toThrow();
+    expect(chunks.length).toBeGreaterThan(0);
   });
 
   test("does not require pino-pretty outside development", () => {

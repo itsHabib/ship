@@ -25,13 +25,15 @@ export function wrapStreamWithErrorSwallowing(
   stream: NodeJS.WritableStream,
 ): NodeJS.WritableStream {
   const destination = stream as WritableStream;
-  destination.on("error", () => {
-    // Swallow destination errors so diagnostics never throw into business logic.
-  });
-
-  return new Writable({
+  const wrapper = new Writable({
     write(chunk: Buffer | string, encoding, callback) {
       forwardWrite(destination, chunk, encoding, callback);
     },
   });
+
+  wrapper.on("error", () => {
+    // Swallow wrapper errors so diagnostics never throw into business logic.
+  });
+
+  return wrapper;
 }

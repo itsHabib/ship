@@ -39,6 +39,12 @@ describe("config", () => {
     expect(resolveLevel()).toBe("info");
   });
 
+  test("resolveLevel falls back to info for unknown values", () => {
+    process.env["SHIP_LOG_LEVEL"] = "bogus";
+    expect(resolveLevel()).toBe("info");
+    expect(resolveLevel({ level: "not-a-level" })).toBe("info");
+  });
+
   test("resolvePretty prefers explicit opts over dev default", () => {
     process.env["NODE_ENV"] = "development";
     expect(resolvePretty({ pretty: false })).toBe(false);
