@@ -8,7 +8,7 @@ import { createStore, StoreContentionError } from "@ship/store";
 import { DEFAULT_WORKFLOW_POLICY } from "@ship/workflow";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { createMemoryShipFs } from "./fs/memory.js";
+import { createMemoryShipFs, type MemoryShipFs } from "./fs/memory.js";
 import { createShipService, type ShipService } from "./service.js";
 
 const RUNS_DIR = "/state/runs";
@@ -17,7 +17,13 @@ const WORKDIR = "/work/wt/feat";
 interface Harness {
   service: ShipService;
   cursor: FakeCursorRunner;
+  fs: MemoryShipFs;
   store: ReturnType<typeof createStore>;
+}
+
+async function readResultJson(fs: MemoryShipFs, path: string): Promise<Record<string, unknown>> {
+  const raw = await fs.readFile(path, "utf-8");
+  return JSON.parse(raw) as Record<string, unknown>;
 }
 
 async function createHarness(): Promise<Harness> {
@@ -41,7 +47,7 @@ async function createHarness(): Promise<Harness> {
     },
     store,
   });
-  return { cursor, service, store };
+  return { cursor, fs, service, store };
 }
 
 describe("ShipService failure classification wiring", () => {
@@ -82,6 +88,11 @@ describe("ShipService failure classification wiring", () => {
     const row = h.store.getRun(out.workflowRunId);
     expect(row?.phases[0]?.failureCategory).toBe("logic");
     expect(row?.phases[0]?.errorMessage).toBe("logic; make check failed");
+
+    const resultJson = await readResultJson(h.fs, out.artifacts.resultPath);
+    expect(resultJson["failureCategory"]).toBe("logic");
+    expect(resultJson["failureDetail"]).toBe("make check failed");
+    expect(resultJson).not.toHaveProperty("classificationEvents");
   });
 
   test("finalizeFailure (thrown SDK error) persists sdk-throw category", async () => {

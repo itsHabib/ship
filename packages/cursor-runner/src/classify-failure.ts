@@ -1,8 +1,5 @@
-/**
- * Pure failure classification + bounded detail builder. Exported for
- * `core`'s finalize paths; lives in cursor-runner where SDK event
- * shapes are native.
- */
+// Pure failure classification + bounded detail builder. Exported for
+// `core`'s finalize paths; lives in cursor-runner where SDK event shapes are native.
 
 import type { SDKMessage } from "@cursor/sdk";
 import type { FailureCategory } from "@ship/workflow";
@@ -12,6 +9,14 @@ import { LOCAL_RUN_CONTENTION_HINT } from "@ship/workflow";
 const NEAR_CAP_DURATION_RATIO = 0.95;
 const COLLAPSE_DURATION_RATIO = 0.8;
 const RUNNING_TOOL_MIN_AGE_MS = 30_000;
+const MAX_FAILURE_DETAIL_CHARS = 512;
+const TRUNCATED_SUFFIX = "...";
+
+function boundFailureDetail(text: string): string {
+  if (text.length <= MAX_FAILURE_DETAIL_CHARS) return text;
+  const keep = MAX_FAILURE_DETAIL_CHARS - TRUNCATED_SUFFIX.length;
+  return `${text.slice(0, keep)}${TRUNCATED_SUFFIX}`;
+}
 
 export interface ClassifyFailureInput {
   readonly sdkTerminalStatus?: string;
@@ -153,7 +158,7 @@ function agentCollapseOnRunningTool(input: ClassifyFailureInput): boolean {
   return age > RUNNING_TOOL_MIN_AGE_MS;
 }
 
-/** Maps terminal failure signals to a canonical category. Total — never throws. */
+// Maps terminal failure signals to a canonical category. Total — never throws.
 export function classifyFailure(input: ClassifyFailureInput): FailureCategory {
   if (input.isStoreContention === true) return "contention";
   if (input.thrownError === true) return "sdk-throw";
@@ -245,9 +250,9 @@ const DETAIL_BUILDERS: Record<FailureCategory, (input: BuildFailureDetailInput) 
   unknown: detailForUnknown,
 };
 
-/** Builds a bounded operator-facing detail string for a classified failure. */
+// Builds a bounded operator-facing detail string for a classified failure.
 export function buildFailureDetail(input: BuildFailureDetailInput): string {
-  return DETAIL_BUILDERS[input.category](input);
+  return boundFailureDetail(DETAIL_BUILDERS[input.category](input));
 }
 
 export function formatClassifiedErrorMessage(category: FailureCategory, detail: string): string {

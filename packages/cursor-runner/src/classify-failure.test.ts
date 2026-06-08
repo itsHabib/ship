@@ -231,4 +231,14 @@ describe("buildFailureDetail", () => {
       "logic; make check failed",
     );
   });
+
+  test("buildFailureDetail caps long tool output", () => {
+    const longErr = "x".repeat(600);
+    const detail = buildFailureDetail({
+      category: "logic",
+      events: [{ type: "tool_call", status: "error", result: longErr }] as never[],
+    });
+    expect(detail.length).toBe(512);
+    expect(detail.endsWith("...")).toBe(true);
+  });
 });

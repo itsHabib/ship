@@ -922,13 +922,21 @@ type WriteOutcome = { ok: true } | { ok: false; err: unknown };
 // Writes `result.json` and `summary.md`. Returns a tagged outcome so the
 // caller can route to `finalizeFailure` without a try block at this
 // layer, and without ambiguity over what counts as "success."
+function cursorRunResultForPersistence(result: CursorRunResult): CursorRunResult {
+  if (result.classificationEvents === undefined) return result;
+  const rest = { ...result };
+  Reflect.deleteProperty(rest, "classificationEvents");
+  return rest;
+}
+
 async function tryWriteSuccessArtifacts(
   ctx: ShipContext,
   paths: RunArtifactPaths,
   result: CursorRunResult,
 ): Promise<WriteOutcome> {
   try {
-    await ctx.fs.writeFile(paths.result, `${JSON.stringify(result, null, 2)}\n`);
+    const persisted = cursorRunResultForPersistence(result);
+    await ctx.fs.writeFile(paths.result, `${JSON.stringify(persisted, null, 2)}\n`);
     if (result.summary !== undefined && result.summary !== "") {
       await ctx.fs.writeFile(paths.summary, result.summary);
     }
