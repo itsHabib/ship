@@ -16,6 +16,7 @@ import {
 import { isAbsolute } from "node:path";
 import { inspect } from "node:util";
 
+import type { MapRunResultOptions } from "./_shared.js";
 import type {
   CloudRunSpec,
   CursorRunAttachInput,
@@ -25,12 +26,7 @@ import type {
   CursorRunResult,
 } from "./runner.js";
 
-import {
-  attachInputAsRunInput,
-  mapRunResult,
-  mapTerminalResult,
-  modelArgFromInput,
-} from "./_shared.js";
+import { attachInputAsRunInput, mapRunResult, modelArgFromInput } from "./_shared.js";
 import { captureListedArtifacts } from "./artifacts-capture.js";
 import { cloudDebugLog } from "./debug.js";
 import {
@@ -115,16 +111,16 @@ function loggableCloudOptions(opts: CloudAgentOptions): unknown {
   };
 }
 
-function mapCloudRunResult(result: RunResult, input: CursorRunInput): CursorRunResult {
+function mapCloudRunResult(
+  result: RunResult,
+  input: CursorRunInput,
+  options?: MapRunResultOptions,
+): CursorRunResult {
   // Cloud-only debug telemetry. Local runs go through mapRunResult directly
   // and never reach this wrapper, preserving the SHIP_CLOUD_DEBUG-only intent.
   cloudDebugLog("mapTerminalResult result.git", result.git);
   const cloudSpec = input.cloud;
-  // `@cursor/sdk` RunResult typings omit "expired" as of 1.0.x; cloud may still surface it.
-  if (((result.status as string | undefined) ?? "").toLowerCase() === "expired") {
-    return mapTerminalResult(result, "cancelled", cloudSpec);
-  }
-  return mapRunResult(result, input, cloudSpec);
+  return mapRunResult(result, input, cloudSpec, options);
 }
 
 /** Construct once, reuse across runs. The runner holds no per-run state. */
@@ -370,23 +366,38 @@ export class CloudCursorRunner implements CursorRunner {
       }
     };
 
+    const MAX_CAPTURED_EVENTS = 256;
+    const capturedEvents: SDKMessage[] = [];
+    const recordEvent = (ev: SDKMessage): void => {
+      capturedEvents.push(ev);
+      if (capturedEvents.length > MAX_CAPTURED_EVENTS) capturedEvents.shift();
+    };
+    const mapOpts = (): MapRunResultOptions => ({ events: capturedEvents });
+
     try {
       if (callbacks.shipResumed !== undefined) {
-        safelyEmit({
+        const resumed = {
           type: "ship.resumed",
           ts: new Date().toISOString(),
           agentId: callbacks.shipResumed.agentId,
           runId: callbacks.shipResumed.runId,
-        } as unknown as SDKMessage);
+        } as unknown as SDKMessage;
+        recordEvent(resumed);
+        safelyEmit(resumed);
       }
       try {
         for await (const ev of sdkRun.stream()) {
+          recordEvent(ev);
           safelyEmit(ev);
         }
       } catch (streamErr) {
         const wr = await this.#tryWait(sdkRun);
         if (wr !== undefined) {
-          await this.#finalizeOkWithArtifacts(agent, mapCloudRunResult(wr, input), callbacks);
+          await this.#finalizeOkWithArtifacts(
+            agent,
+            mapCloudRunResult(wr, input, mapOpts()),
+            callbacks,
+          );
           return;
         }
         callbacks.finalizeError(
@@ -408,7 +419,11 @@ export class CloudCursorRunner implements CursorRunner {
         );
         return;
       }
-      await this.#finalizeOkWithArtifacts(agent, mapCloudRunResult(waitResult, input), callbacks);
+      await this.#finalizeOkWithArtifacts(
+        agent,
+        mapCloudRunResult(waitResult, input, mapOpts()),
+        callbacks,
+      );
     } finally {
       try {
         await agent[Symbol.asyncDispose]();

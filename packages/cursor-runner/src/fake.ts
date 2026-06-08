@@ -304,12 +304,17 @@ export class FakeCursorRunner implements CursorRunner {
     if (!isTerminated()) {
       if (script.listArtifacts !== undefined) {
         const artifacts = await captureListedArtifacts(script.listArtifacts);
-        finalize({ ...script.result, artifacts });
+        finalize(finalizeFakeResult(script, { ...script.result, artifacts }));
         return;
       }
-      finalize(script.result);
+      finalize(finalizeFakeResult(script, script.result));
     }
   }
+}
+
+function finalizeFakeResult(script: FakeCursorScript, terminal: CursorRunResult): CursorRunResult {
+  if (script.events.length === 0) return terminal;
+  return { ...terminal, classificationEvents: [...script.events] };
 }
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {

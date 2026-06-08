@@ -673,7 +673,7 @@ describe("CloudCursorRunner — cloud warnings on terminal result", () => {
 });
 
 describe("CloudCursorRunner — status mapping", () => {
-  test('SDK status "expired" maps to cancelled terminal result', async () => {
+  test('SDK status "expired" maps to failed terminal result', async () => {
     const expiredResult = {
       durationMs: 100,
       id: "run-expired",
@@ -686,10 +686,10 @@ describe("CloudCursorRunner — status mapping", () => {
 
     const runner = new CloudCursorRunner();
     const handle = await runner.run(cloudBaseInput());
-    await expect(handle.result).resolves.toMatchObject({ status: "cancelled", durationMs: 100 });
+    await expect(handle.result).resolves.toMatchObject({ status: "failed", durationMs: 100 });
   });
 
-  test('SDK status "EXPIRED" (uppercase) maps to cancelled terminal result', async () => {
+  test('SDK status "EXPIRED" (uppercase) maps to failed terminal result', async () => {
     const expiredResult = {
       durationMs: 100,
       id: "run-expired",
@@ -702,7 +702,7 @@ describe("CloudCursorRunner — status mapping", () => {
 
     const runner = new CloudCursorRunner();
     const handle = await runner.run(cloudBaseInput());
-    await expect(handle.result).resolves.toMatchObject({ status: "cancelled", durationMs: 100 });
+    await expect(handle.result).resolves.toMatchObject({ status: "failed", durationMs: 100 });
   });
 });
 

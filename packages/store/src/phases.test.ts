@@ -121,18 +121,20 @@ describe("phases (via createStore)", () => {
     expect(store.getRun(runId)?.updatedAt).toBe("2026-05-08T00:05:00.000Z");
   });
 
-  test("updatePhase: persists outputJson, errorMessage, cursorRunId", () => {
+  test("updatePhase: persists outputJson, errorMessage, cursorRunId, failureCategory", () => {
     const runId = seedRun();
     const phaseId = newPhaseId();
     store.appendPhase({ id: phaseId, inputJson: "{}", kind: "implement", workflowRunId: runId });
     store.updatePhase(phaseId, {
       cursorRunId: "cr_01HMXAAAAAAAAAAAAAAAAAAAAA",
       errorMessage: "something went wrong",
+      failureCategory: "logic",
       outputJson: '{"changedFiles":["a.ts"]}',
     });
     const phase = store.getRun(runId)?.phases[0];
     expect(phase?.cursorRunId).toBe("cr_01HMXAAAAAAAAAAAAAAAAAAAAA");
     expect(phase?.errorMessage).toBe("something went wrong");
+    expect(phase?.failureCategory).toBe("logic");
     expect(phase?.outputJson).toBe('{"changedFiles":["a.ts"]}');
   });
 

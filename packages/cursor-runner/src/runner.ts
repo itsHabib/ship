@@ -6,7 +6,7 @@
  */
 
 import type { AgentDefinition, McpServerConfig, SDKMessage } from "@cursor/sdk";
-import type { ArtifactRef, ModelSelection } from "@ship/workflow";
+import type { ArtifactRef, FailureCategory, ModelSelection } from "@ship/workflow";
 
 /** Input required to start a single Cursor run. Constructed by `core` per workflow run. */
 export interface CursorRunInput {
@@ -149,6 +149,12 @@ export interface CursorRunResult {
   readonly errorMessage?: string;
   /** Raw SDK `RunResult.status` or last streamed `status` event (e.g. `error`, `ERROR`). */
   readonly sdkTerminalStatus?: string;
+  /** Bounded event window for failure classification (runner → core handoff). */
+  readonly classificationEvents?: readonly SDKMessage[];
+  /** Set by `core` at finalize on failed runs. */
+  readonly failureCategory?: FailureCategory;
+  /** Bounded last-activity / error summary; set by `core` at finalize. */
+  readonly failureDetail?: string;
 }
 
 /**

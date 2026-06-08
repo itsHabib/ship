@@ -388,7 +388,7 @@ describe("ShipService.ship — failure mapping", () => {
     h.store.close();
   });
 
-  test("cursor result.status: failed → workflow row failed; errorMessage carried", async () => {
+  test("cursor result.status: failed → workflow row failed; errorMessage classified", async () => {
     h.cursor.enqueue({
       events: [],
       result: {
@@ -408,7 +408,8 @@ describe("ShipService.ship — failure mapping", () => {
     expect(out.status).toBe("failed");
     const row = h.store.getRun(out.workflowRunId);
     expect(row?.status).toBe("failed");
-    expect(row?.phases[0]?.errorMessage).toBe("model rejected the task");
+    expect(row?.phases[0]?.failureCategory).toBe("unknown");
+    expect(row?.phases[0]?.errorMessage).toBe("unknown; model rejected the task");
   });
 
   test("cursor.run() rejects (pre-run) → ShipOutput resolves with failed", async () => {
@@ -422,7 +423,9 @@ describe("ShipService.ship — failure mapping", () => {
     expect(out.cursorRun.status).toBe("failed");
     expect(out.cursorRun.id).toMatch(/^cr_/);
     const row = h.store.getRun(out.workflowRunId);
+    expect(row?.phases[0]?.errorMessage).toMatch(/^sdk-throw; /);
     expect(row?.phases[0]?.errorMessage).toMatch(/no script enqueued/i);
+    expect(row?.phases[0]?.failureCategory).toBe("sdk-throw");
   });
 
   test("fs.writeFile fails persisting prompt.md (pre-runner, post-row) → ShipOutput failed", async () => {
@@ -451,6 +454,7 @@ describe("ShipService.ship — failure mapping", () => {
     expect(out.status).toBe("failed");
     const row = h.store.getRun(out.workflowRunId);
     expect(row?.status).toBe("failed");
+    expect(row?.phases[0]?.errorMessage).toMatch(/^sdk-throw; /);
     expect(row?.phases[0]?.errorMessage).toMatch(/ENOSPC|disk full/);
   });
 
@@ -504,6 +508,7 @@ describe("ShipService.ship — failure mapping", () => {
 
     expect(out.status).toBe("failed");
     const row = h.store.getRun(out.workflowRunId);
+    expect(row?.phases[0]?.errorMessage).toMatch(/^sdk-throw; /);
     expect(row?.phases[0]?.errorMessage).toMatch(/persist run artifacts|ENOSPC/);
   });
 
@@ -532,11 +537,11 @@ describe("ShipService.ship — failure mapping", () => {
 
     expect(out.status).toBe("failed");
     const row = h.store.getRun(out.workflowRunId);
-    // Joined chain on the row's errorMessage: every level appears in order.
+    // Classified errorMessage uses sdk-throw; forensic chain stays in result.json.
     const msg = row?.phases[0]?.errorMessage ?? "";
-    expect(msg).toMatch(/L0:.*ship dispatch failed/);
-    expect(msg).toMatch(/L1:.*agent\.send failed after Agent\.create/);
-    expect(msg).toMatch(/L2:.*\[validation_error\]/);
+    expect(msg).toMatch(/^sdk-throw; /);
+    expect(msg).toContain("ship dispatch failed");
+    expect(row?.phases[0]?.failureCategory).toBe("sdk-throw");
 
     // Structured chain in result.json: each level preserved with name +
     // message + SDK-side extras (status, code, endpoint).
@@ -615,6 +620,7 @@ describe("ShipService.ship — failure mapping", () => {
 
     const parsed = await readResultJson(h.fs, out.artifacts.resultPath);
     expect(parsed.status).toBe("failed");
+    expect(parsed.errorMessage).toMatch(/^sdk-throw; /);
     expect(parsed.errorMessage).toContain("hostile extras error");
     expect(parsed.errorChain.length).toBeGreaterThanOrEqual(1);
     const extra = parsed.errorChain[0]?.extra ?? {};
@@ -897,6 +903,7 @@ describe("ShipService.startShip — async kickoff", () => {
 
     const terminal = await waitForRunTerminal(h.service, start.workflowRunId);
     expect(terminal.status).toBe("failed");
+    expect(terminal.phases[0]?.errorMessage).toMatch(/^sdk-throw; /);
     expect(terminal.phases[0]?.errorMessage).toMatch(/no script enqueued/i);
   });
 
@@ -1577,7 +1584,8 @@ describe("ShipService.resumeOrphanedRuns", () => {
     await service.resumeReady();
     const row = await waitForRunTerminal(service, "wf_00000000000000000000000002");
     expect(row.status).toBe("failed");
-    expect(row.phases[0]?.errorMessage).toBe(
+    expect(row.phases[0]?.errorMessage).toMatch(/^sdk-throw; /);
+    expect(row.phases[0]?.errorMessage).toContain(
       "cloud agent bc-resume-0001 no longer reachable on resume",
     );
     expect(store.getCursorRun("cr_00000000000000000000000002")?.status).toBe("failed");

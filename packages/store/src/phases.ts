@@ -4,7 +4,7 @@
  * triggers.
  */
 
-import type { Phase, PhaseKind, PhaseStatus } from "@ship/workflow";
+import type { FailureCategory, Phase, PhaseKind, PhaseStatus } from "@ship/workflow";
 
 import { phaseSchema } from "@ship/workflow";
 
@@ -34,6 +34,7 @@ export interface UpdatePhaseInput {
   cursorRunId?: string;
   outputJson?: string;
   errorMessage?: string;
+  failureCategory?: FailureCategory;
 }
 
 /** Internal phase-table API consumed by `workflow-runs.ts` and `store.ts`. */
@@ -61,11 +62,12 @@ interface PhaseRow {
   input_json: string;
   output_json: string | null;
   error_message: string | null;
+  failure_category: string | null;
   created_at: string;
 }
 
 const PHASE_COLUMNS =
-  "id, workflow_run_id, kind, status, started_at, ended_at, cursor_run_id, input_json, output_json, error_message, created_at";
+  "id, workflow_run_id, kind, status, started_at, ended_at, cursor_run_id, input_json, output_json, error_message, failure_category, created_at";
 
 /**
  * Constructs the `phases` ops. Caches static prepared statements (ED-6);
@@ -186,6 +188,10 @@ function applyPhasePatch(db: Db, id: string, patch: UpdatePhaseInput): void {
     sets.push("error_message = ?");
     params.push(patch.errorMessage);
   }
+  if (patch.failureCategory !== undefined) {
+    sets.push("failure_category = ?");
+    params.push(patch.failureCategory);
+  }
   if (sets.length === 0) return;
   params.push(id);
   db.prepare(`UPDATE phases SET ${sets.join(", ")} WHERE id = ?`).run(...params);
@@ -209,6 +215,7 @@ function parsePhase(row: PhaseRow): Phase {
     cursorRunId?: string;
     outputJson?: string;
     errorMessage?: string;
+    failureCategory?: string;
   } = {
     id: row.id,
     inputJson: row.input_json,
@@ -221,6 +228,7 @@ function parsePhase(row: PhaseRow): Phase {
   if (row.cursor_run_id !== null) candidate.cursorRunId = row.cursor_run_id;
   if (row.output_json !== null) candidate.outputJson = row.output_json;
   if (row.error_message !== null) candidate.errorMessage = row.error_message;
+  if (row.failure_category !== null) candidate.failureCategory = row.failure_category;
 
   const result = phaseSchema.safeParse(candidate);
   if (!result.success) {

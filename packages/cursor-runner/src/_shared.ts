@@ -59,17 +59,26 @@ export interface MapRunResultOptions {
   readonly events?: readonly SDKMessage[];
 }
 
+function withClassificationEvents(
+  mapped: CursorRunResult,
+  events: readonly SDKMessage[],
+): CursorRunResult {
+  if (events.length === 0) return mapped;
+  return { ...mapped, classificationEvents: events };
+}
+
 export function mapRunResult(
   result: RunResult,
   input: CursorRunInput,
   requestedCloudSpec?: CloudRunSpec,
   options?: MapRunResultOptions,
 ): CursorRunResult {
+  const events = options?.events ?? [];
   if (result.status === "finished")
     return mapTerminalResult(result, "succeeded", requestedCloudSpec);
   if (result.status === "cancelled")
     return mapTerminalResult(result, "cancelled", requestedCloudSpec);
-  return mapErrorResult(result, input, options);
+  return withClassificationEvents(mapErrorResult(result, input, options), events);
 }
 
 type FirstBranch = NonNullable<NonNullable<RunResult["git"]>["branches"]>[number];
