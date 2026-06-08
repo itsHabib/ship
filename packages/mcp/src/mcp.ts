@@ -63,6 +63,27 @@ export const cloudRunSpecSchema = z
   })
   .strict();
 
+/**
+ * Rooms-agent config — structural twin of `RoomRunSpec` in `@ship/cursor-runner`.
+ * Single-repo this phase (single-element tuple). The runner re-validates shape
+ * with a runtime guard. No `autoCreatePR` — rooms never opens its own PR (the
+ * pushed branch surfaces via `get_workflow_run`; PR opening is downstream).
+ */
+export const roomRunSpecSchema = z
+  .object({
+    repos: z.tuple([
+      z
+        .object({
+          url: z.string().min(1),
+          startingRef: z.string().min(1).optional(),
+        })
+        .strict(),
+    ]),
+    image: z.string().min(1).optional(),
+    pushBranch: z.string().min(1).optional(),
+  })
+  .strict();
+
 /** Input to the `ship` tool. Optional fields default in `core`. */
 export const shipInputSchema = z
   .object({
@@ -86,14 +107,17 @@ export const shipInputSchema = z
     modelParams: z.array(shipInputModelParamEntrySchema).optional(),
     /**
      * Runtime selector. Defaults to `"local"` when omitted. `"cloud"` routes
-     * to the configured `CloudCursorRunner`; `cloud` field below is required
-     * when this is set to `"cloud"` (enforced by the cross-field refinement
-     * below, so MCP callers get a clean schema error instead of a runner-layer
-     * `MissingCloudSpecError` after persistence).
+     * to the configured `CloudCursorRunner`; `"rooms"` to the configured
+     * `RoomCursorRunner` (a self-hosted microVM). The matching `cloud` / `room`
+     * field is required for the respective runtime (enforced by the cross-field
+     * refinement below, so MCP callers get a clean schema error instead of a
+     * runner-layer error after persistence).
      */
-    runtime: z.enum(["local", "cloud"]).optional(),
+    runtime: z.enum(["local", "cloud", "rooms"]).optional(),
     /** Cloud-specific config; required when `runtime === "cloud"`, ignored otherwise. */
     cloud: cloudRunSpecSchema.optional(),
+    /** Rooms-specific config; required when `runtime === "rooms"`, ignored otherwise. */
+    room: roomRunSpecSchema.optional(),
   })
   .strict()
   .superRefine((data, ctx) => {
@@ -105,18 +129,27 @@ export const shipInputSchema = z
         message: "cloud config is required when runtime is 'cloud'",
       });
     }
-    if (runtime !== "cloud" && data.workdir === undefined) {
+    if (runtime === "rooms" && data.room === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["room"],
+        message: "room config is required when runtime is 'rooms'",
+      });
+    }
+    // workdir + repo are required for local only. Cloud and rooms have no host
+    // worktree (workdir optional) and derive `repo` from their repo URL.
+    if (runtime === "local" && data.workdir === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["workdir"],
-        message: "workdir is required when runtime is not 'cloud'",
+        message: "workdir is required when runtime is 'local'",
       });
     }
-    if (runtime !== "cloud" && data.repo === undefined) {
+    if (runtime === "local" && data.repo === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["repo"],
-        message: "repo is required when runtime is not 'cloud'",
+        message: "repo is required when runtime is 'local'",
       });
     }
   });
@@ -188,6 +221,20 @@ export type GetWorkflowRunInput = z.infer<typeof getWorkflowRunInputSchema>;
  */
 const recentRunEventSchema = z.record(z.string(), z.unknown());
 
+/**
+ * One branch a terminal run produced — structural twin of `CursorRunResult.branches[]`.
+ * Surfaced from `result.json` for cloud + rooms runs so downstream (`/work-driver`)
+ * can read `branches[0].branch` and open the PR with `gh pr create`.
+ */
+export const runBranchRefSchema = z
+  .object({
+    repoUrl: z.string().min(1),
+    branch: z.string().min(1).optional(),
+    prUrl: z.string().min(1).optional(),
+  })
+  .strict();
+export type RunBranchRef = z.infer<typeof runBranchRefSchema>;
+
 export const getWorkflowRunOutputSchema = workflowRunSchema.extend({
   cursorAgentId: z.string().min(1).optional(),
   watchUrl: z.string().url().optional(),
@@ -199,6 +246,8 @@ export const getWorkflowRunOutputSchema = workflowRunSchema.extend({
   sdkTerminalStatus: z.string().min(1).optional(),
   /** Tail of `events.ndjson` so operators need not open the file. */
   recentEvents: z.array(recentRunEventSchema).optional(),
+  /** Branches the run pushed (cloud + rooms), from terminal `result.json`. */
+  branches: z.array(runBranchRefSchema).optional(),
 });
 export type GetWorkflowRunOutput = z.infer<typeof getWorkflowRunOutputSchema>;
 
