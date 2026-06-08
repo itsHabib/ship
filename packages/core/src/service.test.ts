@@ -1301,6 +1301,26 @@ describe("ShipService.ship — rooms routing (L2)", () => {
     expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
     h.store.close();
   });
+
+  test("rooms run derives repo from room URL, ignoring a stray cloud field", async () => {
+    const h = await createHarness();
+    await h.fs.mkdir("/external", { recursive: true });
+    await h.fs.writeFile("/external/task.md", "# t\n");
+    h.roomCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      docPath: "/external/task.md",
+      runtime: "rooms",
+      room: { repos: [{ url: "https://github.com/itsHabib/roxiq" }] },
+      // A stray cloud field must NOT redirect repo derivation / doc resolution.
+      cloud: { repos: [{ url: "https://github.com/itsHabib/wrong-repo" }] },
+    });
+    expect(h.store.getRun(out.workflowRunId)?.repo).toBe("itsHabib/roxiq");
+    expect(h.roomCursor.calls).toHaveLength(1);
+    h.store.close();
+  });
 });
 
 describe("ShipService.ship — cloud parity", () => {
