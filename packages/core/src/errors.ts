@@ -13,6 +13,15 @@ export class CloudRunnerNotConfiguredError extends Error {
   }
 }
 
+/** Constructed without `roomCursor` when `input.runtime === "rooms"`. */
+export class RoomRunnerNotConfiguredError extends Error {
+  override readonly name = "RoomRunnerNotConfiguredError";
+
+  constructor() {
+    super("ShipService was constructed without roomCursor; runtime: 'rooms' cannot be dispatched");
+  }
+}
+
 export class WorkdirNotFoundError extends Error {
   override readonly name = "WorkdirNotFoundError";
   readonly workdir: string;

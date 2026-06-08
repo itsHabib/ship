@@ -26,6 +26,7 @@ import {
   DocNotFoundError,
   DocPathEscapesWorkdirError,
   MissingRepoError,
+  RoomRunnerNotConfiguredError,
   WorkdirNotFoundError,
 } from "./errors.js";
 import { createMemoryShipFs, type MemoryShipFs } from "./fs/memory.js";
@@ -83,15 +84,39 @@ interface Harness {
   /** Fake local runner — historical name `cursor` for existing tests. */
   cursor: FakeCursorRunner;
   cloudCursor: FakeCursorRunner;
+  roomCursor: FakeCursorRunner;
   config: ShipServiceConfig;
 }
 
-async function createHarness(opts?: {
+interface HarnessOpts {
   defaultModelId?: string;
   defaultModelParams?: { id: string; value: string }[];
   omitCloudCursor?: boolean;
+  omitRoomCursor?: boolean;
   docSource?: DocSource;
-}): Promise<Harness> {
+}
+
+function makeHarnessConfig(
+  opts: HarnessOpts | undefined,
+  runners: {
+    cursor: FakeCursorRunner;
+    cloudCursor: FakeCursorRunner;
+    roomCursor: FakeCursorRunner;
+  },
+): ShipServiceConfig {
+  return {
+    runsDir: RUNS_DIR,
+    defaultModel: {
+      id: opts?.defaultModelId ?? "composer-2.5",
+      params: opts?.defaultModelParams ?? [{ id: "fast", value: "true" }],
+    },
+    cursor: runners.cursor,
+    ...(opts?.omitCloudCursor ? {} : { cloudCursor: runners.cloudCursor }),
+    ...(opts?.omitRoomCursor ? {} : { roomCursor: runners.roomCursor }),
+  };
+}
+
+async function createHarness(opts?: HarnessOpts): Promise<Harness> {
   const fs = createMemoryShipFs();
   await fs.mkdir(RUNS_DIR, { recursive: true });
   await fs.mkdir(WORKDIR, { recursive: true });
@@ -103,15 +128,8 @@ async function createHarness(opts?: {
   });
   const cursor = new FakeCursorRunner();
   const cloudCursor = new FakeCursorRunner();
-  const config: ShipServiceConfig = {
-    runsDir: RUNS_DIR,
-    defaultModel: {
-      id: opts?.defaultModelId ?? "composer-2.5",
-      params: opts?.defaultModelParams ?? [{ id: "fast", value: "true" }],
-    },
-    cursor,
-    ...(opts?.omitCloudCursor ? {} : { cloudCursor }),
-  };
+  const roomCursor = new FakeCursorRunner();
+  const config = makeHarnessConfig(opts, { cursor, cloudCursor, roomCursor });
 
   const service = createShipService({
     store,
@@ -122,7 +140,7 @@ async function createHarness(opts?: {
     ...(opts?.docSource !== undefined ? { docSource: opts.docSource } : {}),
   });
 
-  return { service, fs, store, cursor, cloudCursor, config };
+  return { service, fs, store, cursor, cloudCursor, roomCursor, config };
 }
 
 describe("createShipService — dep injection defaults", () => {
@@ -1178,6 +1196,113 @@ describe("ShipService.ship — runtime routing", () => {
   });
 });
 
+const ROOM_SPEC: NonNullable<ShipInput["room"]> = {
+  repos: [{ url: "https://github.com/itsHabib/roxiq" }],
+};
+
+describe("ShipService.ship — rooms routing (L2)", () => {
+  test("runtime: rooms uses roomCursor.run; local + cloud runners untouched", async () => {
+    const h = await createHarness();
+    h.roomCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      runtime: "rooms",
+      room: ROOM_SPEC,
+    });
+    expect(h.roomCursor.calls).toHaveLength(1);
+    expect(h.cursor.calls).toHaveLength(0);
+    expect(h.cloudCursor.calls).toHaveLength(0);
+    expect(out.cursorRun.runtime).toBe("rooms");
+    expect(h.store.getCursorRun(out.cursorRun.id)?.runtime).toBe("rooms");
+    h.store.close();
+  });
+
+  test("rooms run forwards runtime + room spec to the runner", async () => {
+    const h = await createHarness();
+    h.roomCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      runtime: "rooms",
+      room: { repos: [{ url: "https://github.com/itsHabib/roxiq", startingRef: "main" }] },
+    });
+    const input = h.roomCursor.calls[0]?.input;
+    expect(input?.runtime).toBe("rooms");
+    expect(input?.room?.repos[0]?.url).toBe("https://github.com/itsHabib/roxiq");
+    expect(input?.room?.repos[0]?.startingRef).toBe("main");
+    h.store.close();
+  });
+
+  test("rooms branches[0].branch surfaces via get_workflow_run", async () => {
+    const h = await createHarness();
+    h.roomCursor.enqueue({
+      events: [],
+      result: {
+        status: "succeeded",
+        durationMs: 30_000,
+        branches: [
+          { repoUrl: "https://github.com/itsHabib/roxiq", branch: "rooms/ship-x-abcd1234" },
+        ],
+      },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      runtime: "rooms",
+      room: ROOM_SPEC,
+    });
+    const view = await h.service.getRun(out.workflowRunId);
+    expect(view?.branches?.[0]?.branch).toBe("rooms/ship-x-abcd1234");
+    expect(view?.branches?.[0]?.repoUrl).toBe("https://github.com/itsHabib/roxiq");
+    h.store.close();
+  });
+
+  test("rooms without workdir: synthetic worktree + repo auto-derived from room URL", async () => {
+    const h = await createHarness();
+    await h.fs.mkdir("/external", { recursive: true });
+    await h.fs.writeFile("/external/task.md", "# External rooms task\n");
+    h.roomCursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      docPath: "/external/task.md",
+      runtime: "rooms",
+      room: { repos: [{ url: "https://github.com/itsHabib/roxiq" }] },
+    });
+    expect(out.status).toBe("succeeded");
+    expect(out.worktree.path).toBe(CLOUD_WORKTREE_SENTINEL);
+    expect(h.store.getRun(out.workflowRunId)?.repo).toBe("itsHabib/roxiq");
+    expect(h.roomCursor.calls).toHaveLength(1);
+    h.store.close();
+  });
+
+  test("runtime rooms without roomCursor throws before any persistence", async () => {
+    const h = await createHarness({ omitRoomCursor: true });
+    expect(() => {
+      void h.service.ship({
+        workdir: WORKDIR,
+        repo: "ship",
+        docPath: "docs.md",
+        runtime: "rooms",
+        room: ROOM_SPEC,
+      });
+    }).toThrow(RoomRunnerNotConfiguredError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
+    h.store.close();
+  });
+});
+
 describe("ShipService.ship — cloud parity", () => {
   test("cloud without workdir: synthetic worktree + repo auto-derived", async () => {
     const h = await createHarness();
@@ -1496,6 +1621,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
         config: null as never,
         cursor: null as never,
         fs,
+        roomCursor: null as never,
         service: null as never,
         store,
       },
@@ -1550,6 +1676,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
         config: null as never,
         cursor: null as never,
         fs,
+        roomCursor: null as never,
         service: null as never,
         store,
       },
@@ -1618,6 +1745,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
         config: null as never,
         cursor: null as never,
         fs,
+        roomCursor: null as never,
         service: null as never,
         store,
       },
