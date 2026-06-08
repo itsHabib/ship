@@ -14,6 +14,7 @@ export type {
   CursorRunInput,
   CursorRunner,
   CursorRunResult,
+  RoomRunSpec,
 } from "./runner.js";
 
 export type { ArtifactRef } from "@ship/workflow";
@@ -25,15 +26,30 @@ export { LIST_ARTIFACTS_TIMEOUT_MS } from "./artifacts-capture.js";
 // --- local-runner.ts ---
 export { LocalCursorRunner } from "./local-runner.js";
 
+// --- room-runner.ts ---
+export { RoomCursorRunner } from "./room-runner.js";
+export type {
+  RoomCursorRunnerOptions,
+  RoomsChild,
+  RoomsSpawn,
+  RoomsSpawnOptions,
+} from "./room-runner.js";
+
 // --- errors.ts ---
 export {
   CursorAgentNotFoundError,
   CursorCloudIntegrationError,
   CursorRunFailedError,
   InvalidCloudReposError,
+  InvalidRoomReposError,
   LocalResumeNotSupportedError,
   MissingApiKeyError,
   MissingCloudSpecError,
+  MissingRoomImageError,
+  MissingRoomSpecError,
+  RoomArtifactError,
+  RoomResumeNotSupportedError,
+  RoomSchemaVersionError,
   WrongRunnerError,
 } from "./errors.js";
 

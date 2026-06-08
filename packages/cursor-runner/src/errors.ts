@@ -154,3 +154,83 @@ export class LocalResumeNotSupportedError extends CursorRunFailedError {
     this.agentId = args.agentId;
   }
 }
+
+/** Rooms inputs passed to {@link RoomCursorRunner} without `room` config. */
+export class MissingRoomSpecError extends CursorRunFailedError {
+  override readonly name: string = "MissingRoomSpecError";
+
+  constructor() {
+    super("runtime: 'rooms' was set but input.room is undefined");
+  }
+}
+
+/**
+ * Rooms inputs whose `room.repos` array doesn't match the single-repo
+ * contract. Covers both empty (`length === 0`) and multi-repo (`length > 1`).
+ */
+export class InvalidRoomReposError extends CursorRunFailedError {
+  override readonly name: string = "InvalidRoomReposError";
+
+  constructor(receivedLength: number) {
+    super(
+      `room.repos must contain exactly one repo entry; received length ${String(receivedLength)}`,
+    );
+  }
+}
+
+/**
+ * Rooms run with no resolvable guest image. The `rooms` CLI requires
+ * `--image` (no default), so {@link RoomCursorRunner} rejects up front when
+ * neither `room.image` nor the runner's `defaultImage` is set — a clear
+ * pre-run error instead of an opaque clap failure inside the subprocess.
+ */
+export class MissingRoomImageError extends CursorRunFailedError {
+  override readonly name: string = "MissingRoomImageError";
+
+  constructor() {
+    super(
+      "rooms requires a guest image: set room.image or construct RoomCursorRunner with a defaultImage",
+    );
+  }
+}
+
+/**
+ * Thrown by {@link RoomCursorRunner.attach} — rooms microVMs are disposable,
+ * so resume is not supported (ED-5). Mirrors {@link LocalResumeNotSupportedError}.
+ */
+export class RoomResumeNotSupportedError extends CursorRunFailedError {
+  override readonly name: string = "RoomResumeNotSupportedError";
+  readonly agentId: string;
+
+  constructor(args: { agentId: string }) {
+    super(`Rooms agent resume is not supported (agentId=${args.agentId})`);
+    this.agentId = args.agentId;
+  }
+}
+
+/**
+ * `rooms run` exited but the host-collected `--out` artifacts couldn't be
+ * read or parsed (missing `result.json`, malformed JSON). A contract/harness
+ * failure, not an agent failure — surfaces via `handle.result` rejection.
+ */
+export class RoomArtifactError extends CursorRunFailedError {
+  override readonly name: string = "RoomArtifactError";
+}
+
+/**
+ * `result.json.schema_version` did not match the pinned rooms contract
+ * version. Bails loudly so a silent contract drift can't mis-report a run.
+ */
+export class RoomSchemaVersionError extends CursorRunFailedError {
+  override readonly name: string = "RoomSchemaVersionError";
+  readonly expected: number;
+  readonly received: unknown;
+
+  constructor(args: { expected: number; received: unknown }) {
+    super(
+      `rooms result.json schema_version mismatch: expected ${String(args.expected)}, received ${JSON.stringify(args.received)}`,
+    );
+    this.expected = args.expected;
+    this.received = args.received;
+  }
+}
