@@ -694,13 +694,16 @@ function isRemoteRuntime(input: ShipInput): boolean {
   return input.runtime === "cloud" || input.runtime === "rooms";
 }
 
-// The single repo spec a remote (cloud/rooms) run targets. `prUrl` is
-// cloud-only; the typed-loose return lets the rooms repo element (no `prUrl`)
-// flow through the same accessor.
+// The single repo spec a remote (cloud/rooms) run targets, chosen by
+// `runtime` so an allowed-but-ignored sibling field (e.g. a stray `cloud` on a
+// rooms request) can't redirect doc resolution / persisted repo to the wrong
+// repository. `prUrl` is cloud-only; the typed-loose return lets the rooms
+// repo element (no `prUrl`) flow through the same accessor.
 function remoteRepoSpec(
   input: ShipInput,
 ): { url: string; startingRef?: string | undefined; prUrl?: string | undefined } | undefined {
-  return input.cloud?.repos[0] ?? input.room?.repos[0];
+  if (input.runtime === "rooms") return input.room?.repos[0];
+  return input.cloud?.repos[0];
 }
 
 function resolveRepo(input: ShipInput): string {
@@ -760,8 +763,8 @@ function logBackgroundFailure(workflowRunId: string, err: unknown): void {
   );
 }
 
-// The implement phase's `input_json`. Persists the cloud/room spec for
-// forensics; the cloud spec is also read back on resume (rooms has no resume).
+// The implement phase's `input_json`, persisted for forensics. The cloud
+// spec is also read back on resume; rooms has no resume path.
 function buildImplementInputJson(input: ShipInput): string {
   if (input.runtime === "cloud" && input.cloud !== undefined) {
     return JSON.stringify({ cloud: input.cloud, docPath: input.docPath });
@@ -874,7 +877,9 @@ async function runToTerminal(
 
     const handle = await ctx.runner.run(runInput);
 
-    if (ctx.resolvedCursorRuntime === "cloud") {
+    // Cloud + rooms both run unattended off the async path; the timer-based
+    // pump keeps `workflow_runs.updated_at` fresh while a long run is live.
+    if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
       eventPump = startEventPump({ store: ctx.store, workflowRunId: prep.workflowRunId });
     }
 
