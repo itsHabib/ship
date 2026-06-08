@@ -3,7 +3,7 @@ import pino from "pino";
 
 import type { CreateLoggerOpts, LogFields, Logger } from "./types.js";
 
-import { isDevEnvironment, resolveLevel, resolvePretty, resolveStream } from "./config.js";
+import { resolveLevel, resolvePretty, resolveStream } from "./config.js";
 import { wrapStreamWithErrorSwallowing } from "./safe-stream.js";
 
 const require = createRequire(import.meta.url);
@@ -58,7 +58,7 @@ function wrapPinoLogger(pinoLogger: pino.Logger): Logger {
 
 export function createPinoLogger(opts?: CreateLoggerOpts): Logger {
   const level = resolveLevel(opts);
-  const usePretty = resolvePretty(opts) && isDevEnvironment();
+  const usePretty = resolvePretty(opts);
   const baseStream = resolveStream(opts);
   const prettyStream = usePretty ? tryCreatePrettyStream(baseStream) : undefined;
   const stream = wrapStreamWithErrorSwallowing(prettyStream ?? baseStream);

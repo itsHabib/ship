@@ -47,4 +47,26 @@ describe("wrapStreamWithErrorSwallowing", () => {
     const wrapped = wrapStreamWithErrorSwallowing(new Writable());
     expect(() => wrapped.emit("error", new Error("stream broke"))).not.toThrow();
   });
+
+  test("swallows async error events emitted on the destination", () => {
+    const destination = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    });
+    wrapStreamWithErrorSwallowing(destination);
+    // Without a destination-level listener, this emit would crash the process.
+    expect(() => destination.emit("error", new Error("destination broke"))).not.toThrow();
+  });
+
+  test("attaches the destination error listener at most once", () => {
+    const destination = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    });
+    wrapStreamWithErrorSwallowing(destination);
+    wrapStreamWithErrorSwallowing(destination);
+    expect(destination.listenerCount("error")).toBe(1);
+  });
 });

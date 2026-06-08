@@ -45,6 +45,13 @@ describe("config", () => {
     expect(resolveLevel({ level: "not-a-level" })).toBe("info");
   });
 
+  test("resolveLevel normalizes level casing", () => {
+    expect(resolveLevel({ level: "ERROR" })).toBe("error");
+    expect(resolveLevel({ level: "Warn" })).toBe("warn");
+    process.env["SHIP_LOG_LEVEL"] = "DEBUG";
+    expect(resolveLevel()).toBe("debug");
+  });
+
   test("resolvePretty prefers explicit opts over dev default", () => {
     process.env["NODE_ENV"] = "development";
     expect(resolvePretty({ pretty: false })).toBe(false);
