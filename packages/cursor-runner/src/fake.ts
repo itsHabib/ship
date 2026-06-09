@@ -303,7 +303,7 @@ export class FakeCursorRunner implements CursorRunner {
     }
     if (!isTerminated()) {
       if (script.listArtifacts !== undefined) {
-        const artifacts = await captureListedArtifacts(script.listArtifacts);
+        const artifacts = await captureListedArtifacts(script.listArtifacts, input.log);
         finalize(finalizeFakeResult(script, { ...script.result, artifacts }));
         return;
       }

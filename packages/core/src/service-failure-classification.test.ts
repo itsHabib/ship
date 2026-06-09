@@ -3,6 +3,8 @@
  * `failureCategory` and category-prefixed `errorMessage`.
  */
 
+import type { Logger } from "@ship/logger";
+
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore, StoreContentionError } from "@ship/store";
 import { DEFAULT_WORKFLOW_POLICY } from "@ship/workflow";
@@ -26,7 +28,7 @@ async function readResultJson(fs: MemoryShipFs, path: string): Promise<Record<st
   return JSON.parse(raw) as Record<string, unknown>;
 }
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(opts?: { readonly logger?: Logger }): Promise<Harness> {
   const fs = createMemoryShipFs();
   await fs.mkdir(WORKDIR, { recursive: true });
   await fs.writeFile(`${WORKDIR}/docs.md`, "# task\n");
@@ -38,6 +40,7 @@ async function createHarness(): Promise<Harness> {
       cursor,
       defaultModel: { id: "composer-2.5" },
       runsDir: RUNS_DIR,
+      ...(opts?.logger !== undefined && { logger: opts.logger }),
     },
     fs,
     ids: {
@@ -222,5 +225,32 @@ describe("ShipService failure classification wiring", () => {
     const row = h.store.getRun(out.workflowRunId);
     expect(row?.phases[0]?.failureCategory).toBe("timeout-near-cap");
     expect(row?.phases[0]?.errorMessage).toMatch(/^timeout-near-cap; /);
+  });
+
+  test("a custom logger whose child() throws does not strand the run", async () => {
+    const noop = (): void => undefined;
+    const throwingChildLogger = {
+      debug: noop,
+      info: noop,
+      warn: noop,
+      error: noop,
+      child: () => {
+        throw new Error("child boom");
+      },
+    } as unknown as Logger;
+    const h2 = await createHarness({ logger: throwingChildLogger });
+    try {
+      h2.cursor.enqueue({
+        events: [],
+        result: { branches: [], durationMs: 10, status: "succeeded", summary: "ok" },
+      });
+      // runScopedLogger swallows the throwing child() and falls back to the root
+      // logger, so the run still reaches a terminal state instead of stranding.
+      const out = await h2.service.ship({ docPath: "docs.md", repo: "ship", workdir: WORKDIR });
+      expect(out.status).toBe("succeeded");
+      expect(h2.store.getRun(out.workflowRunId)?.status).toBe("succeeded");
+    } finally {
+      h2.store.close();
+    }
   });
 });

@@ -18,7 +18,7 @@ import type { WorkflowRun } from "@ship/workflow";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { waitForTerminalRun } from "@ship/test-harness";
-import { spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -171,6 +171,15 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     expect(run.status).toBe("succeeded");
   });
 
+  test("stdout purity: every line during an MCP session is valid JSON-RPC", async () => {
+    const stdoutLines = await collectStdoutLinesDuringMcpSession(cenv.env);
+    expect(stdoutLines.length).toBeGreaterThan(0);
+    for (const line of stdoutLines) {
+      const parsed = JSON.parse(line) as { jsonrpc?: string };
+      expect(parsed.jsonrpc).toBe("2.0");
+    }
+  });
+
   test("ship with explicit modelParams still reaches persistence on the fake runner", async () => {
     const shippedRaw = await client.callTool({
       name: "ship",
@@ -274,3 +283,104 @@ function parseToolJson(result: unknown): unknown {
 // busy CI box; 300 × 50ms = 15s gives subprocess-mode tests enough
 // headroom without masking a real hang.
 const INT_POLL = { maxAttempts: 300, intervalMs: 50 } as const;
+
+// Numeric JSON-RPC `id` of a stdout line, or undefined if the line isn't a
+// JSON object with a numeric id. Total — never throws on non-JSON.
+function parseJsonRpcId(line: string): number | undefined {
+  try {
+    const parsed: unknown = JSON.parse(line);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const id = (parsed as Record<string, unknown>)["id"];
+    return typeof id === "number" ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Spawns the MCP server binary, drives a minimal initialize + listTools
+ * exchange, and returns every non-empty stdout line captured during the
+ * session. Stdio MCP framing is newline-delimited JSON-RPC.
+ */
+async function collectStdoutLinesDuringMcpSession(env: NodeJS.ProcessEnv): Promise<string[]> {
+  const stdoutLines: string[] = [];
+  let stdoutBuf = "";
+
+  const child: ChildProcessWithoutNullStreams = spawn(
+    process.execPath,
+    ["--import", "tsx/esm", BIN],
+    {
+      cwd: PKG,
+      env: filterEnvForStdio(env),
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+
+  // Resolve as soon as both request responses (id 1 + id 2) have arrived rather
+  // than killing after a fixed delay — a cold subprocess start under load can
+  // otherwise be SIGTERM'd before it answers (0 lines). A 10s backstop guards a
+  // genuine hang.
+  let resolveSession!: () => void;
+  let rejectSession!: (err: unknown) => void;
+  const session = new Promise<void>((res, rej) => {
+    resolveSession = res;
+    rejectSession = rej;
+  });
+  const seenResponseIds = new Set<number>();
+
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdoutBuf += chunk.toString("utf-8");
+    const parts = stdoutBuf.split("\n");
+    stdoutBuf = parts.pop() ?? "";
+    for (const line of parts) {
+      if (line.trim() === "") continue;
+      stdoutLines.push(line);
+      const id = parseJsonRpcId(line);
+      if (id !== undefined) seenResponseIds.add(id);
+    }
+    if (seenResponseIds.has(1) && seenResponseIds.has(2)) resolveSession();
+  });
+
+  // Drain stderr so the server's diagnostic stream (now structured-logger
+  // output) can't fill the pipe buffer and block the child's writes.
+  child.stderr.on("data", () => {
+    // discard — only stdout JSON-RPC purity is under test here
+  });
+
+  const writeLine = (payload: unknown): void => {
+    child.stdin.write(`${JSON.stringify(payload)}\n`);
+  };
+
+  writeLine({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "stdout-purity-test", version: "0.0.0" },
+    },
+  });
+  writeLine({ jsonrpc: "2.0", method: "notifications/initialized" });
+  writeLine({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+
+  const timer = setTimeout(() => {
+    rejectSession(new Error("stdout purity MCP session timed out"));
+  }, 10_000);
+  child.on("error", (err) => {
+    rejectSession(err);
+  });
+  child.on("close", () => {
+    resolveSession();
+  });
+
+  try {
+    await session;
+  } finally {
+    clearTimeout(timer);
+    if (stdoutBuf.trim() !== "") stdoutLines.push(stdoutBuf.trim());
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+  }
+
+  return stdoutLines;
+}

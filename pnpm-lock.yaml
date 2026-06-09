@@ -96,6 +96,9 @@ importers:
       '@ship/cursor-runner':
         specifier: workspace:*
         version: link:../cursor-runner
+      '@ship/logger':
+        specifier: workspace:*
+        version: link:../logger
       '@ship/mcp':
         specifier: workspace:*
         version: link:../mcp
@@ -139,6 +142,9 @@ importers:
       '@ship/cursor-runner':
         specifier: workspace:*
         version: link:../cursor-runner
+      '@ship/logger':
+        specifier: workspace:*
+        version: link:../logger
       '@ship/mcp':
         specifier: workspace:*
         version: link:../mcp
@@ -170,6 +176,9 @@ importers:
       '@cursor/sdk':
         specifier: ^1.0.12
         version: 1.0.12
+      '@ship/logger':
+        specifier: workspace:*
+        version: link:../logger
       '@ship/workflow':
         specifier: workspace:*
         version: link:../workflow
@@ -239,6 +248,9 @@ importers:
       '@ship/cursor-runner':
         specifier: workspace:*
         version: link:../cursor-runner
+      '@ship/logger':
+        specifier: workspace:*
+        version: link:../logger
       '@ship/mcp':
         specifier: workspace:*
         version: link:../mcp
@@ -298,6 +310,9 @@ importers:
 
   packages/store:
     dependencies:
+      '@ship/logger':
+        specifier: workspace:*
+        version: link:../logger
       '@ship/workflow':
         specifier: workspace:*
         version: link:../workflow

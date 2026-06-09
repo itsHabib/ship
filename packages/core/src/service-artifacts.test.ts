@@ -313,7 +313,10 @@ describe("ShipService — cloud artifacts", () => {
 
   test("stalled listArtifacts at terminal times out; finalize completes without artifacts", async () => {
     vi.useFakeTimers();
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk, _enc, cb) => {
+      if (typeof cb === "function") cb();
+      return true;
+    }) as typeof process.stderr.write);
     h.cloudCursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 1, branches: [] },

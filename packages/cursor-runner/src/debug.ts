@@ -1,7 +1,13 @@
-// stderr-only debug telemetry for cloud runs — gated strictly on SHIP_CLOUD_DEBUG=1.
+import type { Logger } from "@ship/logger";
 
-export function cloudDebugLog(label: string, payload: unknown): void {
-  if (process.env["SHIP_CLOUD_DEBUG"] !== "1") return;
+// Debug telemetry for cloud runs, emitted via the injected Logger (stderr by
+// default). Gated strictly on SHIP_CLOUD_DEBUG=1 — that flag is the access
+// control, so once past it we emit at `info` rather than `debug`: the flag is
+// the gate, not the log level, so `SHIP_CLOUD_DEBUG=1` alone is sufficient to
+// surface these diagnostics at the default level.
+
+export function cloudDebugLog(log: Logger | undefined, label: string, payload: unknown): void {
+  if (process.env["SHIP_CLOUD_DEBUG"] !== "1" || log === undefined) return;
   // Defensive: JSON.stringify throws on circular refs / BigInt. This is
   // diagnostics — a crash here is the worst possible outcome. Fall back
   // to String() so the run continues.
@@ -11,5 +17,5 @@ export function cloudDebugLog(label: string, payload: unknown): void {
   } catch {
     serialized = String(payload);
   }
-  process.stderr.write(`[ship-cloud-debug] ${label}: ${serialized}\n`);
+  log.info({ label, payload: serialized }, label);
 }

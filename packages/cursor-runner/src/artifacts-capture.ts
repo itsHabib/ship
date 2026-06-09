@@ -3,6 +3,8 @@
  * cannot hang on a stalled cloud SDK call.
  */
 
+import type { Logger } from "@ship/logger";
+
 import { type ArtifactRef, artifactRefSchema } from "@ship/workflow";
 
 /** Best-effort cap on terminal `listArtifacts()` so finalize cannot hang. */
@@ -32,12 +34,14 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
-function logListArtifactsFailure(err: unknown): void {
+function logListArtifactsFailure(log: Logger | undefined, err: unknown): void {
   try {
     const message = err instanceof Error ? err.message : String(err);
     const label =
       err instanceof ListArtifactsTimeoutError ? "listArtifacts timed out" : "listArtifacts failed";
-    process.stderr.write(`[ship-cloud-warn] ${label}: ${message}\n`);
+    if (log !== undefined) {
+      log.warn({ label, err: message }, label);
+    }
   } catch {
     /* swallow — diagnostic logging must never affect control flow */
   }
@@ -46,6 +50,7 @@ function logListArtifactsFailure(err: unknown): void {
 /** Runs `listArtifacts`, logs on failure/timeout, returns refs or `[]`. */
 export async function captureListedArtifacts(
   listArtifacts: () => Promise<unknown>,
+  log?: Logger,
 ): Promise<readonly ArtifactRef[]> {
   try {
     const listed = await withTimeout(listArtifacts(), LIST_ARTIFACTS_TIMEOUT_MS);
@@ -64,7 +69,7 @@ export async function captureListedArtifacts(
       return parsed.success ? [parsed.data] : [];
     });
   } catch (err) {
-    logListArtifactsFailure(err);
+    logListArtifactsFailure(log, err);
     return [];
   }
 }

@@ -24,12 +24,14 @@ import type { CursorRunner } from "@ship/cursor-runner";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createDefaultShipService } from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
+import { createLogger } from "@ship/logger";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 import { buildServer } from "./server.js";
 
 async function main(): Promise<void> {
+  const logger = createLogger({ stream: process.stderr });
   const useFake = process.env["SHIP_TEST_FAKE_CURSOR"] === "1";
   // Treat both "unset" and "set to empty string" as missing — the
   // Cursor SDK rejects an empty key the same way it rejects an
@@ -38,7 +40,7 @@ async function main(): Promise<void> {
   // fast at boot. Cycle-1 review (ship#15) caught this gap.
   const apiKey = process.env["CURSOR_API_KEY"];
   if (!useFake && (apiKey === undefined || apiKey === "")) {
-    process.stderr.write("error: CURSOR_API_KEY is not set\n");
+    logger.error({}, "CURSOR_API_KEY is not set");
     process.exitCode = 1;
     return;
   }
@@ -46,7 +48,7 @@ async function main(): Promise<void> {
   const dbPath = process.env["SHIP_DB_PATH"] ?? join(userConfigDir(), "ship", "state.db");
   const runsDir = process.env["SHIP_RUNS_DIR"] ?? join(userConfigDir(), "ship", "runs");
 
-  const opts: Parameters<typeof createDefaultShipService>[0] = { dbPath, runsDir };
+  const opts: Parameters<typeof createDefaultShipService>[0] = { dbPath, runsDir, logger };
   if (useFake) {
     // The fake runner returns a fixed `succeeded` outcome for every
     // `ship` call so the L3 subprocess test exercises the stdio /
@@ -84,6 +86,8 @@ function userConfigDir(): string {
 }
 
 main().catch((err: unknown) => {
-  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+  const logger = createLogger({ stream: process.stderr });
+  const message = err instanceof Error ? err.message : String(err);
+  logger.error({ err: message }, "mcp-server bootstrap failed");
   process.exitCode = 2;
 });

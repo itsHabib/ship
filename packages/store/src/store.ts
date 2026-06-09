@@ -4,6 +4,7 @@
  * modules into a single `Store`.
  */
 
+import type { Logger } from "@ship/logger";
 import type { CursorRunRef, Phase, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
 import type {
@@ -32,6 +33,8 @@ import { createWorkflowRunOps } from "./workflow-runs.js";
 export interface CreateStoreOptions {
   dbPath: string;
   clock?: () => string;
+  /** Structured logger for store diagnostics; omitted in tests that silence logs. */
+  logger?: Logger;
   /** Override migration directory; production callers omit this. */
   migrationsDir?: string;
 }
@@ -136,7 +139,8 @@ function defaultClock(): string {
  */
 export function createStore(opts: CreateStoreOptions): Store {
   const clock = opts.clock ?? defaultClock;
-  const db = openDatabase(opts.dbPath);
+  const logger = opts.logger;
+  const db = openDatabase(opts.dbPath, logger);
   try {
     const migrationOpts =
       opts.migrationsDir === undefined ? { clock } : { clock, migrationsDir: opts.migrationsDir };
@@ -160,9 +164,12 @@ export function createStore(opts: CreateStoreOptions): Store {
           db.pragma("wal_checkpoint(TRUNCATE)");
         } catch (err: unknown) {
           const reason = err instanceof Error ? err.message : String(err);
-          console.warn(
-            `[@ship/store] wal_checkpoint(TRUNCATE) failed during close(); the -wal/-shm sidecars may persist until the next clean shutdown: ${reason}`,
-          );
+          if (logger !== undefined) {
+            logger.warn(
+              { err: reason },
+              "wal_checkpoint(TRUNCATE) failed during close(); -wal/-shm sidecars may persist until next clean shutdown",
+            );
+          }
         }
         db.close();
       },

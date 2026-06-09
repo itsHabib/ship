@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@cursor/sdk": "^1.0.12",
+    "@ship/logger": "workspace:*",
     "@ship/workflow": "workspace:*"
   },
   "devDependencies": {

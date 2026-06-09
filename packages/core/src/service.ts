@@ -37,12 +37,13 @@ import type {
   WorktreeRef,
 } from "@ship/workflow";
 
-import { CursorAgentNotFoundError } from "@ship/cursor-runner";
 import {
   buildFailureDetail,
   classifyFailure,
+  CursorAgentNotFoundError,
   formatClassifiedErrorMessage,
 } from "@ship/cursor-runner";
+import { createLogger, type LogFields, type Logger } from "@ship/logger";
 import { StoreContentionError, WorkflowRunNotFoundError } from "@ship/store";
 import {
   CLOUD_WORKTREE_SENTINEL,
@@ -124,6 +125,8 @@ export interface ShipServiceDeps {
   readonly activeRuns?: ActiveRunsRegistry;
   /** Remote doc source for cloud runs (local-miss path). */
   readonly docSource?: DocSource;
+  /** Structured diagnostics logger; defaults to stderr JSON when omitted. */
+  readonly logger?: Logger;
 }
 
 // Registry of in-flight runs. Each entry carries an `AbortController`
@@ -402,6 +405,7 @@ function toRunBranchRef(entry: unknown): RunBranchRef | undefined {
 export function createShipService(deps: ShipServiceDeps): ShipService {
   const { clock, config, fs, store } = deps;
   const docSource = deps.docSource;
+  const logger = deps.logger ?? createLogger({ stream: process.stderr });
   const ids = deps.ids ?? {
     workflowRun: newWorkflowRunId,
     phase: newPhaseId,
@@ -426,6 +430,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     fs,
     ids,
     input,
+    logger,
     resolvedCursorRuntime: resolvePersistedRuntime(input),
     runner: selectRunner(config, input),
     store,
@@ -437,12 +442,13 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     clock,
     config,
     fs,
+    logger,
     resumeBgPending,
     store,
   };
 
   const initialResume = resumeOrphanedRunsTracked(resumeCtx).catch((err: unknown) => {
-    logResumeFailure(err);
+    logResumeFailure(logger, err);
   });
 
   const service: ShipService = {
@@ -487,13 +493,14 @@ interface ResumeContext {
   readonly clock: () => string;
   readonly config: ShipServiceConfig;
   readonly fs: ShipFs;
+  readonly logger: Logger;
   readonly resumeBgPending: Set<Promise<void>>;
   readonly store: Store;
 }
 
-function logResumeFailure(err: unknown): void {
+function logResumeFailure(logger: Logger, err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
-  process.stderr.write(`ship: resumeOrphanedRuns failed: ${message}\n`);
+  logger.error({ err: message }, "resumeOrphanedRuns failed");
 }
 
 interface ShipContext {
@@ -504,6 +511,7 @@ interface ShipContext {
   readonly fs: ShipFs;
   readonly ids: NonNullable<ShipServiceDeps["ids"]>;
   readonly input: ShipInput;
+  readonly logger: Logger;
   /** Value persisted to `cursor_runs.runtime` for this invocation. */
   readonly resolvedCursorRuntime: CursorRunRuntime;
   readonly runner: CursorRunner;
@@ -562,10 +570,11 @@ interface BuildCursorRunInputArgs {
   readonly model: ModelSelection;
   readonly controller: AbortController;
   readonly onEvent: CursorRunInput["onEvent"];
+  readonly runLog: Logger;
 }
 
 function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput {
-  const { ctx, prep, prompt, model, controller, onEvent } = args;
+  const { ctx, prep, prompt, model, controller, onEvent, runLog } = args;
   const policy = ctx.store.getRun(prep.workflowRunId)?.policy ?? DEFAULT_WORKFLOW_POLICY;
   const base = {
     cwd: prep.effectiveWorkdir,
@@ -577,6 +586,7 @@ function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput 
     agentName: `ship/${prep.workflowRunId}`,
     signal: controller.signal,
     onEvent,
+    log: runLog,
   } as const;
   if (ctx.input.runtime === "cloud") {
     return {
@@ -663,7 +673,7 @@ async function runShipStart(
     setImmediate(() => {
       runToTerminal(ctx, prep, controller)
         .catch((err: unknown) => {
-          logBackgroundFailure(prep.workflowRunId, err);
+          logBackgroundFailure(ctx.logger, prep.workflowRunId, err);
         })
         .finally(() => {
           resolve();
@@ -762,11 +772,49 @@ function markRunStarted(ctx: ShipContext, prep: PreparedRun): void {
 // throwing, observable via `getRun`. stderr is the right channel: MCP
 // stdio framing uses stdout for JSON-RPC, so diagnostics belong on
 // stderr to avoid corrupting the wire.
-function logBackgroundFailure(workflowRunId: string, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  process.stderr.write(
-    `ship-start: background continuation rejected after finalize: workflowRunId=${workflowRunId} err=${message}\n`,
+interface LogRunFailedArgs {
+  readonly ctx: ShipContext;
+  readonly workflowRunId: string;
+  readonly phase: string;
+  readonly cursorRunId?: string;
+  readonly terminal: TerminalWorkflowStatus;
+  readonly classified?: ClassifiedFailure;
+  readonly durationMs?: number;
+}
+
+function logRunFailedIfNeeded(args: LogRunFailedArgs): void {
+  const { ctx, workflowRunId, phase, cursorRunId, terminal, classified, durationMs } = args;
+  if (terminal !== "failed" || classified === undefined) return;
+  // Carry the run-scoped fields (workflowRunId + phase) so operators can query
+  // terminal failures by phase — matches the structured-field contract used by
+  // the run-scoped child logger.
+  ctx.logger.error(
+    {
+      workflowRunId,
+      phase,
+      ...(cursorRunId !== undefined && { cursorRunId }),
+      failureCategory: classified.category,
+      ...(durationMs !== undefined && { durationMs }),
+    },
+    "run failed",
   );
+}
+
+function logBackgroundFailure(logger: Logger, workflowRunId: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  logger.error({ workflowRunId, err: message }, "background continuation rejected after finalize");
+}
+
+// Guards Logger.child at the public DI boundary: a diagnostics call must never
+// affect control flow. The default logger never throws here, but a custom
+// injected Logger might — falling back to the root logger keeps a throwing
+// child() from stranding a run in `running` before runToTerminal's guard.
+function runScopedLogger(logger: Logger, fields: LogFields): Logger {
+  try {
+    return logger.child(fields);
+  } catch {
+    return logger;
+  }
 }
 
 // The implement phase's `input_json`, persisted for forensics. The cloud
@@ -848,6 +896,10 @@ async function runToTerminal(
   // already flipped the row + phase from `pending → running`; this
   // function handles fs prep, the cursor call, and finalization.
 
+  const runLog = runScopedLogger(ctx.logger, {
+    workflowRunId: prep.workflowRunId,
+    phase: prep.phaseId,
+  });
   let cursorRunId: string | undefined;
   let ndjson: EventWriter | undefined;
   let eventPump: EventPumpHandle | undefined;
@@ -879,6 +931,7 @@ async function runToTerminal(
       model,
       controller,
       onEvent,
+      runLog,
     });
 
     const handle = await ctx.runner.run(runInput);
@@ -989,6 +1042,40 @@ function classifyFinalizedResult(
   };
 }
 
+interface FinalizeSuccessPersistArgs {
+  readonly ctx: ShipContext;
+  readonly args: FinalizeSuccessArgs;
+  readonly endedAt: string;
+  readonly terminal: TerminalWorkflowStatus;
+  readonly result: CursorRunResult;
+  readonly classified?: ClassifiedFailure;
+}
+
+function finalizeSuccessPersistAndLog(p: FinalizeSuccessPersistArgs): TerminalWorkflowStatus {
+  const { ctx, args, endedAt, terminal, result, classified } = p;
+  const cancelledNow = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
+  const effectiveTerminal: TerminalWorkflowStatus = cancelledNow ? "cancelled" : terminal;
+  persistSuccessRows({
+    ctx,
+    args,
+    terminal: effectiveTerminal,
+    endedAt,
+    isCancelled: cancelledNow,
+    result,
+    ...(classified !== undefined && !cancelledNow && { failureCategory: classified.category }),
+  });
+  logRunFailedIfNeeded({
+    ctx,
+    workflowRunId: args.workflowRunId,
+    phase: args.phaseId,
+    cursorRunId: args.cursorRunId,
+    terminal: effectiveTerminal,
+    durationMs: result.durationMs,
+    ...(classified !== undefined ? { classified } : {}),
+  });
+  return effectiveTerminal;
+}
+
 async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
   const { ctx, paths } = args;
   const endedAt = ctx.clock();
@@ -1012,20 +1099,13 @@ async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
     });
   }
 
-  // Re-read cancel state: a cancelRun() may have landed during the async
-  // artifact write above. Honor the latest intent so the runner's terminal
-  // status doesn't overwrite a concurrent cancel.
-  const cancelledNow = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
-  const effectiveTerminal: TerminalWorkflowStatus = cancelledNow ? "cancelled" : terminal;
-
-  persistSuccessRows({
+  const effectiveTerminal = finalizeSuccessPersistAndLog({
     ctx,
     args,
-    terminal: effectiveTerminal,
     endedAt,
-    isCancelled: cancelledNow,
+    terminal,
     result,
-    ...(classified !== undefined && !cancelledNow && { failureCategory: classified.category }),
+    ...(classified !== undefined ? { classified } : {}),
   });
 
   const updatedRun = ctx.store.getRun(args.workflowRunId);
@@ -1420,6 +1500,16 @@ async function finalizeFailure(args: FinalizeFailureArgs): Promise<ShipOutput> {
     isCancelled,
     ...(classified !== undefined && { failureCategory: classified.category }),
   });
+
+  logRunFailedIfNeeded({
+    ctx,
+    workflowRunId: args.workflowRunId,
+    phase: args.phaseId,
+    terminal,
+    ...(args.cursorRunId !== undefined ? { cursorRunId: args.cursorRunId } : {}),
+    ...(classified !== undefined ? { classified } : {}),
+  });
+
   await tryWriteFailureResult({
     ctx,
     path: args.paths.result,
@@ -1872,9 +1962,14 @@ async function runResumeAttach(
 
   try {
     const model = target.row.model ?? ctx.config.defaultModel;
+    const resumeLog = target.shipCtx.logger.child({
+      workflowRunId: target.row.workflowRunId,
+      phase: target.phaseId,
+    });
     const handle = await cloudCursor.attach({
       agentId: target.row.agentId,
       cloud: target.cloudSpec,
+      log: resumeLog,
       model,
       onEvent,
       runId: target.row.runId,
@@ -1936,6 +2031,7 @@ function resumeCtxAsShipContext(ctx: ResumeContext, workflowRunId: string): Ship
       workflowRun: () => workflowRunId,
     },
     input: { docPath: "", runtime: "cloud" },
+    logger: ctx.logger,
     resolvedCursorRuntime: "cloud",
     runner: ctx.config.cloudCursor ?? ctx.config.cursor,
     store: ctx.store,
