@@ -14,20 +14,26 @@ batches:
   - id: 1
     label: ready now (parallel-safe, cloud) — logger + classifier are disjoint packages
     depends_on: []
-    status: pending
+    status: done
     streams:
       - task_id: tsk_01KTJH8EYJF9JB8BXKRXDHC2NK
         task_slug: observability-logger-package
         spec_path: docs/features/observability/phases/observability-logger-package.md
         runtime: cloud
         touches: [packages/logger]
-        status: pending
+        status: done
+        pr_number: 116
+        merge_commit: 1d8c7d2
+        merged_at: 2026-06-09T20:01:00Z
       - task_id: tsk_01KTJH8HWKD3DANMPJ15WE5WD9
         task_slug: observability-failure-category-enum
         spec_path: docs/features/observability/phases/observability-failure-category-enum.md
         runtime: cloud
         touches: [packages/workflow/src/workflow.ts, packages/cursor-runner/src/_shared.ts, packages/cursor-runner/src/cloud-runner.ts, packages/core/src/service.ts, packages/store/src/db.ts, packages/store/src/migrations.ts]
-        status: pending
+        status: done
+        pr_number: 117
+        merge_commit: f6b6f55
+        merged_at: 2026-06-09T20:07:00Z
   - id: 2
     label: after batch 1 — migrate sites (needs the logger + the failureCategory enum)
     depends_on: [1]
