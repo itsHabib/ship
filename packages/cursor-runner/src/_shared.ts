@@ -59,17 +59,26 @@ export interface MapRunResultOptions {
   readonly events?: readonly SDKMessage[];
 }
 
+function withClassificationEvents(
+  mapped: CursorRunResult,
+  events: readonly SDKMessage[],
+): CursorRunResult {
+  if (events.length === 0) return mapped;
+  return { ...mapped, classificationEvents: events };
+}
+
 export function mapRunResult(
   result: RunResult,
   input: CursorRunInput,
   requestedCloudSpec?: CloudRunSpec,
   options?: MapRunResultOptions,
 ): CursorRunResult {
+  const events = options?.events ?? [];
   if (result.status === "finished")
     return mapTerminalResult(result, "succeeded", requestedCloudSpec);
   if (result.status === "cancelled")
     return mapTerminalResult(result, "cancelled", requestedCloudSpec);
-  return mapErrorResult(result, input, options);
+  return withClassificationEvents(mapErrorResult(result, input, options), events);
 }
 
 type FirstBranch = NonNullable<NonNullable<RunResult["git"]>["branches"]>[number];
@@ -144,11 +153,18 @@ function formatWallDuration(ms: number): string {
   return rem > 0 ? `${String(hours)}h${String(rem)}m` : `${String(hours)}h`;
 }
 
-function eventRecord(ev: SDKMessage): Record<string, unknown> {
+// Upper bound on the streamed events retained for failure classification. Both
+// runners keep the most-recent window; the fake mirrors it so tests reflect the
+// same eviction. Single source of truth so the three stay aligned.
+export const MAX_CLASSIFICATION_EVENTS = 256;
+
+// Shared by the runners and the failure classifier — kept here so both read
+// SDK event shapes through one projection.
+export function eventRecord(ev: SDKMessage): Record<string, unknown> {
   return ev as unknown as Record<string, unknown>;
 }
 
-function stringifyToolCallResult(result: unknown): string {
+export function stringifyToolCallResult(result: unknown): string {
   if (typeof result === "string") return result;
   if (typeof result === "number" || typeof result === "boolean" || typeof result === "bigint") {
     return String(result);

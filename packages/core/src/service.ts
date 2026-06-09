@@ -28,6 +28,7 @@ import type {
   ArtifactRef,
   CursorRunRef,
   CursorRunRuntime,
+  FailureCategory,
   ModelSelection,
   TerminalCursorRunStatus,
   TerminalWorkflowStatus,
@@ -37,7 +38,12 @@ import type {
 } from "@ship/workflow";
 
 import { CursorAgentNotFoundError } from "@ship/cursor-runner";
-import { WorkflowRunNotFoundError } from "@ship/store";
+import {
+  buildFailureDetail,
+  classifyFailure,
+  formatClassifiedErrorMessage,
+} from "@ship/cursor-runner";
+import { StoreContentionError, WorkflowRunNotFoundError } from "@ship/store";
 import {
   CLOUD_WORKTREE_SENTINEL,
   cursorWatchUrl,
@@ -962,9 +968,34 @@ interface FinalizeSuccessArgs {
   readonly workflowRunId: string;
 }
 
+// When the runner reports a non-cancelled failure, classify it and fold the
+// category/detail into the result; otherwise pass the result through untouched.
+function classifyFinalizedResult(
+  ctx: ShipContext,
+  args: FinalizeSuccessArgs,
+  isCancelled: boolean,
+  terminal: TerminalWorkflowStatus,
+): { readonly result: CursorRunResult; readonly classified?: ClassifiedFailure } {
+  if (terminal !== "failed" || isCancelled) return { result: args.result };
+  const classified = classifyFailedRun(ctx, args.workflowRunId, args.result);
+  return {
+    classified,
+    result: {
+      ...args.result,
+      errorMessage: classified.errorMessage,
+      failureCategory: classified.category,
+      failureDetail: classified.detail,
+    },
+  };
+}
+
 async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
-  const { ctx, paths, result } = args;
+  const { ctx, paths } = args;
   const endedAt = ctx.clock();
+
+  const isCancelled = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
+  const terminal: TerminalWorkflowStatus = isCancelled ? "cancelled" : args.result.status;
+  const { result, classified } = classifyFinalizedResult(ctx, args, isCancelled, terminal);
 
   const writeOutcome = await tryWriteSuccessArtifacts(ctx, paths, result);
   if (!writeOutcome.ok) {
@@ -981,22 +1012,29 @@ async function finalizeSuccess(args: FinalizeSuccessArgs): Promise<ShipOutput> {
     });
   }
 
-  // Read current row status so a concurrent `cancelRun()` that already
-  // flipped the workflow row to `cancelled` isn't overwritten by the
-  // runner's terminal status. Phase + cursor-run rows still reflect the
-  // run's actual outcome — they're internal-consistency markers.
-  const isCancelled = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
-  const terminal: TerminalWorkflowStatus = isCancelled ? "cancelled" : result.status;
+  // Re-read cancel state: a cancelRun() may have landed during the async
+  // artifact write above. Honor the latest intent so the runner's terminal
+  // status doesn't overwrite a concurrent cancel.
+  const cancelledNow = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
+  const effectiveTerminal: TerminalWorkflowStatus = cancelledNow ? "cancelled" : terminal;
 
-  persistSuccessRows(ctx, args, terminal, endedAt, isCancelled);
+  persistSuccessRows({
+    ctx,
+    args,
+    terminal: effectiveTerminal,
+    endedAt,
+    isCancelled: cancelledNow,
+    result,
+    ...(classified !== undefined && !cancelledNow && { failureCategory: classified.category }),
+  });
 
   const updatedRun = ctx.store.getRun(args.workflowRunId);
   const cursorRunRef = ctx.store.getCursorRun(args.cursorRunId);
   return buildShipOutput({
     workflowRunId: args.workflowRunId,
-    status: terminal,
+    status: effectiveTerminal,
     worktree: updatedRun?.worktree ?? args.worktree,
-    cursorRun: assertTerminalCursorRunRef(cursorRunRef, terminal),
+    cursorRun: assertTerminalCursorRunRef(cursorRunRef, effectiveTerminal),
     paths,
     summary: result.summary,
   });
@@ -1011,13 +1049,21 @@ type WriteOutcome = { ok: true } | { ok: false; err: unknown };
 // Writes `result.json` and `summary.md`. Returns a tagged outcome so the
 // caller can route to `finalizeFailure` without a try block at this
 // layer, and without ambiguity over what counts as "success."
+function cursorRunResultForPersistence(result: CursorRunResult): CursorRunResult {
+  if (result.classificationEvents === undefined) return result;
+  const rest = { ...result };
+  Reflect.deleteProperty(rest, "classificationEvents");
+  return rest;
+}
+
 async function tryWriteSuccessArtifacts(
   ctx: ShipContext,
   paths: RunArtifactPaths,
   result: CursorRunResult,
 ): Promise<WriteOutcome> {
   try {
-    await ctx.fs.writeFile(paths.result, `${JSON.stringify(result, null, 2)}\n`);
+    const persisted = cursorRunResultForPersistence(result);
+    await ctx.fs.writeFile(paths.result, `${JSON.stringify(persisted, null, 2)}\n`);
     if (result.summary !== undefined && result.summary !== "") {
       await ctx.fs.writeFile(paths.summary, result.summary);
     }
@@ -1027,31 +1073,131 @@ async function tryWriteSuccessArtifacts(
   }
 }
 
+interface ClassifiedFailure {
+  readonly category: FailureCategory;
+  readonly detail: string;
+  readonly errorMessage: string;
+}
+
+function resolveMaxRunDurationMs(ctx: ShipContext, workflowRunId: string): number {
+  return (
+    ctx.store.getRun(workflowRunId)?.policy.maxRunDurationMs ??
+    DEFAULT_WORKFLOW_POLICY.maxRunDurationMs
+  );
+}
+
+function classifyFailedRun(
+  ctx: ShipContext,
+  workflowRunId: string,
+  result: CursorRunResult,
+): ClassifiedFailure {
+  const events = result.classificationEvents ?? [];
+  const maxRunDurationMs = resolveMaxRunDurationMs(ctx, workflowRunId);
+  const category = classifyFailure({
+    durationMs: result.durationMs,
+    events,
+    maxRunDurationMs,
+    ...(result.sdkTerminalStatus !== undefined && {
+      sdkTerminalStatus: result.sdkTerminalStatus,
+    }),
+  });
+  const detail = buildFailureDetail({
+    category,
+    durationMs: result.durationMs,
+    events,
+    maxRunDurationMs,
+    ...(result.sdkTerminalStatus !== undefined && {
+      sdkTerminalStatus: result.sdkTerminalStatus,
+    }),
+    ...(result.errorMessage !== undefined && { rawErrorMessage: result.errorMessage }),
+  });
+  return {
+    category,
+    detail,
+    errorMessage: formatClassifiedErrorMessage(category, detail),
+  };
+}
+
+function errorMessageFromUnknown(err: unknown): string | undefined {
+  if (err instanceof Error && err.message.length > 0) return err.message;
+  if (typeof err === "string" && err.length > 0) return err;
+  return undefined;
+}
+
+// `sdk-throw` is the default bucket for a thrown error that isn't a known
+// ship-internal type. Errors ship raises while finalizing (store contention, a
+// failed artifact write routed in via finalizeSuccess) are excluded here and
+// classify as `unknown` instead of being attributed to the SDK; every other
+// thrown error is treated as SDK-origin. An explicit `infra` category can split
+// the internal ones out later (tombstone discipline: add, never repurpose).
+function isSdkThrow(err: unknown): boolean {
+  if (err instanceof StoreContentionError) return false;
+  if (err instanceof ArtifactWriteFailedError) return false;
+  return true;
+}
+
+function classifyThrownFailure(err: unknown): ClassifiedFailure {
+  const isStoreContention = err instanceof StoreContentionError;
+  const category = classifyFailure({
+    events: [],
+    isStoreContention,
+    thrownError: isSdkThrow(err),
+  });
+  const rawMessage = errorMessageFromUnknown(err);
+  const detail = buildFailureDetail({
+    category,
+    events: [],
+    thrownErr: err,
+    ...(rawMessage !== undefined && { rawErrorMessage: rawMessage }),
+  });
+  return {
+    category,
+    detail,
+    errorMessage: formatClassifiedErrorMessage(category, detail),
+  };
+}
+
 // Phase + cursor-run + workflow-run row updates on the success path.
 // `isCancelled` is true when a concurrent `cancelRun()` already flipped
 // the workflow row mid-flight; we keep the cursor + phase rows aligned
 // with the runner's actual outcome but leave the workflow row at
 // `cancelled` so the user's cancel intent isn't silently overwritten.
-function persistSuccessRows(
-  ctx: ShipContext,
-  args: FinalizeSuccessArgs,
-  terminal: TerminalWorkflowStatus,
-  endedAt: string,
-  isCancelled: boolean,
-): void {
-  const phasePatch: { status: TerminalWorkflowStatus; endedAt: string; errorMessage?: string } = {
+interface PersistSuccessRowsArgs {
+  readonly ctx: ShipContext;
+  readonly args: FinalizeSuccessArgs;
+  readonly terminal: TerminalWorkflowStatus;
+  readonly endedAt: string;
+  readonly isCancelled: boolean;
+  readonly result: CursorRunResult;
+  readonly failureCategory?: FailureCategory;
+}
+
+function persistSuccessRows(p: PersistSuccessRowsArgs): void {
+  const { ctx, args, terminal, endedAt, isCancelled, result, failureCategory } = p;
+  const phasePatch: {
+    status: TerminalWorkflowStatus;
+    endedAt: string;
+    errorMessage?: string;
+    failureCategory?: FailureCategory;
+  } = {
     status: terminal,
     endedAt,
   };
-  if (args.result.errorMessage !== undefined) phasePatch.errorMessage = args.result.errorMessage;
+  // Suppress the failure errorMessage on a cancel (mirrors failureCategory): a
+  // cancel landing during the artifact write must not leave stale failure text
+  // on a cancelled phase.
+  if (result.errorMessage !== undefined && !isCancelled) {
+    phasePatch.errorMessage = result.errorMessage;
+  }
+  if (failureCategory !== undefined) phasePatch.failureCategory = failureCategory;
   ctx.store.updatePhase(args.phaseId, phasePatch);
   ctx.store.updateCursorRunStatus(args.cursorRunId, {
     status: terminal,
     endedAt,
-    durationMs: args.result.durationMs,
-    ...(args.result.artifacts !== undefined && { artifacts: [...args.result.artifacts] }),
+    durationMs: result.durationMs,
+    ...(result.artifacts !== undefined && { artifacts: [...result.artifacts] }),
   });
-  if (!isCancelled) ctx.store.updateWorkflowRunStatus(args.workflowRunId, args.result.status);
+  if (!isCancelled) ctx.store.updateWorkflowRunStatus(args.workflowRunId, result.status);
 }
 
 function resolveImplementCursorRunId(run: WorkflowRun): string | undefined {
@@ -1241,24 +1387,47 @@ interface FinalizeFailureArgs {
   readonly workflowRunId: string;
 }
 
+function resolveFailureMessage(
+  err: unknown,
+  isCancelled: boolean,
+): { errorMessage: string; classified?: ClassifiedFailure } {
+  const errorChain = flattenErrorChain(err);
+  const rawErrorMessage =
+    errorChain.length <= 1
+      ? (errorChain[0]?.message ?? stringifyUnknown(err))
+      : errorChain.map((e, i) => `L${String(i)}: ${e.message}`).join(" | ");
+  if (isCancelled) return { errorMessage: rawErrorMessage };
+  const classified = classifyThrownFailure(err);
+  return { classified, errorMessage: classified.errorMessage };
+}
+
 async function finalizeFailure(args: FinalizeFailureArgs): Promise<ShipOutput> {
   const { ctx } = args;
   const endedAt = ctx.clock();
   const errorChain = flattenErrorChain(args.err);
-  // Single-level errors keep the raw message (back-compat with existing
-  // assertions). Multi-level chains get the joined "L0: <msg> | L1: <msg>"
-  // form so a single-field consumer still sees every level. The full
-  // structured chain is also written to `result.json` for forensic use.
-  const errorMessage =
-    errorChain.length <= 1
-      ? (errorChain[0]?.message ?? stringifyUnknown(args.err))
-      : errorChain.map((e, i) => `L${String(i)}: ${e.message}`).join(" | ");
 
   const isCancelled = ctx.store.getRun(args.workflowRunId)?.status === "cancelled";
   const terminal: TerminalWorkflowStatus = isCancelled ? "cancelled" : "failed";
 
-  persistFailureRows({ ctx, args, terminal, endedAt, errorMessage, isCancelled });
-  await tryWriteFailureResult(ctx, args.paths.result, terminal, errorMessage, errorChain);
+  const { errorMessage, classified } = resolveFailureMessage(args.err, isCancelled);
+
+  persistFailureRows({
+    ctx,
+    args,
+    terminal,
+    endedAt,
+    errorMessage,
+    isCancelled,
+    ...(classified !== undefined && { failureCategory: classified.category }),
+  });
+  await tryWriteFailureResult({
+    ctx,
+    path: args.paths.result,
+    status: terminal,
+    errorMessage,
+    errorChain,
+    ...(classified !== undefined && { classified }),
+  });
 
   const updatedRun = ctx.store.getRun(args.workflowRunId);
   return buildShipOutput({
@@ -1278,6 +1447,7 @@ interface PersistFailureRowsArgs {
   readonly endedAt: string;
   readonly errorMessage: string;
   readonly isCancelled: boolean;
+  readonly failureCategory?: FailureCategory;
 }
 
 // Phase + (optional) cursor-run + workflow-run row updates on failure.
@@ -1285,12 +1455,20 @@ interface PersistFailureRowsArgs {
 // already cancelled mid-flight; phase + cursor-run rows align with the
 // actual failure for internal consistency.
 function persistFailureRows(p: PersistFailureRowsArgs): void {
-  const { ctx, args, terminal, endedAt, errorMessage, isCancelled } = p;
-  const phasePatch: { status: TerminalWorkflowStatus; endedAt: string; errorMessage?: string } = {
+  const { ctx, args, terminal, endedAt, errorMessage, isCancelled, failureCategory } = p;
+  const phasePatch: {
+    status: TerminalWorkflowStatus;
+    endedAt: string;
+    errorMessage?: string;
+    failureCategory?: FailureCategory;
+  } = {
     status: terminal,
     endedAt,
   };
-  if (!isCancelled) phasePatch.errorMessage = errorMessage;
+  if (!isCancelled) {
+    phasePatch.errorMessage = errorMessage;
+    if (failureCategory !== undefined) phasePatch.failureCategory = failureCategory;
+  }
   ctx.store.updatePhase(args.phaseId, phasePatch);
   if (args.cursorRunId !== undefined) {
     try {
@@ -1391,15 +1569,27 @@ function collectExtraErrorFields(err: Error): Record<string, unknown> {
 // circular refs) — `safeStringifyFailureResult` handles those so a bad
 // extra never loses the whole `result.json` (which would also drop
 // `status` / `errorMessage`).
-async function tryWriteFailureResult(
-  ctx: ShipContext,
-  path: string,
-  status: TerminalWorkflowStatus,
-  errorMessage: string,
-  errorChain: readonly ErrorChainEntry[],
-): Promise<void> {
+interface WriteFailureResultArgs {
+  readonly ctx: ShipContext;
+  readonly path: string;
+  readonly status: TerminalWorkflowStatus;
+  readonly errorMessage: string;
+  readonly errorChain: readonly ErrorChainEntry[];
+  readonly classified?: ClassifiedFailure;
+}
+
+async function tryWriteFailureResult(args: WriteFailureResultArgs): Promise<void> {
+  const { ctx, path, status, errorMessage, errorChain, classified } = args;
   try {
-    const body = safeStringifyFailureResult({ status, errorMessage, errorChain });
+    const body = safeStringifyFailureResult({
+      status,
+      errorMessage,
+      errorChain,
+      ...(classified !== undefined && {
+        failureCategory: classified.category,
+        failureDetail: classified.detail,
+      }),
+    });
     await ctx.fs.writeFile(path, `${body}\n`);
   } catch {
     // swallow
@@ -1410,6 +1600,8 @@ interface FailureResultPayload {
   readonly status: string;
   readonly errorMessage: string;
   readonly errorChain: readonly ErrorChainEntry[];
+  readonly failureCategory?: FailureCategory;
+  readonly failureDetail?: string;
 }
 
 // JSON-stringify wrapper that survives common SDK-error payload hazards:

@@ -6,6 +6,14 @@
  * the `./test/fake` subpath, not this barrel.
  */
 
+// --- classify-failure.ts ---
+export {
+  buildFailureDetail,
+  classifyFailure,
+  formatClassifiedErrorMessage,
+} from "./classify-failure.js";
+export type { BuildFailureDetailInput, ClassifyFailureInput } from "./classify-failure.js";
+
 // --- runner.ts ---
 export type {
   CloudRunSpec,

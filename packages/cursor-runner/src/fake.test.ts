@@ -116,8 +116,9 @@ describe("FakeCursorRunner — onEvent error swallowing", () => {
     };
 
     const handle = await runner.run(baseInput({ onEvent }));
-    await expect(handle.result).resolves.toEqual(baseResult());
-    // All three events were attempted despite each one throwing.
+    const result = await handle.result;
+    expect(result).toMatchObject(baseResult());
+    expect(result.classificationEvents).toHaveLength(3);
     expect(calls).toBe(3);
   });
 
@@ -142,7 +143,9 @@ describe("FakeCursorRunner — onEvent error swallowing", () => {
     process.on("unhandledRejection", onUnhandled);
     try {
       const handle = await runner.run(baseInput({ onEvent }));
-      await expect(handle.result).resolves.toEqual(baseResult());
+      const result = await handle.result;
+      expect(result).toMatchObject(baseResult());
+      expect(result.classificationEvents).toHaveLength(2);
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
@@ -185,7 +188,8 @@ describe("FakeCursorRunner — cancel behaviors", () => {
     await handle.cancel(); // no-op
     const result = await handle.result;
 
-    expect(result).toEqual(scripted);
+    expect(result).toMatchObject(scripted);
+    expect(result.classificationEvents).toHaveLength(2);
     expect(onEvent).toHaveBeenCalledTimes(2);
   });
 

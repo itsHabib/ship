@@ -50,6 +50,23 @@ export type TerminalWorkflowStatus = z.infer<typeof terminalWorkflowStatusSchema
 export const terminalCursorRunStatusSchema = z.enum(["succeeded", "failed", "cancelled"]);
 export type TerminalCursorRunStatus = z.infer<typeof terminalCursorRunStatusSchema>;
 
+/**
+ * Canonical classification for why a run reached terminal `failed`.
+ * Literals are tombstones — persisted in SQLite; never delete/rename,
+ * only add (mirrors `phaseKindSchema`). `cancelled` is intentionally
+ * absent: cancellation is `run.status === "cancelled"` and never
+ * reaches the failure classifier.
+ */
+export const failureCategorySchema = z.enum([
+  "contention",
+  "timeout-near-cap",
+  "agent-collapse-on-running-tool",
+  "sdk-throw",
+  "logic",
+  "unknown",
+]);
+export type FailureCategory = z.infer<typeof failureCategorySchema>;
+
 /** Where the underlying Cursor agent ran. Local disk, Cursor cloud VM, or a self-hosted rooms microVM. */
 export const cursorRunRuntimeSchema = z.enum(["local", "cloud", "rooms"]);
 export type CursorRunRuntime = z.infer<typeof cursorRunRuntimeSchema>;
@@ -201,6 +218,7 @@ export type WorkflowPolicy = z.infer<typeof workflowPolicySchema>;
  * - `inputJson`      — phase-specific JSON-encoded input; opaque here.
  * - `outputJson`     — phase-specific JSON-encoded output; opaque here.
  * - `errorMessage`   — set when `status === "failed"` (sometimes on cancel).
+ * - `failureCategory` — canonical failure classification; set on failed runs.
  */
 export const phaseSchema = z
   .object({
@@ -214,6 +232,7 @@ export const phaseSchema = z
     inputJson: z.string().min(1),
     outputJson: z.string().min(1).optional(),
     errorMessage: z.string().min(1).optional(),
+    failureCategory: failureCategorySchema.optional(),
   })
   .strict();
 export type Phase = z.infer<typeof phaseSchema>;
