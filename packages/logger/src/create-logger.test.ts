@@ -81,12 +81,17 @@ describe("createLogger", () => {
     expect(writeSpy).toHaveBeenCalled();
   });
 
-  test("does not mutate global process.stderr.write", () => {
+  test("does not mutate global process.stderr.write or pile up error listeners", () => {
     const originalWrite = process.stderr.write;
-    const originalListenerCount = process.stderr.listenerCount("error");
+    // Prime once: the swallow-listener attaches at most once per destination
+    // (WeakSet-guarded). Capture the count AFTER priming, then assert a second
+    // createLogger leaves it unchanged — order-independent (no reliance on a
+    // prior test having already touched process.stderr).
+    createLogger({ level: "info", pretty: false });
+    const primedListenerCount = process.stderr.listenerCount("error");
     createLogger({ level: "info", pretty: false });
     expect(process.stderr.write).toBe(originalWrite);
-    expect(process.stderr.listenerCount("error")).toBe(originalListenerCount);
+    expect(process.stderr.listenerCount("error")).toBe(primedListenerCount);
   });
 
   test("swallows write errors", () => {

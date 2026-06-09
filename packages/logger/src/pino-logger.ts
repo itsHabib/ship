@@ -31,7 +31,7 @@ function safeLog(fn: () => void): void {
 }
 
 function wrapPinoLogger(pinoLogger: pino.Logger): Logger {
-  return {
+  const self: Logger = {
     debug: (fields: LogFields, msg: string) => {
       safeLog(() => {
         pinoLogger.debug(fields, msg);
@@ -52,8 +52,17 @@ function wrapPinoLogger(pinoLogger: pino.Logger): Logger {
         pinoLogger.error(fields, msg);
       });
     },
-    child: (fields: LogFields) => wrapPinoLogger(pinoLogger.child(fields)),
+    child: (fields: LogFields) => {
+      try {
+        return wrapPinoLogger(pinoLogger.child(fields));
+      } catch {
+        // child() must never throw into business logic; if binding fails, keep
+        // logging through the current (unbound) logger rather than crashing.
+        return self;
+      }
+    },
   };
+  return self;
 }
 
 export function createPinoLogger(opts?: CreateLoggerOpts): Logger {

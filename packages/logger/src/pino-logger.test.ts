@@ -1,8 +1,7 @@
-import { Writable } from "node:stream";
-import pino from "pino";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import type pino from "pino";
 
-import { createLogger } from "./index.js";
+import { Writable } from "node:stream";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 describe("pino logger internals", () => {
   const originalNodeEnv = process.env["NODE_ENV"];
@@ -10,6 +9,7 @@ describe("pino logger internals", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.doUnmock("node:module");
+    vi.doUnmock("pino");
     vi.resetModules();
     if (originalNodeEnv === undefined) {
       delete process.env["NODE_ENV"];
@@ -20,8 +20,7 @@ describe("pino logger internals", () => {
 
   test("falls back to base stream when pino-pretty cannot load", async () => {
     // doMock (not the hoisted vi.mock) keeps this scoped to this test: the
-    // throwing createRequire only reaches the fresh module graph imported below,
-    // never the statically-imported createLogger the other tests use.
+    // throwing createRequire only reaches the fresh module graph imported below.
     vi.doMock("node:module", () => ({
       createRequire: () => () => {
         throw new Error("pino-pretty missing");
@@ -38,8 +37,8 @@ describe("pino logger internals", () => {
       },
     });
 
-    const { createLogger: createLoggerScoped } = await import("./index.js");
-    const log = createLoggerScoped({ level: "info", stream });
+    const { createLogger } = await import("./index.js");
+    const log = createLogger({ level: "info", stream });
     log.info({ fallback: true }, "pretty unavailable");
 
     expect(chunks.length).toBeGreaterThan(0);
@@ -47,9 +46,15 @@ describe("pino logger internals", () => {
     expect(parsed["msg"]).toBe("pretty unavailable");
   });
 
-  test("swallows logger method throws", () => {
+  test("swallows logger method + child() throws", async () => {
+    // A pino whose every method (including child) throws. doMock("pino") + a
+    // fresh dynamic import actually intercepts the default-imported pino() call
+    // — vi.spyOn(pino, "default") does not, because the impl never routes
+    // through the .default property.
     const throwingLogger = {
-      child: () => throwingLogger,
+      child: () => {
+        throw new Error("child failed");
+      },
       debug: () => {
         throw new Error("debug failed");
       },
@@ -64,8 +69,10 @@ describe("pino logger internals", () => {
       },
     } as unknown as pino.Logger;
 
-    vi.spyOn(pino, "default" as never).mockReturnValue(throwingLogger);
+    vi.doMock("pino", () => ({ default: () => throwingLogger }));
+    vi.resetModules();
 
+    const { createLogger } = await import("./index.js");
     const log = createLogger({ level: "info", pretty: false, stream: new Writable() });
 
     expect(() => {
@@ -79,6 +86,12 @@ describe("pino logger internals", () => {
     }).not.toThrow();
     expect(() => {
       log.debug({}, "no throw");
+    }).not.toThrow();
+    // child() must not throw even when binding fails — it falls back to the
+    // current logger so diagnostics never escape into business logic.
+    expect(() => {
+      const child = log.child({ scope: "x" });
+      child.info({}, "no throw");
     }).not.toThrow();
   });
 });
