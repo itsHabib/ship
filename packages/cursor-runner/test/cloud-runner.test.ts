@@ -1113,7 +1113,11 @@ describe("CloudCursorRunner — SHIP_CLOUD_DEBUG diagnostics", () => {
       vi.mocked(Agent.create).mockResolvedValue(agent);
 
       const runner = new CloudCursorRunner();
-      const handle = await runner.run(cloudBaseInput());
+      // Default-level (info) logger — proves SHIP_CLOUD_DEBUG=1 alone surfaces the
+      // diagnostics without a debug-level logger (the flag is the gate, not the level).
+      const handle = await runner.run(
+        cloudBaseInput({ log: createLogger({ level: "info", stream: process.stderr }) }),
+      );
       await handle.result;
 
       const out = stderrSpyConcat(spy);

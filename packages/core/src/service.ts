@@ -775,6 +775,7 @@ function markRunStarted(ctx: ShipContext, prep: PreparedRun): void {
 interface LogRunFailedArgs {
   readonly ctx: ShipContext;
   readonly workflowRunId: string;
+  readonly phase: string;
   readonly cursorRunId?: string;
   readonly terminal: TerminalWorkflowStatus;
   readonly classified?: ClassifiedFailure;
@@ -782,11 +783,15 @@ interface LogRunFailedArgs {
 }
 
 function logRunFailedIfNeeded(args: LogRunFailedArgs): void {
-  const { ctx, workflowRunId, cursorRunId, terminal, classified, durationMs } = args;
+  const { ctx, workflowRunId, phase, cursorRunId, terminal, classified, durationMs } = args;
   if (terminal !== "failed" || classified === undefined) return;
+  // Carry the run-scoped fields (workflowRunId + phase) so operators can query
+  // terminal failures by phase — matches the structured-field contract used by
+  // the run-scoped child logger.
   ctx.logger.error(
     {
       workflowRunId,
+      phase,
       ...(cursorRunId !== undefined && { cursorRunId }),
       failureCategory: classified.category,
       ...(durationMs !== undefined && { durationMs }),
@@ -1050,6 +1055,7 @@ function finalizeSuccessPersistAndLog(p: FinalizeSuccessPersistArgs): TerminalWo
   logRunFailedIfNeeded({
     ctx,
     workflowRunId: args.workflowRunId,
+    phase: args.phaseId,
     cursorRunId: args.cursorRunId,
     terminal: effectiveTerminal,
     durationMs: result.durationMs,
@@ -1486,6 +1492,7 @@ async function finalizeFailure(args: FinalizeFailureArgs): Promise<ShipOutput> {
   logRunFailedIfNeeded({
     ctx,
     workflowRunId: args.workflowRunId,
+    phase: args.phaseId,
     terminal,
     ...(args.cursorRunId !== undefined ? { cursorRunId: args.cursorRunId } : {}),
     ...(classified !== undefined ? { classified } : {}),

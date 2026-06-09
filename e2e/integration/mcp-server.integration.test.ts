@@ -284,6 +284,19 @@ function parseToolJson(result: unknown): unknown {
 // headroom without masking a real hang.
 const INT_POLL = { maxAttempts: 300, intervalMs: 50 } as const;
 
+// Numeric JSON-RPC `id` of a stdout line, or undefined if the line isn't a
+// JSON object with a numeric id. Total — never throws on non-JSON.
+function parseJsonRpcId(line: string): number | undefined {
+  try {
+    const parsed: unknown = JSON.parse(line);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const id = (parsed as Record<string, unknown>)["id"];
+    return typeof id === "number" ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Spawns the MCP server binary, drives a minimal initialize + listTools
  * exchange, and returns every non-empty stdout line captured during the
@@ -303,13 +316,35 @@ async function collectStdoutLinesDuringMcpSession(env: NodeJS.ProcessEnv): Promi
     },
   );
 
+  // Resolve as soon as both request responses (id 1 + id 2) have arrived rather
+  // than killing after a fixed delay — a cold subprocess start under load can
+  // otherwise be SIGTERM'd before it answers (0 lines). A 10s backstop guards a
+  // genuine hang.
+  let resolveSession!: () => void;
+  let rejectSession!: (err: unknown) => void;
+  const session = new Promise<void>((res, rej) => {
+    resolveSession = res;
+    rejectSession = rej;
+  });
+  const seenResponseIds = new Set<number>();
+
   child.stdout.on("data", (chunk: Buffer) => {
     stdoutBuf += chunk.toString("utf-8");
     const parts = stdoutBuf.split("\n");
     stdoutBuf = parts.pop() ?? "";
     for (const line of parts) {
-      if (line.trim() !== "") stdoutLines.push(line);
+      if (line.trim() === "") continue;
+      stdoutLines.push(line);
+      const id = parseJsonRpcId(line);
+      if (id !== undefined) seenResponseIds.add(id);
     }
+    if (seenResponseIds.has(1) && seenResponseIds.has(2)) resolveSession();
+  });
+
+  // Drain stderr so the server's diagnostic stream (now structured-logger
+  // output) can't fill the pipe buffer and block the child's writes.
+  child.stderr.on("data", () => {
+    // discard — only stdout JSON-RPC purity is under test here
   });
 
   const writeLine = (payload: unknown): void => {
@@ -329,23 +364,23 @@ async function collectStdoutLinesDuringMcpSession(env: NodeJS.ProcessEnv): Promi
   writeLine({ jsonrpc: "2.0", method: "notifications/initialized" });
   writeLine({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
 
-  await new Promise<void>((done, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error("stdout purity MCP session timed out"));
-    }, 10_000);
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on("close", () => {
-      clearTimeout(timer);
-      if (stdoutBuf.trim() !== "") stdoutLines.push(stdoutBuf.trim());
-      done();
-    });
-    setTimeout(() => {
-      child.kill("SIGTERM");
-    }, 2_000);
+  const timer = setTimeout(() => {
+    rejectSession(new Error("stdout purity MCP session timed out"));
+  }, 10_000);
+  child.on("error", (err) => {
+    rejectSession(err);
   });
+  child.on("close", () => {
+    resolveSession();
+  });
+
+  try {
+    await session;
+  } finally {
+    clearTimeout(timer);
+    if (stdoutBuf.trim() !== "") stdoutLines.push(stdoutBuf.trim());
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+  }
 
   return stdoutLines;
 }
