@@ -37,14 +37,17 @@ batches:
   - id: 2
     label: after batch 1 — migrate sites (needs the logger + the failureCategory enum)
     depends_on: [1]
-    status: pending
+    status: done
     streams:
       - task_id: tsk_01KTJH8S28YJPD5KR2MWET0TDH
         task_slug: observability-migrate-log-sites
         spec_path: docs/features/observability/phases/observability-migrate-log-sites.md
         runtime: cloud
         touches: [packages/store/src/db.ts, packages/store/src/store.ts, packages/cursor-runner/src/debug.ts, packages/cursor-runner/src/cloud-runner.ts, packages/cursor-runner/src/artifacts-capture.ts, packages/core/src/service.ts, packages/mcp-server/src/bin.ts]
-        status: pending
+        status: done
+        pr_number: 120
+        merge_commit: ff5200b
+        merged_at: 2026-06-09T21:23:00Z
 
 conflict_notes:
   - kind: none
