@@ -43,7 +43,7 @@ import {
   CursorAgentNotFoundError,
   formatClassifiedErrorMessage,
 } from "@ship/cursor-runner";
-import { createLogger, type Logger } from "@ship/logger";
+import { createLogger, type LogFields, type Logger } from "@ship/logger";
 import { StoreContentionError, WorkflowRunNotFoundError } from "@ship/store";
 import {
   CLOUD_WORKTREE_SENTINEL,
@@ -805,6 +805,18 @@ function logBackgroundFailure(logger: Logger, workflowRunId: string, err: unknow
   logger.error({ workflowRunId, err: message }, "background continuation rejected after finalize");
 }
 
+// Guards Logger.child at the public DI boundary: a diagnostics call must never
+// affect control flow. The default logger never throws here, but a custom
+// injected Logger might — falling back to the root logger keeps a throwing
+// child() from stranding a run in `running` before runToTerminal's guard.
+function runScopedLogger(logger: Logger, fields: LogFields): Logger {
+  try {
+    return logger.child(fields);
+  } catch {
+    return logger;
+  }
+}
+
 // The implement phase's `input_json`, persisted for forensics. The cloud
 // spec is also read back on resume; rooms has no resume path.
 function buildImplementInputJson(input: ShipInput): string {
@@ -884,7 +896,7 @@ async function runToTerminal(
   // already flipped the row + phase from `pending → running`; this
   // function handles fs prep, the cursor call, and finalization.
 
-  const runLog = ctx.logger.child({
+  const runLog = runScopedLogger(ctx.logger, {
     workflowRunId: prep.workflowRunId,
     phase: prep.phaseId,
   });
