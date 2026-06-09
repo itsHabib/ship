@@ -11,10 +11,12 @@
 // from env vars.
 
 import type { CursorRunner } from "@ship/cursor-runner";
+import type { Logger } from "@ship/logger";
 import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
 
 import { CloudCursorRunner, LocalCursorRunner, RoomCursorRunner } from "@ship/cursor-runner";
+import { createLogger } from "@ship/logger";
 import { createStore } from "@ship/store";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -81,6 +83,11 @@ export interface DefaultShipServiceOpts {
    * `RoomCursorRunner`. Tests may inject a `FakeCursorRunner`.
    */
   readonly roomCursor?: CursorRunner;
+  /**
+   * Structured diagnostics logger. Production entrypoints pass
+   * `createLogger({ stream: process.stderr })` explicitly.
+   */
+  readonly logger?: Logger;
 }
 
 // Memoizing factory shape. Returns the same `ShipService` across calls.
@@ -99,14 +106,14 @@ interface SharedInfra {
 // them.
 const SHARED_INFRA_BY_DB_PATH = new Map<string, SharedInfra>();
 
-function getOrCreateSharedInfra(dbPath: string): SharedInfra {
+function getOrCreateSharedInfra(dbPath: string, logger: Logger): SharedInfra {
   const existing = SHARED_INFRA_BY_DB_PATH.get(dbPath);
   if (existing !== undefined) return existing;
   if (dbPath !== ":memory:") {
     mkdirSync(dirname(dbPath), { recursive: true });
   }
   const clock = (): string => new Date().toISOString();
-  const store = createStore({ dbPath, clock });
+  const store = createStore({ dbPath, clock, logger });
   const activeRuns: ActiveRunsRegistry = new Map();
   const infra: SharedInfra = { store, clock, activeRuns };
   SHARED_INFRA_BY_DB_PATH.set(dbPath, infra);
@@ -119,10 +126,11 @@ function getOrCreateSharedInfra(dbPath: string): SharedInfra {
 // service-store-runner-fs triple.
 export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServiceFactory {
   let cached: ShipService | undefined;
+  const logger = opts.logger ?? createLogger({ stream: process.stderr });
   return () => {
     if (cached !== undefined) return cached;
     mkdirSync(opts.runsDir, { recursive: true });
-    const infra = getOrCreateSharedInfra(opts.dbPath);
+    const infra = getOrCreateSharedInfra(opts.dbPath, logger);
     const cursor = opts.cursor ?? new LocalCursorRunner();
     const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
     const roomCursor = opts.roomCursor ?? new RoomCursorRunner();
@@ -133,6 +141,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
       clock: infra.clock,
       activeRuns: infra.activeRuns,
       docSource: createRemoteDocSource(),
+      logger,
       config: {
         runsDir: opts.runsDir,
         defaultModel: resolveConfiguredDefaultModel(opts),

@@ -5,6 +5,7 @@
  */
 
 import type { CloudAgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
+import type { Logger } from "@ship/logger";
 import type { ArtifactRef } from "@ship/workflow";
 
 import {
@@ -123,7 +124,7 @@ function mapCloudRunResult(
 ): CursorRunResult {
   // Cloud-only debug telemetry. Local runs go through mapRunResult directly
   // and never reach this wrapper, preserving the SHIP_CLOUD_DEBUG-only intent.
-  cloudDebugLog("mapTerminalResult result.git", result.git);
+  cloudDebugLog(input.log, "mapTerminalResult result.git", result.git);
   const cloudSpec = input.cloud;
   return mapRunResult(result, input, cloudSpec, options);
 }
@@ -236,7 +237,7 @@ export class CloudCursorRunner implements CursorRunner {
     try {
       const cloudOpts = cloudAgentOptions(cloudSpec);
       const modelArg = modelArgFromInput(input);
-      cloudDebugLog("Agent.create payload", {
+      cloudDebugLog(input.log, "Agent.create payload", {
         cloud: loggableCloudOptions(cloudOpts),
         model: modelArg,
       });
@@ -262,7 +263,7 @@ export class CloudCursorRunner implements CursorRunner {
       // opaque. cloudDebugLog gates on SHIP_CLOUD_DEBUG; this always
       // fires because the cause chain is exactly what an operator needs
       // when Agent.create or agent.send throws.
-      logCloudStartFailure(err, agent !== undefined);
+      logCloudStartFailure(input.log, err, agent !== undefined);
       if (err instanceof IntegrationNotConnectedError) {
         throw new CursorCloudIntegrationError(err.provider, err.helpUrl, { cause: err });
       }
@@ -400,6 +401,7 @@ export class CloudCursorRunner implements CursorRunner {
           await this.#finalizeOkWithArtifacts(
             agent,
             mapCloudRunResult(wr, input, mapOpts()),
+            input,
             callbacks,
           );
           return;
@@ -426,6 +428,7 @@ export class CloudCursorRunner implements CursorRunner {
       await this.#finalizeOkWithArtifacts(
         agent,
         mapCloudRunResult(waitResult, input, mapOpts()),
+        input,
         callbacks,
       );
     } finally {
@@ -449,15 +452,19 @@ export class CloudCursorRunner implements CursorRunner {
   async #finalizeOkWithArtifacts(
     agent: SDKAgent,
     terminal: CursorRunResult,
+    input: CursorRunInput,
     callbacks: { finalizeOk: (terminal: CursorRunResult) => void },
   ): Promise<void> {
-    const artifacts = await captureCloudArtifacts(agent);
+    const artifacts = await captureCloudArtifacts(agent, input.log);
     callbacks.finalizeOk(artifacts !== undefined ? { ...terminal, artifacts } : terminal);
   }
 }
 
-async function captureCloudArtifacts(agent: SDKAgent): Promise<readonly ArtifactRef[] | undefined> {
-  const listed = await captureListedArtifacts(() => agent.listArtifacts());
+async function captureCloudArtifacts(
+  agent: SDKAgent,
+  log?: Logger,
+): Promise<readonly ArtifactRef[] | undefined> {
+  const listed = await captureListedArtifacts(() => agent.listArtifacts(), log);
   return listed.flatMap((a) => {
     if (isUnsafeCloudArtifactPath(a.path)) return [];
     return [a];
@@ -477,15 +484,16 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
 // chains and renders non-enumerable SDK error fields (status, code,
 // endpoint) — so an operator running an L3 dry-run sees the actual
 // cursor failure without spelunking. Best-effort; never throws.
-function logCloudStartFailure(err: unknown, agentCreated: boolean): void {
+function logCloudStartFailure(log: Logger | undefined, err: unknown, agentCreated: boolean): void {
   try {
+    if (log === undefined) return;
     const stage = agentCreated ? "agent.send" : "Agent.create";
     // `showHidden: true` is required to render non-enumerable own
     // properties — SDK error classes commonly set fields like `status`
     // / `code` / `endpoint` via `Object.defineProperty(..., { enumerable: false })`,
     // and the whole point of this dump is exposing them.
     const dump = inspect(err, { depth: 10, showHidden: true, breakLength: 100 });
-    process.stderr.write(`[ship-cloud-error] ${stage} failed:\n${dump}\n`);
+    log.error({ stage, failureCategory: "sdk-throw", err: dump }, `${stage} failed`);
   } catch {
     // swallow — diagnostic logging must never affect control flow
   }

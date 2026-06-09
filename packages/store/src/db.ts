@@ -4,6 +4,7 @@
  * phases/03-store.md § F2 / Risks.
  */
 
+import type { Logger } from "@ship/logger";
 import type { Database as BetterSqlite3Database } from "better-sqlite3";
 
 import Database from "better-sqlite3";
@@ -29,10 +30,10 @@ export const BUSY_TIMEOUT_MS = 30_000;
  * the handle is closed before re-throwing so callers don't leak file handles
  * or SQLite locks.
  */
-export function openDatabase(dbPath: string): Db {
+export function openDatabase(dbPath: string, logger?: Logger): Db {
   const db = new Database(dbPath);
   try {
-    configureConnection(db, dbPath);
+    configureConnection(db, dbPath, logger);
   } catch (err: unknown) {
     db.close();
     // The PRAGMA setup (and migrations on open) can hit lock contention under
@@ -49,7 +50,7 @@ export function openDatabase(dbPath: string): Db {
  * silent fallback (e.g. networked FS). `memory` is acceptable for `:memory:`
  * DBs.
  */
-function configureConnection(db: Db, dbPath: string): void {
+function configureConnection(db: Db, dbPath: string, logger?: Logger): void {
   // Install busy_timeout FIRST: the WAL pragma below can itself need a write lock
   // at startup, so under concurrent local runs it must wait the full timeout
   // rather than better-sqlite3's short constructor default before surfacing busy.
@@ -59,10 +60,13 @@ function configureConnection(db: Db, dbPath: string): void {
 
   const journalMode = db.pragma("journal_mode", { simple: true }) as string;
   if (journalMode !== "wal" && journalMode !== "memory") {
-    console.warn(
-      `[@ship/store] PRAGMA journal_mode = WAL was not honored for '${dbPath}'; running in '${journalMode}' mode. ` +
-        "This is usually a networked filesystem; cross-process writes are more likely to hit lock contention.",
-    );
+    const log = logger ?? undefined;
+    if (log !== undefined) {
+      log.warn(
+        { dbPath, journalMode },
+        "PRAGMA journal_mode = WAL was not honored; cross-process writes are more likely to hit lock contention",
+      );
+    }
   }
 }
 

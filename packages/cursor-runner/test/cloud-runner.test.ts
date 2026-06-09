@@ -10,6 +10,7 @@ import {
   IntegrationNotConnectedError,
   UnknownAgentError,
 } from "@cursor/sdk";
+import { createLogger } from "@ship/logger";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { CloudRunSpec, CursorRunInput } from "../src/runner.js";
@@ -164,6 +165,10 @@ const evB: SDKMessage = {
   type: "assistant",
 } as unknown as SDKMessage;
 
+function cloudTestLogger(): ReturnType<typeof createLogger> {
+  return createLogger({ level: "debug", stream: process.stderr });
+}
+
 function cloudBaseInput(
   overrides: Partial<Parameters<CloudCursorRunner["run"]>[0]> = {},
 ): Parameters<CloudCursorRunner["run"]>[0] {
@@ -177,6 +182,7 @@ function cloudBaseInput(
     prompt: "do the cloud thing",
     runtime: "cloud",
     ...overrides,
+    log: overrides.log ?? cloudTestLogger(),
   };
 }
 
@@ -1089,7 +1095,10 @@ function stderrSpyConcat(spy: {
 describe("CloudCursorRunner — SHIP_CLOUD_DEBUG diagnostics", () => {
   test("SHIP_CLOUD_DEBUG=1 writes Agent.create payload + terminal map lines", async () => {
     vi.stubEnv("SHIP_CLOUD_DEBUG", "1");
-    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk, _enc, cb) => {
+      if (typeof cb === "function") cb();
+      return true;
+    }) as typeof process.stderr.write);
     try {
       const { run } = makeMockRun({
         result: {
@@ -1108,13 +1117,8 @@ describe("CloudCursorRunner — SHIP_CLOUD_DEBUG diagnostics", () => {
       await handle.result;
 
       const out = stderrSpyConcat(spy);
-      const segments = out
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l.includes("[ship-cloud-debug]"));
-      expect(segments).toHaveLength(2);
-      expect(segments.some((s) => s.includes("Agent.create payload"))).toBe(true);
-      expect(segments.some((s) => s.includes("mapTerminalResult"))).toBe(true);
+      expect(out).toContain("Agent.create payload");
+      expect(out).toContain("mapTerminalResult result.git");
     } finally {
       spy.mockRestore();
     }
@@ -1131,7 +1135,7 @@ describe("CloudCursorRunner — SHIP_CLOUD_DEBUG diagnostics", () => {
       const handle = await runner.run(cloudBaseInput());
       await handle.result;
 
-      expect(stderrSpyConcat(spy).includes("[ship-cloud-debug]")).toBe(false);
+      expect(stderrSpyConcat(spy).includes("Agent.create payload")).toBe(false);
     } finally {
       spy.mockRestore();
     }

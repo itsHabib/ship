@@ -6,6 +6,7 @@
  * exit status.
  */
 
+import { createLogger } from "@ship/logger";
 import { CommanderError } from "commander";
 
 import { CliExit } from "./errors.js";
@@ -13,9 +14,11 @@ import { buildProgram } from "./program.js";
 import { createCliService, resolveDbPath, resolveRunsDir } from "./service.js";
 
 async function main(): Promise<void> {
+  const logger = createLogger({ stream: process.stderr });
   const factory = createCliService({
     dbPath: resolveDbPath(),
     runsDir: resolveRunsDir(),
+    logger,
   });
   const program = buildProgram(factory);
   await program.parseAsync(process.argv);

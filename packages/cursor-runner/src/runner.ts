@@ -6,6 +6,7 @@
  */
 
 import type { AgentDefinition, McpServerConfig, SDKMessage } from "@cursor/sdk";
+import type { Logger } from "@ship/logger";
 import type { ArtifactRef, FailureCategory, ModelSelection } from "@ship/workflow";
 
 /** Input required to start a single Cursor run. Constructed by `core` per workflow run. */
@@ -46,6 +47,8 @@ export interface CursorRunInput {
 
   /** Ship policy cap — used when folding SDK terminal errors into `errorMessage`. */
   readonly maxRunDurationMs?: number;
+  /** Run-scoped structured logger; bound by `core` via `log.child(...)`. */
+  readonly log?: Logger;
 }
 
 /** Input required to re-attach to an in-flight Cursor run (cloud resume). */
