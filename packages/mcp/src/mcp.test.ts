@@ -123,6 +123,52 @@ describe("shipInputSchema", () => {
     }
   });
 
+  test("accepts runtime rooms with a room spec (workdir/repo omitted)", () => {
+    const rooms = shipInputSchema.parse({
+      docPath: "docs/x.md",
+      runtime: "rooms",
+      room: { repos: [{ url: "https://github.com/itsHabib/roxiq", startingRef: "main" }] },
+    });
+    expect(rooms.runtime).toBe("rooms");
+    expect(rooms.room?.repos[0]?.url).toBe("https://github.com/itsHabib/roxiq");
+    expect(rooms.workdir).toBeUndefined();
+    expect(rooms.repo).toBeUndefined();
+  });
+
+  test("accepts optional room image + pushBranch; rejects unknown room keys", () => {
+    const rooms = shipInputSchema.parse({
+      docPath: "x",
+      runtime: "rooms",
+      room: {
+        repos: [{ url: "https://github.com/itsHabib/roxiq" }],
+        image: "agent-alpine-cursor.ext4",
+        pushBranch: "rooms/custom",
+      },
+    });
+    expect(rooms.room?.image).toBe("agent-alpine-cursor.ext4");
+    expect(rooms.room?.pushBranch).toBe("rooms/custom");
+    expect(
+      shipInputSchema.safeParse({
+        docPath: "x",
+        runtime: "rooms",
+        room: { repos: [{ url: "https://github.com/o/r" }], autoCreatePR: true },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects runtime: 'rooms' without a room spec (cross-field refinement)", () => {
+    const result = shipInputSchema.safeParse({
+      docPath: "x",
+      runtime: "rooms",
+      // room omitted
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find((i) => i.path.join(".") === "room");
+      expect(issue?.message).toMatch(/room config is required/);
+    }
+  });
+
   test("accepts modelParams arrays with string / boolean values; omits when undefined", () => {
     const parsed = shipInputSchema.parse({
       workdir: "/w",
@@ -430,6 +476,23 @@ describe("getWorkflowRunOutputSchema", () => {
       recentEvents: [{ type: "status", status: "ERROR" }],
     };
     expect(getWorkflowRunOutputSchema.parse(withDiagnostics)).toEqual(withDiagnostics);
+  });
+
+  test("accepts branches[] (cloud + rooms pushed branches) and round-trips them", () => {
+    const withBranches = {
+      ...validWorkflowRun,
+      branches: [{ repoUrl: "https://github.com/itsHabib/roxiq", branch: "rooms/ship-x-abcd1234" }],
+    };
+    expect(getWorkflowRunOutputSchema.parse(withBranches)).toEqual(withBranches);
+  });
+
+  test("rejects branch entry missing repoUrl", () => {
+    expect(
+      getWorkflowRunOutputSchema.safeParse({
+        ...validWorkflowRun,
+        branches: [{ branch: "rooms/x" }],
+      }).success,
+    ).toBe(false);
   });
 });
 

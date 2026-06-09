@@ -14,8 +14,15 @@ import type {
   CursorRunner,
   CursorRunResult,
   McpServerConfig,
+  RoomRunSpec,
 } from "@ship/cursor-runner";
-import type { GetWorkflowRunOutput, ShipInput, ShipOutput, ShipStartOutput } from "@ship/mcp";
+import type {
+  GetWorkflowRunOutput,
+  RunBranchRef,
+  ShipInput,
+  ShipOutput,
+  ShipStartOutput,
+} from "@ship/mcp";
 import type { ListRunsFilter, ResumableCloudCursorRun, Store } from "@ship/store";
 import type {
   ArtifactRef,
@@ -41,6 +48,7 @@ import {
   CLOUD_WORKTREE_SENTINEL,
   cursorWatchUrl,
   DEFAULT_WORKFLOW_POLICY,
+  isTerminal,
   newCursorRunId,
   newPhaseId,
   newWorkflowRunId,
@@ -73,6 +81,7 @@ import {
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
   MissingRepoError,
+  RoomRunnerNotConfiguredError,
   WorkdirNotFoundError,
 } from "./errors.js";
 import { resolveValidatedDoc, resolveValidatedDocForCloud } from "./validate.js";
@@ -91,6 +100,8 @@ export interface ShipServiceConfig {
   readonly cursor: CursorRunner;
   /** Optional cloud runner; required at dispatch time only for `runtime: "cloud"`. */
   readonly cloudCursor?: CursorRunner;
+  /** Optional rooms runner; required at dispatch time only for `runtime: "rooms"`. */
+  readonly roomCursor?: CursorRunner;
   /** Preflight cap for `downloadArtifact` (ED-5). Default: 100 MiB. */
   readonly artifactMaxBytes?: number;
 }
@@ -341,7 +352,51 @@ async function enrichWorkflowRunView(
       }),
     };
   }
+  const branches = await loadRunBranches(deps.fs, deps.runsDir, run);
+  if (branches !== undefined) {
+    view = { ...view, branches };
+  }
   return view;
+}
+
+// Branches a terminal run pushed (cloud + rooms), read from the persisted
+// `result.json`. The runner already validated them; we re-validate the shape
+// defensively since `result.json` is read from disk. Returns undefined for
+// non-terminal runs and runs with no branches (e.g. local).
+async function loadRunBranches(
+  fs: ShipFs,
+  runsDir: string,
+  run: WorkflowRun,
+): Promise<RunBranchRef[] | undefined> {
+  if (!isTerminal(run.status)) return undefined;
+  const paths = resolveRunArtifactPaths(runsDir, run.id);
+  try {
+    const parsed = JSON.parse(await fs.readFile(paths.result, "utf-8")) as { branches?: unknown };
+    const branches = sanitizeBranches(parsed.branches);
+    return branches.length > 0 ? branches : undefined;
+  } catch {
+    return undefined; // result.json missing / unparseable / no branches
+  }
+}
+
+function sanitizeBranches(raw: unknown): RunBranchRef[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RunBranchRef[] = [];
+  for (const entry of raw) {
+    const branch = toRunBranchRef(entry);
+    if (branch !== undefined) out.push(branch);
+  }
+  return out;
+}
+
+function toRunBranchRef(entry: unknown): RunBranchRef | undefined {
+  if (entry === null || typeof entry !== "object") return undefined;
+  const e = entry as { repoUrl?: unknown; branch?: unknown; prUrl?: unknown };
+  if (typeof e.repoUrl !== "string" || e.repoUrl === "") return undefined;
+  const out: { repoUrl: string; branch?: string; prUrl?: string } = { repoUrl: e.repoUrl };
+  if (typeof e.branch === "string" && e.branch !== "") out.branch = e.branch;
+  if (typeof e.prUrl === "string" && e.prUrl !== "") out.prUrl = e.prUrl;
+  return out;
 }
 
 export function createShipService(deps: ShipServiceDeps): ShipService {
@@ -469,8 +524,19 @@ type _CloudKeysMatch = keyof NonNullable<ShipInput["cloud"]> extends keyof Cloud
   : false;
 const _cloudKeysMatch: _CloudKeysMatch = true;
 
+// Same drift assertion for `room`: keys of `ShipInput["room"]` (inferred from
+// `roomRunSpecSchema`) must match keys of `RoomRunSpec` (cursor-runner).
+type _RoomKeysMatch = keyof NonNullable<ShipInput["room"]> extends keyof RoomRunSpec
+  ? keyof RoomRunSpec extends keyof NonNullable<ShipInput["room"]>
+    ? true
+    : false
+  : false;
+const _roomKeysMatch: _RoomKeysMatch = true;
+
 function resolvePersistedRuntime(input: ShipInput): CursorRunRuntime {
-  return input.runtime === "cloud" ? "cloud" : "local";
+  if (input.runtime === "cloud") return "cloud";
+  if (input.runtime === "rooms") return "rooms";
+  return "local";
 }
 
 function selectRunner(config: ShipServiceConfig, input: ShipInput): CursorRunner {
@@ -479,6 +545,12 @@ function selectRunner(config: ShipServiceConfig, input: ShipInput): CursorRunner
       throw new CloudRunnerNotConfiguredError();
     }
     return config.cloudCursor;
+  }
+  if (input.runtime === "rooms") {
+    if (config.roomCursor === undefined) {
+      throw new RoomRunnerNotConfiguredError();
+    }
+    return config.roomCursor;
   }
   return config.cursor;
 }
@@ -512,6 +584,15 @@ function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput 
       runtime: "cloud",
       ...(ctx.input.cloud !== undefined && {
         cloud: ctx.input.cloud as NonNullable<CursorRunInput["cloud"]>,
+      }),
+    };
+  }
+  if (ctx.input.runtime === "rooms") {
+    return {
+      ...base,
+      runtime: "rooms",
+      ...(ctx.input.room !== undefined && {
+        room: ctx.input.room as NonNullable<CursorRunInput["room"]>,
       }),
     };
   }
@@ -597,11 +678,13 @@ async function runShipStart(
 }
 
 async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
-  if (ctx.input.runtime === "cloud") {
+  // Cloud + rooms share the remote-capable doc path: no host worktree
+  // required, doc resolved local-first / remote-fallback.
+  if (isRemoteRuntime(ctx.input)) {
     const validated = await resolveValidatedDocForCloud(
       ctx.fs,
       ctx.input.docPath,
-      buildCloudDocResolveOptions(ctx),
+      buildRemoteDocResolveOptions(ctx),
     );
     return persistInitialState(ctx, validated);
   }
@@ -612,9 +695,26 @@ async function prepareRun(ctx: ShipContext): Promise<PreparedRun> {
   return persistInitialState(ctx, validated);
 }
 
+// Cloud and rooms both run off a remote repo URL rather than a local worktree.
+function isRemoteRuntime(input: ShipInput): boolean {
+  return input.runtime === "cloud" || input.runtime === "rooms";
+}
+
+// The single repo spec a remote (cloud/rooms) run targets, chosen by
+// `runtime` so an allowed-but-ignored sibling field (e.g. a stray `cloud` on a
+// rooms request) can't redirect doc resolution / persisted repo to the wrong
+// repository. `prUrl` is cloud-only; the typed-loose return lets the rooms
+// repo element (no `prUrl`) flow through the same accessor.
+function remoteRepoSpec(
+  input: ShipInput,
+): { url: string; startingRef?: string | undefined; prUrl?: string | undefined } | undefined {
+  if (input.runtime === "rooms") return input.room?.repos[0];
+  return input.cloud?.repos[0];
+}
+
 function resolveRepo(input: ShipInput): string {
   if (input.repo !== undefined) return input.repo;
-  const url = input.cloud?.repos[0]?.url;
+  const url = remoteRepoSpec(input)?.url;
   if (url !== undefined) {
     const derived = parseGitHubRepoSlug(url);
     if (derived !== undefined) return derived;
@@ -622,9 +722,9 @@ function resolveRepo(input: ShipInput): string {
   throw new MissingRepoError();
 }
 
-/** Repo slug for remote doc fetch — derived from `cloud.repos[0].url` per F3. */
+/** Repo slug for remote doc fetch — derived from the cloud/rooms repo URL per F3. */
 function resolveDocRepoSlug(input: ShipInput): string {
-  const url = input.cloud?.repos[0]?.url;
+  const url = remoteRepoSpec(input)?.url;
   if (url !== undefined) {
     const derived = parseGitHubRepoSlug(url);
     if (derived !== undefined) return derived;
@@ -633,13 +733,13 @@ function resolveDocRepoSlug(input: ShipInput): string {
   throw new MissingRepoError();
 }
 
-function buildCloudDocResolveOptions(ctx: ShipContext): CloudDocResolveOptions {
-  const cloudRepo = ctx.input.cloud?.repos[0];
+function buildRemoteDocResolveOptions(ctx: ShipContext): CloudDocResolveOptions {
+  const repo = remoteRepoSpec(ctx.input);
   return {
     repoSlug: resolveDocRepoSlug(ctx.input),
     ...(ctx.input.workdir !== undefined ? { workdir: ctx.input.workdir } : {}),
-    ...(cloudRepo?.startingRef !== undefined ? { startingRef: cloudRepo.startingRef } : {}),
-    ...(cloudRepo?.prUrl !== undefined ? { prUrl: cloudRepo.prUrl } : {}),
+    ...(repo?.startingRef !== undefined ? { startingRef: repo.startingRef } : {}),
+    ...(repo?.prUrl !== undefined ? { prUrl: repo.prUrl } : {}),
     ...(ctx.docSource !== undefined ? { docSource: ctx.docSource } : {}),
   };
 }
@@ -669,6 +769,18 @@ function logBackgroundFailure(workflowRunId: string, err: unknown): void {
   );
 }
 
+// The implement phase's `input_json`, persisted for forensics. The cloud
+// spec is also read back on resume; rooms has no resume path.
+function buildImplementInputJson(input: ShipInput): string {
+  if (input.runtime === "cloud" && input.cloud !== undefined) {
+    return JSON.stringify({ cloud: input.cloud, docPath: input.docPath });
+  }
+  if (input.runtime === "rooms" && input.room !== undefined) {
+    return JSON.stringify({ room: input.room, docPath: input.docPath });
+  }
+  return JSON.stringify({ docPath: input.docPath });
+}
+
 function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): PreparedRun {
   const workflowRunId = ctx.ids.workflowRun();
   const phaseId = ctx.ids.phase();
@@ -676,9 +788,10 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
 
   const repo = resolveRepo(ctx.input);
   const baseRef = ctx.input.baseRef ?? DEFAULT_WORKFLOW_POLICY.baseRef;
-  const cloudNoWorkdir = ctx.input.runtime === "cloud" && ctx.input.workdir === undefined;
+  // Cloud + rooms with no local checkout use the cloud-worktree sentinel.
+  const remoteNoWorkdir = isRemoteRuntime(ctx.input) && ctx.input.workdir === undefined;
   const effectiveWorkdir = ctx.input.workdir ?? paths.dir;
-  const worktree: WorktreeRef = cloudNoWorkdir
+  const worktree: WorktreeRef = remoteNoWorkdir
     ? {
         repo,
         name: CLOUD_WORKTREE_SENTINEL,
@@ -708,11 +821,7 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
     id: phaseId,
     workflowRunId,
     kind: "implement",
-    inputJson: JSON.stringify(
-      ctx.input.runtime === "cloud" && ctx.input.cloud !== undefined
-        ? { cloud: ctx.input.cloud, docPath: ctx.input.docPath }
-        : { docPath: ctx.input.docPath },
-    ),
+    inputJson: buildImplementInputJson(ctx.input),
   });
 
   return {
@@ -774,7 +883,9 @@ async function runToTerminal(
 
     const handle = await ctx.runner.run(runInput);
 
-    if (ctx.resolvedCursorRuntime === "cloud") {
+    // Cloud + rooms both run unattended off the async path; the timer-based
+    // pump keeps `workflow_runs.updated_at` fresh while a long run is live.
+    if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
       eventPump = startEventPump({ store: ctx.store, workflowRunId: prep.workflowRunId });
     }
 

@@ -573,3 +573,44 @@ describe("FakeCursorRunner — handle shape", () => {
     expect(a.runId).not.toBe(b.runId);
   });
 });
+
+describe("FakeCursorRunner — rooms path", () => {
+  // The fake is runtime-agnostic: it records the input verbatim and replays
+  // the scripted result. These pin that a `runtime: "rooms"` input round-trips
+  // (so PR-S2's L2 routing double can assert on it) and that a branches-
+  // populated rooms-shaped result flows through unchanged.
+  test("accepts a rooms-shaped input and records runtime + room", async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueue({ events: [], result: baseResult() });
+
+    const input = baseInput({
+      runtime: "rooms",
+      room: { repos: [{ url: "https://github.com/itsHabib/roxiq" }] },
+    });
+    await runner.run(input);
+
+    expect(runner.calls[0]?.input.runtime).toBe("rooms");
+    expect(runner.calls[0]?.input.room?.repos[0]?.url).toBe("https://github.com/itsHabib/roxiq");
+  });
+
+  test("replays a rooms-shaped result with branches[0].branch populated", async () => {
+    const runner = new FakeCursorRunner();
+    runner.enqueue({
+      events: [],
+      result: baseResult({
+        branches: [
+          { branch: "rooms/ship-wf-1-abcd1234", repoUrl: "https://github.com/itsHabib/roxiq" },
+        ],
+      }),
+    });
+
+    const handle = await runner.run(
+      baseInput({
+        runtime: "rooms",
+        room: { repos: [{ url: "https://github.com/itsHabib/roxiq" }] },
+      }),
+    );
+    const result = await handle.result;
+    expect(result.branches[0]?.branch).toBe("rooms/ship-wf-1-abcd1234");
+  });
+});

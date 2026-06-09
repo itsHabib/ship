@@ -36,10 +36,13 @@ export interface CursorRunInput {
   readonly onEvent: (event: SDKMessage) => void | Promise<void>;
 
   /** Runtime selector. Defaults to "local" when omitted. */
-  readonly runtime?: "local" | "cloud";
+  readonly runtime?: "local" | "cloud" | "rooms";
 
   /** Cloud-specific config. Required when runtime === "cloud"; ignored otherwise. */
   readonly cloud?: CloudRunSpec;
+
+  /** Rooms-specific config. Required when runtime === "rooms"; ignored otherwise. */
+  readonly room?: RoomRunSpec;
 
   /** Ship policy cap — used when folding SDK terminal errors into `errorMessage`. */
   readonly maxRunDurationMs?: number;
@@ -97,6 +100,29 @@ export interface CloudRunSpec {
   readonly envVars?: Record<string, string>;
   /** Cloud env selector. Default: `{ type: "cloud" }` (Cursor-managed). */
   readonly env?: { readonly type: "cloud" | "pool" | "machine"; readonly name?: string };
+}
+
+/**
+ * Rooms-agent config — drives a Cursor agent inside a disposable rooms
+ * microVM. The room clones, the agent edits, then rooms commits + pushes a
+ * branch and reports terminal state; `RoomCursorRunner` returns it as a
+ * `CursorRunResult` with `branches[]` populated (the same shape
+ * `CloudCursorRunner` fills). PR opening is downstream, not the runner's job.
+ */
+export interface RoomRunSpec {
+  /**
+   * GitHub repo the room operates against. Single-repo this phase
+   * (single-element tuple), like cloud — multi-repo is out of scope.
+   */
+  readonly repos: readonly [{ readonly url: string; readonly startingRef?: string }];
+  /** Guest image to boot. Defaults to the rooms host's `agent-alpine-cursor.ext4`. */
+  readonly image?: string;
+  /**
+   * Branch rooms pushes the agent's work to. Defaults to
+   * `rooms/<slug(agentName) || "run">-<short-uuid>` — always uuid-suffixed so
+   * concurrent runs never collide on a branch name.
+   */
+  readonly pushBranch?: string;
 }
 
 /**

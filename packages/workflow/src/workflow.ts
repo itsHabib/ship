@@ -67,8 +67,8 @@ export const failureCategorySchema = z.enum([
 ]);
 export type FailureCategory = z.infer<typeof failureCategorySchema>;
 
-/** Where the underlying Cursor agent ran. Local disk vs Cursor cloud VM. */
-export const cursorRunRuntimeSchema = z.enum(["local", "cloud"]);
+/** Where the underlying Cursor agent ran. Local disk, Cursor cloud VM, or a self-hosted rooms microVM. */
+export const cursorRunRuntimeSchema = z.enum(["local", "cloud", "rooms"]);
 export type CursorRunRuntime = z.infer<typeof cursorRunRuntimeSchema>;
 
 /** One element of `ModelSelection.params`. Internal; not re-exported. */
