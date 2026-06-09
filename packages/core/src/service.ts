@@ -1943,9 +1943,14 @@ async function runResumeAttach(
 
   try {
     const model = target.row.model ?? ctx.config.defaultModel;
+    const resumeLog = target.shipCtx.logger.child({
+      workflowRunId: target.row.workflowRunId,
+      phase: target.phaseId,
+    });
     const handle = await cloudCursor.attach({
       agentId: target.row.agentId,
       cloud: target.cloudSpec,
+      log: resumeLog,
       model,
       onEvent,
       runId: target.row.runId,

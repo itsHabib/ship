@@ -70,6 +70,8 @@ export interface CursorRunAttachInput {
   readonly cloud?: CloudRunSpec;
   readonly onEvent: (event: SDKMessage) => void | Promise<void>;
   readonly signal?: AbortSignal;
+  /** Run-scoped structured logger; bound by `core` via `log.child(...)`. */
+  readonly log?: Logger;
 }
 
 export interface CloudRunSpec {

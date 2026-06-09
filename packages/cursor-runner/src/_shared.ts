@@ -38,6 +38,7 @@ export function attachInputAsRunInput(
     ...(input.agents !== undefined && { agents: input.agents }),
     ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
     ...(input.signal !== undefined && { signal: input.signal }),
+    ...(input.log !== undefined && { log: input.log }),
   };
 }
 
