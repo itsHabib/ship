@@ -229,6 +229,22 @@ describe("ShipService.ship — happy path", () => {
     expect(h.fs.snapshot().files.has(scratchPath)).toBe(false);
   });
 
+  test("local failed run also removes the worktree scratch task-doc", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "failed", durationMs: 0, branches: [] },
+    });
+
+    const scratchPath = `${WORKDIR}/task-doc.md`;
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    expect(h.fs.snapshot().files.has(scratchPath)).toBe(false);
+  });
+
   test("pre-existing file at the scratch path is never overwritten or deleted", async () => {
     h.cursor.enqueue({
       events: [],

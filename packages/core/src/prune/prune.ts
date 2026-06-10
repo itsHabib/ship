@@ -205,10 +205,13 @@ async function pruneOneTarget(
   runsDir: string,
   target: PruneTarget,
 ): Promise<void> {
-  if (target.deleteStoreRow) {
-    store.deleteWorkflowRun(target.runId);
-  }
+  // Dir first, row second — both failure orders then self-heal on the next
+  // prune: a thrown dir removal leaves the terminal row to retry the pair; a
+  // thrown row deletion after the dir is gone leaves a row-only target.
   if (target.deleteRunDir) {
     await pruneFs.removeRunDir(join(runsDir, target.runId));
+  }
+  if (target.deleteStoreRow) {
+    store.deleteWorkflowRun(target.runId);
   }
 }

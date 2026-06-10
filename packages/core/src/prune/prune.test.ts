@@ -233,9 +233,33 @@ describe("executePruneRuns", () => {
     const dirsAfter = await pruneFs.listRunDirNames(runsDir);
     expect(dirsAfter).toContain(failFirst);
     expect(dirsAfter).not.toContain(ids[1]);
+    // Dir-first ordering: the failed target's store row must survive so the
+    // next prune retries it as a terminal row, not a downgraded orphan dir.
+    expect(store.getRun(failFirst)).not.toBeNull();
   });
 
-  test("deletes store row before run dir and cleans orphans", async () => {
+  test("row exactly at the cutoff boundary is not pruned", async () => {
+    const cutoffIso = new Date(nowMs - 30 * 24 * 60 * 60 * 1000).toISOString();
+    store.close();
+    store = createStore({ clock: () => cutoffIso, dbPath: ":memory:" });
+    const boundaryId = newWorkflowRunId();
+    store.createWorkflowRun({
+      baseRef: "main",
+      docPath: "docs.md",
+      id: boundaryId,
+      policy: { agentTimeoutMs: 1, baseRef: "main", maxRunDurationMs: 1 },
+      repo: "ship",
+      worktree: { baseRef: "main", branch: "feat", name: "feat", path: "/wt/feat", repo: "ship" },
+    });
+    store.updateWorkflowRunStatus(boundaryId, "succeeded");
+
+    const out = await executePruneRuns({ before: "30d", nowMs, pruneFs, runsDir, store });
+
+    expect(out.targets.map((t) => t.runId)).not.toContain(boundaryId);
+    expect(store.getRun(boundaryId)).not.toBeNull();
+  });
+
+  test("deletes terminal targets (dir then row) and cleans orphans", async () => {
     store.close();
     store = createStore({ clock: () => "2026-01-01T00:00:00.000Z", dbPath: ":memory:" });
     const oldId = newWorkflowRunId();
@@ -305,5 +329,6 @@ describe("formatPruneAge", () => {
     expect(formatPruneAge(3 * 24 * 60 * 60 * 1000)).toBe("3d");
     expect(formatPruneAge(5 * 60 * 60 * 1000)).toBe("5h");
     expect(formatPruneAge(90 * 1000)).toBe("1m");
+    expect(formatPruneAge(30 * 1000)).toBe("30s");
   });
 });
