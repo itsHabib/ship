@@ -1,12 +1,14 @@
 /** Tests for `format.ts` — pretty + JSON variants per output shape. */
 
-import type { ShipOutput } from "@ship/core";
+import type { GetWorkflowRunOutput, ShipOutput } from "@ship/core";
 import type { WorkflowRun } from "@ship/workflow";
 
+import { getWorkflowRunOutputSchema } from "@ship/mcp";
 import { describe, expect, test } from "vitest";
 
 import {
   formatCancelOutput,
+  formatDiagnoseRun,
   formatShipOutput,
   formatWorkflowRun,
   formatWorkflowRunList,
@@ -153,5 +155,75 @@ describe("formatCancelOutput", () => {
 describe("summarizeCursorRun", () => {
   test("includes id, status, runtime", () => {
     expect(summarizeCursorRun(SAMPLE_OUTPUT.cursorRun)).toBe("cr_01 (succeeded, local)");
+  });
+});
+
+const SAMPLE_DIAGNOSE_RUN: GetWorkflowRunOutput = {
+  ...SAMPLE_RUN,
+  status: "failed",
+  failureCategory: "logic",
+  runDurationMs: 360_000,
+  maxRunDurationMs: 1_800_000,
+  sdkTerminalStatus: "ERROR",
+  watchUrl: "https://cursor.com/agents/agent-1",
+  recentEvents: [
+    { type: "tool_call", name: "shell", status: "running", ts: "2026-06-01T12:04:12.000Z" },
+  ],
+  phases: SAMPLE_RUN.phases[0]
+    ? [
+        {
+          ...SAMPLE_RUN.phases[0],
+          status: "failed",
+          errorMessage: "logic; make check failed",
+        },
+      ]
+    : [],
+};
+
+describe("formatDiagnoseRun", () => {
+  test("pretty mode renders diagnosis fields for a failed run", () => {
+    const text = formatDiagnoseRun(SAMPLE_DIAGNOSE_RUN, false);
+    expect(text).toContain("status:    failed");
+    expect(text).toContain("category:  logic");
+    expect(text).toContain("error:     logic; make check failed");
+    expect(text).toContain("duration:  360000ms / cap 1800000ms");
+    expect(text).toContain("sdkStatus: ERROR");
+    expect(text).toContain("last:      shell running (2026-06-01T12:04:12.000Z)");
+    expect(text).toContain("watchUrl:  https://cursor.com/agents/agent-1");
+  });
+
+  test("non-failed run prints a nothing-to-diagnose note", () => {
+    const text = formatDiagnoseRun(SAMPLE_RUN, false);
+    expect(text).toContain("status:    succeeded");
+    expect(text).toContain("note:      nothing to diagnose");
+    expect(text).not.toContain("category:");
+  });
+
+  test("failed run without a persisted category renders (unclassified)", () => {
+    const unclassified: GetWorkflowRunOutput = { ...SAMPLE_DIAGNOSE_RUN };
+    delete (unclassified as { failureCategory?: unknown }).failureCategory;
+    const text = formatDiagnoseRun(unclassified, false);
+    expect(text).toContain("category:  (unclassified)");
+  });
+
+  test("omits last activity when recentEvents is absent", () => {
+    const withoutEvents: GetWorkflowRunOutput = { ...SAMPLE_DIAGNOSE_RUN };
+    delete (withoutEvents as { recentEvents?: unknown }).recentEvents;
+    const text = formatDiagnoseRun(withoutEvents, false);
+    expect(text).not.toContain("last:");
+  });
+
+  test("falls back to the last event type when no tool_call exists", () => {
+    const statusOnly: GetWorkflowRunOutput = {
+      ...SAMPLE_DIAGNOSE_RUN,
+      recentEvents: [{ type: "status", status: "ERROR" }],
+    };
+    expect(formatDiagnoseRun(statusOnly, false)).toContain("last:      status");
+  });
+
+  test("--json emits the enriched GetWorkflowRunOutput", () => {
+    const parsed = JSON.parse(formatDiagnoseRun(SAMPLE_DIAGNOSE_RUN, true)) as GetWorkflowRunOutput;
+    expect(parsed).toEqual(SAMPLE_DIAGNOSE_RUN);
+    expect(getWorkflowRunOutputSchema.parse(parsed)).toEqual(SAMPLE_DIAGNOSE_RUN);
   });
 });

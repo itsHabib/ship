@@ -247,6 +247,12 @@ function durationMsFromImplementPhase(run: WorkflowRun): number | undefined {
   return ms >= 0 ? ms : undefined;
 }
 
+function failureCategoryFromImplementPhase(run: WorkflowRun): FailureCategory | undefined {
+  if (run.status !== "failed") return undefined;
+  const phase = run.phases.find((p) => p.kind === "implement");
+  return phase?.failureCategory;
+}
+
 function parseRecentEventsNdjson(ndjson: string): Record<string, unknown>[] {
   const lines = ndjson.split("\n").filter((line) => line.trim().length > 0);
   const tail = lines.slice(-DIAGNOSTIC_RECENT_EVENTS_LIMIT);
@@ -358,6 +364,10 @@ async function enrichWorkflowRunView(
   const branches = await loadRunBranches(deps.fs, deps.runsDir, run);
   if (branches !== undefined) {
     view = { ...view, branches };
+  }
+  const failureCategory = failureCategoryFromImplementPhase(run);
+  if (failureCategory !== undefined) {
+    view = { ...view, failureCategory };
   }
   return view;
 }

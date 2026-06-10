@@ -209,26 +209,19 @@ describe("buildFailureDetail", () => {
         type: "tool_call",
         status: "running",
         name: "shell",
+        args: { command: "make check" },
         ts: "2026-06-01T12:00:00.000Z",
       },
       { type: "status", status: "ERROR", ts: "2026-06-01T12:04:12.000Z" },
     ] as unknown as SDKMessage[];
-    expect(
-      buildFailureDetail({
-        category: "agent-collapse-on-running-tool",
-        durationMs: 252_000,
-        events,
-        maxRunDurationMs: CAP_MS,
-      }),
-    ).toContain("shell");
-    expect(
-      buildFailureDetail({
-        category: "agent-collapse-on-running-tool",
-        durationMs: 252_000,
-        events,
-        maxRunDurationMs: CAP_MS,
-      }),
-    ).toContain("never completed");
+    const detail = buildFailureDetail({
+      category: "agent-collapse-on-running-tool",
+      durationMs: 252_000,
+      events,
+      maxRunDurationMs: CAP_MS,
+    });
+    expect(detail).toContain("shell 'make check'");
+    expect(detail).toContain("never completed");
     expect(buildFailureDetail({ category: "agent-collapse-on-running-tool", events: [] })).toBe(
       "agent stopped with a running tool_call",
     );
