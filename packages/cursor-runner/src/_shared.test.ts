@@ -148,6 +148,149 @@ describe("buildTerminalErrorMessage", () => {
     expect(msg).toContain("detail: run exceeded time budget");
     expect(msg).toMatch(/SDK status EXPIRED/);
   });
+
+  test("surfaces in-flight running tool_call with command summary and age", () => {
+    const runningShell = {
+      type: "tool_call",
+      status: "running",
+      name: "shell",
+      args: { command: "make check" },
+      ts: "2026-06-01T12:00:00.000Z",
+    } as unknown as SDKMessage;
+    const statusErr = {
+      type: "status",
+      status: "ERROR",
+      ts: "2026-06-01T12:04:12.000Z",
+    } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage(
+      { durationMs: 6 * 60 * 1000, status: "error" } as RunResult,
+      [runningShell, statusErr],
+      30 * 60 * 1000,
+    );
+    expect(msg).toMatch(/SDK status ERROR after 6m \(cap 30m\)/);
+    expect(msg).toContain("last activity: shell 'make check' running 4m12s, never completed");
+  });
+
+  test("running fallback uses tool name only when args has no command", () => {
+    const runningGrep = {
+      type: "tool_call",
+      status: "running",
+      name: "grep",
+      ts: "2026-06-01T12:00:00.000Z",
+    } as unknown as SDKMessage;
+    const statusErr = {
+      type: "status",
+      status: "ERROR",
+      ts: "2026-06-01T12:01:00.000Z",
+    } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage({ durationMs: 60_000, status: "error" } as RunResult, [
+      runningGrep,
+      statusErr,
+    ]);
+    expect(msg).toContain("last activity: grep running 1m, never completed");
+  });
+
+  test("running fallback omits age when event timestamps are absent", () => {
+    const runningShell = {
+      type: "tool_call",
+      status: "running",
+      name: "shell",
+      args: { command: "make check" },
+    } as unknown as SDKMessage;
+    const statusErr = { type: "status", status: "ERROR" } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage({ durationMs: 60_000, status: "error" } as RunResult, [
+      runningShell,
+      statusErr,
+    ]);
+    expect(msg).toContain("last activity: shell 'make check' running, never completed");
+    expect(msg).not.toMatch(/running \d/);
+  });
+
+  test("failed tool_call beats running fallback", () => {
+    const runningShell = {
+      type: "tool_call",
+      status: "running",
+      name: "shell",
+      call_id: "c1",
+    } as unknown as SDKMessage;
+    const toolErr = {
+      type: "tool_call",
+      status: "error",
+      result: "command failed",
+      call_id: "c2",
+    } as unknown as SDKMessage;
+    const statusErr = { type: "status", status: "ERROR" } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage({ durationMs: 1000, status: "error" } as RunResult, [
+      runningShell,
+      toolErr,
+      statusErr,
+    ]);
+    expect(msg).toContain("last tool_call errored: command failed");
+    expect(msg).not.toContain("never completed");
+  });
+
+  test("status message beats running fallback", () => {
+    const runningShell = {
+      type: "tool_call",
+      status: "running",
+      name: "shell",
+    } as unknown as SDKMessage;
+    const statusErr = {
+      type: "status",
+      status: "ERROR",
+      message: "agent stopped unexpectedly",
+    } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage({ durationMs: 1000, status: "error" } as RunResult, [
+      runningShell,
+      statusErr,
+    ]);
+    expect(msg).toContain("detail: agent stopped unexpectedly");
+    expect(msg).not.toContain("never completed");
+  });
+
+  test("result.result beats running fallback", () => {
+    const runningShell = {
+      type: "tool_call",
+      status: "running",
+      name: "shell",
+    } as unknown as SDKMessage;
+    const msg = buildTerminalErrorMessage(
+      { durationMs: 1000, result: "final agent text", status: "error" } as RunResult,
+      [runningShell],
+    );
+    expect(msg).toBe("final agent text");
+  });
+
+  test("running→completed call_id pair is not surfaced as in-flight", () => {
+    const events = [
+      {
+        type: "tool_call",
+        status: "running",
+        name: "shell",
+        call_id: "c1",
+        ts: "2026-06-01T12:00:00.000Z",
+      },
+      {
+        type: "tool_call",
+        status: "completed",
+        name: "shell",
+        call_id: "c1",
+        ts: "2026-06-01T12:05:00.000Z",
+      },
+      { type: "status", status: "ERROR", ts: "2026-06-01T12:06:00.000Z" },
+    ] as unknown as SDKMessage[];
+    const msg = buildTerminalErrorMessage(
+      { durationMs: 360_000, status: "error" } as RunResult,
+      events,
+    );
+    expect(msg).toBe("SDK status ERROR after 6m");
+    expect(msg).not.toContain("never completed");
+  });
+
+  test("no-sdk-status branch stays byte-identical", () => {
+    const msg = buildTerminalErrorMessage({ status: "finished" } as RunResult, []);
+    expect(msg).toBe("Cursor SDK reported error without a message");
+  });
 });
 
 describe("mapRunResult cloud-spec gating", () => {

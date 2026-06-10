@@ -6,6 +6,7 @@
 
 import {
   artifactRefSchema,
+  failureCategorySchema,
   terminalCursorRunRefSchema,
   terminalWorkflowStatusSchema,
   workflowRunSchema,
@@ -248,6 +249,8 @@ export const getWorkflowRunOutputSchema = workflowRunSchema.extend({
   recentEvents: z.array(recentRunEventSchema).optional(),
   /** Branches the run pushed (cloud + rooms), from terminal `result.json`. */
   branches: z.array(runBranchRefSchema).optional(),
+  /** Canonical failure classification hoisted from the implement phase row (failed runs only). */
+  failureCategory: failureCategorySchema.optional(),
 });
 export type GetWorkflowRunOutput = z.infer<typeof getWorkflowRunOutputSchema>;
 

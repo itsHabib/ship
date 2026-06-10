@@ -2,7 +2,7 @@
 // (default) and `--json` variant; pretty mode is plain ASCII (no ANSI
 // colors in V1) so test snapshots are stable across terminals.
 
-import type { ShipOutput } from "@ship/core";
+import type { GetWorkflowRunOutput, ShipOutput } from "@ship/core";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
 /** Renders a `ShipOutput` for the `ship ship` subcommand. */
@@ -16,6 +16,64 @@ export function formatShipOutput(out: ShipOutput, json: boolean): string {
     `  events:  ${out.artifacts.eventsPath}`,
     `  result:  ${out.artifacts.resultPath}`,
   );
+  return lines.join("\n");
+}
+
+function implementPhaseErrorMessage(run: WorkflowRun): string | undefined {
+  const phase = run.phases.find((p) => p.kind === "implement");
+  return phase?.errorMessage;
+}
+
+function renderToolCallActivity(ev: Record<string, unknown>): string {
+  const name = typeof ev["name"] === "string" ? ev["name"] : "tool";
+  const status = typeof ev["status"] === "string" ? ev["status"] : "unknown";
+  const ts = typeof ev["ts"] === "string" ? ev["ts"] : undefined;
+  if (ts !== undefined) return `${name} ${status} (${ts})`;
+  return `${name} ${status}`;
+}
+
+function renderLastActivity(
+  recentEvents: readonly Record<string, unknown>[] | undefined,
+): string | undefined {
+  if (recentEvents === undefined || recentEvents.length === 0) return undefined;
+  for (let i = recentEvents.length - 1; i >= 0; i--) {
+    const ev = recentEvents[i];
+    if (ev?.["type"] === "tool_call") return renderToolCallActivity(ev);
+  }
+  const last = recentEvents[recentEvents.length - 1];
+  if (last !== undefined && typeof last["type"] === "string") return last["type"];
+  return undefined;
+}
+
+function formatDurationVsCap(
+  runDurationMs: number | undefined,
+  maxRunDurationMs: number | undefined,
+): string | undefined {
+  if (runDurationMs !== undefined && maxRunDurationMs !== undefined) {
+    return `${String(runDurationMs)}ms / cap ${String(maxRunDurationMs)}ms`;
+  }
+  if (runDurationMs !== undefined) return `${String(runDurationMs)}ms`;
+  if (maxRunDurationMs !== undefined) return `cap ${String(maxRunDurationMs)}ms`;
+  return undefined;
+}
+
+/** Renders diagnosis fields for the `ship diagnose` subcommand. */
+export function formatDiagnoseRun(run: GetWorkflowRunOutput, json: boolean): string {
+  if (json) return jsonStringify(run);
+  const lines = [`status:    ${run.status}`, `id:        ${run.id}`];
+  if (run.status !== "failed") {
+    lines.push("note:      nothing to diagnose");
+    return lines.join("\n");
+  }
+  if (run.failureCategory !== undefined) lines.push(`category:  ${run.failureCategory}`);
+  const errorMessage = implementPhaseErrorMessage(run);
+  if (errorMessage !== undefined) lines.push(`error:     ${errorMessage}`);
+  const duration = formatDurationVsCap(run.runDurationMs, run.maxRunDurationMs);
+  if (duration !== undefined) lines.push(`duration:  ${duration}`);
+  if (run.sdkTerminalStatus !== undefined) lines.push(`sdkStatus: ${run.sdkTerminalStatus}`);
+  const lastActivity = renderLastActivity(run.recentEvents);
+  if (lastActivity !== undefined) lines.push(`last:      ${lastActivity}`);
+  if (run.watchUrl !== undefined) lines.push(`watchUrl:  ${run.watchUrl}`);
   return lines.join("\n");
 }
 

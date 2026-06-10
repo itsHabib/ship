@@ -494,6 +494,26 @@ describe("getWorkflowRunOutputSchema", () => {
       }).success,
     ).toBe(false);
   });
+
+  test("accepts optional failureCategory on failed runs and omits on succeeded", () => {
+    const failed = {
+      ...validWorkflowRun,
+      status: "failed" as const,
+      failureCategory: "logic" as const,
+    };
+    expect(getWorkflowRunOutputSchema.parse(failed)).toEqual(failed);
+    expect(getWorkflowRunOutputSchema.parse(validWorkflowRun)).toEqual(validWorkflowRun);
+  });
+
+  test("rejects invalid failureCategory literals", () => {
+    expect(
+      getWorkflowRunOutputSchema.safeParse({
+        ...validWorkflowRun,
+        status: "failed",
+        failureCategory: "not-a-category",
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("listWorkflowRunsInputSchema", () => {

@@ -154,6 +154,118 @@ function formatWallDuration(ms: number): string {
   return rem > 0 ? `${String(hours)}h${String(rem)}m` : `${String(hours)}h`;
 }
 
+// Second-granularity formatter for in-flight tool_call age in error/detail text.
+function formatRunningToolAge(ms: number): string {
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min === 0) return `${String(sec)}s`;
+  if (sec === 0) return `${String(min)}m`;
+  return `${String(min)}m${String(sec)}s`;
+}
+
+const TOOL_COMMAND_SUMMARY_MAX = 80;
+
+// Parse an SDK event timestamp from `ts` or `startedAt`.
+export function parseEventTimestamp(raw: Record<string, unknown>): number | undefined {
+  const ts = raw["ts"] ?? raw["startedAt"];
+  if (typeof ts !== "string" || ts.length === 0) return undefined;
+  const ms = Date.parse(ts);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+// Most recent event timestamp in the stream.
+export function lastEventTimestamp(events: readonly SDKMessage[]): number | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev === undefined) continue;
+    const ts = parseEventTimestamp(eventRecord(ev));
+    if (ts !== undefined) return ts;
+  }
+  return undefined;
+}
+
+function toolCallId(raw: Record<string, unknown>): string | undefined {
+  const id = raw["call_id"];
+  return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+// Final status per call_id (last event wins) so a tool that emitted `running`
+// early but `completed`/`error` later is not counted as still-running.
+function finalStatusByCallId(events: readonly SDKMessage[]): Map<string, unknown> {
+  const byId = new Map<string, unknown>();
+  for (const ev of events) {
+    const raw = eventRecord(ev);
+    if (raw["type"] !== "tool_call") continue;
+    const id = toolCallId(raw);
+    if (id !== undefined) byId.set(id, raw["status"]);
+  }
+  return byId;
+}
+
+// The most recent tool_call still running at stream end. A call_id is unfinished
+// only if its LAST tool_call event is `running`; calls lacking a call_id can't be
+// reconciled and fall back to their own status (last-running-wins).
+export function lastRunningToolCall(
+  events: readonly SDKMessage[],
+): Record<string, unknown> | undefined {
+  const finalStatus = finalStatusByCallId(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev === undefined) continue;
+    const raw = eventRecord(ev);
+    if (raw["type"] !== "tool_call") continue;
+    const id = toolCallId(raw);
+    const effectiveStatus = id !== undefined ? finalStatus.get(id) : raw["status"];
+    if (effectiveStatus === "running") return raw;
+  }
+  return undefined;
+}
+
+function commandLikeFromArgs(args: unknown): string | undefined {
+  if (args === null || typeof args !== "object") return undefined;
+  const record = args as Record<string, unknown>;
+  const command = record["command"];
+  if (typeof command === "string" && command.length > 0) return command;
+  return undefined;
+}
+
+function truncateCommandSummary(command: string): string {
+  if (command.length <= TOOL_COMMAND_SUMMARY_MAX) return command;
+  const keep = TOOL_COMMAND_SUMMARY_MAX - 3;
+  return `${command.slice(0, keep)}...`;
+}
+
+// Render a tool_call name plus an optional quoted command from unstable `args`.
+export function summarizeToolCall(raw: Record<string, unknown>): string {
+  const name = typeof raw["name"] === "string" ? raw["name"] : "tool";
+  const command = commandLikeFromArgs(raw["args"]);
+  if (command === undefined) return name;
+  return `${name} '${truncateCommandSummary(command)}'`;
+}
+
+function runningToolAgeFromTimestamps(
+  toolCall: Record<string, unknown>,
+  events: readonly SDKMessage[],
+): number | undefined {
+  const toolTs = parseEventTimestamp(toolCall);
+  const endTs = lastEventTimestamp(events);
+  if (toolTs === undefined || endTs === undefined) return undefined;
+  const age = endTs - toolTs;
+  return age >= 0 ? age : undefined;
+}
+
+// Bounded in-flight tool_call detail for terminal error messages and failure detail.
+export function runningToolActivityDetail(
+  toolCall: Record<string, unknown>,
+  events: readonly SDKMessage[],
+): string {
+  const summary = summarizeToolCall(toolCall);
+  const age = runningToolAgeFromTimestamps(toolCall, events);
+  if (age === undefined) return `last activity: ${summary} running, never completed`;
+  return `last activity: ${summary} running ${formatRunningToolAge(age)}, never completed`;
+}
+
 // Upper bound on the streamed events retained for failure classification. Both
 // runners keep the most-recent window; the fake mirrors it so tests reflect the
 // same eviction. Single source of truth so the three stay aligned.
@@ -259,6 +371,20 @@ export function withLocalRunContentionHint(message: string): string {
   return `${LOCAL_RUN_CONTENTION_HINT} (${message})`;
 }
 
+function sdkStatusErrorMessage(
+  displayStatus: string,
+  durationPart: string,
+  events: readonly SDKMessage[],
+): string {
+  const running = lastRunningToolCall(events);
+  if (running !== undefined) {
+    return withLocalRunContentionHint(
+      `SDK status ${displayStatus} ${durationPart}; ${runningToolActivityDetail(running, events)}`,
+    );
+  }
+  return `SDK status ${displayStatus} ${durationPart}`;
+}
+
 /** Fold SDK terminal state + streamed events into a single operator-facing message. */
 export function buildTerminalErrorMessage(
   result: RunResult,
@@ -283,7 +409,7 @@ export function buildTerminalErrorMessage(
     );
   }
   if (eventStatus !== undefined || result.status === "error") {
-    return `SDK status ${displayStatus} ${durationPart}`;
+    return sdkStatusErrorMessage(displayStatus, durationPart, events);
   }
   return "Cursor SDK reported error without a message";
 }
