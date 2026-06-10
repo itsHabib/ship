@@ -514,6 +514,18 @@ describe("getWorkflowRunOutputSchema", () => {
       }).success,
     ).toBe(false);
   });
+
+  test("rejects failureCategory on non-failed runs (present-iff-failed invariant)", () => {
+    for (const status of ["succeeded", "cancelled", "running", "pending"] as const) {
+      expect(
+        getWorkflowRunOutputSchema.safeParse({
+          ...validWorkflowRun,
+          status,
+          failureCategory: "logic",
+        }).success,
+      ).toBe(false);
+    }
+  });
 });
 
 describe("listWorkflowRunsInputSchema", () => {

@@ -8,6 +8,7 @@ import { LOCAL_RUN_CONTENTION_HINT } from "@ship/workflow";
 
 import {
   eventRecord,
+  formatRunningToolAge,
   lastEventTimestamp,
   lastRunningToolCall,
   parseEventTimestamp,
@@ -81,18 +82,6 @@ function runningToolAgeMs(
   return undefined;
 }
 
-// Second-granularity, distinct from _shared's minute-granularity formatter:
-// failure detail ("running 45s, never completed") needs finer precision than the
-// "after 5m (cap 30m)" run summaries. Intentionally not shared.
-function formatWallDuration(ms: number): string {
-  const totalSec = Math.max(0, Math.round(ms / 1000));
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  if (min === 0) return `${String(sec)}s`;
-  if (sec === 0) return `${String(min)}m`;
-  return `${String(min)}m${String(sec)}s`;
-}
-
 function isNearCap(durationMs: number | undefined, maxRunDurationMs: number | undefined): boolean {
   if (durationMs === undefined || maxRunDurationMs === undefined) return false;
   return durationMs >= NEAR_CAP_DURATION_RATIO * maxRunDurationMs;
@@ -148,7 +137,7 @@ function runningToolDetail(
 ): string {
   const age = runningToolAgeMs(toolCall, events, durationMs) ?? durationMs ?? 0;
   const summary = summarizeToolCall(toolCall);
-  return `last activity: ${summary} running ${formatWallDuration(age)}, never completed`;
+  return `last activity: ${summary} running ${formatRunningToolAge(age)}, never completed`;
 }
 
 function detailForContention(input: BuildFailureDetailInput): string {
@@ -187,8 +176,8 @@ function detailForTimeoutNearCap(input: BuildFailureDetailInput): string {
   const { durationMs, maxRunDurationMs } = input;
   const capPart =
     maxRunDurationMs !== undefined
-      ? `duration ${formatWallDuration(durationMs ?? 0)} (cap ${formatWallDuration(maxRunDurationMs)})`
-      : `duration ${formatWallDuration(durationMs ?? 0)}`;
+      ? `duration ${formatRunningToolAge(durationMs ?? 0)} (cap ${formatRunningToolAge(maxRunDurationMs)})`
+      : `duration ${formatRunningToolAge(durationMs ?? 0)}`;
   if (isExpiredStatus(input.sdkTerminalStatus)) {
     return `SDK status expired; ${capPart}`;
   }

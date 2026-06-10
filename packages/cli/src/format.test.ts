@@ -199,6 +199,13 @@ describe("formatDiagnoseRun", () => {
     expect(text).not.toContain("category:");
   });
 
+  test("failed run without a persisted category renders (unclassified)", () => {
+    const unclassified: GetWorkflowRunOutput = { ...SAMPLE_DIAGNOSE_RUN };
+    delete (unclassified as { failureCategory?: unknown }).failureCategory;
+    const text = formatDiagnoseRun(unclassified, false);
+    expect(text).toContain("category:  (unclassified)");
+  });
+
   test("omits last activity when recentEvents is absent", () => {
     const withoutEvents: GetWorkflowRunOutput = { ...SAMPLE_DIAGNOSE_RUN };
     delete (withoutEvents as { recentEvents?: unknown }).recentEvents;

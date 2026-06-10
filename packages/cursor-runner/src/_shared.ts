@@ -155,7 +155,9 @@ function formatWallDuration(ms: number): string {
 }
 
 // Second-granularity formatter for in-flight tool_call age in error/detail text.
-function formatRunningToolAge(ms: number): string {
+// Also used by classify-failure's detail builders (finer precision than the
+// minute-granularity formatWallDuration above).
+export function formatRunningToolAge(ms: number): string {
   const totalSec = Math.max(0, Math.round(ms / 1000));
   const min = Math.floor(totalSec / 60);
   const sec = totalSec % 60;

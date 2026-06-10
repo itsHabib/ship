@@ -236,22 +236,35 @@ export const runBranchRefSchema = z
   .strict();
 export type RunBranchRef = z.infer<typeof runBranchRefSchema>;
 
-export const getWorkflowRunOutputSchema = workflowRunSchema.extend({
-  cursorAgentId: z.string().min(1).optional(),
-  watchUrl: z.string().url().optional(),
-  /** Cursor run wall time from `result.json` / cursor row (failed runs). */
-  runDurationMs: z.number().int().nonnegative().optional(),
-  /** Policy cap from the run row (`policy.maxRunDurationMs`), surfaced for failed runs. */
-  maxRunDurationMs: z.number().int().positive().optional(),
-  /** Raw SDK terminal status from `result.json` (e.g. `error`, `ERROR`). */
-  sdkTerminalStatus: z.string().min(1).optional(),
-  /** Tail of `events.ndjson` so operators need not open the file. */
-  recentEvents: z.array(recentRunEventSchema).optional(),
-  /** Branches the run pushed (cloud + rooms), from terminal `result.json`. */
-  branches: z.array(runBranchRefSchema).optional(),
-  /** Canonical failure classification hoisted from the implement phase row (failed runs only). */
-  failureCategory: failureCategorySchema.optional(),
-});
+export const getWorkflowRunOutputSchema = workflowRunSchema
+  .extend({
+    cursorAgentId: z.string().min(1).optional(),
+    watchUrl: z.string().url().optional(),
+    /** Cursor run wall time from `result.json` / cursor row (failed runs). */
+    runDurationMs: z.number().int().nonnegative().optional(),
+    /** Policy cap from the run row (`policy.maxRunDurationMs`), surfaced for failed runs. */
+    maxRunDurationMs: z.number().int().positive().optional(),
+    /** Raw SDK terminal status from `result.json` (e.g. `error`, `ERROR`). */
+    sdkTerminalStatus: z.string().min(1).optional(),
+    /** Tail of `events.ndjson` so operators need not open the file. */
+    recentEvents: z.array(recentRunEventSchema).optional(),
+    /** Branches the run pushed (cloud + rooms), from terminal `result.json`. */
+    branches: z.array(runBranchRefSchema).optional(),
+    /** Canonical failure classification hoisted from the implement phase row (failed runs only). */
+    failureCategory: failureCategorySchema.optional(),
+  })
+  .superRefine((val, ctx) => {
+    // Enforce the documented invariant, not just describe it: the category is
+    // present iff the run failed (spec §6) — a non-failed run carrying one is a
+    // producer bug, caught at the .parse sites.
+    if (val.failureCategory !== undefined && val.status !== "failed") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `failureCategory requires status "failed" (got "${val.status}")`,
+        path: ["failureCategory"],
+      });
+    }
+  });
 export type GetWorkflowRunOutput = z.infer<typeof getWorkflowRunOutputSchema>;
 
 // =====================================================================

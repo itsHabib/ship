@@ -65,7 +65,9 @@ export function formatDiagnoseRun(run: GetWorkflowRunOutput, json: boolean): str
     lines.push("note:      nothing to diagnose");
     return lines.join("\n");
   }
-  if (run.failureCategory !== undefined) lines.push(`category:  ${run.failureCategory}`);
+  // "(unclassified)" distinguishes a pre-P1 row (failure_category NULL) from
+  // the real `unknown` category — absent is not the same as unclassifiable.
+  lines.push(`category:  ${run.failureCategory ?? "(unclassified)"}`);
   const errorMessage = implementPhaseErrorMessage(run);
   if (errorMessage !== undefined) lines.push(`error:     ${errorMessage}`);
   const duration = formatDurationVsCap(run.runDurationMs, run.maxRunDurationMs);
