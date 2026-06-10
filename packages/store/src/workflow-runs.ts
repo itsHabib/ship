@@ -3,13 +3,7 @@
  * hydration that combines a row with its phases (via `PhaseOps`).
  */
 
-import type {
-  TerminalWorkflowStatus,
-  WorkflowPolicy,
-  WorkflowRun,
-  WorkflowStatus,
-  WorktreeRef,
-} from "@ship/workflow";
+import type { WorkflowPolicy, WorkflowRun, WorkflowStatus, WorktreeRef } from "@ship/workflow";
 import type { Statement } from "better-sqlite3";
 
 import { workflowRunSchema } from "@ship/workflow";
@@ -190,16 +184,6 @@ export function createWorkflowRunOps(
       deps.stmts.deleteById.run(id);
     },
   };
-}
-
-const TERMINAL_PRUNE_STATUSES: ReadonlySet<TerminalWorkflowStatus> = new Set([
-  "succeeded",
-  "failed",
-  "cancelled",
-]);
-
-export function isTerminalPruneStatus(status: WorkflowStatus): status is TerminalWorkflowStatus {
-  return TERMINAL_PRUNE_STATUSES.has(status as TerminalWorkflowStatus);
 }
 
 /** Hydrate a row + its phases into a `WorkflowRun`. */

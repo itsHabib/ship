@@ -12,7 +12,6 @@ export type {
   ListRunsFilter,
   WorkflowRunPruneRow,
 } from "./workflow-runs.js";
-export { isTerminalPruneStatus } from "./workflow-runs.js";
 
 export type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
 

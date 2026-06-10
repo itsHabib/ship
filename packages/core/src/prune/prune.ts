@@ -4,9 +4,8 @@
  */
 
 import type { Store, WorkflowRunPruneRow } from "@ship/store";
-import type { WorkflowStatus } from "@ship/workflow";
 
-import { isTerminalPruneStatus } from "@ship/store";
+import { isTerminal, type WorkflowStatus } from "@ship/workflow";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -102,7 +101,7 @@ export function selectPruneTargets(
   const runDirSet = new Set(runDirNames);
 
   for (const row of rows) {
-    if (!isTerminalPruneStatus(row.status)) continue;
+    if (!isTerminal(row.status)) continue;
     if (Date.parse(row.updatedAt) >= cutoffMs) continue;
     const ageMs = Math.max(0, nowMs - Date.parse(row.updatedAt));
     targets.set(row.id, {
