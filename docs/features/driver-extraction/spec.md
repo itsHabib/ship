@@ -171,9 +171,13 @@ CREATE INDEX driver_streams_run_idx   ON driver_streams (driver_run_id);
 CREATE INDEX driver_streams_status_idx ON driver_streams (status);
 ```
 
-**Stream status semantics:** `dispatching` is the crash-window marker (intent persisted before `startShip`; see §7.3). `landed` = ship run terminal-succeeded, PR known where applicable. `done` = merged (written by the *skill* via `driver decide`-adjacent verb or the F4-era engine — v1: the skill records merges through `ship driver mark-merged <stream> --pr N --sha X`, keeping the store authoritative even for policy-side facts). `awaiting_judgment` mirrors the run-level pause.
+**Stream status semantics** *(v2: `awaiting_judgment` removed from the stream enum — it is a RUN-level state only; cursor review caught the §4.1/§7.2 contradiction)*: stream statuses are `pending | dispatching | dispatched | landed | failed | skipped | done`. `dispatching` is the crash-window marker (intent persisted before `startShip`; see §7.3). `landed` = ship run terminal-succeeded, PR known where applicable. `failed` is the stream's resting state **during** triage — `decide` acts on `failed` streams of an `awaiting_judgment` run; that pair of fields is the gate, unambiguously. `done` = merged (written by the *skill* via `ship driver mark-merged <stream> --pr N --sha X`, keeping the store authoritative even for policy-side facts).
 
-**Open fork (reviewers):** `driver_batches` as a table (above) vs a `batches_json` column on `driver_runs`. Table buys per-batch status transitions + FK integrity for streams; JSON buys schema simplicity. Proposed: table.
+**Schema integrity (v2, codex):** `driver_streams` carries a **composite FK** — `FOREIGN KEY (driver_run_id, driver_batch_id) REFERENCES driver_batches (driver_run_id, id)` (with the matching `UNIQUE (driver_run_id, id)` on `driver_batches`) — so a stream can never point at a batch belonging to a different run. `driver_run_id` stays on streams for the hot index.
+
+**Render fidelity (v2, claude):** `source_json` stores the **raw frontmatter text verbatim** (pre-zod), not the parsed object — a `.strict()` parse would silently strip unknown future fields and break render round-trip across schema upgrades.
+
+**Fork resolved (was open):** `driver_batches` is a table, not JSON — the composite-FK integrity above requires it, which closes the question (claude: a JSON column can't be an FK target; batch status also becomes first-class queryable for the walker).
 
 ## 6. API contract
 
@@ -197,26 +201,39 @@ export interface RunOpts {
   maxParallel?: { local?: number; cloud?: number }; // defaults: local 1, cloud 4 (F9 hook)
 }
 
-export type Decision = { kind: 'retry' } | { kind: 'skip'; reason: string } | { kind: 'abort'; reason: string };
+export type Decision =
+  | { kind: 'retry' }
+  | { kind: 'skip'; reason: string }
+  | { kind: 'abort'; reason: string }
+  | { kind: 'adopt'; workflowRunId: string };   // v2: answers a dispatch-ambiguity request
 
 export interface DriverTickResult {
   driverRunId: string;
-  status: 'running' | 'awaiting_judgment' | 'done' | 'failed' | 'cancelled';
+  status: 'running' | 'awaiting_judgment' | 'blocked_on_merges' | 'done' | 'failed' | 'cancelled';
   awaiting: JudgmentRequest[];     // non-empty iff status === 'awaiting_judgment'
+  unmerged: DriverStreamView[];    // v2: non-empty iff status === 'blocked_on_merges' (§7.6)
   progress: { batchIndex: number; dispatched: number; landed: number; failed: number; remaining: number };
   streams: DriverStreamView[];     // compact per-stream rows for the brain
 }
 
-export interface JudgmentRequest {
-  kind: 'failure-triage';          // reserved: 'merge-confirmation' | 'review-adjudication'
-  driverRunId: string;
-  streamId: string;
-  workflowRunId: string;
-  failureCategory: FailureCategory; // ship's enum, carried through
-  errorMessage?: string;
-  attempts: number;
-  hint?: string;                    // e.g. LOCAL_RUN_CONTENTION_HINT passthrough
-}
+export type JudgmentRequest =
+  | {                              // a stream failed; brain triages (§7.2)
+      kind: 'failure-triage';
+      driverRunId: string;
+      streamId: string;
+      workflowRunId: string;
+      failureCategory: FailureCategory; // ship's enum, carried through
+      errorMessage?: string;
+      attempts: number;
+      hint?: string;               // e.g. LOCAL_RUN_CONTENTION_HINT passthrough
+    }
+  | {                              // v2: crash-recovery found >1 candidate run (§7.3)
+      kind: 'dispatch-ambiguity';
+      driverRunId: string;
+      streamId: string;
+      candidates: { workflowRunId: string; createdAt: string; status: string }[];
+    };
+// reserved kinds: 'merge-confirmation' | 'review-adjudication'
 ```
 
 **CLI** (registered via the existing `registerXCommand(program, factory)` pattern):
@@ -226,12 +243,14 @@ ship driver import <driver.md>                          → { driverRunId }
 ship driver run    <driver.md | drv_id> [--batch N] [--json]
                    [--max-wait 20m] [--poll-interval 30s]   exit 0 done/progress · 10 awaiting · 1 error
 ship driver decide <drv_id> --stream <ds_id> <retry|skip|abort> [--reason "..."]
+ship driver decide <drv_id> --stream <ds_id> adopt --workflow-run <wf_id>   # answers dispatch-ambiguity (v2)
 ship driver mark-merged <drv_id> --stream <ds_id> --pr <n> --sha <sha> [--merged-at <iso>]
+ship driver cancel <drv_id>                                                 # run-level (v2, distinct from decide)
 ship driver render <drv_id> [--out docs/features/<phase>/driver.md]
-ship driver status <drv_id> [--json]
+ship driver status <drv_id> [--json]    # flags "manifest modified since import" (v2)
 ```
 
-**MCP** (via `registerXTool`; input/output zod in `@ship/mcp`): `driver_run { manifestPath?|driverRunId?, batch?, maxWaitMs? } → DriverTickResult` · `driver_status { driverRunId }` · `driver_decide { driverRunId, streamId, decision }`. The MCP tick defaults `maxWaitMs` to 4min (MCP-timeout-safe); the caller loops.
+**MCP** (via `registerXTool`; input/output zod in `@ship/mcp`): `driver_run { manifestPath?|driverRunId?, batch?, maxWaitMs? } → DriverTickResult` · `driver_status { driverRunId }` · `driver_decide { driverRunId, streamId?, decision }`. *(v2, claude §10b)* The MCP tick defaults **`maxWaitMs: 0`** — one dispatch + scan pass, return immediately; the polling loop lives in the caller (the brain), which knows its own transport limits and may pass a larger bound explicitly. The CLI keeps its 20-min default (no transport to time out). `ship driver status` output flags when the manifest file has changed since import (`⚠ manifest modified since import <ts>` — §4.2's warning made visible).
 
 Path/env: same `SHIP_DB_PATH` / `SHIP_RUNS_DIR` resolution as the existing CLI; `SHIP_TEST_FAKE_CURSOR=1` flows through to the runner seam untouched.
 
@@ -243,13 +262,19 @@ Path/env: same `SHIP_DB_PATH` / `SHIP_RUNS_DIR` resolution as the existing CLI; 
 3. Poll loop: every 30s, `getRun` each in-flight id; on `isTerminal`: succeeded → harvest `branches[0].prUrl` → `landed`; failed → §7.2.
 4. Both `landed` → batch `done` → next batch (or `DriverTickResult{status:'done'}`). Renderer refreshes `driver.md` if `--out` configured. The skill takes over: reviewers, cycles, merge, then `mark-merged` per stream.
 
-### 7.2 Failure → judgment → retry
-1. Stream B's run terminates `failed` (`failureCategory: 'timeout-near-cap'`). Engine: stream→`failed`, attempt appended, run→`awaiting_judgment`; sibling in-flight streams keep polling to terminal first (no orphaned dispatches).
-2. Tick exits 10 with `awaiting:[{kind:'failure-triage', …}]`.
+### 7.2 Failure → judgment → retry *(v2: ordering made explicit — cursor)*
+1. Stream B's run terminates `failed` (`failureCategory: 'timeout-near-cap'`). Engine: stream→`failed`, attempt appended. **The run does NOT pause yet** — sibling in-flight streams keep polling to terminal first (no orphaned dispatches). Only when no stream remains in `dispatching|dispatched` does the run transition to `awaiting_judgment`.
+2. The tick then exits 10 with `awaiting:[{kind:'failure-triage', …}]` — one entry per `failed` stream awaiting triage.
 3. Brain triages (this is the LLM's actual job): `decide … retry` → stream→`pending`, next `run` re-dispatches same branch, fresh `wf_` id (§4.5). `skip` → `skipped`, batch can still complete; `abort` → run→`failed`, sticky.
 
-### 7.3 Crash mid-dispatch (the window §reviewers)
-`dispatching` persisted but process dies before `workflow_run_id` recorded. On resume: for each `dispatching` stream, query `listRuns({repo, status:['pending','running']})` and match by `docPath` (the recovery the skill documents for transport timeouts, now in code); exactly-one match → adopt it (`dispatched`); zero → revert to `pending` (dispatch never left); multiple → judgment request (never guess).
+### 7.3 Crash mid-dispatch (the window §reviewers) *(v2: correlation hardened — codex)*
+`dispatching` persisted but process dies before `workflow_run_id` recorded. Matching by `docPath` cardinality alone is fragile (an unrelated same-doc run gets adopted; pagination can hide the real one). v2 recovery, per `dispatching` stream:
+1. Query `listRuns({repo, status:['pending','running','succeeded','failed','cancelled']})` bounded to runs **created at/after the stream's `dispatching` timestamp** (persisted in `attempts`), and match on `docPath` **AND** the stream's `branch` (both are dispatch inputs; branch is unique per stream by construction).
+2. Exactly one → adopt (`dispatched`). Zero → revert to `pending` (the dispatch never left). Multiple, or pagination-suspect (result set at the limit) → emit `{kind:'dispatch-ambiguity', candidates:[{workflowRunId, createdAt, status}…]}` and pause — **never guess**; the brain answers with `decide … adopt --workflow-run <wf_id>` (or `retry` to abandon candidates and re-dispatch).
+3. **Pre-P3 verification step:** confirm `listRuns` surfaces `docPath` per returned run (it is on `WorkflowRun` today) and that the limit is high enough to bound the created-after window; if not, P3 adds the needed filter to the store first.
+
+### 7.6 Dependent batches wait for MERGE, not landed *(v2 — codex caught a contract break)*
+`depends_on` exists because later batches build on earlier batches' **merged** code (the historical work-driver contract). v2 semantics: a batch is dispatch-eligible only when every batch in its `depends_on` has all streams `done|skipped` (merged or skipped — not merely `landed`). When the only remaining work is blocked on unmerged dependencies, the tick exits with `status:'blocked_on_merges'` listing the landed-but-unmerged streams; the brain runs its review/merge policy, records `mark-merged`, and re-invokes. Batches with **no** `depends_on` edge keep dispatching immediately (preserves the parallel-while-CI optimization for file-disjoint batches).
 
 ### 7.4 Resume from store alone (acceptance)
 `driver.md` deleted mid-run → `ship driver run drv_…` proceeds from rows; `render --out` regenerates the file. Round-trip property: store → render → parse → import → rows lossless on progress fields.
@@ -260,8 +285,8 @@ Path/env: same `SHIP_DB_PATH` / `SHIP_RUNS_DIR` resolution as the existing CLI; 
 ## 8. Concurrency / consistency / failure model
 
 - **All state transitions transactional** via `@ship/store` conventions (`withStoreContentionGuard`, busy-timeout 30s); every transition bumps `driver_runs.updated_at`.
-- **Single-writer assumption per driver_run** (one brain drives one run). A second concurrent `run` on the same id detects a live tick via an `updated_at` heartbeat lease (<2× poll interval) and refuses with a clear error. Not a distributed lock — same trust level as the rest of the local workbench.
-- **Cancellation:** `ship driver cancel <drv_id>` (alias of `decide abort` at run level) cancels in-flight ship runs via `cancelRun` (idempotent), marks streams `failed(cancelled)`, run→`cancelled`, sticky.
+- **Single-writer assumption per driver_run** *(v2 — the heartbeat lease was over-engineered; claude §10e, plus codex caught that a `--max-wait` exit would self-block re-invocation)*: the engine stamps `tick_started_at` on tick entry and `tick_ended_at` on every exit (including `progress`/`blocked_on_merges` exits). A second `run` refuses only when a tick looks **live** — `tick_started_at` set with no matching `tick_ended_at` AND `updated_at` fresher than 3× the poll interval. A cleanly-exited tick never blocks the brain's immediate re-invoke. `--force` overrides (manual takeover after a hard crash inside the staleness window). Not a distributed lock — same trust level as the rest of the local workbench.
+- **Cancellation** *(v2 — cursor caught the cancel/decide mismatch)*: `ship driver cancel <drv_id>` is its own **run-level** verb on the public surface (`DriverService.cancel(driverRunId)`), not an alias of stream-scoped `decide`: it `cancelRun`s every in-flight ship run (idempotent), marks open streams `failed` (cancelled attempt recorded), run→`cancelled`, sticky. `decide … abort` remains the stream-scoped form used during triage.
 - **Engine errors ≠ stream failures:** store/contention/schema errors exit 1 and change nothing (transactions); stream failures are data (§7.2).
 - **Push events (F5):** out of scope; the poll sites are isolated in `engine.ts#awaitTerminal` so an event-driven waiter can replace them without touching the walker.
 
@@ -281,11 +306,10 @@ Phases 1–2 are committed and task-materialized now; 3–4 are committed but ta
 
 ## 10. Open questions
 
-a. **`driver_batches` table vs JSON column** (§5) — proposed table; reviewer call wanted.
-b. **MCP tick bound** — 4min default reasonable for MCP transports, or should the MCP verb always return immediately after one dispatch+scan pass (`maxWaitMs: 0` semantics)?
+*(v2: a, b, e resolved by cycle-1 design review — answers folded into §5, §6, §8. Remaining:)*
+
 c. **Mid-run input edits** — adding a stream to an imported run. v1: not supported (re-import a new run). Acceptable?
 d. **`cycles` ownership** — review cycles are policy-side; v1 records them via `mark-merged --cycles N`? Or drop from the store until F3 lands and derive from coordinator verdicts? Proposed: optional field on `mark-merged`, derive later.
-e. **Where the heartbeat lease (§8) is too clever** — a plain "refuse if status=running and updated_at fresh" may be enough; flag if even that is over-engineering for single-operator v1.
 
 ## 11. Validation plan
 
