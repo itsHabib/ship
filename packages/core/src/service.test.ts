@@ -212,6 +212,23 @@ describe("ShipService.ship — happy path", () => {
     expect(row?.phases[0]?.cursorRunId).toBe(out.cursorRun.id);
   });
 
+  test("local succeeded run removes the worktree scratch task-doc afterward", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const scratchPath = `${WORKDIR}/task-doc.md`;
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    await expect(h.fs.stat(scratchPath)).rejects.toThrow();
+    expect(h.fs.snapshot().files.has(scratchPath)).toBe(false);
+  });
+
   test("succeeded run: state transitions, artifacts persisted, ShipOutput populated", async () => {
     h.cursor.enqueue({
       events: [],

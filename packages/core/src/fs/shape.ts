@@ -26,6 +26,8 @@ export interface ShipFs {
   writeFileBytes(path: string, data: Buffer): Promise<void>;
   /** Recursive mkdir. No-op if already present. */
   mkdir(path: string, opts: { recursive: true }): Promise<void>;
+  /** Remove a single file. ENOENT is swallowed by callers that best-effort cleanup. */
+  unlink(path: string): Promise<void>;
   /**
    * Append-mode writable. The caller `.write()`s lines and `.end()`s
    * to flush+close. Open-time failures (e.g. missing parent dir) and

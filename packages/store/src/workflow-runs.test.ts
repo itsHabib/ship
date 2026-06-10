@@ -80,6 +80,28 @@ describe("workflow runs (via createStore)", () => {
     expect(store.getRun(newWorkflowRunId())).toBeNull();
   });
 
+  test("listWorkflowRunsForPrune: returns lightweight rows without phases", () => {
+    const input = makeInput();
+    store.createWorkflowRun(input);
+    const rows = store.listWorkflowRunsForPrune();
+    expect(rows).toEqual([{ id: input.id, status: "pending", updatedAt: currentNow }]);
+  });
+
+  test("deleteWorkflowRun: removes row and cascades child tables", () => {
+    const input = makeInput();
+    store.createWorkflowRun(input);
+    const phaseId = newPhaseId();
+    store.appendPhase({
+      id: phaseId,
+      workflowRunId: input.id,
+      kind: "implement",
+      inputJson: "{}",
+    });
+    store.deleteWorkflowRun(input.id);
+    expect(store.getRun(input.id)).toBeNull();
+    expect(store.listWorkflowRunsForPrune()).toEqual([]);
+  });
+
   test("createWorkflowRun: duplicate id throws (PK violation)", () => {
     const input = makeInput();
     store.createWorkflowRun(input);

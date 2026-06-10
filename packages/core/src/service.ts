@@ -69,6 +69,7 @@ import {
   resolveContainedCloudArtifactDest,
   resolveContainedCloudArtifactDestUnderRoot,
   resolveRunArtifactPaths,
+  resolveWorktreeScratchTaskDocPath,
   type RunArtifactPaths,
 } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
@@ -85,6 +86,7 @@ import {
   RoomRunnerNotConfiguredError,
   WorkdirNotFoundError,
 } from "./errors.js";
+import { executePruneRuns, type PruneRunsInput, type PruneRunsOutput } from "./prune/prune.js";
 import { resolveValidatedDoc, resolveValidatedDocForCloud } from "./validate.js";
 
 /** Construction-time configuration for the service. */
@@ -178,6 +180,8 @@ export interface ShipService {
     path: string,
     opts?: { readonly force?: boolean; readonly outDir?: string },
   ): Promise<{ localPath: string; sizeBytes: number }>;
+  /** Delete terminal runs older than `--before` plus orphan artifact dirs. */
+  pruneRuns(input: PruneRunsInput): Promise<PruneRunsOutput>;
 }
 
 // Per-run entry stored in the `ActiveRunsRegistry`. `handle` is set
@@ -483,6 +487,13 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
       Promise.resolve().then(() => listArtifactsFromStore(store, workflowRunId)),
     downloadArtifact: (workflowRunId, path, opts) =>
       downloadArtifactImpl({ config, fs, store }, workflowRunId, path, opts),
+    pruneRuns: (input) =>
+      executePruneRuns({
+        before: input.before,
+        runsDir: config.runsDir,
+        store,
+        ...(input.dryRun === true ? { dryRun: true } : {}),
+      }),
   };
 
   return service;
@@ -625,6 +636,8 @@ interface PreparedRun {
   readonly validated: ValidatedDoc;
   readonly effectiveWorkdir: string;
   readonly repo: string;
+  /** Exact scratch task-doc path ship wrote for local runs; undefined for remote. */
+  readonly scratchTaskDocPath?: string;
 }
 
 // Sync `ship` body — drives the run end-to-end, blocking the caller
@@ -881,7 +894,17 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
     validated,
     effectiveWorkdir,
     repo,
+    ...resolveScratchTaskDocFields(ctx.input, remoteNoWorkdir, effectiveWorkdir),
   };
+}
+
+function resolveScratchTaskDocFields(
+  input: ShipInput,
+  remoteNoWorkdir: boolean,
+  effectiveWorkdir: string,
+): { readonly scratchTaskDocPath?: string } {
+  if (remoteNoWorkdir || isRemoteRuntime(input)) return {};
+  return { scratchTaskDocPath: resolveWorktreeScratchTaskDocPath(effectiveWorkdir) };
 }
 
 async function runToTerminal(
@@ -988,6 +1011,19 @@ async function runToTerminal(
         /* swallow — close errors after terminal don't change outcome */
       }
     }
+    await cleanupScratchTaskDocIfTerminal(ctx, prep);
+  }
+}
+
+async function cleanupScratchTaskDocIfTerminal(ctx: ShipContext, prep: PreparedRun): Promise<void> {
+  if (prep.scratchTaskDocPath === undefined) return;
+  if (ctx.resolvedCursorRuntime !== "local") return;
+  const row = ctx.store.getRun(prep.workflowRunId);
+  if (row === null || !isTerminal(row.status)) return;
+  try {
+    await ctx.fs.unlink(prep.scratchTaskDocPath);
+  } catch {
+    /* best-effort — missing scratch must not change terminal outcome */
   }
 }
 
@@ -996,6 +1032,9 @@ async function prepareArtifacts(ctx: ShipContext, prep: PreparedRun): Promise<st
   const taskDoc =
     prep.validated.content ?? (await ctx.fs.readFile(prep.validated.absoluteDocPath, "utf-8"));
   await ctx.fs.writeFile(prep.paths.taskDoc, taskDoc);
+  if (prep.scratchTaskDocPath !== undefined) {
+    await ctx.fs.writeFile(prep.scratchTaskDocPath, taskDoc);
+  }
 
   const prompt = renderImplementationPrompt({
     taskDoc,

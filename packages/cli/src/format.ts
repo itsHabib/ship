@@ -2,8 +2,10 @@
 // (default) and `--json` variant; pretty mode is plain ASCII (no ANSI
 // colors in V1) so test snapshots are stable across terminals.
 
-import type { ShipOutput } from "@ship/core";
+import type { PruneRunsOutput, ShipOutput } from "@ship/core";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
+
+import { formatPruneAge } from "@ship/core";
 
 /** Renders a `ShipOutput` for the `ship ship` subcommand. */
 export function formatShipOutput(out: ShipOutput, json: boolean): string {
@@ -51,6 +53,21 @@ export function formatWorkflowRunList(runs: readonly WorkflowRun[], json: boolea
       `${pad(r.id, 32)}  ${pad(r.status, 10)}  ${pad(r.worktree.repo, 24)}  ${pad(r.createdAt, 25)}  ${r.updatedAt}`,
   );
   return [header, ...rows].join("\n");
+}
+
+/** Renders a `pruneRuns` result for the `ship prune` subcommand. */
+export function formatPruneOutput(out: PruneRunsOutput, json: boolean): string {
+  if (json) return jsonStringify(out);
+  if (out.targets.length === 0) {
+    return out.dryRun ? "dry-run: (none)" : "pruned: (none)";
+  }
+  const header = `${pad("RUN ID", 32)}  ${pad("STATUS", 10)}  AGE`;
+  const rows = out.targets.map(
+    (t) =>
+      `${pad(t.runId, 32)}  ${pad(t.status, 10)}  ${t.status === "orphan" ? "orphan" : formatPruneAge(t.ageMs)}`,
+  );
+  const prefix = out.dryRun ? "dry-run:\n" : "pruned:\n";
+  return `${prefix}${[header, ...rows].join("\n")}`;
 }
 
 /** Renders a `cancelRun` result for the `ship cancel` subcommand. */

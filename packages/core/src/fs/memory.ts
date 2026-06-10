@@ -88,6 +88,12 @@ export function createMemoryShipFs(): MemoryShipFs {
       fs.files.delete(norm);
       return Promise.resolve();
     },
+    unlink: (path) => {
+      const norm = normalize(path);
+      const removed = fs.files.delete(norm) || fs.binaryFiles.delete(norm);
+      if (!removed) return Promise.reject(ENOENT(path));
+      return Promise.resolve();
+    },
     mkdir: (path, _opts) => {
       // Recursive only — `ShipFs.mkdir` types `opts.recursive: true`.
       // Walk every ancestor and add it; idempotent on existing dirs.

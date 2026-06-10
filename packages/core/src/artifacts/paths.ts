@@ -34,6 +34,11 @@ export function resolveRunArtifactsDir(runsDir: string, workflowRunId: string): 
   return join(runsDir, workflowRunId);
 }
 
+/** Scratch task-doc path ship writes at the worktree root for local runs. */
+export function resolveWorktreeScratchTaskDocPath(workdir: string): string {
+  return join(workdir, ARTIFACT_FILES.taskDoc);
+}
+
 export function resolveRunArtifactPaths(runsDir: string, workflowRunId: string): RunArtifactPaths {
   const dir = resolveRunArtifactsDir(runsDir, workflowRunId);
   return {

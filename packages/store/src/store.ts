@@ -13,7 +13,11 @@ import type {
   UpdateCursorRunInput,
 } from "./cursor-runs.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
-import type { CreateWorkflowRunInput, ListRunsFilter } from "./workflow-runs.js";
+import type {
+  CreateWorkflowRunInput,
+  ListRunsFilter,
+  WorkflowRunPruneRow,
+} from "./workflow-runs.js";
 
 import { createCursorRunOps } from "./cursor-runs.js";
 import { openDatabase, withStoreContentionGuard } from "./db.js";
@@ -114,6 +118,10 @@ export interface Store {
    * `WorkflowRunNotFoundError` if unknown.
    */
   cancelRun: (id: string) => WorkflowRun;
+  /** All workflow rows (id, status, updated_at) for prune selection. */
+  listWorkflowRunsForPrune: () => WorkflowRunPruneRow[];
+  /** Delete a workflow run; cascades phases + cursor_runs. Idempotent on unknown id. */
+  deleteWorkflowRun: (id: string) => void;
   /**
    * Run `PRAGMA wal_checkpoint(TRUNCATE)` (cleans up `-wal` / `-shm`
    * sidecars) and close the SQLite handle. Caller must not invoke other
@@ -156,6 +164,12 @@ export function createStore(opts: CreateStoreOptions): Store {
     return {
       appendPhase: (input) => withStoreContentionGuard(() => phaseOps.append(input)),
       cancelRun: (id) => withStoreContentionGuard(() => workflowRunOps.cancel(id)),
+      deleteWorkflowRun: (id) => {
+        withStoreContentionGuard(() => {
+          workflowRunOps.delete(id);
+        });
+      },
+      listWorkflowRunsForPrune: () => withStoreContentionGuard(() => workflowRunOps.listForPrune()),
       close: () => {
         // wal_checkpoint(TRUNCATE) can throw SQLITE_BUSY under contention;
         // that's non-fatal for shutdown (SQLite reclaims sidecars on the
