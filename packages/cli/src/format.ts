@@ -67,7 +67,9 @@ export function formatPruneOutput(out: PruneRunsOutput, json: boolean): string {
       `${pad(t.runId, 32)}  ${pad(t.status, 10)}  ${t.status === "orphan" ? "orphan" : formatPruneAge(t.ageMs)}`,
   );
   const prefix = out.dryRun ? "dry-run:\n" : "pruned:\n";
-  return `${prefix}${[header, ...rows].join("\n")}`;
+  const body = `${prefix}${[header, ...rows].join("\n")}`;
+  if (out.failures.length === 0) return body;
+  return `${body}\nfailed/skipped (${String(out.failures.length)}): ${out.failures.join(", ")}`;
 }
 
 /** Renders a `cancelRun` result for the `ship cancel` subcommand. */

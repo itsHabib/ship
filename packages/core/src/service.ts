@@ -54,7 +54,7 @@ import {
   newPhaseId,
   newWorkflowRunId,
 } from "@ship/workflow";
-import { basename } from "node:path";
+import { basename, resolve as resolvePathAbs } from "node:path";
 
 import type { EventWriter } from "./artifacts/ndjson.js";
 import type { DocSource } from "./doc-source/doc-source.js";
@@ -894,17 +894,22 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
     validated,
     effectiveWorkdir,
     repo,
-    ...resolveScratchTaskDocFields(ctx.input, remoteNoWorkdir, effectiveWorkdir),
+    ...resolveScratchTaskDocFields(ctx.input, effectiveWorkdir, validated.absoluteDocPath),
   };
 }
 
 function resolveScratchTaskDocFields(
   input: ShipInput,
-  remoteNoWorkdir: boolean,
   effectiveWorkdir: string,
+  absoluteDocPath: string,
 ): { readonly scratchTaskDocPath?: string } {
-  if (remoteNoWorkdir || isRemoteRuntime(input)) return {};
-  return { scratchTaskDocPath: resolveWorktreeScratchTaskDocPath(effectiveWorkdir) };
+  if (isRemoteRuntime(input)) return {};
+  const scratchPath = resolveWorktreeScratchTaskDocPath(effectiveWorkdir);
+  // The user's docPath may already BE the scratch path — writing then deleting
+  // it at cleanup would destroy their source file. No scratch copy is needed:
+  // the doc is already in the worktree where the agent reads it.
+  if (resolvePathAbs(scratchPath) === resolvePathAbs(absoluteDocPath)) return {};
+  return { scratchTaskDocPath: scratchPath };
 }
 
 async function runToTerminal(
@@ -926,9 +931,12 @@ async function runToTerminal(
   let cursorRunId: string | undefined;
   let ndjson: EventWriter | undefined;
   let eventPump: EventPumpHandle | undefined;
+  let scratchOwned = false;
 
   try {
-    const prompt = await prepareArtifacts(ctx, prep);
+    const artifacts = await prepareArtifacts(ctx, prep);
+    const prompt = artifacts.prompt;
+    scratchOwned = artifacts.scratchOwned;
 
     // Concurrent `cancelRun()` may have flipped the workflow + phase
     // rows to `cancelled` while we were doing fs work. Bail before
@@ -1011,15 +1019,21 @@ async function runToTerminal(
         /* swallow — close errors after terminal don't change outcome */
       }
     }
-    await cleanupScratchTaskDocIfTerminal(ctx, prep);
+    await cleanupScratchTaskDocIfTerminal(ctx, prep, scratchOwned);
   }
 }
 
-async function cleanupScratchTaskDocIfTerminal(ctx: ShipContext, prep: PreparedRun): Promise<void> {
+async function cleanupScratchTaskDocIfTerminal(
+  ctx: ShipContext,
+  prep: PreparedRun,
+  scratchOwned: boolean,
+): Promise<void> {
   if (prep.scratchTaskDocPath === undefined) return;
+  // Only delete a scratch file ship itself wrote — a pre-existing file at the
+  // scratch path belongs to the user and must survive the run.
+  if (!scratchOwned) return;
   if (ctx.resolvedCursorRuntime !== "local") return;
-  const row = ctx.store.getRun(prep.workflowRunId);
-  if (row === null || !isTerminal(row.status)) return;
+  if (!isRunTerminalSafe(ctx, prep.workflowRunId)) return;
   try {
     await ctx.fs.unlink(prep.scratchTaskDocPath);
   } catch {
@@ -1027,13 +1041,35 @@ async function cleanupScratchTaskDocIfTerminal(ctx: ShipContext, prep: PreparedR
   }
 }
 
-async function prepareArtifacts(ctx: ShipContext, prep: PreparedRun): Promise<string> {
+function isRunTerminalSafe(ctx: ShipContext, workflowRunId: string): boolean {
+  // Called from a finally block: a store read that throws (e.g. schema error
+  // on a malformed row) must not override the run's outcome. No row / unreadable
+  // row / non-terminal all mean "leave the scratch file alone".
+  try {
+    const row = ctx.store.getRun(workflowRunId);
+    return row !== null && isTerminal(row.status);
+  } catch {
+    return false;
+  }
+}
+
+async function prepareArtifacts(
+  ctx: ShipContext,
+  prep: PreparedRun,
+): Promise<{ prompt: string; scratchOwned: boolean }> {
   await ctx.fs.mkdir(prep.paths.dir, { recursive: true });
   const taskDoc =
     prep.validated.content ?? (await ctx.fs.readFile(prep.validated.absoluteDocPath, "utf-8"));
   await ctx.fs.writeFile(prep.paths.taskDoc, taskDoc);
+  let scratchOwned = false;
   if (prep.scratchTaskDocPath !== undefined) {
-    await ctx.fs.writeFile(prep.scratchTaskDocPath, taskDoc);
+    // A file already present at the scratch path is the user's, not ours —
+    // never overwrite it, and cleanup must not delete it.
+    const preexisting = await fileExists(ctx, prep.scratchTaskDocPath);
+    if (!preexisting) {
+      await ctx.fs.writeFile(prep.scratchTaskDocPath, taskDoc);
+      scratchOwned = true;
+    }
   }
 
   const prompt = renderImplementationPrompt({
@@ -1047,7 +1083,16 @@ async function prepareArtifacts(ctx: ShipContext, prep: PreparedRun): Promise<st
     baseRef: prep.baseRef,
   });
   await ctx.fs.writeFile(prep.paths.prompt, prompt);
-  return prompt;
+  return { prompt, scratchOwned };
+}
+
+async function fileExists(ctx: ShipContext, path: string): Promise<boolean> {
+  try {
+    await ctx.fs.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 interface FinalizeSuccessArgs {

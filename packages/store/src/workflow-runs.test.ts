@@ -100,6 +100,11 @@ describe("workflow runs (via createStore)", () => {
     store.deleteWorkflowRun(input.id);
     expect(store.getRun(input.id)).toBeNull();
     expect(store.listWorkflowRunsForPrune()).toEqual([]);
+    // Child rows must be gone too: re-creating the same run id must not
+    // resurrect the old phase, and the phase id must be unknown.
+    store.createWorkflowRun(input);
+    expect(store.getRun(input.id)?.phases).toEqual([]);
+    expect(() => store.updatePhase(phaseId, { status: "running" })).toThrow();
   });
 
   test("createWorkflowRun: duplicate id throws (PK violation)", () => {

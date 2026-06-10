@@ -37,6 +37,8 @@ export interface PruneRunsOutput {
   readonly targets: readonly PruneTarget[];
   readonly deletedStoreRows: number;
   readonly deletedRunDirs: number;
+  /** Run ids whose deletion failed or was skipped by the orphan recheck — never aborts the batch. */
+  readonly failures: readonly string[];
 }
 
 export interface PruneFs {
@@ -71,7 +73,7 @@ export function parsePruneDuration(raw: string): number {
   }
   const amount = Number(match[1]);
   const unit = match[2];
-  if (!Number.isInteger(amount) || amount <= 0) {
+  if (amount <= 0) {
     throw new PruneDurationError(`invalid --before duration: ${raw}`);
   }
   const dayMs = 24 * 60 * 60 * 1000;
@@ -102,8 +104,12 @@ export function selectPruneTargets(
 
   for (const row of rows) {
     if (!isTerminal(row.status)) continue;
-    if (Date.parse(row.updatedAt) >= cutoffMs) continue;
-    const ageMs = Math.max(0, nowMs - Date.parse(row.updatedAt));
+    const updatedAtMs = Date.parse(row.updatedAt);
+    // A malformed timestamp must never select the row — NaN comparisons are
+    // all-false, which would otherwise sail past the cutoff guard.
+    if (Number.isNaN(updatedAtMs)) continue;
+    if (updatedAtMs >= cutoffMs) continue;
+    const ageMs = Math.max(0, nowMs - updatedAtMs);
     targets.set(row.id, {
       ageMs,
       deleteRunDir: runDirSet.has(row.id),
@@ -155,22 +161,54 @@ export async function executePruneRuns(args: {
   const dryRun = args.dryRun === true;
 
   if (dryRun) {
-    return { deletedRunDirs: 0, deletedStoreRows: 0, dryRun: true, targets };
+    return { deletedRunDirs: 0, deletedStoreRows: 0, dryRun: true, failures: [], targets };
   }
 
   let deletedStoreRows = 0;
   let deletedRunDirs = 0;
+  const failures: string[] = [];
 
   for (const target of targets) {
-    if (target.deleteStoreRow) {
-      args.store.deleteWorkflowRun(target.runId);
-      deletedStoreRows += 1;
+    // Orphan classification raced against run creation: the dir was listed
+    // before a store row existed. Recheck the store at deletion time — a row
+    // that appeared since the snapshot means this is a live run, not an orphan.
+    if (target.status === "orphan" && hasStoreRowNow(args.store, target.runId)) {
+      failures.push(target.runId);
+      continue;
     }
-    if (target.deleteRunDir) {
-      await pruneFs.removeRunDir(join(args.runsDir, target.runId));
-      deletedRunDirs += 1;
+    try {
+      await pruneOneTarget(args.store, pruneFs, args.runsDir, target);
+      if (target.deleteStoreRow) deletedStoreRows += 1;
+      if (target.deleteRunDir) deletedRunDirs += 1;
+    } catch {
+      // Per-target isolation: one failed deletion never strands the rest of
+      // the batch. The id is reported; re-running prune retries it.
+      failures.push(target.runId);
     }
   }
 
-  return { deletedRunDirs, deletedStoreRows, dryRun: false, targets };
+  return { deletedRunDirs, deletedStoreRows, dryRun: false, failures, targets };
+}
+
+function hasStoreRowNow(store: Store, runId: string): boolean {
+  try {
+    return store.getRun(runId) !== null;
+  } catch {
+    // A row we cannot read is a row we must not treat as absent.
+    return true;
+  }
+}
+
+async function pruneOneTarget(
+  store: Store,
+  pruneFs: PruneFs,
+  runsDir: string,
+  target: PruneTarget,
+): Promise<void> {
+  if (target.deleteStoreRow) {
+    store.deleteWorkflowRun(target.runId);
+  }
+  if (target.deleteRunDir) {
+    await pruneFs.removeRunDir(join(runsDir, target.runId));
+  }
 }

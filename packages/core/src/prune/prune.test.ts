@@ -51,6 +51,15 @@ describe("selectPruneTargets", () => {
     expect(targets[0]?.deleteRunDir).toBe(true);
   });
 
+  test("never selects a row with a malformed updatedAt timestamp", () => {
+    const rows: WorkflowRunPruneRow[] = [
+      { id: "wf_bad_ts", status: "succeeded", updatedAt: "not-a-timestamp" },
+      { id: "wf_old_ok", status: "succeeded", updatedAt: "2026-04-01T00:00:00.000Z" },
+    ];
+    const targets = selectPruneTargets(rows, [], cutoffMs, nowMs);
+    expect(targets.map((t) => t.runId)).toEqual(["wf_old_ok"]);
+  });
+
   test("includes orphan run dirs with no store row", () => {
     const rows: WorkflowRunPruneRow[] = [];
     const targets = selectPruneTargets(rows, ["wf_orphan"], cutoffMs, nowMs);
@@ -141,6 +150,89 @@ describe("executePruneRuns", () => {
     expect(store.getRun(oldId)).not.toBeNull();
     const dirsAfter = await pruneFs.listRunDirNames(runsDir);
     expect(dirsAfter).toContain(oldId);
+  });
+
+  test("orphan recheck: a run created during the listing gap is not deleted", async () => {
+    const racingId = newWorkflowRunId();
+    await mkdir(join(runsDir, racingId), { recursive: true });
+
+    // Simulate the race: the store row appears AFTER the prune snapshot was
+    // taken but BEFORE deletion — injected via the dir-listing hook, which
+    // executePruneRuns awaits after reading store rows.
+    const racingPruneFs: PruneFs = {
+      listRunDirNames: async (dir) => {
+        store.createWorkflowRun({
+          baseRef: "main",
+          docPath: "docs.md",
+          id: racingId,
+          policy: { agentTimeoutMs: 1, baseRef: "main", maxRunDurationMs: 1 },
+          repo: "ship",
+          worktree: {
+            baseRef: "main",
+            branch: "feat",
+            name: "feat",
+            path: "/wt/feat",
+            repo: "ship",
+          },
+        });
+        return pruneFs.listRunDirNames(dir);
+      },
+      removeRunDir: pruneFs.removeRunDir,
+    };
+
+    const out = await executePruneRuns({
+      before: "30d",
+      nowMs,
+      pruneFs: racingPruneFs,
+      runsDir,
+      store,
+    });
+
+    expect(out.failures).toContain(racingId);
+    expect(store.getRun(racingId)).not.toBeNull();
+    const dirsAfter = await pruneFs.listRunDirNames(runsDir);
+    expect(dirsAfter).toContain(racingId);
+  });
+
+  test("one failed deletion does not abort the rest of the batch", async () => {
+    store.close();
+    store = createStore({ clock: () => "2026-01-01T00:00:00.000Z", dbPath: ":memory:" });
+    const ids = [newWorkflowRunId(), newWorkflowRunId()].sort((a, b) => a.localeCompare(b));
+    for (const id of ids) {
+      store.createWorkflowRun({
+        baseRef: "main",
+        docPath: "docs.md",
+        id,
+        policy: { agentTimeoutMs: 1, baseRef: "main", maxRunDurationMs: 1 },
+        repo: "ship",
+        worktree: { baseRef: "main", branch: "feat", name: "feat", path: "/wt/feat", repo: "ship" },
+      });
+      store.updateWorkflowRunStatus(id, "succeeded");
+      await mkdir(join(runsDir, id), { recursive: true });
+    }
+
+    const failFirst = ids[0] ?? "";
+    const flakyPruneFs: PruneFs = {
+      listRunDirNames: pruneFs.listRunDirNames,
+      removeRunDir: (path) => {
+        if (path.endsWith(failFirst)) return Promise.reject(new Error("EBUSY"));
+        return pruneFs.removeRunDir(path);
+      },
+    };
+
+    const out = await executePruneRuns({
+      before: "30d",
+      nowMs,
+      pruneFs: flakyPruneFs,
+      runsDir,
+      store,
+    });
+
+    expect(out.failures).toEqual([failFirst]);
+    expect(out.deletedRunDirs).toBe(1);
+    const dirsAfter = await pruneFs.listRunDirNames(runsDir);
+    expect(dirsAfter).toContain(failFirst);
+    expect(dirsAfter).not.toContain(ids[1]);
   });
 
   test("deletes store row before run dir and cleans orphans", async () => {
