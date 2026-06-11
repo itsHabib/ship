@@ -15,7 +15,7 @@ Zod wire schemas for Ship's MCP tool boundary — the contract between `@ship/mc
 
 **Inspect / control tools**
 
-- `getWorkflowRunInputSchema` / `getWorkflowRunOutputSchema`
+- `getWorkflowRunInputSchema` / `getWorkflowRunOutputSchema` — the output carries failure diagnostics (`runDurationMs`, `maxRunDurationMs`, `sdkTerminalStatus`, `recentEvents`, `watchUrl`, `branches`) plus top-level **`failureCategory`**, with a refinement enforcing it is present only on `failed` runs.
 - `listWorkflowRunsInputSchema` / `listWorkflowRunsOutputSchema`
 - `cancelWorkflowRunInputSchema` / `cancelWorkflowRunOutputSchema`
 

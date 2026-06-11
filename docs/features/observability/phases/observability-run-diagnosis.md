@@ -1,8 +1,8 @@
-**Status**: draft
+**Status**: shipped — PR #124 (squash `2253345`, 2026-06-10)
 **Owner**: @michael
 **Date**: 2026-06-09
 **Related**: dossier phase `observability-run-diagnosis` (id: `phs_01KTJH6RW4DBEBNWA5D6N791FF`); locked design [docs/features/observability/spec.md](../spec.md) §6 (run-diagnosis surface), §7 (read path), §9 phase 2. **Closes feedback task** `failed-run-errormessage-omits-inflight-tool-call` (id: `tsk_01KT3CYEFSM41WS3VEQM5NMG0K`). **Depends on** P1 (all merged: #116 / #117 / #120).
-**P1 validation gate (spec §9/§11)**: pending — no real failed run has occurred since P1 merged (2026-06-09); operator directed P2 to proceed same day. Gate evidence is captured on the next real failure; this phase's acceptance run doubles as the gate check (a failed run diagnosable from structured surfaces alone).
+**P1 validation gate (spec §9/§11)**: **PASSED** 2026-06-10 — deliberate e2e failure `wf_01KTT7F3NXG7A9TN2AANY7Z89K` (cloud, nonexistent `startingRef` → SDK `ConfigurationError`) classified `sdk-throw` and was diagnosed from `ship diagnose` + persisted category/`errorChain` alone, zero `events.ndjson` grep. (Synthetic provisioning failure; the in-flight-fallback categories accrue organic evidence on the next natural failure.)
 
 # Run diagnosis surface — failureCategory on get_workflow_run, in-flight fallback, ship diagnose
 

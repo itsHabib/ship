@@ -20,6 +20,11 @@ Workflow orchestration — `ShipService`, artifact I/O (NDJSON events, rendered 
 - Terminal failures walk the `Error.cause` chain (max depth 10) into a structured **`errorChain`** on persisted rows and `ShipOutput`.
 - `result.json` is guarded against BigInt, circular refs, and non-JSON values (internal serializer — no public symbol, but the contract holds).
 
+**Failure classification (observability P1/P2 — PRs #117/#124)**
+
+- Both finalize paths classify failed runs via `@ship/cursor-runner`'s `classifyFailure`; the **`failureCategory`** + bounded `failureDetail` persist on the phase row, `errorMessage` becomes `<category>; <detail>`, and a structured `"run failed"` log line carries `{ workflowRunId, phase, failureCategory }`.
+- `getRun` hoists the persisted category to the top-level output (failed runs only — never re-derived at read time).
+
 **Wiring & artifacts**
 
 - `createDefaultShipService`, `DEFAULT_MODEL`, `ShipServiceFactory`
@@ -28,7 +33,7 @@ Workflow orchestration — `ShipService`, artifact I/O (NDJSON events, rendered 
 
 ## How it composes
 
-Orchestrates `@ship/store` (persistence), `@ship/cursor-runner` (local + cloud agents), `@ship/workflow` (domain + transitions), and `@ship/mcp` (wire schemas). Does not import `@cursor/sdk` directly — ED-2 isolation keeps SDK usage in `cursor-runner`. Tests use `@ship/test-harness` for in-memory wiring.
+Orchestrates `@ship/store` (persistence), `@ship/cursor-runner` (local + cloud agents), `@ship/workflow` (domain + transitions), `@ship/mcp` (wire schemas), and `@ship/logger` (structured stderr diagnostics, injected via the optional top-level `ShipServiceDeps.logger`). Does not import `@cursor/sdk` directly — ED-2 isolation keeps SDK usage in `cursor-runner`. Tests use `@ship/test-harness` for in-memory wiring.
 
 ## When to swap it
 

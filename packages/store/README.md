@@ -18,6 +18,7 @@ SQLite persistence for workflow runs, phases, and cursor-run rows. Hand-written 
 **Phases**
 
 - `appendPhase`, `updatePhase`
+- Phase rows carry the persisted **`failure_category`** (nullable; migration `0004`) — written by `core`'s finalize classification, hydrated through `@ship/workflow`'s `failureCategorySchema`. Pre-migration rows stay NULL.
 
 **Cursor runs**
 

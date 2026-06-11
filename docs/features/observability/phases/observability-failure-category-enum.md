@@ -1,4 +1,4 @@
-**Status**: draft
+**Status**: shipped — PR #117 (squash `f6b6f55`, 2026-06-09)
 **Owner**: @michael
 **Date**: 2026-06-02
 **Related**: dossier task `observability-failure-category-enum` (id: `tsk_01KTJH8HWKD3DANMPJ15WE5WD9`); locked design [docs/features/observability/spec.md](../spec.md) §5, §6, §7, §4 D5.

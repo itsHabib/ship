@@ -9,9 +9,10 @@ Domain layer for Ship — Zod schemas, inferred TypeScript types, workflow/phase
 **Schemas & types**
 
 - `workflowRunSchema`, `phaseSchema`, `phaseKindSchema`, status enums
-- **`cursorRunRuntimeSchema`** — `"local" | "cloud"` discriminator for cursor runs
+- **`cursorRunRuntimeSchema`** — `"local" | "cloud" | "rooms"` discriminator for cursor runs
+- **`failureCategorySchema`** — canonical failure taxonomy for failed runs (`contention` / `timeout-near-cap` / `agent-collapse-on-running-tool` / `sdk-throw` / `logic` / `unknown`). Literals are tombstones — persisted in SQLite, never deleted/renamed, only added. `cancelled` is deliberately absent (cancellation is a run status, not a failure class).
 - `modelSelectionSchema`, `canTransition`, `isTerminal`, `TransitionError`
-- Types: `WorkflowRun`, `Phase`, `PhaseKind`, `CursorRunRuntime`, etc.
+- Types: `WorkflowRun`, `Phase`, `PhaseKind`, `CursorRunRuntime`, `FailureCategory`, etc.
 
 **Phase kinds**
 
