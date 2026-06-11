@@ -196,6 +196,31 @@ importers:
         specifier: 2.1.9
         version: 2.1.9(@types/node@22.19.17)
 
+  packages/driver:
+    dependencies:
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.0
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@stryker-mutator/core':
+        specifier: 9.6.1
+        version: 9.6.1(@types/node@22.19.17)
+      '@stryker-mutator/vitest-runner':
+        specifier: 9.6.1
+        version: 9.6.1(@stryker-mutator/core@9.6.1(@types/node@22.19.17))(vitest@2.1.9(@types/node@22.19.17))
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.17
+      tsx:
+        specifier: ^4.19.0
+        version: 4.21.0
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.19.17)
+
   packages/logger:
     dependencies:
       pino:
