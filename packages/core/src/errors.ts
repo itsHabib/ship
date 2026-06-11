@@ -120,6 +120,19 @@ export class MissingRepoError extends Error {
   }
 }
 
+/** The policy cap window expired before the SDK start/attach call produced a handle. */
+export class CursorRunStartTimedOutError extends Error {
+  override readonly name = "CursorRunStartTimedOutError";
+  readonly windowMs: number;
+
+  constructor(windowMs: number) {
+    super(
+      `cursor run start did not produce a handle within the policy.maxRunDurationMs window (${String(windowMs)}ms); SDK start/attach presumed hung`,
+    );
+    this.windowMs = windowMs;
+  }
+}
+
 /** Wraps an underlying fs failure during a post-run-creation artifact write. */
 export class ArtifactWriteFailedError extends Error {
   override readonly name = "ArtifactWriteFailedError";

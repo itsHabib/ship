@@ -18,20 +18,28 @@ still `running` at 60+ minutes; a manual cancel + re-dispatch succeeded in
 
 ## Functional
 
-- New `awaitResultWithDurationCap` in `@ship/core` (`cursor-runs/duration-cap.ts`)
-  races the runner's terminal promise against the policy cap. On expiry it
-  resolves a synthetic `failed` terminal and fires a best-effort
-  `handle.cancel()` (not awaited — a hung agent may never acknowledge).
-- The synthetic result carries `durationMs >= maxRunDurationMs` and no
-  classification events, so the existing `classifyFailure` lands on
+- New `runWithDurationCap` in `@ship/core` (`cursor-runs/duration-cap.ts`)
+  runs the whole start → terminal sequence under a single cap window: the
+  window opens *before* the SDK start/attach call, so a stalled
+  `Agent.create` / `agent.send` / `Agent.resume` is bounded the same as a
+  hung agent run (codex review caught the attach gap on the first cut).
+- Expiry with a live handle resolves a synthetic `failed` terminal and fires
+  a best-effort `handle.cancel()` (not awaited — a hung agent may never
+  acknowledge). The synthetic result carries `durationMs >= maxRunDurationMs`
+  and no classification events, so the existing `classifyFailure` lands on
   `timeout-near-cap` deterministically; callers (work-driver, future
   `@ship/driver`) get a terminal `failed` + `failureCategory` to triage
   instead of polling forever.
-- Both await sites are guarded: fresh dispatch (`runToTerminal`) and cloud
-  resume (`runResumeAttach`). On resume the window is the *remaining* budget
+- Expiry *before* a handle exists rejects `CursorRunStartTimedOutError`
+  (classified `sdk-throw` — the SDK start call hung, not the agent run); a
+  handle arriving after expiry is cancelled and never registered, so no
+  pump/registry bookkeeping outlives the finalized run.
+- Both sites are guarded: fresh dispatch (`runToTerminal`) and cloud resume
+  (`runResumeAttach`). On resume the window is the *remaining* budget
   (`cap − elapsed since the cursor run started`), floored at a 60s grace
-  window so an already-terminal run can still deliver its real result —
-  a process restart doesn't re-grant a hung run the full cap.
+  window — itself clamped to the cap, so the grace never grants more than
+  `maxRunDurationMs` — so an already-terminal run can still deliver its real
+  result while a process restart doesn't re-grant a hung run the full cap.
 
 ## Tradeoffs / EDs
 
@@ -51,8 +59,10 @@ still `running` at 60+ minutes; a manual cancel + re-dispatch succeeded in
 ## Validation
 
 - L1 (`packages/core/src/cursor-runs/duration-cap.test.ts`): pass-through,
-  rejection propagation, cap expiry shape, swallowed cancel rejection,
-  resume-window arithmetic, grace-window floor, late-result-beats-synthetic.
+  start/result rejection propagation, post-handle cap expiry shape,
+  pre-handle expiry (`CursorRunStartTimedOutError` + late handle cancelled,
+  never registered), swallowed cancel rejection, resume-window arithmetic,
+  grace floor + its cap clamp, late-result-beats-synthetic.
 - L2 (`packages/test-harness/scenarios/core-duration-cap.scenario.test.ts`):
   fake timers + `FakeCursorRunner` scripted to never terminate — fresh cloud
   dispatch fails `timeout-near-cap` at the cap with the cancel reaching the
