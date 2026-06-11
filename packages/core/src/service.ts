@@ -73,6 +73,7 @@ import {
   type RunArtifactPaths,
 } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
+import { awaitResultWithDurationCap } from "./cursor-runs/duration-cap.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
 import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
 import {
@@ -999,7 +1000,12 @@ async function runToTerminal(
     ctx.store.updatePhase(prep.phaseId, { cursorRunId });
     ctx.activeRuns.set(prep.workflowRunId, { controller, handle });
 
-    const result = await handle.result;
+    const result = await awaitResultWithDurationCap({
+      cancel: () => handle.cancel(),
+      log: runLog,
+      maxRunDurationMs: resolveMaxRunDurationMs(ctx.store, prep.workflowRunId),
+      result: handle.result,
+    });
     return await finalizeSuccess({
       ctx,
       cursorRunId,
@@ -1253,10 +1259,9 @@ interface ClassifiedFailure {
   readonly errorMessage: string;
 }
 
-function resolveMaxRunDurationMs(ctx: ShipContext, workflowRunId: string): number {
+function resolveMaxRunDurationMs(store: Store, workflowRunId: string): number {
   return (
-    ctx.store.getRun(workflowRunId)?.policy.maxRunDurationMs ??
-    DEFAULT_WORKFLOW_POLICY.maxRunDurationMs
+    store.getRun(workflowRunId)?.policy.maxRunDurationMs ?? DEFAULT_WORKFLOW_POLICY.maxRunDurationMs
   );
 }
 
@@ -1266,7 +1271,7 @@ function classifyFailedRun(
   result: CursorRunResult,
 ): ClassifiedFailure {
   const events = result.classificationEvents ?? [];
-  const maxRunDurationMs = resolveMaxRunDurationMs(ctx, workflowRunId);
+  const maxRunDurationMs = resolveMaxRunDurationMs(ctx.store, workflowRunId);
   const category = classifyFailure({
     durationMs: result.durationMs,
     events,
@@ -2076,7 +2081,13 @@ async function runResumeAttach(
     onPumpStarted(eventPump);
     ctx.activeRuns.set(target.row.workflowRunId, { controller: target.controller, handle });
 
-    const result = await handle.result;
+    const result = await awaitResultWithDurationCap({
+      cancel: () => handle.cancel(),
+      elapsedMs: resumeElapsedMs(ctx, target.row.id),
+      log: resumeLog,
+      maxRunDurationMs: resolveMaxRunDurationMs(ctx.store, target.row.workflowRunId),
+      result: handle.result,
+    });
     await finalizeSuccess({
       ctx: target.shipCtx,
       cursorRunId: target.row.id,
@@ -2089,6 +2100,17 @@ async function runResumeAttach(
   } catch (err) {
     await handleResumeAttachError(ctx, target, err);
   }
+}
+
+// Wall time a resumed run consumed before this process attached, from the
+// persisted cursor-run row. Zero when the row (or a sane delta) isn't
+// available — the cap then falls back to a full fresh window.
+function resumeElapsedMs(ctx: ResumeContext, cursorRunId: string): number {
+  const startedAt = ctx.store.getCursorRun(cursorRunId)?.startedAt;
+  if (startedAt === undefined) return 0;
+  const elapsed = Date.parse(ctx.clock()) - Date.parse(startedAt);
+  if (!Number.isFinite(elapsed) || elapsed < 0) return 0;
+  return elapsed;
 }
 
 async function handleResumeAttachError(
