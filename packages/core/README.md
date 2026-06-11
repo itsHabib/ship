@@ -33,7 +33,7 @@ Workflow orchestration — `ShipService`, artifact I/O (NDJSON events, rendered 
 
 ## How it composes
 
-Orchestrates `@ship/store` (persistence), `@ship/cursor-runner` (local + cloud agents), `@ship/workflow` (domain + transitions), `@ship/mcp` (wire schemas), and `@ship/logger` (structured stderr diagnostics, injected via `ShipServiceDeps.config.logger`). Does not import `@cursor/sdk` directly — ED-2 isolation keeps SDK usage in `cursor-runner`. Tests use `@ship/test-harness` for in-memory wiring.
+Orchestrates `@ship/store` (persistence), `@ship/cursor-runner` (local + cloud agents), `@ship/workflow` (domain + transitions), `@ship/mcp` (wire schemas), and `@ship/logger` (structured stderr diagnostics, injected via the optional top-level `ShipServiceDeps.logger`). Does not import `@cursor/sdk` directly — ED-2 isolation keeps SDK usage in `cursor-runner`. Tests use `@ship/test-harness` for in-memory wiring.
 
 ## When to swap it
 

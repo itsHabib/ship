@@ -36,11 +36,14 @@ async function createHarness(opts?: { readonly logger?: Logger }): Promise<Harne
   const cursor = new FakeCursorRunner();
   const service = createShipService({
     clock: () => "2026-06-08T00:00:00.000Z",
+    // logger is a top-level ShipServiceDeps dep, NOT a config field — putting it
+    // in config is silently dropped (a conditional spread defeats TS excess-
+    // property checks) and would make the injection a no-op.
+    ...(opts?.logger !== undefined && { logger: opts.logger }),
     config: {
       cursor,
       defaultModel: { id: "composer-2.5" },
       runsDir: RUNS_DIR,
-      ...(opts?.logger !== undefined && { logger: opts.logger }),
     },
     fs,
     ids: {

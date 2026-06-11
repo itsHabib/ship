@@ -6,7 +6,7 @@ Repo-native dev-workflow MCP toolkit. Ship hands a task doc to a Cursor agent (l
 
 **V1 feature-complete** on `main` (Phases 0–9). **V2** phases shipped: **01** (async `ship` kickoff), **03** (subagent passthrough), **04** (Cursor cloud runner), **08** (`Agent.resume` for orphaned cloud runs). The PR-opening MCP verb was removed in PR #81; PR creation is operator-side (`gh pr create`). Cause-chain failure diagnostics and boolean-coerce fixes landed in PR #82.
 
-**Observability** (P1+P2, PRs #116/#117/#120/#124): structured JSON logging via [`@ship/logger`](packages/logger/README.md) (stderr, `SHIP_LOG_LEVEL`), a canonical **`failureCategory`** classified and persisted on every failed run (`contention` / `timeout-near-cap` / `agent-collapse-on-running-tool` / `sdk-throw` / `logic` / `unknown`), and a diagnosis surface — `get_workflow_run` carries the category top-level and `ship diagnose <wf>` prints category + error + duration-vs-cap + last activity. Design: [docs/features/observability/spec.md](docs/features/observability/spec.md).
+**Observability** (P1+P2, PRs #116/#117/#120/#124): structured JSON logging via [`@ship/logger`](packages/logger/README.md) (stderr, `SHIP_LOG_LEVEL`), a canonical **`failureCategory`** classified and persisted on failed runs (`contention` / `timeout-near-cap` / `agent-collapse-on-running-tool` / `sdk-throw` / `logic` / `unknown`; rows persisted before the migration stay unclassified), and a diagnosis surface — `get_workflow_run` carries the category top-level and `ship diagnose <wf>` prints category + error + duration-vs-cap + last activity. Design: [docs/features/observability/spec.md](docs/features/observability/spec.md).
 
 See [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) for V1 history and [docs/features/ship-v2/spec.md](docs/features/ship-v2/spec.md) for V2 design and phase docs under `docs/features/ship-v2/phases/`.
 
@@ -30,7 +30,7 @@ CLI equivalent (blocking): `cd packages/cli && npx tsx src/bin.ts ship <docPath>
 
 ## Architecture
 
-Nine pnpm workspace packages, dependency direction inward toward `@ship/core`:
+Ten pnpm workspace packages, dependency direction inward toward `@ship/core`:
 
 | Package | Role |
 |---------|------|
@@ -40,6 +40,7 @@ Nine pnpm workspace packages, dependency direction inward toward `@ship/core`:
 | [`logger`](packages/logger/README.md) | Structured JSON logging — narrow `Logger` interface, pino default |
 | [`mcp`](packages/mcp/README.md) | Zod wire schemas for MCP tool I/O |
 | [`mcp-server`](packages/mcp-server/README.md) | MCP stdio server — tool registration + `ship://runs` resource |
+| [`receipt`](packages/receipt/README.md) | Run-receipt layer — one queryable row per unit of agent work |
 | [`store`](packages/store/README.md) | SQLite persistence behind the `Store` interface |
 | [`test-harness`](packages/test-harness/README.md) | In-memory fixtures + scenario helpers for tests |
 | [`workflow`](packages/workflow/README.md) | Domain schemas, transitions, ID factories |
