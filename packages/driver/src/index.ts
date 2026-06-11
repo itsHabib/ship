@@ -18,3 +18,15 @@ export {
   manifestStreamSchema,
   parseManifest,
 } from "./manifest.js";
+
+export { ImportManifestError, importManifest } from "./import.js";
+export type { ImportManifestResult } from "./import.js";
+
+export { renderDriverRun } from "./render.js";
+
+export {
+  manifestBatchStatusToStore,
+  manifestStatusToStore,
+  storeBatchStatusToManifest,
+  storeStatusToManifest,
+} from "./status-mapping.js";

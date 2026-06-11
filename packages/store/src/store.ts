@@ -12,6 +12,10 @@ import type {
   ResumableCloudCursorRun,
   UpdateCursorRunInput,
 } from "./cursor-runs.js";
+import type { UpdateDriverBatchInput } from "./driver-batches.js";
+import type { InsertDriverRunInput, ListDriverRunsFilter } from "./driver-runs.js";
+import type { DriverBatch, DriverRun, DriverRunStatus, DriverStream } from "./driver-schemas.js";
+import type { UpdateDriverStreamInput } from "./driver-streams.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
 import type {
   CreateWorkflowRunInput,
@@ -21,6 +25,7 @@ import type {
 
 import { createCursorRunOps } from "./cursor-runs.js";
 import { openDatabase, withStoreContentionGuard } from "./db.js";
+import { createDriverRunOps } from "./driver-runs.js";
 import { assertSchemaVersion, runMigrations } from "./migrations.js";
 import { createPhaseOps } from "./phases.js";
 import { createWorkflowRunOps } from "./workflow-runs.js";
@@ -122,6 +127,18 @@ export interface Store {
   listWorkflowRunsForPrune: () => WorkflowRunPruneRow[];
   /** Delete a workflow run; cascades phases + cursor_runs. Idempotent on unknown id. */
   deleteWorkflowRun: (id: string) => void;
+  /** Insert a driver run aggregate (run + batches + streams) in one transaction. */
+  insertDriverRun: (input: InsertDriverRunInput) => DriverRun;
+  /** Hydrated driver run aggregate, or `null` if unknown. Does not throw. */
+  getDriverRun: (id: string) => DriverRun | null;
+  /** Filtered + ordered + limited list of driver runs. */
+  listDriverRuns: (filter: ListDriverRunsFilter) => DriverRun[];
+  /** Flip a driver run's `status` and bump `updated_at`. */
+  updateDriverRunStatus: (id: string, status: DriverRunStatus) => DriverRun;
+  /** Patch driver batch progress columns; bumps parent run `updated_at`. */
+  updateDriverBatch: (id: string, patch: UpdateDriverBatchInput) => DriverBatch;
+  /** Patch driver stream progress columns; bumps parent run `updated_at`. */
+  updateDriverStream: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
   /**
    * Run `PRAGMA wal_checkpoint(TRUNCATE)` (cleans up `-wal` / `-shm`
    * sidecars) and close the SQLite handle. Caller must not invoke other
@@ -160,6 +177,7 @@ export function createStore(opts: CreateStoreOptions): Store {
     const phaseOps = createPhaseOps(db, clock);
     const workflowRunOps = createWorkflowRunOps(db, clock, phaseOps);
     const cursorRunOps = createCursorRunOps(db, clock);
+    const driverRunOps = createDriverRunOps(db, clock);
 
     return {
       appendPhase: (input) => withStoreContentionGuard(() => phaseOps.append(input)),
@@ -169,6 +187,15 @@ export function createStore(opts: CreateStoreOptions): Store {
           workflowRunOps.delete(id);
         });
       },
+      getDriverRun: (id) => withStoreContentionGuard(() => driverRunOps.get(id)),
+      insertDriverRun: (input) => withStoreContentionGuard(() => driverRunOps.insert(input)),
+      listDriverRuns: (filter) => withStoreContentionGuard(() => driverRunOps.list(filter)),
+      updateDriverBatch: (id, patch) =>
+        withStoreContentionGuard(() => driverRunOps.updateBatch(id, patch)),
+      updateDriverRunStatus: (id, status) =>
+        withStoreContentionGuard(() => driverRunOps.updateStatus(id, status)),
+      updateDriverStream: (id, patch) =>
+        withStoreContentionGuard(() => driverRunOps.updateStream(id, patch)),
       listWorkflowRunsForPrune: () => withStoreContentionGuard(() => workflowRunOps.listForPrune()),
       close: () => {
         // wal_checkpoint(TRUNCATE) can throw SQLITE_BUSY under contention;

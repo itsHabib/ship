@@ -22,6 +22,39 @@ export class WorkflowRunNotFoundError extends Error {
   }
 }
 
+/** Thrown when a `DriverRun` referenced by id does not exist. */
+export class DriverRunNotFoundError extends Error {
+  override readonly name = "DriverRunNotFoundError";
+  readonly driverRunId: string;
+
+  constructor(driverRunId: string) {
+    super(`driver run not found: ${driverRunId}`);
+    this.driverRunId = driverRunId;
+  }
+}
+
+/** Thrown by `updateDriverBatch` when the batch id does not resolve. */
+export class DriverBatchNotFoundError extends Error {
+  override readonly name = "DriverBatchNotFoundError";
+  readonly driverBatchId: string;
+
+  constructor(driverBatchId: string) {
+    super(`driver batch not found: ${driverBatchId}`);
+    this.driverBatchId = driverBatchId;
+  }
+}
+
+/** Thrown by `updateDriverStream` when the stream id does not resolve. */
+export class DriverStreamNotFoundError extends Error {
+  override readonly name = "DriverStreamNotFoundError";
+  readonly driverStreamId: string;
+
+  constructor(driverStreamId: string) {
+    super(`driver stream not found: ${driverStreamId}`);
+    this.driverStreamId = driverStreamId;
+  }
+}
+
 /** Thrown by `updatePhase` when the phase id does not resolve. */
 export class PhaseNotFoundError extends Error {
   override readonly name = "PhaseNotFoundError";
