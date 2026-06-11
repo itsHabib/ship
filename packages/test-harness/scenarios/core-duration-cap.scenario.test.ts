@@ -43,6 +43,9 @@ function neverTerminatingScript(): FakeCursorScript {
 // holds, letting the background ship continuation advance to the point
 // where the cap timer is armed without advancing the faked clock.
 async function flushUntil(probe: () => boolean, label: string): Promise<void> {
+  // Safeguard ceiling: the background ship continuation settles in well under
+  // 20 macrotask hops; 1000 is a loud upper bound so a logic bug surfaces as
+  // a thrown error rather than a hang.
   for (let i = 0; i < 1000; i += 1) {
     if (probe()) return;
     await new Promise<void>((resolve) => {

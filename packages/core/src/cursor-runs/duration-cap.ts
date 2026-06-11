@@ -28,6 +28,15 @@ import { CursorRunStartTimedOutError } from "../errors.js";
  */
 export const MIN_RESUMED_CAP_WINDOW_MS = 60_000;
 
+/**
+ * Node clamps a `setTimeout` delay above the 32-bit signed max to 1ms,
+ * which would misfire a multi-week cap instantly. We clamp the timer delay
+ * here instead: a cap beyond ~24.9 days fires at the limit rather than at
+ * 1ms. The synthetic terminal still reports the configured cap as the
+ * duration — the clamp only bounds the physical wait.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export interface DurationCapRunArgs {
   /** Starts the run (fresh dispatch) or attach (resume); invoked once, immediately. */
   readonly start: () => Promise<CursorRunHandle>;
@@ -63,58 +72,63 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Curs
   let expired = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const capExpiry = new Promise<CursorRunResult>((resolve, reject) => {
-    timer = setTimeout(() => {
-      expired = true;
-      args.log?.warn(
-        {
-          elapsedMs,
-          maxRunDurationMs: args.maxRunDurationMs,
-          startResolved: handle !== undefined,
-          windowMs,
-        },
-        "policy.maxRunDurationMs exceeded; cancelling run",
-      );
-      if (handle === undefined) {
-        reject(new CursorRunStartTimedOutError(windowMs));
-        return;
-      }
-      // Resolve the synthetic terminal BEFORE firing cancel: a runner whose
-      // cancel settles `result` synchronously (as "cancelled") must not win
-      // the race — the cap verdict is `failed`, not `cancelled`.
-      resolve(capExceededResult(elapsedMs + windowMs));
-      cancelBestEffort(handle);
-    }, windowMs);
-  });
-
-  const terminal = args.start().then((h) => {
-    // Past expiry the race has already settled; the late handle is only
-    // cancelled, never registered. The returned value is discarded.
-    if (expired) {
-      cancelBestEffort(h);
-      return capExceededResult(elapsedMs + windowMs);
-    }
-    handle = h;
-    args.onHandle(h);
-    return h.result;
-  });
-
-  // The loser of the race can still settle later — e.g. the cap rejects
-  // pre-handle and `start()` (a hung `Agent.create`/`Agent.resume`)
-  // rejects minutes afterward, or the cap resolves synthetic and the live
-  // `handle.result` rejects post-cancel. `Promise.race` retains a reaction
-  // on each input, so a late rejection is already observed, but these
-  // sibling swallowers make that guarantee explicit and independent of the
-  // host's race implementation. They never suppress the winner: the race
-  // keeps its own reaction and still propagates the winning settlement.
-  void terminal.catch(() => {
-    /* swallow late loser rejection */
-  });
-  void capExpiry.catch(() => {
-    /* swallow late loser rejection */
-  });
-
+  // Everything that arms the timer or calls `start()` lives inside the try,
+  // so a synchronous throw from an injected runner still hits the finally
+  // and clears the cap timer rather than leaking it.
   try {
+    const capExpiry = new Promise<CursorRunResult>((resolve, reject) => {
+      timer = setTimeout(
+        () => {
+          expired = true;
+          args.log?.warn(
+            {
+              elapsedMs,
+              maxRunDurationMs: args.maxRunDurationMs,
+              startResolved: handle !== undefined,
+              windowMs,
+            },
+            "policy.maxRunDurationMs exceeded; cancelling run",
+          );
+          if (handle === undefined) {
+            reject(new CursorRunStartTimedOutError(windowMs));
+            return;
+          }
+          // Resolve the synthetic terminal BEFORE firing cancel: a runner whose
+          // cancel settles `result` synchronously (as "cancelled") must not win
+          // the race — the cap verdict is `failed`, not `cancelled`.
+          resolve(capExceededResult(elapsedMs + windowMs));
+          cancelBestEffort(handle);
+        },
+        Math.min(windowMs, MAX_TIMER_DELAY_MS),
+      );
+    });
+    // The loser of the race can still settle later — e.g. the cap rejects
+    // pre-handle and `start()` (a hung `Agent.create`/`Agent.resume`) rejects
+    // minutes afterward, or the cap resolves synthetic and the live
+    // `handle.result` rejects post-cancel. `Promise.race` retains a reaction
+    // on each input, so a late rejection is already observed, but these
+    // sibling swallowers make that guarantee explicit and independent of the
+    // host's race implementation. They never suppress the winner: the race
+    // keeps its own reaction and still propagates the winning settlement.
+    void capExpiry.catch(() => {
+      /* swallow late loser rejection */
+    });
+
+    const terminal = args.start().then((h) => {
+      // Past expiry the race has already settled; the late handle is only
+      // cancelled, never registered. The returned value is discarded.
+      if (expired) {
+        cancelBestEffort(h);
+        return capExceededResult(elapsedMs + windowMs);
+      }
+      handle = h;
+      args.onHandle(h);
+      return h.result;
+    });
+    void terminal.catch(() => {
+      /* swallow late loser rejection */
+    });
+
     return await Promise.race([terminal, capExpiry]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);

@@ -9,7 +9,11 @@ import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { CursorRunStartTimedOutError } from "../errors.js";
-import { MIN_RESUMED_CAP_WINDOW_MS, runWithDurationCap } from "./duration-cap.js";
+import {
+  MAX_TIMER_DELAY_MS,
+  MIN_RESUMED_CAP_WINDOW_MS,
+  runWithDurationCap,
+} from "./duration-cap.js";
 
 const CAP_MS = 30 * 60 * 1000;
 
@@ -247,6 +251,43 @@ describe("runWithDurationCap", () => {
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
     expect(onHandle).not.toHaveBeenCalled();
+  });
+
+  test("a synchronous throw from start() rejects and still clears the cap timer", async () => {
+    const boom = new Error("runner.run threw synchronously");
+    const onHandle = vi.fn();
+    await expect(
+      runWithDurationCap({
+        maxRunDurationMs: CAP_MS,
+        onHandle,
+        start: () => {
+          throw boom;
+        },
+      }),
+    ).rejects.toBe(boom);
+    expect(onHandle).not.toHaveBeenCalled();
+    // The cap timer was armed before start() threw; the finally must clear it.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("a cap above Node's timer max fires at the limit, not clamped to 1ms", async () => {
+    const hugeCap = MAX_TIMER_DELAY_MS + 5_000_000; // beyond the 32-bit setTimeout ceiling
+    const { handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      maxRunDurationMs: hugeCap,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    // A naive (unclamped) delay would have been coerced to 1ms by Node and
+    // fired here — assert it did NOT.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(vi.getTimerCount()).toBe(1);
+    // Firing at the clamped ceiling resolves the synthetic terminal, whose
+    // duration still reflects the configured cap, not the clamp.
+    await vi.advanceTimersByTimeAsync(MAX_TIMER_DELAY_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(out.durationMs).toBe(hugeCap);
   });
 
   test("a result landing inside the grace window beats the synthetic terminal", async () => {

@@ -55,6 +55,20 @@ still `running` at 60+ minutes; a manual cancel + re-dispatch succeeded in
 - **ED-4: synthetic result omits events/branches.** A run that hit the cap has
   no trustworthy terminal payload; diagnosis flows through `failureDetail`
   ("duration X (cap Y)") and the persisted `events.ndjson` tail.
+- **ED-5: timer delay clamped to `MAX_TIMER_DELAY_MS` (2³¹−1).** The policy
+  schema accepts any positive int, but Node coerces a `setTimeout` delay above
+  the 32-bit signed max to 1ms — which would misfire a multi-week cap
+  instantly. The clamp fires at ~24.9 days instead; the synthetic terminal
+  still reports the configured cap as its duration (the clamp only bounds the
+  physical wait). Caught by codex review.
+- **ED-6: the whole start→race sequence runs inside one `try/finally`.** An
+  injected runner that throws *synchronously* (rather than returning a rejected
+  promise) must still clear the armed cap timer. Both production callers are
+  async, but the guard is free. Caught independently by codex + claude.
+- **ED-7: explicit race-loser swallowers.** `Promise.race` already retains a
+  reaction on each input, so the loser settling late is observed, not actually
+  unhandled — but sibling `.catch` handlers make that host-independent and
+  self-evident. Raised by cursor bugbot.
 
 ## Validation
 
