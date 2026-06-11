@@ -153,7 +153,8 @@ function capExceededResult(durationMs: number): CursorRunResult {
   return {
     branches: [],
     durationMs,
-    errorMessage: "run exceeded policy.maxRunDurationMs; ship cancelled the SDK run",
+    errorMessage:
+      "run exceeded policy.maxRunDurationMs; ship requested an SDK-run cancel (best-effort)",
     status: "failed",
   };
 }
