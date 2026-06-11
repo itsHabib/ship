@@ -7,7 +7,11 @@
 export { createStore } from "./store.js";
 export type { CreateStoreOptions, Store } from "./store.js";
 
-export type { CreateWorkflowRunInput, ListRunsFilter } from "./workflow-runs.js";
+export type {
+  CreateWorkflowRunInput,
+  ListRunsFilter,
+  WorkflowRunPruneRow,
+} from "./workflow-runs.js";
 
 export type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
 

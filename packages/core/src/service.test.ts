@@ -212,6 +212,75 @@ describe("ShipService.ship — happy path", () => {
     expect(row?.phases[0]?.cursorRunId).toBe(out.cursorRun.id);
   });
 
+  test("local succeeded run removes the worktree scratch task-doc afterward", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const scratchPath = `${WORKDIR}/task-doc.md`;
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    await expect(h.fs.stat(scratchPath)).rejects.toThrow();
+    expect(h.fs.snapshot().files.has(scratchPath)).toBe(false);
+  });
+
+  test("local failed run also removes the worktree scratch task-doc", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "failed", durationMs: 0, branches: [] },
+    });
+
+    const scratchPath = `${WORKDIR}/task-doc.md`;
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    expect(h.fs.snapshot().files.has(scratchPath)).toBe(false);
+  });
+
+  test("pre-existing file at the scratch path is never overwritten or deleted", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const scratchPath = `${WORKDIR}/task-doc.md`;
+    await h.fs.writeFile(scratchPath, "user-owned content — not ship's scratch");
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+
+    expect(await h.fs.readFile(scratchPath, "utf-8")).toBe(
+      "user-owned content — not ship's scratch",
+    );
+  });
+
+  test("docPath that IS the scratch path survives the run", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+
+    const docAtScratch = `${WORKDIR}/task-doc.md`;
+    await h.fs.writeFile(docAtScratch, "# the user's actual task doc");
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "task-doc.md",
+    });
+
+    expect(await h.fs.readFile(docAtScratch, "utf-8")).toBe("# the user's actual task doc");
+  });
+
   test("succeeded run: state transitions, artifacts persisted, ShipOutput populated", async () => {
     h.cursor.enqueue({
       events: [],

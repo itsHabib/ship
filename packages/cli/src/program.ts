@@ -12,6 +12,7 @@ import { registerArtifactsCommand } from "./commands/artifacts.js";
 import { registerCancelCommand } from "./commands/cancel.js";
 import { registerDiagnoseCommand } from "./commands/diagnose.js";
 import { registerListCommand } from "./commands/list.js";
+import { registerPruneCommand } from "./commands/prune.js";
 import { registerShipCommand } from "./commands/ship.js";
 import { registerStatusCommand } from "./commands/status.js";
 
@@ -27,6 +28,7 @@ export function buildProgram(factory: ServiceFactory): Command {
   registerListCommand(program, factory);
   registerCancelCommand(program, factory);
   registerArtifactsCommand(program, factory);
+  registerPruneCommand(program, factory);
 
   return program;
 }

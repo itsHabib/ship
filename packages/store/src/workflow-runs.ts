@@ -42,6 +42,13 @@ export interface ListRunsFilter {
   limit?: number;
 }
 
+/** Lightweight row for prune selection — no phase hydration. */
+export interface WorkflowRunPruneRow {
+  id: string;
+  status: WorkflowStatus;
+  updatedAt: string;
+}
+
 /** Internal workflow-run-table API consumed by `store.ts`. */
 export interface WorkflowRunOps {
   /** Insert a new workflow run with `status = 'pending'`; returns the hydrated row. */
@@ -64,6 +71,10 @@ export interface WorkflowRunOps {
   markRunStarted: (workflowRunId: string, phaseId: string, startedAt: string) => void;
   /** Bump `updated_at` without changing `status`; throws if the id is unknown. */
   touchUpdatedAt: (workflowRunId: string) => void;
+  /** All workflow rows (id, status, updated_at) for prune selection. */
+  listForPrune: () => WorkflowRunPruneRow[];
+  /** Delete a workflow run; cascades phases + cursor_runs. Idempotent on unknown id. */
+  delete: (id: string) => void;
 }
 
 interface WorkflowRunRow {
@@ -101,6 +112,8 @@ interface WorkflowRunStmts {
   markRunRunning: Statement;
   markPhaseRunning: Statement;
   touchUpdatedAt: Statement;
+  deleteById: Statement;
+  listForPrune: Statement<[], WorkflowRunPruneRow>;
 }
 
 /** Bundle threaded into helpers to stay under the eslint param cap. */
@@ -143,6 +156,10 @@ export function createWorkflowRunOps(
       `UPDATE workflow_runs SET status = 'running', updated_at = ? WHERE id = ?`,
     ),
     touchUpdatedAt: db.prepare(`UPDATE workflow_runs SET updated_at = ? WHERE id = ?`),
+    deleteById: db.prepare(`DELETE FROM workflow_runs WHERE id = ?`),
+    listForPrune: db.prepare<[], WorkflowRunPruneRow>(
+      `SELECT id, status, updated_at AS updatedAt FROM workflow_runs`,
+    ),
     selectById: db.prepare<[string], WorkflowRunRow>(
       `SELECT ${WORKFLOW_RUN_COLUMNS} FROM workflow_runs WHERE id = ?`,
     ),
@@ -162,6 +179,10 @@ export function createWorkflowRunOps(
       touchRunUpdatedAt(deps, workflowRunId);
     },
     updateStatus: (id, status) => updateRunStatus(deps, id, status),
+    listForPrune: () => deps.stmts.listForPrune.all(),
+    delete: (id) => {
+      deps.stmts.deleteById.run(id);
+    },
   };
 }
 

@@ -70,7 +70,18 @@ export {
   resolveCloudArtifactDest,
   resolveRunArtifactsDir,
   resolveRunArtifactPaths,
+  resolveWorktreeScratchTaskDocPath,
 } from "./artifacts/paths.js";
+
+export type { PruneRunsInput, PruneRunsOutput, PruneTarget } from "./prune/prune.js";
+export {
+  PruneDurationError,
+  computePruneCutoffMs,
+  executePruneRuns,
+  formatPruneAge,
+  parsePruneDuration,
+  selectPruneTargets,
+} from "./prune/prune.js";
 
 export type { RenderImplementationPromptInput } from "./artifacts/prompt-template.js";
 export { renderImplementationPrompt } from "./artifacts/prompt-template.js";
