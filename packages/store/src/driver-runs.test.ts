@@ -161,54 +161,60 @@ describe("driver runs (via createStore)", () => {
   });
 
   test("composite FK rejects stream referencing batch from different run", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-driver-fk-"));
+    const dbPath = join(dir, "fk.db");
     const runA = newDriverRunId();
     const runB = newDriverRunId();
     const batchA = newDriverBatchId();
     const batchB = newDriverBatchId();
     const streamB = newDriverStreamId();
 
-    store.insertDriverRun({
-      batches: [{ batchIndex: 1, dependsOn: [], id: batchA, status: "pending", streams: [] }],
-      id: runA,
-      manifestPath: "/tmp/a.md",
-      repo: "ship",
-      sourceJson: "---\n---\n",
-      status: "pending",
-    });
-    store.insertDriverRun({
-      batches: [{ batchIndex: 1, dependsOn: [], id: batchB, status: "pending", streams: [] }],
-      id: runB,
-      manifestPath: "/tmp/b.md",
-      repo: "ship",
-      sourceJson: "---\n---\n",
-      status: "pending",
-    });
+    try {
+      const seeded = createStore({ clock: () => currentNow, dbPath });
+      seeded.insertDriverRun({
+        batches: [{ batchIndex: 1, dependsOn: [], id: batchA, status: "pending", streams: [] }],
+        id: runA,
+        manifestPath: "/tmp/a.md",
+        repo: "ship",
+        sourceJson: "---\n---\n",
+        status: "pending",
+      });
+      seeded.insertDriverRun({
+        batches: [{ batchIndex: 1, dependsOn: [], id: batchB, status: "pending", streams: [] }],
+        id: runB,
+        manifestPath: "/tmp/b.md",
+        repo: "ship",
+        sourceJson: "---\n---\n",
+        status: "pending",
+      });
+      seeded.close();
 
-    store.close();
-    const db = new Database(":memory:");
-    db.pragma("foreign_keys = ON");
-    runMigrations(db);
+      const db = new Database(dbPath);
+      db.pragma("foreign_keys = ON");
 
-    expect(() => {
-      db.prepare(
-        `INSERT INTO driver_streams (
-           id, driver_run_id, driver_batch_id, spec_path, runtime, touches, status,
-           attempts, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        streamB,
-        runB,
-        batchA,
-        "docs/x.md",
-        "local",
-        "[]",
-        "pending",
-        "[]",
-        currentNow,
-        currentNow,
-      );
-    }).toThrow();
-    db.close();
+      expect(() => {
+        db.prepare(
+          `INSERT INTO driver_streams (
+             id, driver_run_id, driver_batch_id, spec_path, runtime, touches, status,
+             attempts, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          streamB,
+          runB,
+          batchA,
+          "docs/x.md",
+          "local",
+          "[]",
+          "pending",
+          "[]",
+          currentNow,
+          currentNow,
+        );
+      }).toThrow();
+      db.close();
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
   });
 });
 
