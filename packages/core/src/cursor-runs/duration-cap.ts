@@ -99,6 +99,21 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Curs
     return h.result;
   });
 
+  // The loser of the race can still settle later — e.g. the cap rejects
+  // pre-handle and `start()` (a hung `Agent.create`/`Agent.resume`)
+  // rejects minutes afterward, or the cap resolves synthetic and the live
+  // `handle.result` rejects post-cancel. `Promise.race` retains a reaction
+  // on each input, so a late rejection is already observed, but these
+  // sibling swallowers make that guarantee explicit and independent of the
+  // host's race implementation. They never suppress the winner: the race
+  // keeps its own reaction and still propagates the winning settlement.
+  void terminal.catch(() => {
+    /* swallow late loser rejection */
+  });
+  void capExpiry.catch(() => {
+    /* swallow late loser rejection */
+  });
+
   try {
     return await Promise.race([terminal, capExpiry]);
   } finally {

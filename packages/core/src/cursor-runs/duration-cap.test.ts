@@ -204,6 +204,51 @@ describe("runWithDurationCap", () => {
     expect(out.status).toBe("failed");
   });
 
+  // Regression: the race loser settling late must not surface as an
+  // unhandled rejection (vitest fails the suite on one). Each case drives the
+  // loser to reject AFTER the race resolved, then flushes microtasks.
+  test("post-handle: a late handle.result rejection after the synthetic verdict is swallowed", async () => {
+    let rejectResult!: (e: unknown) => void;
+    const result = new Promise<CursorRunResult>((_resolve, reject) => {
+      rejectResult = reject;
+    });
+    const { cancel, handle } = fakeHandle(result);
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(CAP_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(cancel).toHaveBeenCalledTimes(1);
+    // The runner's result rejects post-cancel — the loser of the race.
+    rejectResult(new Error("runner rejected after cap cancel"));
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+  });
+
+  test("pre-handle: a late start() rejection after CursorRunStartTimedOutError is swallowed", async () => {
+    const onHandle = vi.fn();
+    let rejectStart!: (e: unknown) => void;
+    const start = new Promise<CursorRunHandle>((_resolve, reject) => {
+      rejectStart = reject;
+    });
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      onHandle,
+      start: () => start,
+    });
+    const rejection = expect(pending).rejects.toBeInstanceOf(CursorRunStartTimedOutError);
+    await vi.advanceTimersByTimeAsync(CAP_MS);
+    await rejection;
+    // start() (a hung SDK call) rejects long after the cap already won.
+    rejectStart(new Error("Agent.create finally errored"));
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    expect(onHandle).not.toHaveBeenCalled();
+  });
+
   test("a result landing inside the grace window beats the synthetic terminal", async () => {
     let resolveRunner!: (r: CursorRunResult) => void;
     const runner = new Promise<CursorRunResult>((resolve) => {
