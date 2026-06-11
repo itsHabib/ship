@@ -1,4 +1,4 @@
-**Status**: draft
+**Status**: shipped — PR #116 (squash `1d8c7d2`, 2026-06-09)
 **Owner**: @michael
 **Date**: 2026-06-02
 **Related**: dossier task `observability-logger-package` (id: `tsk_01KTJH8EYJF9JB8BXKRXDHC2NK`); locked design [docs/features/observability/spec.md](../spec.md) §6 (Logger interface), §3, §4 D2/D3/D4.

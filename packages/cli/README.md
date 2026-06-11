@@ -6,12 +6,14 @@ Human-facing Commander CLI for driving `ShipService` from the terminal. Parses f
 
 ## Public surface
 
-- **`buildProgram(factory)`** — pure Commander program factory with four subcommands registered.
+- **`buildProgram(factory)`** — pure Commander program factory with six subcommands registered.
 - **`ship ship <docPath>`** — blocking implement run via `ShipService.ship()` (waits for terminal state).
 - **`ship status <workflowRunId>`** — print run summary + artifact paths.
+- **`ship diagnose <workflowRunId>`** — one-view failure diagnosis: classified `failureCategory` (`(unclassified)` for pre-migration rows), error, duration-vs-cap, last activity, watch URL. `--json` emits the enriched `GetWorkflowRunOutput`.
 - **`ship list`** — filter runs by repo/status/limit.
 - **`ship cancel <workflowRunId>`** — idempotent cancel on in-flight runs.
-- **`createCliService`** — wires default production deps (store path, cursor runners) for the real binary.
+- **`ship artifacts list|download <workflowRunId>`** — inspect / fetch cloud-run artifacts from the persisted manifest.
+- **`createCliService`** — wires default production deps (store path, cursor runners, stderr logger) for the real binary.
 
 Run locally: `cd packages/cli && npx tsx src/bin.ts <subcommand>`.
 

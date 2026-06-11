@@ -1,6 +1,6 @@
 # Observability — Technical Design Document
 
-**Status:** draft / proposal — NOT a build commitment. The artifact we decide from.
+**Status:** locked (#111) — **P1 + P2 shipped** (PRs #116/#117/#120 + #124, 2026-06-09/10). The §9 validation gate **passed** 2026-06-10 (run `wf_01KTT7F3NXG7A9TN2AANY7Z89K`: deliberate `sdk-throw` failure diagnosed from `ship diagnose` + persisted category alone — no `events.ndjson` grep). P3 (cross-run stats, stretch) is unlocked but not scheduled.
 **Owner:** @michael
 **Date:** 2026-06-02
 **Related:** dossier project `ship` (`prj_01KRAE24JC3JCZPNHQQQWGKFY1`); prior point-fixes [#103](https://github.com/itsHabib/ship/pull/103) (surface-failed-run-diagnostics), [#105](https://github.com/itsHabib/ship/pull/105) (ship-store-write-contention); feedback task `failed-run-errormessage-omits-inflight-tool-call` (`tsk_01KT3CYEFSM41WS3VEQM5NMG0K`).

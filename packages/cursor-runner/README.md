@@ -11,6 +11,7 @@ The sole package that imports `@cursor/sdk` directly — **ED-2 SDK isolation**.
 - **`CloudCursorRunner`** — `Agent.create({ cloud: ... })`; supports `attach` for resume; passes through `autoCreatePR` and env vars.
 - **`CloudRunSpec`** — single-repo cloud tuple (URL, branch, env) carried on `ShipInput.cloud`.
 - **`CursorRunInput` / `CursorRunResult` / `CursorRunHandle`** — run lifecycle shapes shared with `@ship/core`.
+- **`classifyFailure` / `buildFailureDetail`** — pure, total failure classification over the bounded event window (`failureCategory` enum from `@ship/workflow`); called by `core`'s finalize paths. Failed-run `errorMessage` also falls back to the last in-flight (`running`, never-completed) tool_call when no error-bearing event exists.
 - **SDK re-exports** — `AgentDefinition`, `McpServerConfig`, `SDKMessage` for prompt/MCP wiring without a direct SDK dep elsewhere.
 - **`FakeCursorRunner`** — scriptable test double at `@ship/cursor-runner/test/fake` (not in the main barrel).
 

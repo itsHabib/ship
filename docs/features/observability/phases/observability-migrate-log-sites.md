@@ -1,4 +1,4 @@
-**Status**: draft
+**Status**: shipped — PR #120 (squash `ff5200b`, 2026-06-09)
 **Owner**: @michael
 **Date**: 2026-06-02
 **Related**: dossier task `observability-migrate-log-sites` (id: `tsk_01KTJH8S28YJPD5KR2MWET0TDH`); locked design [docs/features/observability/spec.md](../spec.md) §1, §8, §9 phase 1(c). **Depends on** `observability-logger-package` + `observability-failure-category-enum`.

@@ -7,11 +7,12 @@ MCP stdio server exposing Ship's workflow verbs to Claude/Cursor sessions. Regis
 ## Public surface
 
 - **`buildServer(shipFactory)`** — constructs the server, registers all tools + resource.
-- **Tools (4)** — registered via `register*Tool` helpers in `src/tools/`:
+- **Tools (6)** — registered via `register*Tool` helpers in `src/tools/`:
   - **`ship`** — async kickoff via `ShipService.startShip()` → `ShipStartOutput`.
-  - **`get_workflow_run`** — full run + phases + cursor rows.
+  - **`get_workflow_run`** — full run + phases + cursor rows, plus failure diagnostics (top-level `failureCategory` on failed runs, duration-vs-cap, `sdkTerminalStatus`, `recentEvents`, `watchUrl`).
   - **`list_workflow_runs`** — filtered listing.
   - **`cancel_workflow_run`** — idempotent cancel.
+  - **`list_artifacts`** / **`download_artifact`** — cloud-run artifact manifest + on-demand fetch.
 - **`ship://runs/{id}` resource** — JSON snapshot of a workflow run.
 - **`src/bin.ts`** — production entry; `SHIP_TEST_FAKE_CURSOR=1` swaps in `FakeCursorRunner`.
 

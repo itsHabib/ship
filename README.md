@@ -6,6 +6,8 @@ Repo-native dev-workflow MCP toolkit. Ship hands a task doc to a Cursor agent (l
 
 **V1 feature-complete** on `main` (Phases 0–9). **V2** phases shipped: **01** (async `ship` kickoff), **03** (subagent passthrough), **04** (Cursor cloud runner), **08** (`Agent.resume` for orphaned cloud runs). The PR-opening MCP verb was removed in PR #81; PR creation is operator-side (`gh pr create`). Cause-chain failure diagnostics and boolean-coerce fixes landed in PR #82.
 
+**Observability** (P1+P2, PRs #116/#117/#120/#124): structured JSON logging via [`@ship/logger`](packages/logger/README.md) (stderr, `SHIP_LOG_LEVEL`), a canonical **`failureCategory`** classified and persisted on every failed run (`contention` / `timeout-near-cap` / `agent-collapse-on-running-tool` / `sdk-throw` / `logic` / `unknown`), and a diagnosis surface — `get_workflow_run` carries the category top-level and `ship diagnose <wf>` prints category + error + duration-vs-cap + last activity. Design: [docs/features/observability/spec.md](docs/features/observability/spec.md).
+
 See [docs/features/ship-v1/plan.md](docs/features/ship-v1/plan.md) for V1 history and [docs/features/ship-v2/spec.md](docs/features/ship-v2/spec.md) for V2 design and phase docs under `docs/features/ship-v2/phases/`.
 
 ## Quick start
@@ -21,19 +23,21 @@ make check   # typecheck + lint + format-check + test (604+ L1/L2 tests, no API 
 2. Spin up a worktree (`/worktree-add <branch>`) or use Cursor cloud runtime.
 3. Kick off: `mcp__ship__ship { workdir, docPath, repo, branch }` — returns `{ workflowRunId, status: "running" }` immediately (V2 async).
 4. Poll terminal: `mcp__ship__get_workflow_run { workflowRunId }` or read `ship://runs/{id}`.
-5. Commit, push, open PR with `gh pr create`.
+5. Failed run? `ship diagnose <workflowRunId>` prints the classified `failureCategory`, error, duration-vs-cap, and last activity — no `events.ndjson` digging.
+6. Commit, push, open PR with `gh pr create`.
 
 CLI equivalent (blocking): `cd packages/cli && npx tsx src/bin.ts ship <docPath> --repo <name>` (`--repo` is required; `--workdir` / `--branch` are optional).
 
 ## Architecture
 
-Eight pnpm workspace packages, dependency direction inward toward `@ship/core`:
+Nine pnpm workspace packages, dependency direction inward toward `@ship/core`:
 
 | Package | Role |
 |---------|------|
 | [`cli`](packages/cli/README.md) | Terminal verbs over `ShipService` |
 | [`core`](packages/core/README.md) | Orchestration — `ShipService`, artifacts, default wiring |
-| [`cursor-runner`](packages/cursor-runner/README.md) | Sole `@cursor/sdk` boundary — local + cloud runners |
+| [`cursor-runner`](packages/cursor-runner/README.md) | Sole `@cursor/sdk` boundary — local + cloud runners, failure classifier |
+| [`logger`](packages/logger/README.md) | Structured JSON logging — narrow `Logger` interface, pino default |
 | [`mcp`](packages/mcp/README.md) | Zod wire schemas for MCP tool I/O |
 | [`mcp-server`](packages/mcp-server/README.md) | MCP stdio server — tool registration + `ship://runs` resource |
 | [`store`](packages/store/README.md) | SQLite persistence behind the `Store` interface |
