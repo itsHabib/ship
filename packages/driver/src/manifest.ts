@@ -50,8 +50,10 @@ const sourceSchema = z
   })
   .strict();
 
-// Advisory blocks: prep-time human notes — entries vary freely; lenient passthrough.
-const advisoryBlockSchema = z.array(z.unknown()).optional();
+// Advisory blocks: prep-time human notes — any shape (arrays, maps, bare
+// prose); lenient passthrough. Strictness guards the engine's input, not
+// advisory text.
+const advisoryBlockSchema = z.unknown().optional();
 
 export const driverManifestSchema = z
   .object({
@@ -115,7 +117,20 @@ export function parseManifest(text: string): ParseManifestResult {
     return { ok: false, errors: syntaxErrors };
   }
 
-  const parsed: unknown = doc.toJS();
+  let parsed: unknown;
+  try {
+    parsed = doc.toJS();
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      errors: [
+        {
+          message: `failed to interpret yaml frontmatter: ${describeError(err)}`,
+          line: startLine,
+        },
+      ],
+    };
+  }
   if (!isRecord(parsed)) {
     return {
       ok: false,
@@ -160,7 +175,9 @@ export function parseManifest(text: string): ParseManifestResult {
 
 function extractFrontmatter(text: string): ExtractFrontmatterResult {
   const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(body);
+  // The closing fence must occupy its own line — `---not-a-fence` is content,
+  // not a terminator.
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(body);
   if (match === null) {
     const hasOpeningFence = body.startsWith("---");
     if (!hasOpeningFence) {
@@ -194,22 +211,16 @@ function extractFrontmatter(text: string): ExtractFrontmatterResult {
       ],
     };
   }
-  const prefix = body.slice(0, match.index);
-  const startLine = countLines(prefix) + 1;
-  return { ok: true, frontmatter, startLine };
+  // The anchored opening fence occupies file line 1, so the frontmatter's
+  // first YAML line is file line 2.
+  return { ok: true, frontmatter, startLine: 2 };
 }
 
-function countLines(text: string): number {
-  if (text.length === 0) {
-    return 0;
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message.toLowerCase();
   }
-  let lines = 1;
-  for (let index = 0; index < text.length; index += 1) {
-    if (text.charCodeAt(index) === 0x0a) {
-      lines += 1;
-    }
-  }
-  return lines;
+  return String(err).toLowerCase();
 }
 
 function docErrorsToManifestErrors(
@@ -257,10 +268,11 @@ function unsupportedDriverVersionError(
     return undefined;
   }
   const path = ["driver_version"];
-  const location = resolveYamlLocation(doc, path, startLine, lineCounter);
-  const value = String(parsed["driver_version"]);
+  const location = resolveNodeLocation(doc, path, startLine, lineCounter);
+  // JSON.stringify keeps the received type visible: `"1"` (string) vs `2` (number).
+  const value = JSON.stringify(parsed["driver_version"]);
   const error: ManifestParseError = {
-    message: `unsupported driver_version ${value} (expected 1)`,
+    message: `unsupported driver_version ${value} (expected the number 1)`,
     path: "driver_version",
   };
   if (location !== undefined) {
@@ -276,7 +288,7 @@ function zodIssuesToManifestErrors(
   startLine: number,
   lineCounter: LineCounter,
 ): ManifestParseError[] {
-  return issues.map((issue) => mapZodIssue(issue, doc, startLine, lineCounter));
+  return issues.flatMap((issue) => mapZodIssue(issue, doc, startLine, lineCounter));
 }
 
 function mapZodIssue(
@@ -284,31 +296,35 @@ function mapZodIssue(
   doc: Document.Parsed,
   startLine: number,
   lineCounter: LineCounter,
-): ManifestParseError {
+): ManifestParseError[] {
   const path = formatZodPath(issue.path);
-  const location = resolveYamlLocation(doc, issue.path, startLine, lineCounter);
+  const location = resolveNodeLocation(doc, issue.path, startLine, lineCounter);
 
   if (issue.code === "unrecognized_keys") {
     return mapUnrecognizedKeyIssue(issue, doc, path, startLine, lineCounter);
   }
 
   if (issue.path[0] === "driver_version" && issue.code === "invalid_type") {
-    return applyLocation(
-      {
-        message: 'required field "driver_version" is missing or invalid (expected 1)',
-        path: "driver_version",
-      },
-      location,
-    );
+    return [
+      applyLocation(
+        {
+          message: 'required field "driver_version" is missing or invalid (expected 1)',
+          path: "driver_version",
+        },
+        location,
+      ),
+    ];
   }
 
-  return applyLocation(
-    {
-      message: zodIssueMessage(issue, path),
-      ...(path !== "" ? { path } : {}),
-    },
-    location,
-  );
+  return [
+    applyLocation(
+      {
+        message: zodIssueMessage(issue, path),
+        ...(path !== "" ? { path } : {}),
+      },
+      location,
+    ),
+  ];
 }
 
 function mapUnrecognizedKeyIssue(
@@ -317,22 +333,24 @@ function mapUnrecognizedKeyIssue(
   path: string,
   startLine: number,
   lineCounter: LineCounter,
-): ManifestParseError {
-  const unknownKey = issue.keys[0] ?? "unknown";
-  const keyLocation = resolveUnknownKeyLocation(
-    doc,
-    issue.path,
-    unknownKey,
-    startLine,
-    lineCounter,
-  );
-  return applyLocation(
-    {
-      message: `unknown field "${unknownKey}" at ${path || "manifest root"}`,
-      ...(path !== "" ? { path } : {}),
-    },
-    keyLocation,
-  );
+): ManifestParseError[] {
+  const keys = issue.keys.length > 0 ? issue.keys : ["unknown"];
+  return keys.map((unknownKey) => {
+    const keyLocation = resolveUnknownKeyLocation(
+      doc,
+      issue.path,
+      unknownKey,
+      startLine,
+      lineCounter,
+    );
+    return applyLocation(
+      {
+        message: `unknown field "${unknownKey}" at ${path || "manifest root"}`,
+        ...(path !== "" ? { path } : {}),
+      },
+      keyLocation,
+    );
+  });
 }
 
 function applyLocation(
@@ -383,15 +401,6 @@ function formatZodPath(path: (string | number)[]): string {
     result += `.${segment}`;
   }
   return result;
-}
-
-function resolveYamlLocation(
-  doc: Document.Parsed,
-  path: (string | number)[],
-  startLine: number,
-  lineCounter: LineCounter,
-): { line: number; column: number } | undefined {
-  return resolveNodeLocation(doc, path, startLine, lineCounter);
 }
 
 function resolveUnknownKeyLocation(
@@ -571,7 +580,9 @@ function findDependencyCycle(batches: ManifestBatch[]): string[] | undefined {
 
     const batch = batchById.get(batchId);
     if (batch !== undefined) {
-      for (const depId of batch.depends_on) {
+      // Self-dependencies are already reported as their own referential
+      // error; re-detecting them here would double-report one root cause.
+      for (const depId of batch.depends_on.filter((id) => id !== batchId)) {
         const cycle = visit(depId);
         if (cycle !== undefined) {
           return cycle;

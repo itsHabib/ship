@@ -113,6 +113,11 @@ describe("parseManifest valid manifests", () => {
     expect(result.manifest.batches[0]?.streams[0]?.touches).toEqual([]);
   });
 
+  it("accepts bare-scalar and mapping advisory blocks", () => {
+    expectOk(minimalManifest('runtime_notes: "batch 1 uses mixed runtimes"'));
+    expectOk(minimalManifest("conflict_notes:\n  summary: none"));
+  });
+
   it("preserves rawFrontmatter byte-identical to the input frontmatter block", () => {
     const fixture = loadFixture("synthetic-full.driver.md");
     const result = parseManifest(fixture);
@@ -133,6 +138,13 @@ describe("parseManifest invalid manifests", () => {
 
   it("rejects unterminated frontmatter fence", () => {
     expectError("---\ndriver_version: 1\n", "unterminated driver manifest frontmatter");
+  });
+
+  it("rejects a closing fence with trailing content on the same line", () => {
+    expectError(
+      "---\ndriver_version: 1\n---not-a-fence\n",
+      "unterminated driver manifest frontmatter",
+    );
   });
 
   it("rejects missing driver_version", () => {
@@ -273,6 +285,11 @@ describe("parseManifest invalid manifests", () => {
   it("rejects unsupported driver_version", () => {
     const text = minimalManifest().replace("driver_version: 1", "driver_version: 2");
     expectError(text, "unsupported driver_version 2");
+  });
+
+  it("names the received type when driver_version is a string", () => {
+    const text = minimalManifest().replace("driver_version: 1", 'driver_version: "1"');
+    expectError(text, 'unsupported driver_version "1" (expected the number 1)');
   });
 
   it("rejects unknown top-level field", () => {
@@ -463,6 +480,48 @@ describe("parseManifest invalid manifests", () => {
     );
   });
 
+  it("reports every unknown field in one object, each at its own line", () => {
+    const text = minimalManifest("spec_prefx: a\nbranch_prefx: b");
+    const result = parseManifest(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    const specError = result.errors.find((error) =>
+      error.message.includes('unknown field "spec_prefx"'),
+    );
+    const branchError = result.errors.find((error) =>
+      error.message.includes('unknown field "branch_prefx"'),
+    );
+    // minimalManifest: fence line 1, eight required lines, overrides at 10–11.
+    expect(specError?.line).toBe(10);
+    expect(branchError?.line).toBe(11);
+  });
+
+  it("rejects a non-integer depends_on entry", () => {
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-06-10T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: [1.5]",
+      "    streams: []",
+      "---",
+    ].join("\n");
+    const result = parseManifest(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    expect(result.errors.some((error) => error.path === "batches[0].depends_on[0]")).toBe(true);
+  });
+
   it("rejects missing depends_on on a batch", () => {
     const text = [
       "---",
@@ -631,6 +690,8 @@ describe("parseManifest referential validation", () => {
     );
     expect(error?.line).toBeTypeOf("number");
     expect(error?.path).toBe("batches[0].depends_on");
+    // One root cause, one error — the cycle detector must not re-report it.
+    expect(result.errors).toHaveLength(1);
   });
 
   it("rejects a three-batch dependency cycle", () => {
@@ -706,6 +767,17 @@ describe("parseManifest edge cases", () => {
 });
 
 describe("parseManifest totality", () => {
+  it("returns an error instead of throwing when alias expansion exceeds the yaml limit", () => {
+    const aliases = Array.from({ length: 101 }, () => "*a").join(", ");
+    const text = `---\nanchor: &a [1, 2]\nspread: [${aliases}]\n---\n`;
+    const result = parseManifest(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    expect(result.errors[0]?.message).toContain("failed to interpret yaml frontmatter");
+  });
+
   it("never throws on arbitrary string input", () => {
     const samples = [
       "",
