@@ -6,7 +6,15 @@ import type { FailureCategory } from "@ship/workflow";
 
 import { LOCAL_RUN_CONTENTION_HINT } from "@ship/workflow";
 
-import { eventRecord, stringifyToolCallResult } from "./_shared.js";
+import {
+  eventRecord,
+  formatRunningToolAge,
+  lastEventTimestamp,
+  lastRunningToolCall,
+  parseEventTimestamp,
+  stringifyToolCallResult,
+  summarizeToolCall,
+} from "./_shared.js";
 
 const NEAR_CAP_DURATION_RATIO = 0.95;
 const COLLAPSE_DURATION_RATIO = 0.8;
@@ -39,23 +47,6 @@ export interface BuildFailureDetailInput {
   readonly thrownErr?: unknown;
 }
 
-function parseEventTimestamp(raw: Record<string, unknown>): number | undefined {
-  const ts = raw["ts"] ?? raw["startedAt"];
-  if (typeof ts !== "string" || ts.length === 0) return undefined;
-  const ms = Date.parse(ts);
-  return Number.isFinite(ms) ? ms : undefined;
-}
-
-function lastEventTimestamp(events: readonly SDKMessage[]): number | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
-    if (ev === undefined) continue;
-    const ts = parseEventTimestamp(eventRecord(ev));
-    if (ts !== undefined) return ts;
-  }
-  return undefined;
-}
-
 function lastFailedToolCallDetail(events: readonly SDKMessage[]): string | undefined {
   let detail: string | undefined;
   for (const ev of events) {
@@ -74,41 +65,6 @@ function lastFailedToolCallDetail(events: readonly SDKMessage[]): string | undef
   return detail;
 }
 
-function toolCallId(raw: Record<string, unknown>): string | undefined {
-  const id = raw["call_id"];
-  return typeof id === "string" && id.length > 0 ? id : undefined;
-}
-
-// Final status per call_id (last event wins) so a tool that emitted `running`
-// early but `completed`/`error` later is not counted as still-running.
-function finalStatusByCallId(events: readonly SDKMessage[]): Map<string, unknown> {
-  const byId = new Map<string, unknown>();
-  for (const ev of events) {
-    const raw = eventRecord(ev);
-    if (raw["type"] !== "tool_call") continue;
-    const id = toolCallId(raw);
-    if (id !== undefined) byId.set(id, raw["status"]);
-  }
-  return byId;
-}
-
-// The most recent tool_call still running at stream end. A call_id is unfinished
-// only if its LAST tool_call event is `running`; calls lacking a call_id can't be
-// reconciled and fall back to their own status (last-running-wins).
-function lastRunningToolCall(events: readonly SDKMessage[]): Record<string, unknown> | undefined {
-  const finalStatus = finalStatusByCallId(events);
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
-    if (ev === undefined) continue;
-    const raw = eventRecord(ev);
-    if (raw["type"] !== "tool_call") continue;
-    const id = toolCallId(raw);
-    const effectiveStatus = id !== undefined ? finalStatus.get(id) : raw["status"];
-    if (effectiveStatus === "running") return raw;
-  }
-  return undefined;
-}
-
 function runningToolAgeMs(
   toolCall: Record<string, unknown>,
   events: readonly SDKMessage[],
@@ -124,18 +80,6 @@ function runningToolAgeMs(
     return durationMs;
   }
   return undefined;
-}
-
-// Second-granularity, distinct from _shared's minute-granularity formatter:
-// failure detail ("running 45s, never completed") needs finer precision than the
-// "after 5m (cap 30m)" run summaries. Intentionally not shared.
-function formatWallDuration(ms: number): string {
-  const totalSec = Math.max(0, Math.round(ms / 1000));
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  if (min === 0) return `${String(sec)}s`;
-  if (sec === 0) return `${String(min)}m`;
-  return `${String(min)}m${String(sec)}s`;
 }
 
 function isNearCap(durationMs: number | undefined, maxRunDurationMs: number | undefined): boolean {
@@ -191,9 +135,9 @@ function runningToolDetail(
   events: readonly SDKMessage[],
   durationMs: number | undefined,
 ): string {
-  const name = typeof toolCall["name"] === "string" ? toolCall["name"] : "tool";
   const age = runningToolAgeMs(toolCall, events, durationMs) ?? durationMs ?? 0;
-  return `last activity: ${name} running ${formatWallDuration(age)}, never completed`;
+  const summary = summarizeToolCall(toolCall);
+  return `last activity: ${summary} running ${formatRunningToolAge(age)}, never completed`;
 }
 
 function detailForContention(input: BuildFailureDetailInput): string {
@@ -232,8 +176,8 @@ function detailForTimeoutNearCap(input: BuildFailureDetailInput): string {
   const { durationMs, maxRunDurationMs } = input;
   const capPart =
     maxRunDurationMs !== undefined
-      ? `duration ${formatWallDuration(durationMs ?? 0)} (cap ${formatWallDuration(maxRunDurationMs)})`
-      : `duration ${formatWallDuration(durationMs ?? 0)}`;
+      ? `duration ${formatRunningToolAge(durationMs ?? 0)} (cap ${formatRunningToolAge(maxRunDurationMs)})`
+      : `duration ${formatRunningToolAge(durationMs ?? 0)}`;
   if (isExpiredStatus(input.sdkTerminalStatus)) {
     return `SDK status expired; ${capPart}`;
   }

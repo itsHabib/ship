@@ -10,6 +10,7 @@ import type { ServiceFactory } from "./service.js";
 
 import { registerArtifactsCommand } from "./commands/artifacts.js";
 import { registerCancelCommand } from "./commands/cancel.js";
+import { registerDiagnoseCommand } from "./commands/diagnose.js";
 import { registerListCommand } from "./commands/list.js";
 import { registerPruneCommand } from "./commands/prune.js";
 import { registerShipCommand } from "./commands/ship.js";
@@ -23,6 +24,7 @@ export function buildProgram(factory: ServiceFactory): Command {
 
   registerShipCommand(program, factory);
   registerStatusCommand(program, factory);
+  registerDiagnoseCommand(program, factory);
   registerListCommand(program, factory);
   registerCancelCommand(program, factory);
   registerArtifactsCommand(program, factory);

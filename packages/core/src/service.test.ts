@@ -1579,6 +1579,58 @@ describe("ShipService.getRun — failure diagnostics enrichment", () => {
     expect(view?.recentEvents?.length).toBeGreaterThanOrEqual(2);
     h.store.close();
   });
+
+  test("failed run hoists failureCategory from the implement phase row", async () => {
+    const h = await createHarness();
+    h.cursor.enqueue({
+      events: [{ type: "tool_call", status: "error", result: "make check failed" }] as never[],
+      result: {
+        status: "failed",
+        durationMs: 1000,
+        errorMessage: "logic; make check failed",
+        branches: [],
+      },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    const stored = h.store.getRun(out.workflowRunId);
+    expect(stored?.phases[0]?.failureCategory).toBe("logic");
+    const view = await h.service.getRun(out.workflowRunId);
+    expect(view?.failureCategory).toBe("logic");
+    expect(view?.failureCategory).toBe(stored?.phases[0]?.failureCategory);
+    h.store.close();
+  });
+
+  test("succeeded and cancelled runs omit top-level failureCategory", async () => {
+    const h = await createHarness();
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const succeeded = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    expect((await h.service.getRun(succeeded.workflowRunId))?.failureCategory).toBeUndefined();
+
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const start = await h.service.startShip({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    await h.service.cancelRun(start.workflowRunId);
+    await h.service.drainBackground();
+    expect((await h.service.getRun(start.workflowRunId))?.failureCategory).toBeUndefined();
+    h.store.close();
+  });
 });
 
 describe("ShipService.getRun — cloud watchUrl enrichment", () => {
