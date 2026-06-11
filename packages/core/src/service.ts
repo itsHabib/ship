@@ -73,6 +73,7 @@ import {
   type RunArtifactPaths,
 } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
+import { runWithDurationCap } from "./cursor-runs/duration-cap.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
 import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
 import {
@@ -975,34 +976,39 @@ async function runToTerminal(
       runLog,
     });
 
-    const handle = await ctx.runner.run(runInput);
-
-    // Cloud + rooms both run unattended off the async path; the timer-based
-    // pump keeps `workflow_runs.updated_at` fresh while a long run is live.
-    if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
-      eventPump = startEventPump({ store: ctx.store, workflowRunId: prep.workflowRunId });
-    }
-
-    cursorRunId = ctx.ids.cursorRun();
-    ctx.store.recordCursorRun({
-      id: cursorRunId,
-      workflowRunId: prep.workflowRunId,
-      agentId: handle.agentId,
-      runId: handle.runId,
-      runtime: ctx.resolvedCursorRuntime,
-      model,
-      artifactsDir: prep.paths.dir,
+    // The cap window opens before the runner is invoked: a stalled SDK start
+    // call must not hold the workflow open past the policy cap any more than
+    // a hung agent run.
+    const result = await runWithDurationCap({
+      log: runLog,
+      maxRunDurationMs: resolveMaxRunDurationMs(ctx.store, prep.workflowRunId),
+      onHandle: (handle) => {
+        // Cloud + rooms both run unattended off the async path; the timer-based
+        // pump keeps `workflow_runs.updated_at` fresh while a long run is live.
+        if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
+          eventPump = startEventPump({ store: ctx.store, workflowRunId: prep.workflowRunId });
+        }
+        cursorRunId = ctx.ids.cursorRun();
+        ctx.store.recordCursorRun({
+          id: cursorRunId,
+          workflowRunId: prep.workflowRunId,
+          agentId: handle.agentId,
+          runId: handle.runId,
+          runtime: ctx.resolvedCursorRuntime,
+          model,
+          artifactsDir: prep.paths.dir,
+        });
+        // Link the phase to the cursor-run so `getRun()` consumers can
+        // join phase rows back to their `cursor_runs` metadata after
+        // process restart.
+        ctx.store.updatePhase(prep.phaseId, { cursorRunId });
+        ctx.activeRuns.set(prep.workflowRunId, { controller, handle });
+      },
+      start: () => ctx.runner.run(runInput),
     });
-    // Link the phase to the cursor-run so `getRun()` consumers can
-    // join phase rows back to their `cursor_runs` metadata after
-    // process restart.
-    ctx.store.updatePhase(prep.phaseId, { cursorRunId });
-    ctx.activeRuns.set(prep.workflowRunId, { controller, handle });
-
-    const result = await handle.result;
     return await finalizeSuccess({
       ctx,
-      cursorRunId,
+      cursorRunId: assertCursorRunRecorded(cursorRunId),
       paths: prep.paths,
       phaseId: prep.phaseId,
       result,
@@ -1061,6 +1067,17 @@ function isRunTerminalSafe(ctx: ShipContext, workflowRunId: string): boolean {
   } catch {
     return false;
   }
+}
+
+// `runWithDurationCap` can only RESOLVE after `onHandle` ran (a pre-handle
+// expiry rejects instead), so a resolved result implies the cursor-run row
+// was recorded. Encodes that invariant for the type system; a violation
+// routes through `finalizeFailure` like any other thrown error.
+function assertCursorRunRecorded(id: string | undefined): string {
+  if (id === undefined) {
+    throw new Error("invariant violated: run resolved without a recorded cursor run");
+  }
+  return id;
 }
 
 async function prepareArtifacts(
@@ -1253,10 +1270,9 @@ interface ClassifiedFailure {
   readonly errorMessage: string;
 }
 
-function resolveMaxRunDurationMs(ctx: ShipContext, workflowRunId: string): number {
+function resolveMaxRunDurationMs(store: Store, workflowRunId: string): number {
   return (
-    ctx.store.getRun(workflowRunId)?.policy.maxRunDurationMs ??
-    DEFAULT_WORKFLOW_POLICY.maxRunDurationMs
+    store.getRun(workflowRunId)?.policy.maxRunDurationMs ?? DEFAULT_WORKFLOW_POLICY.maxRunDurationMs
   );
 }
 
@@ -1266,7 +1282,7 @@ function classifyFailedRun(
   result: CursorRunResult,
 ): ClassifiedFailure {
   const events = result.classificationEvents ?? [];
-  const maxRunDurationMs = resolveMaxRunDurationMs(ctx, workflowRunId);
+  const maxRunDurationMs = resolveMaxRunDurationMs(ctx.store, workflowRunId);
   const category = classifyFailure({
     durationMs: result.durationMs,
     events,
@@ -2060,23 +2076,31 @@ async function runResumeAttach(
       workflowRunId: target.row.workflowRunId,
       phase: target.phaseId,
     });
-    const handle = await cloudCursor.attach({
-      agentId: target.row.agentId,
-      cloud: target.cloudSpec,
+    // Same single-window cap as the dispatch path: the attach call itself
+    // (`Agent.resume` + `Agent.getRun`) can stall, so it runs inside the
+    // remaining-budget window rather than ahead of it.
+    const result = await runWithDurationCap({
+      elapsedMs: resumeElapsedMs(ctx, target.row.id),
       log: resumeLog,
-      model,
-      onEvent,
-      runId: target.row.runId,
-      signal: target.controller.signal,
-      ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
-      ...(ctx.config.agents !== undefined && { agents: ctx.config.agents }),
+      maxRunDurationMs: resolveMaxRunDurationMs(ctx.store, target.row.workflowRunId),
+      onHandle: (handle) => {
+        eventPump = startEventPump({ store: ctx.store, workflowRunId: target.row.workflowRunId });
+        onPumpStarted(eventPump);
+        ctx.activeRuns.set(target.row.workflowRunId, { controller: target.controller, handle });
+      },
+      start: () =>
+        cloudCursor.attach({
+          agentId: target.row.agentId,
+          cloud: target.cloudSpec,
+          log: resumeLog,
+          model,
+          onEvent,
+          runId: target.row.runId,
+          signal: target.controller.signal,
+          ...(ctx.config.mcpServers !== undefined && { mcpServers: ctx.config.mcpServers }),
+          ...(ctx.config.agents !== undefined && { agents: ctx.config.agents }),
+        }),
     });
-
-    eventPump = startEventPump({ store: ctx.store, workflowRunId: target.row.workflowRunId });
-    onPumpStarted(eventPump);
-    ctx.activeRuns.set(target.row.workflowRunId, { controller: target.controller, handle });
-
-    const result = await handle.result;
     await finalizeSuccess({
       ctx: target.shipCtx,
       cursorRunId: target.row.id,
@@ -2089,6 +2113,17 @@ async function runResumeAttach(
   } catch (err) {
     await handleResumeAttachError(ctx, target, err);
   }
+}
+
+// Wall time a resumed run consumed before this process attached, from the
+// persisted cursor-run row. Zero when the row (or a sane delta) isn't
+// available — the cap then falls back to a full fresh window.
+function resumeElapsedMs(ctx: ResumeContext, cursorRunId: string): number {
+  const startedAt = ctx.store.getCursorRun(cursorRunId)?.startedAt;
+  if (startedAt === undefined) return 0;
+  const elapsed = Date.parse(ctx.clock()) - Date.parse(startedAt);
+  if (!Number.isFinite(elapsed) || elapsed < 0) return 0;
+  return elapsed;
 }
 
 async function handleResumeAttachError(

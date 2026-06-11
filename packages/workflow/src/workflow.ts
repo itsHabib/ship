@@ -188,8 +188,10 @@ export type TerminalCursorRunRef = z.infer<typeof terminalCursorRunRefSchema>;
  *
  * Fields:
  * - `baseRef`           — git ref the worktree branches from.
- * - `maxRunDurationMs`  — Ship-level timeout; after this Ship cancels the
- *                         run and marks the workflow `cancelled`.
+ * - `maxRunDurationMs`  — Ship-level cap; when a run outlives it, Ship
+ *                         finalizes the workflow `failed` with
+ *                         `failureCategory: "timeout-near-cap"` and fires a
+ *                         best-effort (not guaranteed) cancel at the SDK run.
  * - `agentTimeoutMs`    — SDK-level timeout passed through to `@cursor/sdk`.
  */
 export const workflowPolicySchema = z
