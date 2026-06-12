@@ -186,6 +186,7 @@ test("resumed cloud run only gets the remaining cap budget, not a fresh window",
       runsDir: RUNS_DIR,
     },
     fs,
+    resumeOrphans: true,
     store,
   });
   // NOTE: `resumeReady()` resolves only when resumed runs reach terminal,

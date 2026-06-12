@@ -49,7 +49,12 @@ async function main(): Promise<void> {
   const dbPath = process.env["SHIP_DB_PATH"] ?? join(userConfigDir(), "ship", "state.db");
   const runsDir = process.env["SHIP_RUNS_DIR"] ?? join(userConfigDir(), "ship", "runs");
 
-  const opts: Parameters<typeof createDefaultShipService>[0] = { dbPath, runsDir, logger };
+  const opts: Parameters<typeof createDefaultShipService>[0] = {
+    dbPath,
+    runsDir,
+    logger,
+    resumeOrphans: true,
+  };
   if (useFake) {
     // The fake runner returns a fixed `succeeded` outcome for every
     // `ship` call so the L3 subprocess test exercises the stdio /

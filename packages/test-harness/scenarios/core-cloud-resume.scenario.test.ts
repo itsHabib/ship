@@ -109,6 +109,7 @@ test("kill-mid-run restart: resumeOrphanedRuns attaches and completes the same w
       runsDir: RUNS_DIR,
     },
     fs,
+    resumeOrphans: true,
     store,
   });
 
