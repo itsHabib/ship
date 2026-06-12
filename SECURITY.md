@@ -2,9 +2,13 @@
 
 ## Reporting a vulnerability
 
-For security concerns, **don't file a public issue**. Email the maintainer privately or use [GitHub private vulnerability reporting](https://github.com/itsHabib/ship/security/advisories/new).
+For security concerns, **don't file a public issue** — use [GitHub private vulnerability reporting](https://github.com/itsHabib/ship/security/advisories/new).
 
-Expect acknowledgment within 7 days. Coordinated disclosure timing depends on severity — for bugs whose blast radius is limited to the operator's own machine (local subprocesses, local SQLite, local config dir), the window is typically short (days, not months).
+Acknowledgment is best effort — typically within 7 days. Coordinated disclosure timing depends on severity — for bugs whose blast radius is limited to the operator's own machine (local subprocesses, local SQLite, local config dir), the window is typically short (days, not months).
+
+## Supported versions
+
+Only the current state of `main` receives security fixes.
 
 ## Scope
 
@@ -31,7 +35,7 @@ Ship is a local dev-workflow toolkit: a CLI (`@ship/cli`) and an MCP server (`@s
 Ship is not network-facing. It runs on the operator's machine, in their own session, against their own repos. Realistic threats:
 
 1. **Malicious task-doc or repo content steering a dispatched agent** (prompt injection). Mitigated by operator-authored task docs and downstream PR review gates — ship does not vet third-party content before dispatch.
-2. **Injection via crafted MCP tool input.** Rejected at the MCP boundary where schemas apply; downstream path containment and typed errors in `@ship/core` / `@ship/store` provide additional guards. The CLI is a separate entry surface.
-3. **API-key leakage into logs or artifacts.** The secret value of `CURSOR_API_KEY` must never appear in `events.ndjson` or other run artifacts. Boot-time stderr may mention the env var name when the key is missing; report any path that echoes the secret value. Residual risk remains if dispatched agent output echoes env or secrets into the event log.
+2. **Injection via crafted MCP tool input.** Rejected at the MCP boundary where schemas apply; downstream validation layers provide additional guards. The CLI is a separate entry surface.
+3. **API-key leakage into logs or artifacts.** The secret value of `CURSOR_API_KEY` must never appear in `events.ndjson` or other run artifacts. Boot-time stderr may mention the env var name when the key is missing; report any path that echoes the secret value. A dispatched agent echoing env or secrets into its own event log is accepted risk for operator-controlled workloads — the operator authors what the agent runs.
 
 Internet-facing attacks (RCE via external network, unsolicited inbound connections) aren't in scope — ship doesn't bind to ports or accept remote connections.
