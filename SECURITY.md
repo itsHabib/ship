@@ -17,11 +17,11 @@ Ship is a local dev-workflow toolkit: a CLI (`@ship/cli`) and an MCP server (`@s
 **Security-relevant surfaces:**
 
 - `@ship/cli` — argv-driven entry point with its own validation path (separate from MCP).
-- `@ship/cursor-runner` — reads and passes through `CURSOR_API_KEY` for Cursor SDK calls (local and cloud).
+- Credential handling — `CURSOR_API_KEY` for Cursor SDK calls (local and cloud), and `GITHUB_TOKEN`/`GH_TOKEN` for remote task-doc fetching and rooms-runtime subprocess environments.
 - Local SQLite store (`state.db` under the user config dir) — persists workflow and run metadata.
 - Task-doc content — embedded into agent prompts; a malicious or crafted task doc is a prompt-injection surface.
 - Run artifacts under the user config dir — `events.ndjson` and related logs can contain repo content from dispatched runs.
-- MCP stdio surface — tool inputs validated with zod schemas; critical handlers re-parse before dispatch; additional containment lives in `@ship/core`.
+- MCP stdio surface — tool inputs validated with zod schemas; critical handlers re-parse before dispatch; additional containment in downstream validation layers.
 - Dispatched Cursor agents (local subprocess or cloud) — may run shell and `git` in operator-configured workdirs; ship does not sandbox that execution.
 
 **Out of scope:**
@@ -36,6 +36,6 @@ Ship is not network-facing. It runs on the operator's machine, in their own sess
 
 1. **Malicious task-doc or repo content steering a dispatched agent** (prompt injection). Mitigated by operator-authored task docs and downstream PR review gates — ship does not vet third-party content before dispatch.
 2. **Injection via crafted MCP tool input.** Rejected at the MCP boundary where schemas apply; downstream validation layers provide additional guards. The CLI is a separate entry surface.
-3. **API-key leakage into logs or artifacts.** The secret value of `CURSOR_API_KEY` must never appear in `events.ndjson` or other run artifacts. Boot-time stderr may mention the env var name when the key is missing; report any path that echoes the secret value. A dispatched agent echoing env or secrets into its own event log is accepted risk for operator-controlled workloads — the operator authors what the agent runs.
+3. **Credential leakage into logs or artifacts.** The secret values of `CURSOR_API_KEY` and `GITHUB_TOKEN`/`GH_TOKEN` must never appear in `events.ndjson` or other run artifacts. Boot-time stderr may mention an env var name when a key is missing; report any path that echoes a secret value. A dispatched agent echoing env or secrets into its own event log is accepted risk for operator-controlled workloads — the operator authors what the agent runs.
 
 Internet-facing attacks (RCE via external network, unsolicited inbound connections) aren't in scope — ship doesn't bind to ports or accept remote connections.
