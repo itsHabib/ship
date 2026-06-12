@@ -138,4 +138,53 @@ describe("renderDriverRun", () => {
   it("throws DriverRunNotFoundError for unknown id", () => {
     expect(() => renderDriverRun(store, "drv_missing")).toThrow(DriverRunNotFoundError);
   });
+
+  it("throws when stored source_json frontmatter is not a mapping", () => {
+    store.insertDriverRun({
+      batches: [],
+      id: "drv_bad_yaml",
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: "---\n- not a mapping\n---\n",
+      status: "pending",
+    });
+    expect(() => renderDriverRun(store, "drv_bad_yaml")).toThrow(/not a mapping/);
+  });
+
+  it("throws when stored source_json lacks frontmatter fences", () => {
+    store.insertDriverRun({
+      batches: [],
+      id: "drv_no_fence",
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: "no fences here",
+      status: "pending",
+    });
+    expect(() => renderDriverRun(store, "drv_no_fence")).toThrow(
+      /missing driver manifest frontmatter/,
+    );
+  });
+
+  it("passes through non-array batch entries unchanged", () => {
+    store.insertDriverRun({
+      batches: [],
+      id: "drv_weird_batches",
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: `---
+driver_version: 1
+generated_at: 2026-06-12T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: x
+repo: ship
+batches: not-an-array
+---
+`,
+      status: "pending",
+    });
+    const rendered = renderDriverRun(store, "drv_weird_batches");
+    expect(rendered).toContain("batches: not-an-array");
+  });
 });
