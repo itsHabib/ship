@@ -71,12 +71,13 @@ batches:
   });
 
   test("golden-manifest walk dispatches batch 1 before batch 2", async () => {
-    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
-    const docB = resolveDocPath(repoRoot, "docs/tasks/b.md");
-    const { port } = createFakeShipPort([
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const docB = localDoc(repoRoot, "feat-b", "docs/tasks/b.md");
+    const fake = createFakeShipPort([
       { docPath: docA, repo: "ship", workflowRunId: "wf_a" },
       { docPath: docB, repo: "ship", workflowRunId: "wf_b" },
     ]);
+    const { port } = fake;
 
     const store = createStore({ dbPath: ":memory:" });
     const driver = createDriverService({ ship: port, store });
@@ -91,6 +92,11 @@ batches:
     expect(result.unmerged).toHaveLength(1);
     expect(result.unmerged[0]?.specPath).toBe("docs/tasks/a.md");
 
+    // Local docs must resolve INSIDE the stream's worktree — core requires
+    // docPath to be a descendant of workdir.
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    expect((start?.input as { docPath?: string } | undefined)?.docPath).toBe(docA);
+
     driver.markMerged(imported.run.id, result.unmerged[0]!.streamId, {
       mergeCommit: "abc123",
       prNumber: 1,
@@ -101,7 +107,7 @@ batches:
   });
 
   test("failed-retry path: fail → judgment → retry → re-dispatch", async () => {
-    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const { port } = createFakeShipPort([
       {
         docPath: docA,
@@ -133,7 +139,7 @@ batches:
   });
 
   test("two-run plan determinism", async () => {
-    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const scripts = [{ docPath: docA, repo: "ship", workflowRunId: "wf_det" }];
     const store1 = createStore({ dbPath: ":memory:" });
     const store2 = createStore({ dbPath: ":memory:" });
@@ -187,7 +193,7 @@ batches:
   });
 
   test("cancel is idempotent", async () => {
-    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const fake = createFakeShipPort([
       { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_live" },
     ]);
@@ -421,6 +427,10 @@ batches:
     const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
     expect(result.status).toBe("awaiting_judgment");
     expect(result.awaiting.some((a) => a.kind === "dispatch-ambiguity")).toBe(true);
+
+    // §7.3's documented alternative to adopt: retry abandons the candidates.
+    driver.decide(runId, streamId, { kind: "retry" });
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("pending");
     store.close();
   });
 
@@ -436,7 +446,7 @@ batches:
   });
 
   test("dispatch-time failure surfaces a triage request without a workflow id", async () => {
-    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const fake = createFakeShipPort([
       { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf_never" },
     ]);
@@ -498,7 +508,7 @@ batches:
   });
 
   test("post-dispatch persistence failure leaves the stream dispatching for recovery", async () => {
-    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_live" }]);
     const store = createStore({ dbPath: ":memory:" });
     const imported = createDriverService({ ship: fake.port, store }).importManifest(manifestPath);
@@ -530,7 +540,7 @@ batches:
   test("stale lease is taken over without force", async () => {
     const t0 = Date.parse("2026-06-12T00:00:00.000Z");
     const store = createStore({ clock: () => new Date(t0).toISOString(), dbPath: ":memory:" });
-    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_stale" }]);
     const imported = createDriverService({ ship: fake.port, store }).importManifest(manifestPath);
     store.stampDriverRunTickStarted(imported.run.id);
@@ -540,7 +550,7 @@ batches:
       { driverRunId: imported.run.id },
       { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
     );
-    expect(result.status).not.toBe("failed");
+    expect(result.status).toBe("blocked_on_merges");
     store.close();
   });
 
@@ -613,6 +623,11 @@ batches:
         status: pending
 ---
 `;
+}
+
+/** Local docs resolve inside the stream's worktree (core requires it). */
+function localDoc(root: string, branch: string, specPath: string): string {
+  return resolveDocPath(join(root, ".claude", "worktrees", branch), specPath);
 }
 
 function minimalSourceJson(): string {

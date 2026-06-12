@@ -32,6 +32,7 @@ export type {
 } from "./driver-schemas.js";
 
 export type {
+  ClaimTickInput,
   InsertDriverBatchInput,
   InsertDriverRunInput,
   InsertDriverStreamInput,

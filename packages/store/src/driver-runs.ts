@@ -60,6 +60,14 @@ export interface InsertDriverRunInput {
   batches: InsertDriverBatchInput[];
 }
 
+/** Inputs for `claimDriverRunTick` — atomic check-and-stamp of the tick lease. */
+export interface ClaimTickInput {
+  /** Take the lease even if a tick looks live (manual takeover, §8). */
+  force: boolean;
+  /** ISO timestamp; an unended tick with `updated_at >= staleBefore` is live. */
+  staleBefore: string;
+}
+
 /** Filter for `listDriverRuns`. */
 export interface ListDriverRunsFilter {
   repo?: string;
@@ -77,6 +85,7 @@ export interface DriverRunOps {
   updateStatus: (id: string, status: DriverRunStatus) => DriverRun;
   stampTickStarted: (id: string) => DriverRun;
   stampTickEnded: (id: string) => DriverRun;
+  claimTick: (id: string, input: ClaimTickInput) => boolean;
   updateBatch: (id: string, patch: UpdateDriverBatchInput) => DriverBatch;
   updateStream: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
 }
@@ -200,6 +209,24 @@ export function createDriverRunOps(db: Db, clock: () => string): DriverRunOps {
     return txn();
   }
 
+  function claimTick(id: string, input: ClaimTickInput): boolean {
+    // Read + liveness check + stamp in one txn so two concurrent claims
+    // can't both pass the check before either stamps (the lease's point).
+    const txn = db.transaction((): boolean => {
+      const row = selectByIdStmt.get(id);
+      if (!row) {
+        throw new DriverRunNotFoundError(id);
+      }
+      if (!input.force && rowTickLive(row, input.staleBefore)) {
+        return false;
+      }
+      const now = clock();
+      stampTickStartedStmt.run(now, now, id);
+      return true;
+    });
+    return txn();
+  }
+
   function stampTickStarted(id: string): DriverRun {
     const txn = db.transaction((): DriverRun => {
       const now = clock();
@@ -251,6 +278,7 @@ export function createDriverRunOps(db: Db, clock: () => string): DriverRunOps {
   }
 
   return {
+    claimTick,
     get,
     insert,
     list,
@@ -260,6 +288,14 @@ export function createDriverRunOps(db: Db, clock: () => string): DriverRunOps {
     updateStatus,
     updateStream,
   };
+}
+
+function rowTickLive(row: DriverRunRow, staleBefore: string): boolean {
+  if (row.tick_started_at === null) return false;
+  const ended =
+    row.tick_ended_at !== null && Date.parse(row.tick_ended_at) >= Date.parse(row.tick_started_at);
+  if (ended) return false;
+  return Date.parse(row.updated_at) >= Date.parse(staleBefore);
 }
 
 function hydrateRun(

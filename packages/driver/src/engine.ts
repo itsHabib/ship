@@ -101,11 +101,18 @@ export async function runTick(
   deps: EngineDeps,
 ): Promise<DriverTickResult> {
   const ctx = buildTickContext(deps);
-  let run = loadRun(ctx.store, driverRunId);
+  loadRun(ctx.store, driverRunId);
 
-  assertLease(run, opts, ctx.clock);
-  ctx.store.stampDriverRunTickStarted(driverRunId);
-  run = loadRun(ctx.store, driverRunId);
+  // Atomic check-and-stamp: two concurrent ticks can't both pass a separate
+  // liveness check before either stamps (codex cycle-2).
+  const claimed = ctx.store.claimDriverRunTick(driverRunId, {
+    force: opts.force,
+    staleBefore: new Date(ctx.clock() - 3 * opts.pollIntervalMs).toISOString(),
+  });
+  if (!claimed) {
+    throw new TickLiveError(driverRunId);
+  }
+  const run = loadRun(ctx.store, driverRunId);
 
   try {
     return await executeTick(driverRunId, run, opts, ctx);
@@ -211,12 +218,6 @@ function ensureRunning(store: Store, driverRunId: string, run: DriverRun): Drive
   return loadRun(store, driverRunId);
 }
 
-function assertLease(run: DriverRun, opts: ResolvedRunOpts, clock: () => number): void {
-  if (opts.force) return;
-  if (!isTickLive(run, opts.pollIntervalMs, clock)) return;
-  throw new TickLiveError(run.id);
-}
-
 export function isTickLive(run: DriverRun, pollIntervalMs: number, clock: () => number): boolean {
   if (run.tickStartedAt === undefined) return false;
   const endedBeforeStart =
@@ -307,6 +308,18 @@ export function resolveDocPath(repoRoot: string, specPath: string): string {
   return resolve(repoRoot, specPath);
 }
 
+/**
+ * Local docs resolve inside the stream's worktree — core requires a local
+ * `docPath` to be a descendant of `workdir`. Cloud docs resolve against the
+ * repo root (content is embedded at dispatch).
+ */
+export function resolveStreamDocPath(repoRoot: string, stream: DriverStream): string {
+  if (stream.runtime === "local" && stream.branch !== undefined) {
+    return resolveDocPath(join(repoRoot, ".claude", "worktrees", stream.branch), stream.specPath);
+  }
+  return resolveDocPath(repoRoot, stream.specPath);
+}
+
 function buildDispatchContext(
   run: DriverRun,
   opts: ResolvedRunOpts,
@@ -379,7 +392,7 @@ function countInFlight(run: DriverRun, runtime: "local" | "cloud"): number {
 }
 
 async function dispatchStream(ctx: DispatchContext, stream: DriverStream): Promise<boolean> {
-  const docPath = resolveDocPath(ctx.repoRoot, stream.specPath);
+  const docPath = resolveStreamDocPath(ctx.repoRoot, stream);
   const attempt: StreamAttempt = {
     dispatchedAt: new Date(ctx.clock()).toISOString(),
     docPath,

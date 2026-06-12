@@ -27,7 +27,10 @@ export interface FakeShipPortCall {
   input?: ShipInput | ListRunsFilter | string;
 }
 
-export function createFakeShipPort(scripts: FakeRunScript[] = []): {
+export function createFakeShipPort(
+  scripts: FakeRunScript[] = [],
+  clock?: () => number,
+): {
   port: DriverShipPort;
   calls: FakeShipPortCall[];
   runs: Map<string, GetWorkflowRunOutput>;
@@ -35,10 +38,11 @@ export function createFakeShipPort(scripts: FakeRunScript[] = []): {
   const calls: FakeShipPortCall[] = [];
   const runs = new Map<string, GetWorkflowRunOutput>();
   const dispatchCounts = new Map<string, number>();
+  const now = (): string => new Date((clock ?? Date.now)()).toISOString();
   let nextId = 0;
 
   for (const script of scripts) {
-    runs.set(script.workflowRunId, buildRun(script));
+    runs.set(script.workflowRunId, buildRun(script, now));
   }
 
   const port: DriverShipPort = {
@@ -60,7 +64,9 @@ export function createFakeShipPort(scripts: FakeRunScript[] = []): {
     },
     startShip: (input) => {
       calls.push({ input, kind: "startShip" });
-      return Promise.resolve(startFakeShip(input, scripts, runs, dispatchCounts, () => nextId++));
+      return Promise.resolve(
+        startFakeShip(input, scripts, runs, dispatchCounts, { nextId: () => nextId++, now }),
+      );
     },
   };
 
@@ -92,17 +98,17 @@ function startFakeShip(
   scripts: FakeRunScript[],
   runs: Map<string, GetWorkflowRunOutput>,
   dispatchCounts: Map<string, number>,
-  nextId: () => number,
+  helpers: { nextId: () => number; now: () => string },
 ): ShipStartOutput {
   const match = pickScript(input, scripts, dispatchCounts);
   if (match?.throwOnStart !== undefined) {
     throw match.throwOnStart;
   }
 
-  const workflowRunId = match?.workflowRunId ?? `wf_fake_${String(nextId())}`;
+  const workflowRunId = match?.workflowRunId ?? `wf_fake_${String(helpers.nextId())}`;
   const branch = input.branch ?? match?.branch ?? "main";
   const script = buildScript(input, match, branch, workflowRunId);
-  runs.set(workflowRunId, buildRun(script));
+  runs.set(workflowRunId, buildRun(script, helpers.now));
   return { status: "running", workflowRunId };
 }
 
@@ -139,19 +145,19 @@ function mergeOptionalScriptFields(
   return base;
 }
 
-function buildRun(script: FakeRunScript): GetWorkflowRunOutput {
+function buildRun(script: FakeRunScript, now: () => string): GetWorkflowRunOutput {
   const status = script.terminalStatus ?? "succeeded";
   const branch = script.branch ?? script.branchName ?? "main";
   const run: GetWorkflowRunOutput = {
     baseRef: "main",
-    createdAt: new Date().toISOString(),
+    createdAt: now(),
     docPath: script.docPath,
     id: script.workflowRunId,
     phases: [],
     policy: DEFAULT_WORKFLOW_POLICY,
     repo: script.repo,
     status,
-    updatedAt: new Date().toISOString(),
+    updatedAt: now(),
     worktree: {
       baseRef: "main",
       branch,

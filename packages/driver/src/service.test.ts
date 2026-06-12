@@ -98,7 +98,10 @@ batches:
 `,
     );
 
-    const docPath = resolveDocPath(repoRoot, "docs/task.md");
+    const docPath = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/task.md",
+    );
     const { port } = createFakeShipPort([
       { docPath, repo: "ship", throwOnStart: new Error("dispatch blew up"), workflowRunId: "wf_x" },
     ]);

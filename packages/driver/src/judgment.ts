@@ -207,9 +207,10 @@ function buildFailureTriageRequest(
     kind: "failure-triage",
     streamId: stream.id,
   };
-  // Dispatch-time failures have no workflow run; the triage request still
-  // surfaces so the brain can retry/skip/abort (§7.2).
-  const wfId = stream.workflowRunId ?? latestAttempt(stream)?.workflowRunId;
+  // Only the LATEST attempt's workflow id belongs in triage — the stream-level
+  // id can be a stale pointer to a previous attempt after a retry. Dispatch-time
+  // failures have none; the request still surfaces (§7.2).
+  const wfId = latestAttempt(stream)?.workflowRunId;
   if (wfId !== undefined) req.workflowRunId = wfId;
   if (stream.errorMessage !== undefined) req.errorMessage = stream.errorMessage;
   if (stream.errorMessage?.includes("local run contention")) {
@@ -292,8 +293,12 @@ function applyRetryDecision(
   streamId: string,
   stream: DriverStream,
 ): DriverRun {
-  if (stream.status !== "failed") {
-    throw new DecideError(`stream ${streamId} is not failed (status=${stream.status})`);
+  // `dispatching` is the ambiguity resting state (§7.3) — retry abandons the
+  // candidates and re-dispatches fresh, the documented alternative to adopt.
+  if (stream.status !== "failed" && stream.status !== "dispatching") {
+    throw new DecideError(
+      `stream ${streamId} is not failed or dispatching (status=${stream.status})`,
+    );
   }
   store.updateDriverStream(streamId, { status: "pending" });
   return store.updateDriverRunStatus(driverRunId, "running");
