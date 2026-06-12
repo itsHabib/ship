@@ -5,6 +5,7 @@
 
 import type { Command } from "commander";
 
+import { closeDefaultSharedStore } from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { mkdirSync, mkdtempSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +26,8 @@ interface DriverHarness {
   cursor: FakeCursorRunner;
   tmp: string;
   repoRoot: string;
+  /** Closes the shared store, then removes the temp dir — Windows cannot unlink an open SQLite file. */
+  dispose: () => void;
 }
 
 function createDriverHarness(): DriverHarness {
@@ -36,7 +39,11 @@ function createDriverHarness(): DriverHarness {
   const cursor = new FakeCursorRunner();
   const opts = { dbPath, runsDir, cursor };
   const program = buildProgram(createCliService(opts), createCliDriverService(opts));
-  return { program, cursor, tmp, repoRoot };
+  const dispose = (): void => {
+    closeDefaultSharedStore(dbPath);
+    rmSync(tmp, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
+  };
+  return { program, cursor, tmp, repoRoot, dispose };
 }
 
 async function runDriver(
@@ -75,7 +82,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(h.tmp, { force: true, recursive: true });
+  h.dispose();
 });
 
 describe("driver CLI fake-cursor e2e", () => {

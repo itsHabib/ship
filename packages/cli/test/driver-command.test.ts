@@ -1,6 +1,5 @@
 /** Argv → DriverService plumbing for `ship driver` subcommands. */
 
-import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { CliExit } from "../src/errors.js";
@@ -32,7 +31,7 @@ beforeEach(() => {
 afterEach(() => {
   process.stdout.write = origStdout;
   process.stderr.write = origStderr;
-  rmSync(h.tmp, { force: true, recursive: true });
+  h.dispose();
 });
 
 async function runDriver(argv: readonly string[]): Promise<number> {

@@ -5,8 +5,9 @@
 
 import type { Command } from "commander";
 
+import { closeDefaultSharedStore } from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +19,8 @@ export interface DriverDiskHarness {
   readonly cursor: FakeCursorRunner;
   readonly tmp: string;
   readonly repoRoot: string;
+  /** Closes the shared store, then removes the temp dir — Windows cannot unlink an open SQLite file. */
+  readonly dispose: () => void;
 }
 
 export function createDriverDiskHarness(): DriverDiskHarness {
@@ -28,5 +31,9 @@ export function createDriverDiskHarness(): DriverDiskHarness {
   const cursor = new FakeCursorRunner();
   const opts = { dbPath, runsDir, cursor };
   const program = buildProgram(createCliService(opts), createCliDriverService(opts));
-  return { program, cursor, tmp, repoRoot };
+  const dispose = (): void => {
+    closeDefaultSharedStore(dbPath);
+    rmSync(tmp, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
+  };
+  return { program, cursor, tmp, repoRoot, dispose };
 }

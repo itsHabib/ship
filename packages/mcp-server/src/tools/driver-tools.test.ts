@@ -6,7 +6,7 @@ import type { DriverService } from "@ship/driver";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createDefaultShipService } from "@ship/core";
+import { closeDefaultSharedStore, createDefaultShipService } from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,6 +51,9 @@ async function createDriverMcpHarness(): Promise<DriverMcpHarness> {
       await client.close();
       await server.close();
       await shipFactory().drainBackground();
+      // The shared sqlite handle must close before the temp dir goes —
+      // Windows cannot unlink an open db file.
+      closeDefaultSharedStore(dbPath);
     },
   };
 }
@@ -63,7 +66,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await h.close();
-  rmSync(h.tmp, { force: true, recursive: true });
+  rmSync(h.tmp, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
 });
 
 describe("driver MCP tools", () => {

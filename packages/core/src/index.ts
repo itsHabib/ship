@@ -17,6 +17,7 @@ export type {
   ShipServiceFactory,
 } from "./default-wiring.js";
 export {
+  closeDefaultSharedStore,
   createDefaultShipService,
   DEFAULT_MODEL,
   getDefaultSharedStore,

@@ -119,6 +119,18 @@ export function getDefaultSharedStore(opts: DefaultSharedStoreOpts): Store {
   return getOrCreateSharedInfra(opts.dbPath, logger).store;
 }
 
+/**
+ * Closes and evicts the shared store for `dbPath`. Test harnesses call this
+ * before removing a temp db directory — Windows cannot unlink an open SQLite
+ * file. No-op when nothing is cached for the path.
+ */
+export function closeDefaultSharedStore(dbPath: string): void {
+  const infra = SHARED_INFRA_BY_DB_PATH.get(dbPath);
+  if (infra === undefined) return;
+  SHARED_INFRA_BY_DB_PATH.delete(dbPath);
+  infra.store.close();
+}
+
 function getOrCreateSharedInfra(dbPath: string, logger: Logger): SharedInfra {
   const existing = SHARED_INFRA_BY_DB_PATH.get(dbPath);
   if (existing !== undefined) return existing;
