@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { DocSource } from "./doc-source/doc-source.js";
 
+import { ORPHAN_RESUME_STALENESS_MS } from "./cursor-runs/orphan-resume.js";
 import {
   CloudRunnerNotConfiguredError,
   DocNotFoundError,
@@ -2083,6 +2084,123 @@ describe("ShipService.resumeOrphanedRuns", () => {
     const row = await waitForRunTerminal(resumedService, workflowRunId);
     expect(row.status).toBe("succeeded");
     expect(cloudCursor.attachCalls).toHaveLength(1);
+    store.close();
+  });
+
+  test("fresh-at-boot row is adopted by a later resumeOrphanedRuns sweep once stale", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-06-12T12:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    const workflowRunId = "wf_00000000000000000000000008";
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        roomCursor: null as never,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000008",
+        phaseId: "ph_00000000000000000000000008",
+        workflowRunId,
+      },
+    );
+
+    // Crash-then-fast-restart: the boot sweep sees a fresh heartbeat and
+    // must skip; the periodic re-sweep (mcp-server bin cadence) calls
+    // resumeOrphanedRuns again after the threshold and must adopt.
+    let nowMs = Date.parse("2026-06-12T12:00:30.000Z");
+    const service = createShipService({
+      clock: () => new Date(nowMs).toISOString(),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    expect(cloudCursor.attachCalls).toHaveLength(0);
+
+    cloudCursor.enqueueAttach({
+      events: [],
+      result: { status: "succeeded", durationMs: 100, branches: [], summary: "resumed late" },
+    });
+    nowMs += ORPHAN_RESUME_STALENESS_MS + 60_000;
+    await service.resumeOrphanedRuns();
+    await service.drainBackground();
+
+    const row = await waitForRunTerminal(service, workflowRunId);
+    expect(row.status).toBe("succeeded");
+    expect(cloudCursor.attachCalls).toHaveLength(1);
+    store.close();
+  });
+
+  test("terminal-parent cursor row reconciles immediately despite a fresh heartbeat", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-06-12T12:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    const workflowRunId = "wf_00000000000000000000000009";
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        roomCursor: null as never,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000009",
+        phaseId: "ph_00000000000000000000000009",
+        workflowRunId,
+      },
+    );
+
+    // A cancel just before boot bumps updated_at (fresh) but leaves the
+    // cursor row running. Reconciliation carries no attach risk, so the
+    // staleness guard must not apply to it.
+    store.cancelRun(workflowRunId);
+
+    const service = createShipService({
+      clock: deterministicClock("2026-06-12T12:00:30.000Z", 1000),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    expect(cloudCursor.attachCalls).toHaveLength(0);
+    expect(store.listResumableCloudCursorRuns()).toHaveLength(0);
+    expect((await service.getRun(workflowRunId))?.status).toBe("cancelled");
     store.close();
   });
 });

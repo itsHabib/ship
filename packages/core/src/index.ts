@@ -94,3 +94,6 @@ export {
 
 export type { RenderImplementationPromptInput } from "./artifacts/prompt-template.js";
 export { renderImplementationPrompt } from "./artifacts/prompt-template.js";
+
+// --- orphan resume ---
+export { ORPHAN_RESUME_STALENESS_MS } from "./cursor-runs/orphan-resume.js";

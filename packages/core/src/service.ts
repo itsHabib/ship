@@ -1956,21 +1956,21 @@ async function resumeOrphanedRuns(ctx: ResumeContext): Promise<void> {
   const rows = ctx.store.listResumableCloudCursorRuns();
   if (rows.length === 0) return;
 
+  // The staleness guard applies to attach-resume only: a fresh heartbeat
+  // means a sibling process is streaming that run. Rows whose parent
+  // workflow is already terminal carry no such risk — reconciling them
+  // (resumeOneOrphanedCloudRun closes the row, no attach) is safe at any
+  // freshness, and gating them would strand e.g. a cancel that bumped
+  // `updated_at` right before this process booted.
   const nowMs = Date.parse(ctx.clock());
-  const rowsWithUpdatedAt = rows.map((row) => {
-    const workflowRun = ctx.store.getRun(row.workflowRunId);
-    const updatedAt = workflowRun?.updatedAt ?? ctx.clock();
-    return { row, updatedAt };
-  });
-  const staleCandidates = selectStaleOrphanResumeCandidates(
-    rowsWithUpdatedAt.map(({ row, updatedAt }) => ({
-      workflowRunId: row.workflowRunId,
-      updatedAt,
-    })),
-    nowMs,
+  const eligible = collectOrphanResumeRows(ctx, rows);
+  const staleIds = new Set(
+    selectStaleOrphanResumeCandidates(
+      eligible.live.map(({ row, updatedAt }) => ({ workflowRunId: row.workflowRunId, updatedAt })),
+      nowMs,
+    ).map((candidate) => candidate.workflowRunId),
   );
-  const staleIds = new Set(staleCandidates.map((candidate) => candidate.workflowRunId));
-  for (const { row, updatedAt } of rowsWithUpdatedAt) {
+  for (const { row, updatedAt } of eligible.live) {
     if (staleIds.has(row.workflowRunId)) continue;
     ctx.logger.debug(
       { updatedAt, workflowRunId: row.workflowRunId },
@@ -1978,11 +1978,41 @@ async function resumeOrphanedRuns(ctx: ResumeContext): Promise<void> {
     );
   }
 
-  await Promise.allSettled(
-    rowsWithUpdatedAt
-      .filter(({ row }) => staleIds.has(row.workflowRunId))
-      .map(({ row }) => resumeOneOrphanedCloudRun(ctx, row)),
-  );
+  const resumable = [
+    ...eligible.terminalParent,
+    ...eligible.live.filter(({ row }) => staleIds.has(row.workflowRunId)).map(({ row }) => row),
+  ];
+  await Promise.allSettled(resumable.map((row) => resumeOneOrphanedCloudRun(ctx, row)));
+}
+
+interface OrphanResumeRows {
+  /** Parent workflow still pending/running — staleness-guarded attach candidates. */
+  live: { row: ResumableCloudCursorRun; updatedAt: string }[];
+  /** Parent workflow already terminal — reconcile-only, exempt from staleness. */
+  terminalParent: ResumableCloudCursorRun[];
+}
+
+function collectOrphanResumeRows(
+  ctx: ResumeContext,
+  rows: readonly ResumableCloudCursorRun[],
+): OrphanResumeRows {
+  const out: OrphanResumeRows = { live: [], terminalParent: [] };
+  for (const row of rows) {
+    const workflowRun = ctx.store.getRun(row.workflowRunId);
+    if (workflowRun === null) {
+      ctx.logger.warn(
+        { cursorRunId: row.id, workflowRunId: row.workflowRunId },
+        "orphan cursor run has no workflow row — skipping",
+      );
+      continue;
+    }
+    if (workflowRun.status !== "pending" && workflowRun.status !== "running") {
+      out.terminalParent.push(row);
+      continue;
+    }
+    out.live.push({ row, updatedAt: workflowRun.updatedAt });
+  }
+  return out;
 }
 
 function resumeOrphanedRunsTracked(ctx: ResumeContext): Promise<void> {
@@ -2147,7 +2177,7 @@ async function runResumeAttach(
       workflowRunId: target.row.workflowRunId,
     });
   } catch (err) {
-    handleResumeAttachError(ctx, target, err);
+    handleResumeAttachError(target, err);
   }
 }
 
@@ -2162,11 +2192,12 @@ function resumeElapsedMs(ctx: ResumeContext, cursorRunId: string): number {
   return elapsed;
 }
 
-function handleResumeAttachError(
-  _ctx: ResumeContext,
-  target: ResumeAttachContext,
-  err: unknown,
-): void {
+// Attach failure ≠ run failure: the row stays `running` so a later sweep
+// can retry once transient causes clear. Permanent causes (revoked key,
+// dead agent) leave the row stuck `running` until an explicit `cancelRun`
+// — only the duration cap, a terminal SDK result, or cancel may
+// terminalize a run this process did not start.
+function handleResumeAttachError(target: ResumeAttachContext, err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   target.shipCtx.logger.error(
     { err: message, workflowRunId: target.row.workflowRunId },

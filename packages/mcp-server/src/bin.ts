@@ -22,7 +22,7 @@
 import type { CursorRunner } from "@ship/cursor-runner";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createDefaultShipService } from "@ship/core";
+import { createDefaultShipService, ORPHAN_RESUME_STALENESS_MS } from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createLogger } from "@ship/logger";
 import { homedir } from "node:os";
@@ -72,9 +72,33 @@ async function main(): Promise<void> {
   }
   const shipFactory = createDefaultShipService(opts);
   const driverFactory = createMcpDriverServiceFactory(opts, shipFactory);
+  startOrphanResweep(shipFactory, logger);
   const server = buildServer(shipFactory, driverFactory);
   const transport = new StdioServerTransport();
   await server.connect(transport);
+}
+
+/**
+ * Periodic orphan re-sweep. The boot sweep skips rows with a fresh
+ * heartbeat (a crash leaves ~5 minutes of apparent freshness behind), so
+ * a one-shot sweep would strand a run orphaned just before this process
+ * started. Re-sweeping at the staleness cadence adopts those rows once
+ * they age past the threshold; live sibling runs keep heartbeating and
+ * stay excluded. `unref()` keeps the timer from holding the process open.
+ */
+function startOrphanResweep(
+  shipFactory: ReturnType<typeof createDefaultShipService>,
+  logger: ReturnType<typeof createLogger>,
+): void {
+  const timer = setInterval(() => {
+    shipFactory()
+      .resumeOrphanedRuns()
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error({ err: message }, "periodic orphan resume sweep failed");
+      });
+  }, ORPHAN_RESUME_STALENESS_MS);
+  timer.unref();
 }
 
 /**
