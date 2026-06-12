@@ -87,7 +87,12 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     const names = list.tools.map((t) => t.name).sort((a, b) => a.localeCompare(b));
     expect(names).toEqual([
       "cancel_workflow_run",
+      "download_artifact",
+      "driver_decide",
+      "driver_run",
+      "driver_status",
       "get_workflow_run",
+      "list_artifacts",
       "list_workflow_runs",
       "ship",
     ]);

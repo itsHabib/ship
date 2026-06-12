@@ -10,9 +10,14 @@ import type { ShipServiceFactory } from "@ship/core";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+import type { DriverServiceFactory } from "./driver-service.js";
+
 import { registerRunsResource } from "./resources/runs.js";
 import { registerCancelWorkflowRunTool } from "./tools/cancel-workflow-run.js";
 import { registerDownloadArtifactTool } from "./tools/download-artifact.js";
+import { registerDriverDecideTool } from "./tools/driver-decide.js";
+import { registerDriverRunTool } from "./tools/driver-run.js";
+import { registerDriverStatusTool } from "./tools/driver-status.js";
 import { registerGetWorkflowRunTool } from "./tools/get-workflow-run.js";
 import { registerListArtifactsTool } from "./tools/list-artifacts.js";
 import { registerListWorkflowRunsTool } from "./tools/list-workflow-runs.js";
@@ -30,7 +35,10 @@ const SERVER_VERSION = "0.0.0";
 // registered. Tools/resources auto-register `tools.listChanged` and
 // `resources.listChanged` capabilities through the SDK's high-level
 // `McpServer` class — no manual capability block needed.
-export function buildServer(shipFactory: ShipServiceFactory): McpServer {
+export function buildServer(
+  shipFactory: ShipServiceFactory,
+  driverFactory?: DriverServiceFactory,
+): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   registerShipTool(server, shipFactory);
   registerGetWorkflowRunTool(server, shipFactory);
@@ -38,6 +46,11 @@ export function buildServer(shipFactory: ShipServiceFactory): McpServer {
   registerCancelWorkflowRunTool(server, shipFactory);
   registerListArtifactsTool(server, shipFactory);
   registerDownloadArtifactTool(server, shipFactory);
+  if (driverFactory !== undefined) {
+    registerDriverRunTool(server, driverFactory);
+    registerDriverStatusTool(server, driverFactory);
+    registerDriverDecideTool(server, driverFactory);
+  }
   registerRunsResource(server, shipFactory);
   return server;
 }

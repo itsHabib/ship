@@ -10,6 +10,9 @@ import type { ShipInput, ShipOutput, ShipStartOutput } from "./mcp.js";
 import {
   cancelWorkflowRunInputSchema,
   cancelWorkflowRunOutputSchema,
+  driverDecideInputSchema,
+  driverRunInputSchema,
+  driverTickResultSchema,
   getWorkflowRunInputSchema,
   getWorkflowRunOutputSchema,
   listWorkflowRunsInputSchema,
@@ -623,5 +626,73 @@ describe("cancelWorkflowRunOutputSchema", () => {
         extra: 1,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("driver MCP schemas", () => {
+  const DRV_ID = "drv_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+  const DS_ID = "ds_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+  test("driverRunInputSchema defaults maxWaitMs to 0", () => {
+    const parsed = driverRunInputSchema.parse({ driverRunId: DRV_ID });
+    expect(parsed.maxWaitMs).toBe(0);
+  });
+
+  test("driverRunInputSchema requires exactly one ref", () => {
+    expect(driverRunInputSchema.safeParse({}).success).toBe(false);
+    expect(
+      driverRunInputSchema.safeParse({ driverRunId: DRV_ID, manifestPath: "/x.md" }).success,
+    ).toBe(false);
+  });
+
+  test("driverTickResultSchema accepts a zero-attempt failure-triage (dispatch-time failure)", () => {
+    const result = {
+      driverRunId: DRV_ID,
+      status: "awaiting_judgment",
+      awaiting: [
+        {
+          kind: "failure-triage",
+          driverRunId: DRV_ID,
+          streamId: DS_ID,
+          failureCategory: "unknown",
+          attempts: 0,
+        },
+      ],
+      unmerged: [],
+      progress: { batchIndex: 1, dispatched: 0, landed: 0, failed: 1, remaining: 0 },
+      streams: [],
+    };
+    expect(driverTickResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  test("driverDecideInputSchema accepts retry/skip/abort/adopt decisions", () => {
+    expect(
+      driverDecideInputSchema.safeParse({
+        driverRunId: DRV_ID,
+        streamId: DS_ID,
+        decision: { kind: "retry" },
+      }).success,
+    ).toBe(true);
+    expect(
+      driverDecideInputSchema.safeParse({
+        driverRunId: DRV_ID,
+        streamId: DS_ID,
+        decision: { kind: "skip", reason: "n/a" },
+      }).success,
+    ).toBe(true);
+    expect(
+      driverDecideInputSchema.safeParse({
+        driverRunId: DRV_ID,
+        streamId: DS_ID,
+        decision: { kind: "abort", reason: "n/a" },
+      }).success,
+    ).toBe(true);
+    expect(
+      driverDecideInputSchema.safeParse({
+        driverRunId: DRV_ID,
+        streamId: DS_ID,
+        decision: { kind: "adopt", workflowRunId: WF_ID },
+      }).success,
+    ).toBe(true);
   });
 });

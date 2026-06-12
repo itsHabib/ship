@@ -29,9 +29,20 @@ export interface ImportManifestResult {
   alreadyImported?: boolean;
 }
 
+// A missing or unreadable manifest is caller error, same as an unparseable
+// one — both CLI and MCP error mappers already classify ImportManifestError.
+function readManifestFile(manifestPath: string): string {
+  try {
+    return readFileSync(manifestPath, "utf8");
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ImportManifestError([{ message: `cannot read manifest: ${detail}` }]);
+  }
+}
+
 /** Read, parse, and insert a manifest; idempotent by (repo, project, phase, generated_at). */
 export function importManifest(store: Store, manifestPath: string): ImportManifestResult {
-  const sourceJson = readFileSync(manifestPath, "utf8");
+  const sourceJson = readManifestFile(manifestPath);
   const parsed = parseManifest(sourceJson);
   if (!parsed.ok) {
     throw new ImportManifestError(parsed.errors);

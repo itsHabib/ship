@@ -3,6 +3,8 @@
 // colors in V1) so test snapshots are stable across terminals.
 
 import type { GetWorkflowRunOutput, PruneRunsOutput, ShipOutput } from "@ship/core";
+import type { DriverTickResult } from "@ship/driver";
+import type { DriverRun } from "@ship/store";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
 import { formatPruneAge } from "@ship/core";
@@ -139,6 +141,86 @@ export function formatCancelOutput(
 ): string {
   if (json) return jsonStringify(out);
   return `status: ${out.status}\nworkflowRunId: ${out.workflowRunId}`;
+}
+
+/** Compact JSON for `ship driver import`. */
+export function formatDriverImportOutput(driverRunId: string): string {
+  return JSON.stringify({ driverRunId });
+}
+
+/** Renders a `DriverTickResult` for `ship driver run`. */
+export function formatDriverRunOutput(result: DriverTickResult, json: boolean): string {
+  return formatDriverTickResult(result, json);
+}
+
+/** Shared tick formatter — also used by MCP output validation tests. */
+export function formatDriverTickResult(result: DriverTickResult, json: boolean): string {
+  if (json) return jsonStringify(result);
+  const lines = [
+    `driverRunId: ${result.driverRunId}`,
+    `status:      ${result.status}`,
+    `progress:    batch ${String(result.progress.batchIndex)} — dispatched ${String(result.progress.dispatched)}, landed ${String(result.progress.landed)}, failed ${String(result.progress.failed)}, remaining ${String(result.progress.remaining)}`,
+  ];
+  if (result.awaiting.length > 0) {
+    lines.push(`awaiting:    ${String(result.awaiting.length)} judgment request(s)`);
+  }
+  if (result.unmerged.length > 0) {
+    lines.push(`unmerged:    ${String(result.unmerged.length)} stream(s) awaiting merge`);
+  }
+  return lines.join("\n");
+}
+
+/** JSON view for decide / mark-merged / cancel — compact DriverRun id + status. */
+export function formatDriverDecideOutput(run: DriverRun): string {
+  return JSON.stringify({ driverRunId: run.id, status: run.status });
+}
+
+export interface DriverStatusView {
+  driverRunId: string;
+  status: DriverRun["status"];
+  manifestPath: string;
+  importedAt: string;
+  manifestModified?: true;
+  repo: string;
+  project?: string;
+  phase?: string;
+  batches: DriverRun["batches"];
+}
+
+export function buildDriverStatusView(run: DriverRun, manifestModified: boolean): DriverStatusView {
+  const view: DriverStatusView = {
+    batches: run.batches,
+    driverRunId: run.id,
+    importedAt: run.createdAt,
+    manifestPath: run.manifestPath,
+    repo: run.repo,
+    status: run.status,
+  };
+  if (run.project !== undefined) view.project = run.project;
+  if (run.phase !== undefined) view.phase = run.phase;
+  if (manifestModified) view.manifestModified = true;
+  return view;
+}
+
+/** Renders `ship driver status` output. */
+export function formatDriverStatusOutput(
+  run: DriverRun,
+  manifestModified: boolean,
+  json: boolean,
+): string {
+  const view = buildDriverStatusView(run, manifestModified);
+  if (json) return jsonStringify(view);
+  const lines = [
+    `driverRunId: ${view.driverRunId}`,
+    `status:      ${view.status}`,
+    `manifest:    ${view.manifestPath}`,
+    `importedAt:  ${view.importedAt}`,
+    `repo:        ${view.repo}`,
+  ];
+  if (view.manifestModified === true) {
+    lines.push(`warning:     ⚠ manifest modified since import ${view.importedAt}`);
+  }
+  return lines.join("\n");
 }
 
 // Pretty-prints a terminal cursor-run summary; used by `ship ship` in pretty mode.

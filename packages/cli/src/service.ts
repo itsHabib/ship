@@ -9,8 +9,10 @@
 // neither `core` nor `mcp-server` needs them.
 
 import type { DefaultShipServiceOpts, ShipServiceFactory } from "@ship/core";
+import type { DriverService } from "@ship/driver";
 
-import { createDefaultShipService } from "@ship/core";
+import { createDefaultShipService, getDefaultSharedStore } from "@ship/core";
+import { createDriverService } from "@ship/driver";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -21,11 +23,37 @@ export type CliPathOpts = DefaultShipServiceOpts;
 // Memoizing factory shape — alias of `ShipServiceFactory`.
 export type ServiceFactory = ShipServiceFactory;
 
+/** Memoizing factory for `@ship/driver`'s `DriverService`. */
+export type DriverServiceFactory = () => DriverService;
+
 // Thin wrapper over `createDefaultShipService` so the CLI keeps a
 // stable, CLI-named entry point. Adding CLI-only knobs here later
 // (e.g. quiet-mode logging) won't ripple into the mcp-server.
 export function createCliService(opts: CliPathOpts): ServiceFactory {
   return createDefaultShipService(opts);
+}
+
+/**
+ * Returns a memoizing `DriverService` factory wired to the same store +
+ * `ShipService` instance as `shipFactory` (mirrors the mcp-server's
+ * `createMcpDriverServiceFactory` shape).
+ */
+export function createCliDriverService(
+  opts: CliPathOpts,
+  shipFactory: ServiceFactory,
+): DriverServiceFactory {
+  let cached: DriverService | undefined;
+  return () => {
+    if (cached !== undefined) return cached;
+    // Ensure ship wiring (mkdir runsDir, open store) ran first.
+    const ship = shipFactory();
+    const store = getDefaultSharedStore({
+      dbPath: opts.dbPath,
+      ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
+    });
+    cached = createDriverService({ ship, store });
+    return cached;
+  };
 }
 
 /**

@@ -128,4 +128,10 @@ describe("importManifest", () => {
     expect(() => importManifest(store, path)).toThrow(ImportManifestError);
     rmSync(dir, { force: true, recursive: true });
   });
+
+  it("wraps a missing manifest file as ImportManifestError", () => {
+    const path = fixturePath("does-not-exist.driver.md");
+    expect(() => importManifest(store, path)).toThrow(ImportManifestError);
+    expect(() => importManifest(store, path)).toThrow(/cannot read manifest/);
+  });
 });

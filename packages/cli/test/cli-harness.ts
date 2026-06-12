@@ -10,12 +10,16 @@
 
 import type { ShipService } from "@ship/core";
 import type { CursorRunner } from "@ship/cursor-runner";
+import type { DriverService } from "@ship/driver";
 import type { Harness, ServiceBundle } from "@ship/test-harness";
 import type { ModelSelection } from "@ship/workflow";
 import type { Command } from "commander";
 
+import { createDriverService } from "@ship/driver";
 import { createHarness, createServiceFromHarness } from "@ship/test-harness";
 import { resolve as resolvePath } from "node:path";
+
+import type { DriverServiceFactory } from "../src/service.js";
 
 import { CliExit } from "../src/errors.js";
 import { buildProgram } from "../src/program.js";
@@ -27,6 +31,7 @@ const WORKDIR = resolvePath("/work/wt/feat");
 export interface CliHarness {
   readonly program: Command;
   readonly service: ShipService;
+  readonly driver: DriverService;
   readonly bundle: ServiceBundle;
   readonly harness: Harness;
   // Present when `createCliHarness({ cloudCursor })` wired a cloud runner.
@@ -47,7 +52,10 @@ export async function createCliHarness(
   await bundle.fs.mkdir(WORKDIR, { recursive: true });
   await bundle.fs.writeFile(`${WORKDIR}/docs.md`, "# Task\n\nDo it.\n");
 
-  const program = buildProgram(() => bundle.service);
+  const driverFactory: DriverServiceFactory = () =>
+    createDriverService({ ship: bundle.service, store: harness.store });
+  const driver = driverFactory();
+  const program = buildProgram(() => bundle.service, driverFactory);
   const stdout: string[] = [];
   const stderr: string[] = [];
   // Capture via process.stdout/process.stderr without spawning child procs.
@@ -65,6 +73,7 @@ export async function createCliHarness(
   return {
     program,
     service: bundle.service,
+    driver,
     bundle,
     harness,
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),

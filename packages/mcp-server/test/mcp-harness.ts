@@ -11,12 +11,16 @@
  */
 
 import type { ShipService, ShipServiceFactory } from "@ship/core";
+import type { DriverService } from "@ship/driver";
 import type { Harness, ServiceBundle } from "@ship/test-harness";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
+import { createDriverService } from "@ship/driver";
 import { createHarness, createServiceFromHarness } from "@ship/test-harness";
+
+import type { DriverServiceFactory } from "../src/driver-service.js";
 
 import { buildServer } from "../src/server.js";
 
@@ -35,6 +39,7 @@ export const TEST_DOC_PATH = "docs.md";
 export interface McpHarness {
   readonly client: Client;
   readonly service: ShipService;
+  readonly driver: DriverService;
   readonly bundle: ServiceBundle;
   readonly harness: Harness;
   readonly cloudCursor: FakeCursorRunner;
@@ -54,7 +59,10 @@ export async function createMcpHarness(): Promise<McpHarness> {
   await bundle.fs.writeFile(`${TEST_WORKDIR}/${TEST_DOC_PATH}`, "# Task\n\nDo it.\n");
 
   const factory: ShipServiceFactory = () => bundle.service;
-  const server = buildServer(factory);
+  const driverFactory: DriverServiceFactory = () =>
+    createDriverService({ ship: bundle.service, store: harness.store });
+  const driver = driverFactory();
+  const server = buildServer(factory, driverFactory);
 
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "ship-mcp-test-client", version: "0.0.0" });
@@ -64,6 +72,7 @@ export async function createMcpHarness(): Promise<McpHarness> {
   return {
     client,
     service: bundle.service,
+    driver,
     bundle,
     harness,
     cloudCursor,

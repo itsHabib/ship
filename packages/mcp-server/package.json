@@ -10,6 +10,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@ship/core": "workspace:*",
+    "@ship/driver": "workspace:*",
     "@ship/logger": "workspace:*",
     "@ship/cursor-runner": "workspace:*",
     "@ship/mcp": "workspace:*",

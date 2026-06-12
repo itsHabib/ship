@@ -11,8 +11,17 @@ export type {
 export { createShipService } from "./service.js";
 
 // --- default production wiring (consumed by cli + mcp-server) ---
-export type { DefaultShipServiceOpts, ShipServiceFactory } from "./default-wiring.js";
-export { createDefaultShipService, DEFAULT_MODEL } from "./default-wiring.js";
+export type {
+  DefaultSharedStoreOpts,
+  DefaultShipServiceOpts,
+  ShipServiceFactory,
+} from "./default-wiring.js";
+export {
+  closeDefaultSharedStore,
+  createDefaultShipService,
+  DEFAULT_MODEL,
+  getDefaultSharedStore,
+} from "./default-wiring.js";
 
 // --- re-exports of MCP boundary types so consumers (cli, mcp-server) ---
 // don't need a direct `@ship/mcp` dep just to type ShipService's surface.
