@@ -13,7 +13,7 @@ import type {
   UpdateCursorRunInput,
 } from "./cursor-runs.js";
 import type { UpdateDriverBatchInput } from "./driver-batches.js";
-import type { InsertDriverRunInput, ListDriverRunsFilter } from "./driver-runs.js";
+import type { ClaimTickInput, InsertDriverRunInput, ListDriverRunsFilter } from "./driver-runs.js";
 import type { DriverBatch, DriverRun, DriverRunStatus, DriverStream } from "./driver-schemas.js";
 import type { UpdateDriverStreamInput } from "./driver-streams.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
@@ -135,6 +135,12 @@ export interface Store {
   listDriverRuns: (filter: ListDriverRunsFilter) => DriverRun[];
   /** Flip a driver run's `status` and bump `updated_at`. */
   updateDriverRunStatus: (id: string, status: DriverRunStatus) => DriverRun;
+  /** Stamp `tick_started_at` and bump `updated_at` (engine lease entry). */
+  stampDriverRunTickStarted: (id: string) => DriverRun;
+  /** Stamp `tick_ended_at` and bump `updated_at` (engine lease exit). */
+  stampDriverRunTickEnded: (id: string) => DriverRun;
+  /** Atomically check liveness and stamp the tick lease; false when refused. */
+  claimDriverRunTick: (id: string, input: ClaimTickInput) => boolean;
   /** Patch driver batch progress columns; bumps parent run `updated_at`. */
   updateDriverBatch: (id: string, patch: UpdateDriverBatchInput) => DriverBatch;
   /** Patch driver stream progress columns; bumps parent run `updated_at`. */
@@ -194,6 +200,12 @@ export function createStore(opts: CreateStoreOptions): Store {
         withStoreContentionGuard(() => driverRunOps.updateBatch(id, patch)),
       updateDriverRunStatus: (id, status) =>
         withStoreContentionGuard(() => driverRunOps.updateStatus(id, status)),
+      stampDriverRunTickStarted: (id) =>
+        withStoreContentionGuard(() => driverRunOps.stampTickStarted(id)),
+      stampDriverRunTickEnded: (id) =>
+        withStoreContentionGuard(() => driverRunOps.stampTickEnded(id)),
+      claimDriverRunTick: (id, input) =>
+        withStoreContentionGuard(() => driverRunOps.claimTick(id, input)),
       updateDriverStream: (id, patch) =>
         withStoreContentionGuard(() => driverRunOps.updateStream(id, patch)),
       listWorkflowRunsForPrune: () => withStoreContentionGuard(() => workflowRunOps.listForPrune()),

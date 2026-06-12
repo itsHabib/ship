@@ -198,9 +198,15 @@ importers:
 
   packages/driver:
     dependencies:
+      '@ship/core':
+        specifier: workspace:*
+        version: link:../core
       '@ship/store':
         specifier: workspace:*
         version: link:../store
+      '@ship/workflow':
+        specifier: workspace:*
+        version: link:../workflow
       yaml:
         specifier: ^2.6.1
         version: 2.9.0

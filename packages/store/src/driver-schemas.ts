@@ -30,9 +30,10 @@ export const driverRuntimeSchema = z.enum(["local", "cloud", "rooms"]);
 export const streamAttemptSchema = z
   .object({
     dispatchedAt: z.string().datetime({ offset: true }),
+    docPath: z.string().optional(),
     failureCategory: z.string().optional(),
     terminal: z.boolean(),
-    workflowRunId: z.string(),
+    workflowRunId: z.string().optional(),
   })
   .strict();
 
@@ -86,6 +87,8 @@ export const driverRunSchema = z
     repo: z.string(),
     sourceJson: z.string(),
     status: driverRunStatusSchema,
+    tickEndedAt: z.string().datetime({ offset: true }).optional(),
+    tickStartedAt: z.string().datetime({ offset: true }).optional(),
     updatedAt: z.string().datetime({ offset: true }),
   })
   .strict();

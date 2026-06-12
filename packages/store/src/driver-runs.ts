@@ -60,6 +60,14 @@ export interface InsertDriverRunInput {
   batches: InsertDriverBatchInput[];
 }
 
+/** Inputs for `claimDriverRunTick` — atomic check-and-stamp of the tick lease. */
+export interface ClaimTickInput {
+  /** Take the lease even if a tick looks live (manual takeover, §8). */
+  force: boolean;
+  /** ISO timestamp; an unended tick with `updated_at >= staleBefore` is live. */
+  staleBefore: string;
+}
+
 /** Filter for `listDriverRuns`. */
 export interface ListDriverRunsFilter {
   repo?: string;
@@ -75,6 +83,9 @@ export interface DriverRunOps {
   get: (id: string) => DriverRun | null;
   list: (filter: ListDriverRunsFilter) => DriverRun[];
   updateStatus: (id: string, status: DriverRunStatus) => DriverRun;
+  stampTickStarted: (id: string) => DriverRun;
+  stampTickEnded: (id: string) => DriverRun;
+  claimTick: (id: string, input: ClaimTickInput) => boolean;
   updateBatch: (id: string, patch: UpdateDriverBatchInput) => DriverBatch;
   updateStream: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
 }
@@ -89,10 +100,12 @@ interface DriverRunRow {
   source_json: string;
   created_at: string;
   updated_at: string;
+  tick_started_at: string | null;
+  tick_ended_at: string | null;
 }
 
 const RUN_COLUMNS =
-  "id, manifest_path, repo, project, phase, status, source_json, created_at, updated_at";
+  "id, manifest_path, repo, project, phase, status, source_json, created_at, updated_at, tick_started_at, tick_ended_at";
 
 /**
  * Constructs the `driver_runs` ops. Wires batch + stream modules for
@@ -118,6 +131,12 @@ export function createDriverRunOps(db: Db, clock: () => string): DriverRunOps {
   );
   const updateStatusStmt = db.prepare(
     `UPDATE driver_runs SET status = ?, updated_at = ? WHERE id = ?`,
+  );
+  const stampTickStartedStmt = db.prepare(
+    `UPDATE driver_runs SET tick_started_at = ?, updated_at = ? WHERE id = ?`,
+  );
+  const stampTickEndedStmt = db.prepare(
+    `UPDATE driver_runs SET tick_ended_at = ?, updated_at = ? WHERE id = ?`,
   );
   const selectBatchRunIdStmt = db.prepare<[string], { driver_run_id: string }>(
     "SELECT driver_run_id FROM driver_batches WHERE id = ?",
@@ -190,6 +209,56 @@ export function createDriverRunOps(db: Db, clock: () => string): DriverRunOps {
     return txn();
   }
 
+  function claimTick(id: string, input: ClaimTickInput): boolean {
+    // Read + liveness check + stamp in one txn so two concurrent claims
+    // can't both pass the check before either stamps (the lease's point).
+    const txn = db.transaction((): boolean => {
+      const row = selectByIdStmt.get(id);
+      if (!row) {
+        throw new DriverRunNotFoundError(id);
+      }
+      if (!input.force && rowTickLive(row, input.staleBefore)) {
+        return false;
+      }
+      const now = clock();
+      stampTickStartedStmt.run(now, now, id);
+      return true;
+    });
+    return txn();
+  }
+
+  function stampTickStarted(id: string): DriverRun {
+    const txn = db.transaction((): DriverRun => {
+      const now = clock();
+      const result = stampTickStartedStmt.run(now, now, id);
+      if (result.changes === 0) {
+        throw new DriverRunNotFoundError(id);
+      }
+      const row = selectByIdStmt.get(id);
+      if (!row) {
+        throw new Error(`internal: driver run ${id} vanished after tick start stamp`);
+      }
+      return hydrateRun(row, batches, streams);
+    });
+    return txn();
+  }
+
+  function stampTickEnded(id: string): DriverRun {
+    const txn = db.transaction((): DriverRun => {
+      const now = clock();
+      const result = stampTickEndedStmt.run(now, now, id);
+      if (result.changes === 0) {
+        throw new DriverRunNotFoundError(id);
+      }
+      const row = selectByIdStmt.get(id);
+      if (!row) {
+        throw new Error(`internal: driver run ${id} vanished after tick end stamp`);
+      }
+      return hydrateRun(row, batches, streams);
+    });
+    return txn();
+  }
+
   function updateBatch(id: string, patch: UpdateDriverBatchInput): DriverBatch {
     // Write + hydrate in one txn so a hydration StoreSchemaError rolls the
     // write back, matching the sibling mutators.
@@ -208,7 +277,25 @@ export function createDriverRunOps(db: Db, clock: () => string): DriverRunOps {
     return streams.update(id, patch);
   }
 
-  return { get, insert, list, updateBatch, updateStatus, updateStream };
+  return {
+    claimTick,
+    get,
+    insert,
+    list,
+    stampTickEnded,
+    stampTickStarted,
+    updateBatch,
+    updateStatus,
+    updateStream,
+  };
+}
+
+function rowTickLive(row: DriverRunRow, staleBefore: string): boolean {
+  if (row.tick_started_at === null) return false;
+  const ended =
+    row.tick_ended_at !== null && Date.parse(row.tick_ended_at) >= Date.parse(row.tick_started_at);
+  if (ended) return false;
+  return Date.parse(row.updated_at) >= Date.parse(staleBefore);
 }
 
 function hydrateRun(
@@ -234,6 +321,8 @@ function hydrateRun(
     repo: string;
     sourceJson: string;
     status: string;
+    tickEndedAt?: string;
+    tickStartedAt?: string;
     updatedAt: string;
   } = {
     batches: hydratedBatches,
@@ -247,6 +336,8 @@ function hydrateRun(
   };
   if (row.project !== null) candidate.project = row.project;
   if (row.phase !== null) candidate.phase = row.phase;
+  if (row.tick_started_at !== null) candidate.tickStartedAt = row.tick_started_at;
+  if (row.tick_ended_at !== null) candidate.tickEndedAt = row.tick_ended_at;
 
   const result = driverRunSchema.safeParse(candidate);
   if (!result.success) {

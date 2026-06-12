@@ -14,6 +14,7 @@ export interface UpdateDriverStreamInput {
   status?: DriverStreamStatus;
   workflowRunId?: string;
   attempts?: StreamAttempt[];
+  branch?: string;
   prNumber?: number;
   prUrl?: string;
   mergeCommit?: string;
@@ -167,6 +168,7 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
   appendStreamPatchColumn(sets, params, "status = ?", patch.status);
   appendStreamPatchColumn(sets, params, "workflow_run_id = ?", patch.workflowRunId);
   appendStreamPatchColumn(sets, params, "attempts = ?", patch.attempts, JSON.stringify);
+  appendStreamPatchColumn(sets, params, "branch = ?", patch.branch);
   appendStreamPatchColumn(sets, params, "pr_number = ?", patch.prNumber);
   appendStreamPatchColumn(sets, params, "pr_url = ?", patch.prUrl);
   appendStreamPatchColumn(sets, params, "merge_commit = ?", patch.mergeCommit);
