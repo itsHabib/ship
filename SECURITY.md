@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-For security concerns, **don't file a public issue**. Use [GitHub private vulnerability reporting](https://github.com/itsHabib/ship/security/advisories/new) or email the maintainer privately at michael.habib@hadrian.co.
+For security concerns, **don't file a public issue**. Email the maintainer privately or use [GitHub private vulnerability reporting](https://github.com/itsHabib/ship/security/advisories/new).
 
 Expect acknowledgment within 7 days. Coordinated disclosure timing depends on severity — for bugs whose blast radius is limited to the operator's own machine (local subprocesses, local SQLite, local config dir), the window is typically short (days, not months).
 
