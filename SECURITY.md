@@ -17,7 +17,7 @@ Ship is a local dev-workflow toolkit: a CLI (`@ship/cli`) and an MCP server (`@s
 **Security-relevant surfaces:**
 
 - `@ship/cli` — argv-driven entry point with its own validation path (separate from MCP).
-- Credential handling — `CURSOR_API_KEY` for Cursor SDK calls (local and cloud), and `GITHUB_TOKEN`/`GH_TOKEN` for remote task-doc fetching and rooms-runtime subprocess environments.
+- Credential handling — `CURSOR_API_KEY` for Cursor SDK calls (local and cloud), and `GITHUB_TOKEN`/`GH_TOKEN` for remote task-doc fetching and for subprocess environments ship provisions.
 - Local SQLite store (`state.db` under the user config dir) — persists workflow and run metadata.
 - Task-doc content — embedded into agent prompts; a malicious or crafted task doc is a prompt-injection surface.
 - Run artifacts under the user config dir — `events.ndjson` and related logs can contain repo content from dispatched runs.
