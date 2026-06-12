@@ -1,7 +1,7 @@
 /**
  * `@ship/store` public barrel. SQLite persistence behind a hand-written SQL
- * layer, hydrated through `@ship/workflow`'s Zod schemas. Exposes
- * `createStore`, the `Store` interface, input shapes, and typed errors.
+ * layer, hydrated through Zod schemas. Exposes `createStore`, the `Store`
+ * interface, input shapes, and typed errors.
  */
 
 export { createStore } from "./store.js";
@@ -21,8 +21,33 @@ export type {
   UpdateCursorRunInput,
 } from "./cursor-runs.js";
 
+export type {
+  DriverBatch,
+  DriverBatchStatus,
+  DriverRun,
+  DriverRunStatus,
+  DriverStream,
+  DriverStreamStatus,
+  StreamAttempt,
+} from "./driver-schemas.js";
+
+export type {
+  InsertDriverBatchInput,
+  InsertDriverRunInput,
+  InsertDriverStreamInput,
+  ListDriverRunsFilter,
+} from "./driver-runs.js";
+
+export type { UpdateDriverBatchInput } from "./driver-batches.js";
+export type { UpdateDriverStreamInput } from "./driver-streams.js";
+
+export { newDriverBatchId, newDriverRunId, newDriverStreamId } from "./driver-ids.js";
+
 export {
   CursorRunNotFoundError,
+  DriverBatchNotFoundError,
+  DriverRunNotFoundError,
+  DriverStreamNotFoundError,
   LOCAL_RUN_CONTENTION_HINT,
   LOCAL_RUNTIME_PARALLELISM_LIMIT,
   MigrationError,

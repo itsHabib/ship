@@ -44,14 +44,18 @@ describe("runMigrations", () => {
     expect(tables).toContain("workflow_runs");
     expect(tables).toContain("phases");
     expect(tables).toContain("cursor_runs");
+    expect(tables).toContain("driver_runs");
+    expect(tables).toContain("driver_batches");
+    expect(tables).toContain("driver_streams");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(4);
+    expect(applied).toHaveLength(5);
     expect(applied.map((r) => r.name)).toEqual([
       "0001_init.sql",
       "0002_cursor_runs_run_id.sql",
       "0003_cursor_runs_artifacts_json.sql",
       "0004_phases_failure_category.sql",
+      "0005_driver_runs.sql",
     ]);
 
     const phaseColumns = db
@@ -74,7 +78,7 @@ describe("runMigrations", () => {
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(4);
+    expect(applied).toHaveLength(5);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {
