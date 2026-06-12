@@ -41,8 +41,10 @@ export interface CreateDriverServiceOpts {
 export function createDriverService(opts: CreateDriverServiceOpts): DriverService {
   const { store, ship, clock, rng, sleep } = opts;
 
+  const now = (): string => new Date((clock ?? Date.now)()).toISOString();
+
   return {
-    cancel: (driverRunId) => cancelRun(store, ship, driverRunId),
+    cancel: (driverRunId) => cancelRun(store, ship, driverRunId, now()),
     decide: (driverRunId, streamId, decision) => decideFn(store, driverRunId, streamId, decision),
     getDriverRun: (id) => store.getDriverRun(id),
     importManifest: (manifestPath) => importManifestFn(store, manifestPath),

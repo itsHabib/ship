@@ -265,7 +265,7 @@ batches:
     store.close();
   });
 
-  test("rooms runtime dispatches through local worktree path", async () => {
+  test("rooms runtime is rejected at pre-flight, nothing dispatches", async () => {
     const manifest = join(repoRoot, "rooms.driver.md");
     writeFileSync(
       manifest,
@@ -289,13 +289,14 @@ batches:
 ---
 `,
     );
-    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
-    const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_rooms" }]);
+    const fake = createFakeShipPort([]);
     const store = createStore({ dbPath: ":memory:" });
     const driver = createDriverService({ ship: fake.port, store });
     const imported = driver.importManifest(manifest);
-    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
-    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(true);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /rooms stream .* not supported/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
     store.close();
   });
 
@@ -433,7 +434,186 @@ batches:
     );
     store.close();
   });
+
+  test("dispatch-time failure surfaces a triage request without a workflow id", async () => {
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf_never" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+
+    const result = await driver.run({ driverRunId: imported.run.id }, { batch: 1, maxWaitMs: 0 });
+    expect(result.status).toBe("awaiting_judgment");
+    expect(result.awaiting).toHaveLength(1);
+    const triage = result.awaiting[0];
+    if (triage?.kind !== "failure-triage") throw new Error("expected failure-triage");
+    expect(triage.workflowRunId).toBeUndefined();
+    expect(triage.failureCategory).toBe("sdk-throw");
+    expect(triage.errorMessage).toBe("boom");
+    store.close();
+  });
+
+  test("failed dispatch does not consume a parallelism slot", async () => {
+    const manifest = join(repoRoot, "two-cloud.driver.md");
+    writeFileSync(manifest, twoCloudStreamManifest("2026-06-12T05:00:00Z"));
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docB = resolveDocPath(repoRoot, "docs/tasks/b.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("quota"), workflowRunId: "wf_x" },
+      { docPath: docB, repo: "ship", terminalStatus: "running", workflowRunId: "wf_b" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxParallel: { cloud: 1 }, maxWaitMs: 0 });
+
+    const startCalls = fake.calls.filter((c) => c.kind === "startShip");
+    expect(startCalls).toHaveLength(2);
+    const streams = store.getDriverRun(imported.run.id)?.batches[0]?.streams;
+    expect(streams?.find((s) => s.specPath === "docs/tasks/a.md")?.status).toBe("failed");
+    expect(streams?.find((s) => s.specPath === "docs/tasks/b.md")?.status).toBe("dispatched");
+    store.close();
+  });
+
+  test("cloud cap limits dispatch within a multi-stream batch", async () => {
+    const manifest = join(repoRoot, "capped-cloud.driver.md");
+    writeFileSync(manifest, twoCloudStreamManifest("2026-06-12T06:00:00Z"));
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docB = resolveDocPath(repoRoot, "docs/tasks/b.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+      { docPath: docB, repo: "ship", terminalStatus: "running", workflowRunId: "wf_b" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxParallel: { cloud: 1 }, maxWaitMs: 0 });
+
+    expect(fake.calls.filter((c) => c.kind === "startShip")).toHaveLength(1);
+    store.close();
+  });
+
+  test("post-dispatch persistence failure leaves the stream dispatching for recovery", async () => {
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_live" }]);
+    const store = createStore({ dbPath: ":memory:" });
+    const imported = createDriverService({ ship: fake.port, store }).importManifest(manifestPath);
+
+    const failingStore: typeof store = {
+      ...store,
+      updateDriverStream: (id, patch) => {
+        if (patch.status === "dispatched") throw new Error("contention");
+        return store.updateDriverStream(id, patch);
+      },
+    };
+    const failingDriver = createDriverService({ ship: fake.port, store: failingStore });
+    await expect(
+      failingDriver.run({ driverRunId: imported.run.id }, { batch: 1, maxWaitMs: 0 }),
+    ).rejects.toThrow(/contention/);
+
+    const stuck = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stuck?.status).toBe("dispatching");
+
+    // Next tick adopts the live workflow via §7.3 instead of re-dispatching.
+    const driver = createDriverService({ ship: fake.port, store });
+    await driver.run({ driverRunId: imported.run.id }, { batch: 1, maxWaitMs: 0 });
+    const recovered = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(recovered?.workflowRunId).toBe("wf_live");
+    expect(fake.calls.filter((c) => c.kind === "startShip")).toHaveLength(1);
+    store.close();
+  });
+
+  test("stale lease is taken over without force", async () => {
+    const t0 = Date.parse("2026-06-12T00:00:00.000Z");
+    const store = createStore({ clock: () => new Date(t0).toISOString(), dbPath: ":memory:" });
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_stale" }]);
+    const imported = createDriverService({ ship: fake.port, store }).importManifest(manifestPath);
+    store.stampDriverRunTickStarted(imported.run.id);
+
+    const driver = createDriverService({ clock: () => t0 + 3001, ship: fake.port, store });
+    const result = await driver.run(
+      { driverRunId: imported.run.id },
+      { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+    );
+    expect(result.status).not.toBe("failed");
+    store.close();
+  });
+
+  test("cloud landed stream adopts the cursor-chosen branch", async () => {
+    const manifest = join(repoRoot, "cloud-branchless.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-06-12T07:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: cloud-branch
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        branchName: "cursor/auto-1a2b",
+        docPath: docA,
+        prUrl: "https://github.com/example/ship/pull/9",
+        repo: "ship",
+        workflowRunId: "wf_cloud",
+      },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    const result = await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.status).toBe("landed");
+    expect(stream?.branch).toBe("cursor/auto-1a2b");
+    expect(stream?.prUrl).toBe("https://github.com/example/ship/pull/9");
+    store.close();
+  });
 });
+
+function twoCloudStreamManifest(generatedAt: string): string {
+  return `---
+driver_version: 1
+generated_at: ${generatedAt}
+generated_by: test
+source:
+  project: ship
+  phase: cloud-pair
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+      - spec_path: docs/tasks/b.md
+        runtime: cloud
+        status: pending
+---
+`;
+}
 
 function minimalSourceJson(): string {
   return `---

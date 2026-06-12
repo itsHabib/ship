@@ -169,7 +169,7 @@ describe("judgment", () => {
     const { port } = createFakeShipPort([
       { docPath: "a.md", repo: "ship", terminalStatus: "running", workflowRunId: "wf_cancel_me" },
     ]);
-    const cancelled = await cancelRun(store, port, runId);
+    const cancelled = await cancelRun(store, port, runId, "2026-06-12T00:00:05.000Z");
     expect(cancelled.status).toBe("cancelled");
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("failed");
   });
@@ -187,9 +187,9 @@ describe("judgment", () => {
       markMerged(store, "drv_missing", "ds_x", { mergeCommit: "a", prNumber: 1 }),
     ).toThrow(DecideError);
 
-    await expect(cancelRun(store, createFakeShipPort([]).port, "drv_missing")).rejects.toThrow(
-      CancelError,
-    );
+    await expect(
+      cancelRun(store, createFakeShipPort([]).port, "drv_missing", "2026-06-12T00:00:05.000Z"),
+    ).rejects.toThrow(CancelError);
   });
 
   test("recovery at list limit emits ambiguity", async () => {

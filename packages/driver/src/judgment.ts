@@ -7,6 +7,7 @@ import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/
 import type { FailureCategory, WorkflowRun } from "@ship/workflow";
 
 import { LOCAL_RUN_CONTENTION_HINT } from "@ship/store";
+import { failureCategorySchema } from "@ship/workflow";
 
 import type { DriverShipPort } from "./ship-port.js";
 import type {
@@ -154,10 +155,10 @@ function filterRecoveryCandidates(
   stream: DriverStream,
   attempt: StreamAttempt,
 ): WorkflowRun[] {
-  const dispatchTs = attempt.dispatchedAt;
+  const dispatchMs = Date.parse(attempt.dispatchedAt);
   const docPath = attempt.docPath;
   return runs.filter((run) => {
-    if (run.createdAt < dispatchTs) return false;
+    if (Date.parse(run.createdAt) < dispatchMs) return false;
     if (run.docPath !== docPath) return false;
     if ((stream.runtime === "local" || stream.runtime === "rooms") && stream.branch !== undefined) {
       return run.worktree.branch === stream.branch;
@@ -198,23 +199,29 @@ function buildFailureTriageRequest(
   stream: DriverStream,
 ): JudgmentRequest | undefined {
   if (stream.status !== "failed") return undefined;
-  const wfId = stream.workflowRunId ?? latestAttempt(stream)?.workflowRunId;
-  if (wfId === undefined) return undefined;
 
-  const category = (latestAttempt(stream)?.failureCategory ?? "unknown") as FailureCategory;
   const req: JudgmentRequest = {
     attempts: stream.attempts.length,
     driverRunId,
-    failureCategory: category,
+    failureCategory: toCanonicalCategory(latestAttempt(stream)?.failureCategory),
     kind: "failure-triage",
     streamId: stream.id,
-    workflowRunId: wfId,
   };
+  // Dispatch-time failures have no workflow run; the triage request still
+  // surfaces so the brain can retry/skip/abort (§7.2).
+  const wfId = stream.workflowRunId ?? latestAttempt(stream)?.workflowRunId;
+  if (wfId !== undefined) req.workflowRunId = wfId;
   if (stream.errorMessage !== undefined) req.errorMessage = stream.errorMessage;
   if (stream.errorMessage?.includes("local run contention")) {
     req.hint = LOCAL_RUN_CONTENTION_HINT;
   }
   return req;
+}
+
+function toCanonicalCategory(value: string | undefined): FailureCategory {
+  const parsed = failureCategorySchema.safeParse(value);
+  if (!parsed.success) return "unknown";
+  return parsed.data;
 }
 
 export function buildDispatchAmbiguityRequests(
@@ -359,6 +366,7 @@ export async function cancelRun(
   store: Store,
   ship: DriverShipPort,
   driverRunId: string,
+  now: string,
 ): Promise<DriverRun> {
   const run = store.getDriverRun(driverRunId);
   if (run === null) {
@@ -378,12 +386,10 @@ export async function cancelRun(
         // Idempotent sweep — record and continue (§8 v2).
       }
     }
-    const attempt: StreamAttempt = {
-      dispatchedAt: new Date().toISOString(),
-      failureCategory: "cancelled",
-      terminal: true,
-      workflowRunId: wfId ?? "cancelled",
-    };
+    // Cancellation is not a failure category (`cancelled` is excluded from the
+    // canonical enum); the attempt records only the terminal fact.
+    const attempt: StreamAttempt = { dispatchedAt: now, terminal: true };
+    if (wfId !== undefined) attempt.workflowRunId = wfId;
     store.updateDriverStream(stream.id, {
       attempts: [...stream.attempts, attempt],
       errorMessage: "cancelled by driver",
@@ -421,21 +427,15 @@ export function isBatchEligible(
   return true;
 }
 
-/** True when pending work exists but is gated only by landed-but-unmerged deps. */
-export function isBlockedOnMerges(run: DriverRun, targetBatch?: number): boolean {
-  const batches = run.batches;
-  for (const batch of batches) {
-    if (targetBatch !== undefined && batch.batchIndex !== targetBatch) continue;
-    if (!batch.streams.some((s) => s.status === "pending")) continue;
-    if (isBatchEligible(batch, batches, targetBatch)) continue;
-    const blockedByUnmerged = batch.dependsOn.some((depIndex) => {
-      const dep = batches.find((b) => b.batchIndex === depIndex);
-      if (dep === undefined) return false;
-      return dep.streams.some((s) => s.status === "landed");
-    });
-    if (blockedByUnmerged) return true;
-  }
-  return false;
+/**
+ * True when the only remaining work is policy-side merging: nothing in
+ * flight, nothing dispatch-eligible, and landed streams await mark-merged.
+ * Covers both dep-gated batches and a final batch that is fully landed.
+ */
+export function isBlockedOnMerges(run: DriverRun): boolean {
+  if (hasInFlightStreams(run)) return false;
+  if (run.batches.some((b) => batchHasPendingDispatchable(b, run.batches))) return false;
+  return allStreams(run).some((s) => s.status === "landed");
 }
 
 export function extractRepoUrl(run: DriverRun): string | undefined {

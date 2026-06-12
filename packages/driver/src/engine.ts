@@ -2,9 +2,10 @@
  * Driver engine tick — walker, dispatcher, poller (spec §4.1, §7).
  */
 
-import type { GetWorkflowRunOutput, ShipInput } from "@ship/core";
+import type { GetWorkflowRunOutput, ShipInput, ShipStartOutput } from "@ship/core";
 import type { Store } from "@ship/store";
 import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/store";
+import type { FailureCategory } from "@ship/workflow";
 
 import { isTerminal } from "@ship/workflow";
 import { existsSync } from "node:fs";
@@ -14,7 +15,7 @@ import type { DispatchAmbiguity } from "./judgment.js";
 import type { DriverShipPort } from "./ship-port.js";
 import type { DriverTickResult, RunOpts } from "./types.js";
 
-import { PreconditionError, TickLiveError } from "./errors.js";
+import { DriverRunNotFoundEngineError, PreconditionError, TickLiveError } from "./errors.js";
 import {
   allStreams,
   batchHasPendingDispatchable,
@@ -158,7 +159,7 @@ async function runDispatchPollLoop(state: PollLoopState): Promise<DriverTickResu
     current = loadRun(state.ctx.store, state.driverRunId);
     current = await pollDispatched(state.ctx.store, state.ctx.ship, current);
 
-    const exit = evaluateExit(current, state.ambiguities, state.opts);
+    const exit = evaluateExit(current, state.ambiguities);
     if (exit !== undefined) {
       return finalizeExit(
         state.driverRunId,
@@ -197,7 +198,7 @@ function finalizeExit(
 function loadRun(store: Store, driverRunId: string): DriverRun {
   const run = store.getDriverRun(driverRunId);
   if (run === null) {
-    throw new PreconditionError(`driver run not found: ${driverRunId}`);
+    throw new DriverRunNotFoundEngineError(driverRunId);
   }
   return run;
 }
@@ -218,7 +219,8 @@ function assertLease(run: DriverRun, opts: ResolvedRunOpts, clock: () => number)
 
 export function isTickLive(run: DriverRun, pollIntervalMs: number, clock: () => number): boolean {
   if (run.tickStartedAt === undefined) return false;
-  const endedBeforeStart = run.tickEndedAt === undefined || run.tickEndedAt < run.tickStartedAt;
+  const endedBeforeStart =
+    run.tickEndedAt === undefined || Date.parse(run.tickEndedAt) < Date.parse(run.tickStartedAt);
   if (!endedBeforeStart) return false;
 
   const staleMs = 3 * pollIntervalMs;
@@ -261,12 +263,17 @@ function collectStreamPreflightErrors(
   missing: string[],
 ): void {
   if (stream.status !== "pending") return;
+  if (stream.runtime === "rooms") {
+    throw new PreconditionError(
+      `rooms stream ${stream.id} is not supported by the engine yet — dispatch rooms work via ship.ship directly`,
+    );
+  }
   if (stream.runtime === "cloud" && repoUrl === undefined) {
     throw new PreconditionError(
       `cloud stream ${stream.id} requires repo_url in manifest — add repo_url to the driver frontmatter`,
     );
   }
-  if (stream.runtime !== "local" && stream.runtime !== "rooms") return;
+  if (stream.runtime !== "local") return;
   if (stream.branch === undefined) {
     throw new PreconditionError(`local stream ${stream.id} requires branch_name in manifest`);
   }
@@ -344,8 +351,10 @@ async function dispatchBatchStreams(
   for (const stream of batch.streams) {
     if (stream.status !== "pending") continue;
     if (!canDispatchStream(stream, local, cloud, ctx.opts)) continue;
-    await dispatchStream(ctx, stream);
-    if (stream.runtime === "local" || stream.runtime === "rooms") local += 1;
+    const dispatched = await dispatchStream(ctx, stream);
+    // A failed dispatch holds no slot — only live work counts against the caps.
+    if (!dispatched) continue;
+    if (stream.runtime === "local") local += 1;
     if (stream.runtime === "cloud") cloud += 1;
   }
   return local;
@@ -358,7 +367,6 @@ function canDispatchStream(
   opts: ResolvedRunOpts,
 ): boolean {
   if (stream.runtime === "local" && localInFlight >= opts.maxParallelLocal) return false;
-  if (stream.runtime === "rooms" && localInFlight >= opts.maxParallelLocal) return false;
   if (stream.runtime === "cloud" && cloudInFlight >= opts.maxParallelCloud) return false;
   return true;
 }
@@ -366,12 +374,11 @@ function canDispatchStream(
 function countInFlight(run: DriverRun, runtime: "local" | "cloud"): number {
   return allStreams(run).filter((s) => {
     if (s.status !== "dispatching" && s.status !== "dispatched") return false;
-    if (runtime === "local") return s.runtime === "local" || s.runtime === "rooms";
-    return s.runtime === "cloud";
+    return s.runtime === runtime;
   }).length;
 }
 
-async function dispatchStream(ctx: DispatchContext, stream: DriverStream): Promise<void> {
+async function dispatchStream(ctx: DispatchContext, stream: DriverStream): Promise<boolean> {
   const docPath = resolveDocPath(ctx.repoRoot, stream.specPath);
   const attempt: StreamAttempt = {
     dispatchedAt: new Date(ctx.clock()).toISOString(),
@@ -382,7 +389,7 @@ async function dispatchStream(ctx: DispatchContext, stream: DriverStream): Promi
 
   ctx.store.updateDriverStream(stream.id, { attempts, status: "dispatching" });
   const input = buildShipInput(ctx, stream, docPath);
-  await dispatchStartShip({
+  return dispatchStartShip({
     baseAttempts: attempts,
     input,
     runId: ctx.runId,
@@ -401,26 +408,39 @@ interface StartShipParams {
   baseAttempts: StreamAttempt[];
 }
 
-async function dispatchStartShip(params: StartShipParams): Promise<void> {
+async function dispatchStartShip(params: StartShipParams): Promise<boolean> {
+  let output: ShipStartOutput;
   try {
-    const output = await params.ship.startShip(params.input);
-    params.store.updateDriverStream(params.streamId, {
-      attempts: markLatestAttemptWorkflowRunId(params.baseAttempts, output.workflowRunId),
-      status: "dispatched",
-      workflowRunId: output.workflowRunId,
-    });
+    output = await params.ship.startShip(params.input);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     params.store.updateDriverStream(params.streamId, {
-      attempts: markLatestAttemptFailed(params.baseAttempts, message),
+      attempts: markLatestAttemptFailed(params.baseAttempts, "sdk-throw"),
       errorMessage: message,
       status: "failed",
     });
+    return false;
   }
+  // Persistence failures past this point propagate as engine errors: the
+  // workflow is live, so the stream must stay `dispatching` for §7.3 recovery
+  // to adopt — marking it failed would invite duplicate dispatch on retry.
+  params.store.updateDriverStream(params.streamId, {
+    attempts: markLatestAttemptWorkflowRunId(params.baseAttempts, output.workflowRunId),
+    status: "dispatched",
+    workflowRunId: output.workflowRunId,
+  });
+  return true;
 }
 
 function buildShipInput(ctx: DispatchContext, stream: DriverStream, docPath: string): ShipInput {
+  if (stream.runtime === "rooms") {
+    throw new PreconditionError(`rooms stream ${stream.id} is not supported by the engine yet`);
+  }
   if (stream.runtime === "cloud") {
+    const repoUrl = ctx.repoUrl;
+    if (repoUrl === undefined) {
+      throw new PreconditionError(`cloud stream ${stream.id} requires repo_url in manifest`);
+    }
     return {
       docPath,
       repo: loadRun(ctx.store, ctx.runId).repo,
@@ -428,7 +448,7 @@ function buildShipInput(ctx: DispatchContext, stream: DriverStream, docPath: str
       cloud: {
         autoCreatePR: true,
         env: { type: "cloud" },
-        repos: [{ url: ctx.repoUrl ?? "" }],
+        repos: [{ url: repoUrl }],
         workOnCurrentBranch: false,
       },
     };
@@ -459,15 +479,15 @@ function markLatestAttemptWorkflowRunId(
   return copy;
 }
 
-function markLatestAttemptFailed(attempts: StreamAttempt[], message: string): StreamAttempt[] {
-  if (attempts.length === 0) {
-    return [{ dispatchedAt: new Date().toISOString(), failureCategory: message, terminal: true }];
-  }
-  const copy = [...attempts];
-  const last = copy.at(-1);
-  if (last === undefined) return copy;
-  copy[copy.length - 1] = { ...last, failureCategory: message, terminal: true };
-  return copy;
+function markLatestAttemptFailed(
+  attempts: StreamAttempt[],
+  failureCategory: FailureCategory,
+): StreamAttempt[] {
+  const last = attempts.at(-1);
+  // No attempt to mark — don't fabricate one; the failure facts live on the
+  // stream row either way.
+  if (last === undefined) return attempts;
+  return [...attempts.slice(0, -1), { ...last, failureCategory, terminal: true }];
 }
 
 async function pollDispatched(
@@ -500,7 +520,7 @@ async function pollOneStream(
   }
 
   store.updateDriverStream(stream.id, {
-    attempts: markLatestAttemptFailed(stream.attempts, wfRun.failureCategory ?? wfRun.status),
+    attempts: markLatestAttemptFailed(stream.attempts, wfRun.failureCategory ?? "unknown"),
     errorMessage: wfRun.failureCategory ?? wfRun.status,
     status: "failed",
   });
@@ -522,7 +542,6 @@ function buildLandedPatch(
 function evaluateExit(
   run: DriverRun,
   ambiguities: DispatchAmbiguity[],
-  opts: ResolvedRunOpts,
 ): Pick<DriverTickResult, "status"> | undefined {
   if (ambiguities.length > 0) {
     return { status: "awaiting_judgment" };
@@ -535,7 +554,7 @@ function evaluateExit(
     return { status: "awaiting_judgment" };
   }
   if (everyStreamTerminalDoneOrSkipped(run)) return { status: "done" };
-  if (isBlockedOnMerges(run, opts.batch)) return { status: "blocked_on_merges" };
+  if (isBlockedOnMerges(run)) return { status: "blocked_on_merges" };
   return undefined;
 }
 

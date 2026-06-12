@@ -45,7 +45,8 @@ export type JudgmentRequest =
       kind: "failure-triage";
       driverRunId: string;
       streamId: string;
-      workflowRunId: string;
+      /** Absent for dispatch-time failures — no workflow ever started. */
+      workflowRunId?: string;
       failureCategory: FailureCategory;
       errorMessage?: string;
       attempts: number;
