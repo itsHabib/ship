@@ -7,6 +7,14 @@ import {
   MissingRepoError,
   WorkdirNotFoundError,
 } from "@ship/core";
+import {
+  CancelError,
+  DecideError,
+  DriverRunNotFoundEngineError,
+  ImportManifestError,
+  PreconditionError,
+  TickLiveError,
+} from "@ship/driver";
 import { WorkflowRunNotFoundError } from "@ship/store";
 import { describe, expect, test } from "vitest";
 
@@ -22,6 +30,15 @@ describe("isUserError", () => {
 
   test("WorkflowRunNotFoundError (cancel/getRun on unknown id) is a user error", () => {
     expect(isUserError(new WorkflowRunNotFoundError("wf_unknown"))).toBe(true);
+  });
+
+  test("driver engine errors map to user errors", () => {
+    expect(isUserError(new TickLiveError("drv_x"))).toBe(true);
+    expect(isUserError(new PreconditionError("precondition"))).toBe(true);
+    expect(isUserError(new DecideError("decide"))).toBe(true);
+    expect(isUserError(new CancelError("cancel"))).toBe(true);
+    expect(isUserError(new DriverRunNotFoundEngineError("drv_x"))).toBe(true);
+    expect(isUserError(new ImportManifestError([{ message: "bad manifest" }]))).toBe(true);
   });
 
   test("RangeError (e.g. listRuns limit cap exceeded) is a user error", () => {
@@ -54,6 +71,13 @@ describe("mapErrorToMcpError", () => {
   test("WorkflowRunNotFoundError maps to InvalidParams", () => {
     const out = mapErrorToMcpError(new WorkflowRunNotFoundError("wf_unknown"));
     expect(out.code).toBe(ErrorCode.InvalidParams);
+  });
+
+  test("driver engine errors map to InvalidParams", () => {
+    expect(mapErrorToMcpError(new DecideError("bad stream")).code).toBe(ErrorCode.InvalidParams);
+    expect(mapErrorToMcpError(new ImportManifestError([{ message: "bad manifest" }])).code).toBe(
+      ErrorCode.InvalidParams,
+    );
   });
 
   test("generic Error maps to InternalError (-32603)", () => {

@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@ship/core": "workspace:*",
+    "@ship/driver": "workspace:*",
     "@ship/logger": "workspace:*",
     "@ship/cursor-runner": "workspace:*",
     "@ship/mcp": "workspace:*",

@@ -28,6 +28,7 @@ import { createLogger } from "@ship/logger";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
+import { createMcpDriverServiceFactory } from "./driver-service.js";
 import { buildServer } from "./server.js";
 
 async function main(): Promise<void> {
@@ -63,7 +64,8 @@ async function main(): Promise<void> {
     Object.assign(opts, { cursor: fake });
   }
   const shipFactory = createDefaultShipService(opts);
-  const server = buildServer(shipFactory);
+  const driverFactory = createMcpDriverServiceFactory(opts, shipFactory);
+  const server = buildServer(shipFactory, driverFactory);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

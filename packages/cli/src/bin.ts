@@ -6,22 +6,45 @@
  * exit status.
  */
 
+import type { CursorRunner } from "@ship/cursor-runner";
+
+import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createLogger } from "@ship/logger";
 import { CommanderError } from "commander";
 
 import { CliExit } from "./errors.js";
 import { buildProgram } from "./program.js";
-import { createCliService, resolveDbPath, resolveRunsDir } from "./service.js";
+import {
+  createCliDriverService,
+  createCliService,
+  resolveDbPath,
+  resolveRunsDir,
+} from "./service.js";
 
 async function main(): Promise<void> {
   const logger = createLogger({ stream: process.stderr });
-  const factory = createCliService({
-    dbPath: resolveDbPath(),
-    runsDir: resolveRunsDir(),
+  const dbPath = resolveDbPath();
+  const runsDir = resolveRunsDir();
+  const useFake = process.env["SHIP_TEST_FAKE_CURSOR"] === "1";
+  const serviceOpts = {
+    dbPath,
+    runsDir,
     logger,
-  });
-  const program = buildProgram(factory);
+    ...(useFake ? { cursor: createFakeCursorRunner() } : {}),
+  };
+  const factory = createCliService(serviceOpts);
+  const driverFactory = createCliDriverService(serviceOpts);
+  const program = buildProgram(factory, driverFactory);
   await program.parseAsync(process.argv);
+}
+
+function createFakeCursorRunner(): CursorRunner {
+  return new FakeCursorRunner({
+    defaultScript: {
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    },
+  });
 }
 
 main().catch((err: unknown) => {

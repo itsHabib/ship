@@ -22,6 +22,14 @@ import {
   MissingRepoError,
   WorkdirNotFoundError,
 } from "@ship/core";
+import {
+  CancelError,
+  DecideError,
+  DriverRunNotFoundEngineError,
+  ImportManifestError,
+  PreconditionError,
+  TickLiveError,
+} from "@ship/driver";
 import { WorkflowRunNotFoundError } from "@ship/store";
 
 // Caller-actionable typed errors: pre-row validation from `@ship/core`
@@ -40,6 +48,12 @@ const USER_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   ArtifactPathEscapesRunDirError,
   ArtifactTooLargeError,
   ArtifactGoneError,
+  TickLiveError,
+  PreconditionError,
+  DecideError,
+  CancelError,
+  DriverRunNotFoundEngineError,
+  ImportManifestError,
 ];
 
 /**

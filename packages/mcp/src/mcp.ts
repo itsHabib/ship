@@ -362,3 +362,183 @@ export const downloadArtifactOutputSchema = z
   })
   .strict();
 export type DownloadArtifactOutput = z.infer<typeof downloadArtifactOutputSchema>;
+
+// =====================================================================
+// driver_* tools (work-driver engine surface)
+// =====================================================================
+
+const DRIVER_RUN_ID_PATTERN = /^drv_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+const DRIVER_STREAM_ID_PATTERN = /^ds_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+const driverRunIdSchema = z.string().regex(DRIVER_RUN_ID_PATTERN);
+const driverStreamIdSchema = z.string().regex(DRIVER_STREAM_ID_PATTERN);
+
+const driverStreamViewSchema = z
+  .object({
+    streamId: driverStreamIdSchema,
+    batchIndex: z.number().int(),
+    taskSlug: z.string().optional(),
+    specPath: z.string().min(1),
+    branch: z.string().optional(),
+    runtime: z.enum(["local", "cloud", "rooms"]),
+    status: z.enum(["pending", "dispatching", "dispatched", "landed", "failed", "skipped", "done"]),
+    workflowRunId: workflowRunIdSchema.optional(),
+    prUrl: z.string().optional(),
+  })
+  .strict();
+
+const driverTickProgressSchema = z
+  .object({
+    batchIndex: z.number().int(),
+    dispatched: z.number().int().nonnegative(),
+    landed: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    remaining: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const failureTriageRequestSchema = z
+  .object({
+    kind: z.literal("failure-triage"),
+    driverRunId: driverRunIdSchema,
+    streamId: driverStreamIdSchema,
+    workflowRunId: workflowRunIdSchema.optional(),
+    failureCategory: failureCategorySchema,
+    errorMessage: z.string().optional(),
+    attempts: z.number().int().positive(),
+    hint: z.string().optional(),
+  })
+  .strict();
+
+const dispatchAmbiguityRequestSchema = z
+  .object({
+    kind: z.literal("dispatch-ambiguity"),
+    driverRunId: driverRunIdSchema,
+    streamId: driverStreamIdSchema,
+    candidates: z.array(
+      z
+        .object({
+          workflowRunId: workflowRunIdSchema,
+          createdAt: z.string().min(1),
+          status: z.string().min(1),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+const mergeConfirmationRequestSchema = z.object({ kind: z.literal("merge-confirmation") }).strict();
+const reviewAdjudicationRequestSchema = z
+  .object({ kind: z.literal("review-adjudication") })
+  .strict();
+
+const judgmentRequestSchema = z.discriminatedUnion("kind", [
+  failureTriageRequestSchema,
+  dispatchAmbiguityRequestSchema,
+  mergeConfirmationRequestSchema,
+  reviewAdjudicationRequestSchema,
+]);
+
+export const driverTickResultSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+    status: z.enum([
+      "running",
+      "awaiting_judgment",
+      "blocked_on_merges",
+      "done",
+      "failed",
+      "cancelled",
+    ]),
+    awaiting: z.array(judgmentRequestSchema),
+    unmerged: z.array(driverStreamViewSchema),
+    progress: driverTickProgressSchema,
+    streams: z.array(driverStreamViewSchema),
+  })
+  .strict();
+export type DriverTickResultOutput = z.infer<typeof driverTickResultSchema>;
+
+export const driverRunInputSchema = z
+  .object({
+    manifestPath: z.string().min(1).optional(),
+    driverRunId: driverRunIdSchema.optional(),
+    batch: z.number().int().positive().optional(),
+    maxWaitMs: z.number().int().nonnegative().default(0),
+    pollIntervalMs: z.number().int().positive().optional(),
+    force: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((data, ctx) => {
+    const hasPath = data.manifestPath !== undefined;
+    const hasId = data.driverRunId !== undefined;
+    if (hasPath === hasId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "exactly one of manifestPath or driverRunId is required",
+        path: ["manifestPath"],
+      });
+    }
+  });
+export type DriverRunInput = z.infer<typeof driverRunInputSchema>;
+
+export const driverStatusInputSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+  })
+  .strict();
+export type DriverStatusInput = z.infer<typeof driverStatusInputSchema>;
+
+const driverBatchSchema = z.record(z.string(), z.unknown());
+
+export const driverStatusOutputSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+    status: z.enum(["pending", "running", "awaiting_judgment", "done", "failed", "cancelled"]),
+    manifestPath: z.string().min(1),
+    importedAt: z.string().min(1),
+    manifestModified: z.literal(true).optional(),
+    repo: z.string().min(1),
+    project: z.string().optional(),
+    phase: z.string().optional(),
+    batches: z.array(driverBatchSchema),
+  })
+  .strict();
+export type DriverStatusOutput = z.infer<typeof driverStatusOutputSchema>;
+
+const driverDecisionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("retry") }).strict(),
+  z
+    .object({
+      kind: z.literal("skip"),
+      reason: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("abort"),
+      reason: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("adopt"),
+      workflowRunId: workflowRunIdSchema,
+    })
+    .strict(),
+]);
+
+export const driverDecideInputSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+    streamId: driverStreamIdSchema,
+    decision: driverDecisionSchema,
+  })
+  .strict();
+export type DriverDecideInput = z.infer<typeof driverDecideInputSchema>;
+
+export const driverDecideOutputSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+    status: driverStatusOutputSchema.shape.status,
+  })
+  .strict();
+export type DriverDecideOutput = z.infer<typeof driverDecideOutputSchema>;

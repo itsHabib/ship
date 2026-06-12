@@ -93,6 +93,9 @@ export interface DefaultShipServiceOpts {
 // Memoizing factory shape. Returns the same `ShipService` across calls.
 export type ShipServiceFactory = () => ShipService;
 
+/** Options for resolving the shared store without constructing `ShipService`. */
+export type DefaultSharedStoreOpts = Pick<DefaultShipServiceOpts, "dbPath" | "logger">;
+
 interface SharedInfra {
   readonly store: Store;
   readonly clock: () => string;
@@ -105,6 +108,16 @@ interface SharedInfra {
 // GC-eligible once the binary exits because nothing else references
 // them.
 const SHARED_INFRA_BY_DB_PATH = new Map<string, SharedInfra>();
+
+/**
+ * Returns the shared `Store` for `dbPath`, creating it on first access.
+ * `@ship/driver` wiring in CLI / mcp-server uses this so driver rows and
+ * workflow rows share one SQLite handle without inverting the dep graph.
+ */
+export function getDefaultSharedStore(opts: DefaultSharedStoreOpts): Store {
+  const logger = opts.logger ?? createLogger({ stream: process.stderr });
+  return getOrCreateSharedInfra(opts.dbPath, logger).store;
+}
 
 function getOrCreateSharedInfra(dbPath: string, logger: Logger): SharedInfra {
   const existing = SHARED_INFRA_BY_DB_PATH.get(dbPath);
