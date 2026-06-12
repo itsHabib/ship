@@ -2,10 +2,15 @@ name: Mutation testing
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * 1" # Mondays 06:23 UTC — staggered vs sibling repos
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   mutation:
