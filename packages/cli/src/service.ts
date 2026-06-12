@@ -34,11 +34,14 @@ export function createCliService(opts: CliPathOpts): ServiceFactory {
 }
 
 /**
- * Returns a memoizing `DriverService` factory sharing the same store +
- * `ShipService` instance as `createCliService(opts)`.
+ * Returns a memoizing `DriverService` factory wired to the same store +
+ * `ShipService` instance as `shipFactory` (mirrors the mcp-server's
+ * `createMcpDriverServiceFactory` shape).
  */
-export function createCliDriverService(opts: CliPathOpts): DriverServiceFactory {
-  const shipFactory = createCliService(opts);
+export function createCliDriverService(
+  opts: CliPathOpts,
+  shipFactory: ServiceFactory,
+): DriverServiceFactory {
   let cached: DriverService | undefined;
   return () => {
     if (cached !== undefined) return cached;

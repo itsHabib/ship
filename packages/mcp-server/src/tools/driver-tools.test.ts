@@ -163,7 +163,7 @@ batches:
     expect(status.manifestModified).toBeUndefined();
   });
 
-  test("driver_decide maps engine errors to invalid params", async () => {
+  test("driver_decide rejects malformed stream ids at the schema layer", async () => {
     const layout = writeOneStreamManifest(h.repoRoot);
     const imported = h.driver.importManifest(layout.manifestPath);
     const raw = await h.client.callTool({
@@ -176,6 +176,23 @@ batches:
     });
     const { text } = expectToolError(raw);
     expect(text.length).toBeGreaterThan(0);
+  });
+
+  test("driver_decide maps engine errors to invalid params", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const imported = h.driver.importManifest(layout.manifestPath);
+    // Valid-format ids pass the schema; a freshly imported run is not
+    // awaiting judgment, so the engine itself rejects the decision.
+    const raw = await h.client.callTool({
+      name: "driver_decide",
+      arguments: {
+        driverRunId: imported.run.id,
+        streamId: "ds_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        decision: { kind: "retry" },
+      },
+    });
+    const { text } = expectToolError(raw);
+    expect(text).toMatch(/not awaiting judgment/);
   });
 
   test("driver_decide retry returns updated run status", async () => {

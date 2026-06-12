@@ -3,6 +3,8 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { DriverRunRef } from "@ship/driver";
+import type { DriverRunInput } from "@ship/mcp";
 
 import { driverRunInputSchema, driverTickResultSchema } from "@ship/mcp";
 
@@ -21,11 +23,7 @@ export function registerDriverRunTool(server: McpServer, factory: DriverServiceF
     async (args) => {
       try {
         const validated = driverRunInputSchema.parse(args);
-        const ref =
-          validated.driverRunId !== undefined
-            ? { driverRunId: validated.driverRunId }
-            : { manifestPath: validated.manifestPath ?? "" };
-        const result = await factory().run(ref, {
+        const result = await factory().run(toDriverRunRef(validated), {
           ...(validated.batch !== undefined ? { batch: validated.batch } : {}),
           force: validated.force === true,
           maxWaitMs: validated.maxWaitMs,
@@ -40,4 +38,10 @@ export function registerDriverRunTool(server: McpServer, factory: DriverServiceF
       }
     },
   );
+}
+
+function toDriverRunRef(input: DriverRunInput): DriverRunRef {
+  if (input.driverRunId !== undefined) return { driverRunId: input.driverRunId };
+  if (input.manifestPath !== undefined) return { manifestPath: input.manifestPath };
+  throw new Error("unreachable: schema requires exactly one of driverRunId or manifestPath");
 }

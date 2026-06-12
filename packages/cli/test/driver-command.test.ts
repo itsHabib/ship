@@ -98,6 +98,20 @@ describe("ship driver", () => {
     expect(parsed.awaiting[0]?.kind).toBe("failure-triage");
   }, 15_000);
 
+  test("run rejects --poll-interval 0s with exit 1", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const code = await runDriver(["driver", "run", layout.manifestPath, "--poll-interval", "0s"]);
+    expect(code).toBe(1);
+    expect(stderr.join("")).toMatch(/--poll-interval.*must be > 0/);
+  });
+
+  test("run rejects --batch 0 with exit 1", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const code = await runDriver(["driver", "run", layout.manifestPath, "--batch", "0"]);
+    expect(code).toBe(1);
+    expect(stderr.join("")).toMatch(/invalid --batch: 0/);
+  });
+
   test("unknown driver run id exits 1", async () => {
     expect(await runDriver(["driver", "status", "drv_missing"])).toBe(1);
     expect(stderr.join("")).toMatch(/not found/);

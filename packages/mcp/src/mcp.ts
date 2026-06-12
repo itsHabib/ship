@@ -404,7 +404,8 @@ const failureTriageRequestSchema = z
     workflowRunId: workflowRunIdSchema.optional(),
     failureCategory: failureCategorySchema,
     errorMessage: z.string().optional(),
-    attempts: z.number().int().positive(),
+    /** Zero when dispatch fails before a workflow starts. */
+    attempts: z.number().int().nonnegative(),
     hint: z.string().optional(),
   })
   .strict();

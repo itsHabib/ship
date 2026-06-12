@@ -12,6 +12,7 @@ import {
   cancelWorkflowRunOutputSchema,
   driverDecideInputSchema,
   driverRunInputSchema,
+  driverTickResultSchema,
   getWorkflowRunInputSchema,
   getWorkflowRunOutputSchema,
   listWorkflowRunsInputSchema,
@@ -642,6 +643,26 @@ describe("driver MCP schemas", () => {
     expect(
       driverRunInputSchema.safeParse({ driverRunId: DRV_ID, manifestPath: "/x.md" }).success,
     ).toBe(false);
+  });
+
+  test("driverTickResultSchema accepts a zero-attempt failure-triage (dispatch-time failure)", () => {
+    const result = {
+      driverRunId: DRV_ID,
+      status: "awaiting_judgment",
+      awaiting: [
+        {
+          kind: "failure-triage",
+          driverRunId: DRV_ID,
+          streamId: DS_ID,
+          failureCategory: "unknown",
+          attempts: 0,
+        },
+      ],
+      unmerged: [],
+      progress: { batchIndex: 1, dispatched: 0, landed: 0, failed: 1, remaining: 0 },
+      streams: [],
+    };
+    expect(driverTickResultSchema.safeParse(result).success).toBe(true);
   });
 
   test("driverDecideInputSchema accepts retry/skip/adopt decisions", () => {

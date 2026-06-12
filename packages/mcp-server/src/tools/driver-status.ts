@@ -5,7 +5,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { DriverRunNotFoundEngineError } from "@ship/driver";
 import { driverStatusInputSchema, driverStatusOutputSchema } from "@ship/mcp";
 
 import type { DriverServiceFactory } from "../driver-service.js";
@@ -32,9 +31,6 @@ export function registerDriverStatusTool(server: McpServer, factory: DriverServi
         const validatedOut = driverStatusOutputSchema.parse(view);
         return { content: [{ type: "text", text: JSON.stringify(validatedOut) }] };
       } catch (err) {
-        if (err instanceof DriverRunNotFoundEngineError) {
-          throw new McpError(ErrorCode.InvalidParams, err.message);
-        }
         throw mapErrorToMcpError(err);
       }
     },

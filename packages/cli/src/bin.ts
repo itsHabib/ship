@@ -33,7 +33,7 @@ async function main(): Promise<void> {
     ...(useFake ? { cursor: createFakeCursorRunner() } : {}),
   };
   const factory = createCliService(serviceOpts);
-  const driverFactory = createCliDriverService(serviceOpts);
+  const driverFactory = createCliDriverService(serviceOpts, factory);
   const program = buildProgram(factory, driverFactory);
   await program.parseAsync(process.argv);
 }

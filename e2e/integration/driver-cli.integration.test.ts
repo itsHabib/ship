@@ -38,7 +38,8 @@ function createDriverHarness(): DriverHarness {
   mkdirSync(repoRoot, { recursive: true });
   const cursor = new FakeCursorRunner();
   const opts = { dbPath, runsDir, cursor };
-  const program = buildProgram(createCliService(opts), createCliDriverService(opts));
+  const shipFactory = createCliService(opts);
+  const program = buildProgram(shipFactory, createCliDriverService(opts, shipFactory));
   const dispose = (): void => {
     closeDefaultSharedStore(dbPath);
     rmSync(tmp, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });

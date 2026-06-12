@@ -9,8 +9,6 @@ import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
 import { formatPruneAge } from "@ship/core";
 
-import type { ManifestDrift } from "./driver-manifest.js";
-
 /** Renders a `ShipOutput` for the `ship ship` subcommand. */
 export function formatShipOutput(out: ShipOutput, json: boolean): string {
   if (json) return jsonStringify(out);
@@ -189,31 +187,28 @@ export interface DriverStatusView {
   batches: DriverRun["batches"];
 }
 
-export function buildDriverStatusView(
-  run: DriverRun,
-  drift: ManifestDrift | undefined,
-): DriverStatusView {
+export function buildDriverStatusView(run: DriverRun, manifestModified: boolean): DriverStatusView {
   const view: DriverStatusView = {
     batches: run.batches,
     driverRunId: run.id,
-    importedAt: drift?.importedAt ?? run.createdAt,
+    importedAt: run.createdAt,
     manifestPath: run.manifestPath,
     repo: run.repo,
     status: run.status,
   };
   if (run.project !== undefined) view.project = run.project;
   if (run.phase !== undefined) view.phase = run.phase;
-  if (drift?.manifestModified === true) view.manifestModified = true;
+  if (manifestModified) view.manifestModified = true;
   return view;
 }
 
 /** Renders `ship driver status` output. */
 export function formatDriverStatusOutput(
   run: DriverRun,
-  drift: ManifestDrift | undefined,
+  manifestModified: boolean,
   json: boolean,
 ): string {
-  const view = buildDriverStatusView(run, drift);
+  const view = buildDriverStatusView(run, manifestModified);
   if (json) return jsonStringify(view);
   const lines = [
     `driverRunId: ${view.driverRunId}`,

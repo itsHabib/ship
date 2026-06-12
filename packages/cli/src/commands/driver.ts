@@ -6,14 +6,7 @@ import type { Decision, DriverRunRef, MergeFacts } from "@ship/driver";
 import type { Command } from "commander";
 
 import { parsePruneDuration, PruneDurationError } from "@ship/core";
-import {
-  CancelError,
-  DecideError,
-  DriverRunNotFoundEngineError,
-  ImportManifestError,
-  PreconditionError,
-  TickLiveError,
-} from "@ship/driver";
+import { DriverRunNotFoundEngineError } from "@ship/driver";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 
@@ -30,7 +23,7 @@ import {
 } from "../format.js";
 
 interface RunOpts {
-  batch?: number;
+  batch?: string;
   json?: boolean;
   maxWait?: string;
   pollInterval?: string;
@@ -75,7 +68,7 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
   driver
     .command("run <ref>")
     .description("run one bounded engine tick (auto-imports when ref is a manifest path)")
-    .option("--batch <n>", "target a single batch index", parseIntOption)
+    .option("--batch <n>", "target a single batch index")
     .option("--json", "emit DriverTickResult JSON")
     .option("--max-wait <duration>", "tick wall-clock bound (default 20m)", "20m")
     .option("--poll-interval <duration>", "poll interval between getRun scans (default 30s)", "30s")
@@ -84,12 +77,16 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
       await runDriverActionAsync(async () => {
         const driverRunRef = resolveDriverRunRef(ref);
         const maxWaitMs = parseDriverDuration(rawOpts.maxWait ?? "20m", "--max-wait");
-        const pollIntervalMs = parseDriverDuration(
+        const pollIntervalMs = parsePositiveDriverDuration(
           rawOpts.pollInterval ?? "30s",
           "--poll-interval",
         );
+        const batch =
+          rawOpts.batch !== undefined
+            ? parsePositiveIntOption(rawOpts.batch, "--batch")
+            : undefined;
         const result = await factory().run(driverRunRef, {
-          ...(rawOpts.batch !== undefined ? { batch: rawOpts.batch } : {}),
+          ...(batch !== undefined ? { batch } : {}),
           force: rawOpts.force === true,
           maxWaitMs,
           pollIntervalMs,
@@ -167,8 +164,10 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
         if (run === null) {
           throw new DriverRunNotFoundEngineError(driverRunId);
         }
-        const drift = detectManifestDrift(run);
-        process.stdout.write(`${formatDriverStatusOutput(run, drift, rawOpts.json === true)}\n`);
+        const manifestModified = detectManifestDrift(run);
+        process.stdout.write(
+          `${formatDriverStatusOutput(run, manifestModified, rawOpts.json === true)}\n`,
+        );
       });
     });
 }
@@ -190,24 +189,9 @@ async function runDriverActionAsync(fn: () => Promise<void>): Promise<void> {
 }
 
 function handleDriverError(err: unknown): never {
-  if (err instanceof InvalidArgumentError || isDriverCliEngineError(err)) {
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-    cliExit(1);
-  }
   const code = toDriverCliExitCode(err);
   process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
   cliExit(code);
-}
-
-function isDriverCliEngineError(err: unknown): err is Error {
-  return (
-    err instanceof TickLiveError ||
-    err instanceof PreconditionError ||
-    err instanceof DecideError ||
-    err instanceof CancelError ||
-    err instanceof DriverRunNotFoundEngineError ||
-    err instanceof ImportManifestError
-  );
 }
 
 function resolveDriverRunRef(ref: string): DriverRunRef {
@@ -223,6 +207,28 @@ function parseIntOption(raw: string): number {
     throw new InvalidArgumentError(`invalid integer: ${raw}`);
   }
   return n;
+}
+
+/**
+ * Action-time positive-int parse (`Number`, not `parseInt`, so `10abc`
+ * rejects instead of coercing). Batch indices are 1-based in the manifest
+ * format, matching the MCP schema's `.positive()`.
+ */
+function parsePositiveIntOption(raw: string, flag: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new InvalidArgumentError(`invalid ${flag}: ${raw}`);
+  }
+  return n;
+}
+
+/** Like `parseDriverDuration` but rejects zero — a zero poll interval busy-loops the tick. */
+function parsePositiveDriverDuration(raw: string, flag: string): number {
+  const ms = parseDriverDuration(raw, flag);
+  if (ms <= 0) {
+    throw new InvalidArgumentError(`invalid ${flag} duration: ${raw} (must be > 0)`);
+  }
+  return ms;
 }
 
 /** Parses `20m`, `30s`, etc. Seconds reuse the prune duration units otherwise. */
