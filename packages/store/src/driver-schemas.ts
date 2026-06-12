@@ -53,6 +53,7 @@ export const driverStreamSchema = z
     runtime: driverRuntimeSchema,
     specPath: z.string(),
     status: driverStreamStatusSchema,
+    streamIndex: z.number().int().min(0),
     taskId: z.string().optional(),
     taskSlug: z.string().optional(),
     touches: z.array(z.string()),

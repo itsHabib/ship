@@ -26,6 +26,7 @@ export interface DriverStreamRow {
   id: string;
   driver_run_id: string;
   driver_batch_id: string;
+  stream_index: number;
   task_id: string | null;
   task_slug: string | null;
   spec_path: string;
@@ -47,6 +48,7 @@ export interface DriverStreamRow {
 
 interface InsertStreamRowInput {
   id: string;
+  streamIndex: number;
   taskId?: string;
   taskSlug?: string;
   specPath: string;
@@ -71,14 +73,14 @@ export interface DriverStreamOps {
   insert: (runId: string, batchId: string, input: InsertStreamRowInput) => void;
   /** Patch progress columns; bumps parent run `updated_at`. */
   update: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
-  /** All streams for a run, ordered by `created_at, id`. */
+  /** All streams for a run, ordered by `stream_index` (manifest order within each batch). */
   listByRunId: (runId: string) => DriverStreamRow[];
   /** Parse a stream row into a domain `DriverStream`. */
   parseRow: (row: DriverStreamRow) => DriverStream;
 }
 
 const STREAM_COLUMNS =
-  "id, driver_run_id, driver_batch_id, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, error_message, created_at, updated_at";
+  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, error_message, created_at, updated_at";
 
 function sqlNull<T>(value: T | undefined): T | null {
   return value ?? null;
@@ -95,17 +97,17 @@ export function createDriverStreamOps(
 ): DriverStreamOps {
   const insertStmt = db.prepare(
     `INSERT INTO driver_streams (
-       id, driver_run_id, driver_batch_id, task_id, task_slug, spec_path, branch,
+       id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch,
        runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url,
        merge_commit, merged_at, cycles, error_message, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], DriverStreamRow>(
     `SELECT ${STREAM_COLUMNS} FROM driver_streams WHERE id = ?`,
   );
   const selectByRunIdStmt = db.prepare<[string], DriverStreamRow>(
     `SELECT ${STREAM_COLUMNS} FROM driver_streams WHERE driver_run_id = ?
-     ORDER BY created_at ASC, id ASC`,
+     ORDER BY stream_index ASC, id ASC`,
   );
 
   function insert(runId: string, batchId: string, input: InsertStreamRowInput): void {
@@ -114,6 +116,7 @@ export function createDriverStreamOps(
       input.id,
       runId,
       batchId,
+      input.streamIndex,
       sqlNull(input.taskId),
       sqlNull(input.taskSlug),
       input.specPath,
@@ -207,6 +210,7 @@ function parseStreamRow(row: DriverStreamRow): DriverStream {
     runtime: row.runtime,
     specPath: row.spec_path,
     status: row.status,
+    streamIndex: row.stream_index,
     touches,
     updatedAt: row.updated_at,
     ...optionalStreamFields(row),

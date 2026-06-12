@@ -34,10 +34,14 @@ CREATE TABLE driver_batches (
 );
 CREATE INDEX driver_batches_run_idx ON driver_batches (driver_run_id);
 
+-- stream_index is the stream's position within its batch's manifest order;
+-- insertion order is not otherwise recoverable (aggregate inserts share one
+-- created_at and ulids are not monotonic within a millisecond).
 CREATE TABLE driver_streams (
   id               TEXT PRIMARY KEY,
   driver_run_id    TEXT NOT NULL REFERENCES driver_runs (id) ON DELETE CASCADE,
   driver_batch_id  TEXT NOT NULL,
+  stream_index     INTEGER NOT NULL,
   task_id          TEXT,
   task_slug        TEXT,
   spec_path        TEXT NOT NULL,

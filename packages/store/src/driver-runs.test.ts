@@ -49,6 +49,7 @@ describe("driver runs (via createStore)", () => {
               runtime: "local",
               specPath: "docs/a.md",
               status: "pending",
+              streamIndex: 0,
               touches: ["src/a.ts"],
             },
           ],
@@ -143,6 +144,57 @@ describe("driver runs (via createStore)", () => {
     expect(filtered.map((run) => run.id)).toEqual([runId]);
   });
 
+  test("listDriverRuns filters by project and phase", () => {
+    const runId = seedRun();
+    store.insertDriverRun({
+      batches: [],
+      id: newDriverRunId(),
+      manifestPath: "/tmp/other-phase.md",
+      phase: "other-phase",
+      project: "ship",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "pending",
+    });
+
+    const filtered = store.listDriverRuns({ phase: "test-phase", project: "ship", repo: "ship" });
+    expect(filtered.map((run) => run.id)).toEqual([runId]);
+  });
+
+  test("hydrated streams preserve manifest order via stream_index", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const specs = ["docs/z.md", "docs/a.md", "docs/m.md"];
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: specs.map((specPath, index) => ({
+            attempts: [],
+            id: newDriverStreamId(),
+            runtime: "local",
+            specPath,
+            status: "pending",
+            streamIndex: index,
+            touches: [],
+          })),
+        },
+      ],
+      id: runId,
+      manifestPath: "/tmp/ordered.md",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "pending",
+    });
+
+    const run = store.getDriverRun(runId);
+    expect(run?.batches[0]?.streams.map((stream) => stream.specPath)).toEqual(specs);
+    expect(run?.batches[0]?.streams.map((stream) => stream.streamIndex)).toEqual([0, 1, 2]);
+  });
+
   test("0005 applies on top of 0004 database file", () => {
     store.close();
     const dir = mkdtempSync(join(tmpdir(), "ship-driver-migrate-"));
@@ -195,13 +247,14 @@ describe("driver runs (via createStore)", () => {
       expect(() => {
         db.prepare(
           `INSERT INTO driver_streams (
-             id, driver_run_id, driver_batch_id, spec_path, runtime, touches, status,
-             attempts, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             id, driver_run_id, driver_batch_id, stream_index, spec_path, runtime, touches,
+             status, attempts, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           streamB,
           runB,
           batchA,
+          0,
           "docs/x.md",
           "local",
           "[]",
@@ -212,6 +265,64 @@ describe("driver runs (via createStore)", () => {
         );
       }).toThrow();
       db.close();
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  test("updateDriverBatch rolls back the write when hydration fails", () => {
+    store.close();
+    const dir = mkdtempSync(join(tmpdir(), "ship-driver-rollback-"));
+    const dbPath = join(dir, "rollback.db");
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+
+    try {
+      const seeded = createStore({ clock: () => currentNow, dbPath });
+      seeded.insertDriverRun({
+        batches: [
+          {
+            batchIndex: 1,
+            dependsOn: [],
+            id: batchId,
+            status: "pending",
+            streams: [
+              {
+                attempts: [],
+                id: streamId,
+                runtime: "local",
+                specPath: "docs/a.md",
+                status: "pending",
+                streamIndex: 0,
+                touches: [],
+              },
+            ],
+          },
+        ],
+        id: newDriverRunId(),
+        manifestPath: "/tmp/rollback.md",
+        repo: "ship",
+        sourceJson: "---\ndriver_version: 1\n---\n",
+        status: "pending",
+      });
+      seeded.close();
+
+      const raw = new Database(dbPath);
+      raw.prepare("UPDATE driver_streams SET touches = 'not-json' WHERE id = ?").run(streamId);
+      raw.close();
+
+      const reopened = createStore({ clock: () => currentNow, dbPath });
+      expect(() => reopened.updateDriverBatch(batchId, { status: "done" })).toThrow(
+        StoreSchemaError,
+      );
+      reopened.close();
+
+      const verify = new Database(dbPath);
+      const row = verify.prepare("SELECT status FROM driver_batches WHERE id = ?").get(batchId) as {
+        status: string;
+      };
+      verify.close();
+      expect(row.status).toBe("pending");
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }

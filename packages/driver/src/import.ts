@@ -69,11 +69,11 @@ function findExistingRun(
   phase: string,
   generatedAt: string,
 ): DriverRun | undefined {
-  const candidates = store.listDriverRuns({ limit: 200, repo });
+  // Filtering by the full identity tuple keeps the candidate set to re-runs
+  // of this one phase, so the list cap can't hide an older run behind
+  // unrelated newer ones.
+  const candidates = store.listDriverRuns({ limit: 200, phase, project, repo });
   for (const run of candidates) {
-    if (run.project !== project || run.phase !== phase) {
-      continue;
-    }
     const storedGeneratedAt = extractGeneratedAt(run.sourceJson);
     if (storedGeneratedAt === generatedAt) {
       return run;
@@ -109,6 +109,7 @@ function buildBatchInput(
   completedAt?: string;
   streams: {
     id: string;
+    streamIndex: number;
     taskId?: string;
     taskSlug?: string;
     specPath: string;
@@ -124,7 +125,9 @@ function buildBatchInput(
   }[];
 } {
   const batchStatus = manifestBatchStatusToStore(batch.status, batch.completed_at);
-  const streams = batch.streams.map((stream) => buildStreamInput(stream, defaultRuntime));
+  const streams = batch.streams.map((stream, index) =>
+    buildStreamInput(stream, index, defaultRuntime),
+  );
 
   const result: {
     id: string;
@@ -148,9 +151,11 @@ function buildBatchInput(
 
 function buildStreamInput(
   stream: ManifestStream,
+  streamIndex: number,
   defaultRuntime: ManifestStream["runtime"] | undefined,
 ): {
   id: string;
+  streamIndex: number;
   taskId?: string;
   taskSlug?: string;
   specPath: string;
@@ -166,6 +171,7 @@ function buildStreamInput(
 } {
   const candidate: {
     id: string;
+    streamIndex: number;
     specPath: string;
     runtime: string;
     touches: string[];
@@ -184,6 +190,7 @@ function buildStreamInput(
     runtime: stream.runtime ?? defaultRuntime ?? "local",
     specPath: stream.spec_path,
     status: manifestStatusToStore(stream.status),
+    streamIndex,
     touches: stream.touches,
   };
   if (stream.task_id !== undefined) candidate.taskId = stream.task_id;

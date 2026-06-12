@@ -2,7 +2,7 @@
 
 import type { Store } from "@ship/store";
 
-import { createStore } from "@ship/store";
+import { createStore, newDriverRunId } from "@ship/store";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -90,6 +90,35 @@ describe("importManifest", () => {
         ?.status,
     ).toBe("failed");
     rmSync(dir, { force: true, recursive: true });
+  });
+
+  it("re-import finds its run behind 200+ newer runs for the same repo", () => {
+    const path = fixturePath("synthetic-full.driver.md");
+    const first = importManifest(store, path);
+
+    for (let index = 0; index < 201; index += 1) {
+      store.insertDriverRun({
+        batches: [],
+        id: newDriverRunId(),
+        manifestPath: `/tmp/noise-${String(index)}.md`,
+        phase: `noise-phase-${String(index)}`,
+        project: "ship",
+        repo: first.run.repo,
+        sourceJson: "---\ndriver_version: 1\n---\n",
+        status: "pending",
+      });
+    }
+
+    const second = importManifest(store, path);
+    expect(second.alreadyImported).toBe(true);
+    expect(second.run.id).toBe(first.run.id);
+  });
+
+  it("assigns streamIndex in manifest order", () => {
+    const path = fixturePath("hygiene-followups.driver.md");
+    const { run } = importManifest(store, path);
+    const firstBatch = run.batches[0];
+    expect(firstBatch?.streams.map((s) => s.streamIndex)).toEqual([0, 1, 2]);
   });
 
   it("propagates parse failures as ImportManifestError", () => {

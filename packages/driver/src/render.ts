@@ -72,12 +72,19 @@ function overlayBatchEntry(batchEntry: unknown, run: DriverRun): unknown {
     return batchEntry;
   }
 
-  return {
+  // Store rows are the only truth for progress: delete-then-set so a field
+  // the row lacks (e.g. completed_at on a non-done batch) can't survive from
+  // the stored source frontmatter.
+  const overlaid: Record<string, unknown> = {
     ...batchEntry,
-    ...(storeBatch.completedAt !== undefined ? { completed_at: storeBatch.completedAt } : {}),
     status: storeBatchStatusToManifest(storeBatch.status),
     streams: overlayStreams(batchEntry["streams"], storeBatch),
   };
+  delete overlaid["completed_at"];
+  if (storeBatch.completedAt !== undefined) {
+    overlaid["completed_at"] = storeBatch.completedAt;
+  }
+  return overlaid;
 }
 
 function overlayStreams(streamsValue: unknown, storeBatch: DriverBatch): unknown {
@@ -85,18 +92,18 @@ function overlayStreams(streamsValue: unknown, storeBatch: DriverBatch): unknown
     return streamsValue;
   }
 
-  return streamsValue.map((streamEntry) => overlayStreamEntry(streamEntry, storeBatch));
+  // Positional pairing: import inserts streams in manifest order and the
+  // store hydrates them ordered by stream_index, so source entry i IS store
+  // stream i. Matching by spec_path would conflate duplicate spec paths.
+  return streamsValue.map((streamEntry, index) =>
+    overlayStreamEntry(streamEntry, storeBatch.streams[index]),
+  );
 }
 
-function overlayStreamEntry(streamEntry: unknown, storeBatch: DriverBatch): unknown {
+function overlayStreamEntry(streamEntry: unknown, storeStream: DriverStream | undefined): unknown {
   if (!isRecord(streamEntry)) {
     return streamEntry;
   }
-  const specPath = streamEntry["spec_path"];
-  if (typeof specPath !== "string") {
-    return streamEntry;
-  }
-  const storeStream = storeBatch.streams.find((stream) => stream.specPath === specPath);
   if (storeStream === undefined) {
     return streamEntry;
   }
@@ -108,14 +115,19 @@ function overlayStreamProgress(
   streamEntry: Record<string, unknown>,
   storeStream: DriverStream,
 ): Record<string, unknown> {
-  return {
+  const overlaid: Record<string, unknown> = {
     ...streamEntry,
     status: storeStatusToManifest(storeStream.status),
-    ...(storeStream.prNumber !== undefined ? { pr_number: storeStream.prNumber } : {}),
-    ...(storeStream.mergeCommit !== undefined ? { merge_commit: storeStream.mergeCommit } : {}),
-    ...(storeStream.mergedAt !== undefined ? { merged_at: storeStream.mergedAt } : {}),
-    ...(storeStream.cycles !== undefined ? { cycles: storeStream.cycles } : {}),
   };
+  delete overlaid["pr_number"];
+  delete overlaid["merge_commit"];
+  delete overlaid["merged_at"];
+  delete overlaid["cycles"];
+  if (storeStream.prNumber !== undefined) overlaid["pr_number"] = storeStream.prNumber;
+  if (storeStream.mergeCommit !== undefined) overlaid["merge_commit"] = storeStream.mergeCommit;
+  if (storeStream.mergedAt !== undefined) overlaid["merged_at"] = storeStream.mergedAt;
+  if (storeStream.cycles !== undefined) overlaid["cycles"] = storeStream.cycles;
+  return overlaid;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

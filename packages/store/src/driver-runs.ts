@@ -19,6 +19,7 @@ const MAX_LIMIT = 200;
 /** Nested stream input for aggregate insert. */
 export interface InsertDriverStreamInput {
   id: string;
+  streamIndex: number;
   taskId?: string;
   taskSlug?: string;
   specPath: string;
@@ -62,6 +63,8 @@ export interface InsertDriverRunInput {
 /** Filter for `listDriverRuns`. */
 export interface ListDriverRunsFilter {
   repo?: string;
+  project?: string;
+  phase?: string;
   status?: DriverRunStatus[];
   limit?: number;
 }
@@ -188,12 +191,17 @@ export function createDriverRunOps(db: Db, clock: () => string): DriverRunOps {
   }
 
   function updateBatch(id: string, patch: UpdateDriverBatchInput): DriverBatch {
-    batches.update(id, patch);
-    const parent = selectBatchRunIdStmt.get(id);
-    if (!parent) {
-      throw new DriverBatchNotFoundError(id);
-    }
-    return getBatchWithStreams(parent.driver_run_id, id, batches, streams);
+    // Write + hydrate in one txn so a hydration StoreSchemaError rolls the
+    // write back, matching the sibling mutators.
+    const txn = db.transaction((): DriverBatch => {
+      batches.update(id, patch);
+      const parent = selectBatchRunIdStmt.get(id);
+      if (!parent) {
+        throw new DriverBatchNotFoundError(id);
+      }
+      return getBatchWithStreams(parent.driver_run_id, id, batches, streams);
+    });
+    return txn();
   }
 
   function updateStream(id: string, patch: UpdateDriverStreamInput): DriverStream {
@@ -301,6 +309,14 @@ function buildListSql(
   if (filter.repo !== undefined) {
     where.push("repo = ?");
     params.push(filter.repo);
+  }
+  if (filter.project !== undefined) {
+    where.push("project = ?");
+    params.push(filter.project);
+  }
+  if (filter.phase !== undefined) {
+    where.push("phase = ?");
+    params.push(filter.phase);
   }
   if (filter.status !== undefined && filter.status.length > 0) {
     const placeholders = filter.status.map(() => "?").join(", ");
