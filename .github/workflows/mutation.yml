@@ -24,8 +24,10 @@ jobs:
           - core
           - cli
           - cursor-runner
+          - driver
           - mcp
           - mcp-server
+          - receipt
           - store
           - workflow
     steps:
