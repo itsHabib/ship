@@ -1811,7 +1811,11 @@ describe("ShipService.resumeOrphanedRuns", () => {
     store.close();
   });
 
-  test("attach failure leaves row running and logs error", async () => {
+  test("agent-gone on a stale row terminalizes the run", async () => {
+    // A not-found agent can never produce a result; leaving the row
+    // running would strand it until a manual cancelRun. The staleness
+    // guard already keeps live sibling runs out of the attach path, so
+    // not-found here is proof of a dead run, not a race.
     const fs = createMemoryShipFs();
     await fs.mkdir(RUNS_DIR, { recursive: true });
     const store = createStore({
@@ -1855,9 +1859,62 @@ describe("ShipService.resumeOrphanedRuns", () => {
     await service.drainBackground();
     await service.resumeReady();
     const row = await service.getRun("wf_00000000000000000000000002");
-    expect(row?.status).toBe("running");
-    expect(store.getCursorRun("cr_00000000000000000000000002")?.status).toBe("running");
+    expect(row?.status).toBe("failed");
+    expect(row?.phases[0]?.errorMessage).toMatch(/no longer reachable/);
     expect(cloudCursor.attachCalls).toHaveLength(1);
+    store.close();
+  });
+
+  test("transient attach failure leaves row running and logs error", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    // Errors the classification can't prove terminal (auth, network) must
+    // not touch the row — a later sweep retries once the cause clears.
+    const flakyCloud: typeof cloudCursor = Object.assign(Object.create(cloudCursor) as never, {
+      attach: () => Promise.reject(new Error("transient: socket hang up")),
+    });
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        roomCursor: null as never,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000010",
+        phaseId: "ph_00000000000000000000000010",
+        workflowRunId: "wf_00000000000000000000000010",
+      },
+    );
+
+    const service = createShipService({
+      clock: deterministicClock("2026-05-09T00:06:00.000Z", 1000),
+      config: {
+        cloudCursor: flakyCloud,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    const row = await service.getRun("wf_00000000000000000000000010");
+    expect(row?.status).toBe("running");
+    expect(store.getCursorRun("cr_00000000000000000000000010")?.status).toBe("running");
     store.close();
   });
 

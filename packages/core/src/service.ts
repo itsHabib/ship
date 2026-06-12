@@ -84,6 +84,7 @@ import {
   ArtifactTooLargeError,
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
+  CursorRunStartTimedOutError,
   MissingRepoError,
   RoomRunnerNotConfiguredError,
   WorkdirNotFoundError,
@@ -2177,7 +2178,7 @@ async function runResumeAttach(
       workflowRunId: target.row.workflowRunId,
     });
   } catch (err) {
-    handleResumeAttachError(target, err);
+    await handleResumeAttachError(ctx, target, err);
   }
 }
 
@@ -2192,12 +2193,35 @@ function resumeElapsedMs(ctx: ResumeContext, cursorRunId: string): number {
   return elapsed;
 }
 
-// Attach failure ≠ run failure: the row stays `running` so a later sweep
-// can retry once transient causes clear. Permanent causes (revoked key,
-// dead agent) leave the row stuck `running` until an explicit `cancelRun`
-// — only the duration cap, a terminal SDK result, or cancel may
-// terminalize a run this process did not start.
-function handleResumeAttachError(target: ResumeAttachContext, err: unknown): void {
+// Attach errors split by what they prove about the run. A duration-cap
+// expiry is this process's own policy verdict on the attempt it started,
+// and a not-found agent means the cloud side can never produce a result
+// — both terminalize. Anything else (auth, network) may be transient or
+// environmental: the row stays `running` for a later sweep to retry;
+// permanent environmental causes require an explicit `cancelRun`.
+async function handleResumeAttachError(
+  ctx: ResumeContext,
+  target: ResumeAttachContext,
+  err: unknown,
+): Promise<void> {
+  if (err instanceof CursorRunStartTimedOutError) {
+    await finalizeFailure({
+      ctx: target.shipCtx,
+      cursorRunId: target.row.id,
+      err,
+      paths: target.paths,
+      phaseId: target.phaseId,
+      worktree: target.worktree,
+      workflowRunId: target.row.workflowRunId,
+    });
+    return;
+  }
+  if (err instanceof CursorAgentNotFoundError) {
+    await finalizeResumeFailure(ctx, target.row, target.phaseId, target.worktree, {
+      message: `cloud agent ${target.row.agentId} no longer reachable on resume`,
+    });
+    return;
+  }
   const message = err instanceof Error ? err.message : String(err);
   target.shipCtx.logger.error(
     { err: message, workflowRunId: target.row.workflowRunId },

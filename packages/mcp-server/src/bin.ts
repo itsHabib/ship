@@ -72,6 +72,9 @@ async function main(): Promise<void> {
   }
   const shipFactory = createDefaultShipService(opts);
   const driverFactory = createMcpDriverServiceFactory(opts, shipFactory);
+  // The factory is lazy and tool registration never invokes it — construct
+  // eagerly so the boot orphan sweep actually runs on an idle server.
+  shipFactory();
   startOrphanResweep(shipFactory, logger);
   const server = buildServer(shipFactory, driverFactory);
   const transport = new StdioServerTransport();
