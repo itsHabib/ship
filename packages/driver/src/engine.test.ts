@@ -360,6 +360,69 @@ batches:
     store.close();
   });
 
+  test("dispatch-ambiguity pauses tick with awaiting_judgment", async () => {
+    const store = createStore({ dbPath: ":memory:" });
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    const docPath = resolveDocPath(repoRoot, "docs/tasks/a.md");
+
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [{ dispatchedAt: "2026-06-12T00:00:00.000Z", docPath, terminal: false }],
+              branch: "feat-a",
+              id: streamId,
+              runtime: "local",
+              specPath: "docs/tasks/a.md",
+              status: "dispatching",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath,
+      repo: "ship",
+      sourceJson: minimalSourceJson(),
+      status: "running",
+    });
+
+    const runs = Array.from({ length: 200 }, (_, i) => ({
+      baseRef: "main",
+      createdAt: "2026-06-12T00:00:01.000Z",
+      docPath,
+      id: `wf_dup_${String(i)}`,
+      phases: [],
+      policy: { agentTimeoutMs: 1, baseRef: "main", maxRunDurationMs: 1 },
+      repo: "ship",
+      status: "running" as const,
+      updatedAt: "2026-06-12T00:00:01.000Z",
+      worktree: {
+        baseRef: "main",
+        branch: "feat-a",
+        name: "feat-a",
+        path: "/wt",
+        repo: "ship",
+      },
+    }));
+    const { port } = createFakeShipPort([]);
+    port.listRuns = () => Promise.resolve(runs);
+
+    const driver = createDriverService({ ship: port, store });
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("awaiting_judgment");
+    expect(result.awaiting.some((a) => a.kind === "dispatch-ambiguity")).toBe(true);
+    store.close();
+  });
+
   test("pre-flight fails on missing worktree", async () => {
     rmSync(worktreePath, { force: true, recursive: true });
     const store = createStore({ dbPath: ":memory:" });

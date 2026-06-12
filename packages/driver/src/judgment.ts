@@ -159,7 +159,7 @@ function filterRecoveryCandidates(
   return runs.filter((run) => {
     if (run.createdAt < dispatchTs) return false;
     if (run.docPath !== docPath) return false;
-    if (stream.runtime === "local" && stream.branch !== undefined) {
+    if ((stream.runtime === "local" || stream.runtime === "rooms") && stream.branch !== undefined) {
       return run.worktree.branch === stream.branch;
     }
     return true;

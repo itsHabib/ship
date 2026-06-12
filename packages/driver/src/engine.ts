@@ -266,7 +266,7 @@ function collectStreamPreflightErrors(
       `cloud stream ${stream.id} requires repo_url in manifest — add repo_url to the driver frontmatter`,
     );
   }
-  if (stream.runtime !== "local") return;
+  if (stream.runtime !== "local" && stream.runtime !== "rooms") return;
   if (stream.branch === undefined) {
     throw new PreconditionError(`local stream ${stream.id} requires branch_name in manifest`);
   }
@@ -340,11 +340,13 @@ async function dispatchBatchStreams(
   if (ctx.opts.batch !== undefined && batch.batchIndex !== ctx.opts.batch) return localInFlight;
 
   let local = localInFlight;
+  let cloud = cloudInFlight;
   for (const stream of batch.streams) {
     if (stream.status !== "pending") continue;
-    if (!canDispatchStream(stream, local, cloudInFlight, ctx.opts)) continue;
+    if (!canDispatchStream(stream, local, cloud, ctx.opts)) continue;
     await dispatchStream(ctx, stream);
     if (stream.runtime === "local" || stream.runtime === "rooms") local += 1;
+    if (stream.runtime === "cloud") cloud += 1;
   }
   return local;
 }
@@ -522,11 +524,14 @@ function evaluateExit(
   ambiguities: DispatchAmbiguity[],
   opts: ResolvedRunOpts,
 ): Pick<DriverTickResult, "status"> | undefined {
-  const hasAmbiguity = ambiguities.length > 0;
+  if (ambiguities.length > 0) {
+    return { status: "awaiting_judgment" };
+  }
+
   const hasFailed = allStreams(run).some((s) => s.status === "failed");
   const inFlight = hasInFlightStreams(run);
 
-  if ((hasFailed || hasAmbiguity) && !inFlight) {
+  if (hasFailed && !inFlight) {
     return { status: "awaiting_judgment" };
   }
   if (everyStreamTerminalDoneOrSkipped(run)) return { status: "done" };
