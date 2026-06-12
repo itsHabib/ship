@@ -665,7 +665,7 @@ describe("driver MCP schemas", () => {
     expect(driverTickResultSchema.safeParse(result).success).toBe(true);
   });
 
-  test("driverDecideInputSchema accepts retry/skip/adopt decisions", () => {
+  test("driverDecideInputSchema accepts retry/skip/abort/adopt decisions", () => {
     expect(
       driverDecideInputSchema.safeParse({
         driverRunId: DRV_ID,
@@ -678,6 +678,13 @@ describe("driver MCP schemas", () => {
         driverRunId: DRV_ID,
         streamId: DS_ID,
         decision: { kind: "skip", reason: "n/a" },
+      }).success,
+    ).toBe(true);
+    expect(
+      driverDecideInputSchema.safeParse({
+        driverRunId: DRV_ID,
+        streamId: DS_ID,
+        decision: { kind: "abort", reason: "n/a" },
       }).success,
     ).toBe(true);
     expect(

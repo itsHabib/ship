@@ -112,6 +112,40 @@ describe("ship driver", () => {
     expect(stderr.join("")).toMatch(/invalid --batch: 0/);
   });
 
+  test("mark-merged rejects --pr with trailing junk", async () => {
+    const code = await runDriver([
+      "driver",
+      "mark-merged",
+      "drv_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "--stream",
+      "ds_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "--pr",
+      "12oops",
+      "--sha",
+      "abc1234",
+    ]);
+    expect(code).toBe(1);
+    expect(stderr.join("")).toMatch(/invalid --pr: 12oops/);
+  });
+
+  test("mark-merged rejects a fractional --cycles", async () => {
+    const code = await runDriver([
+      "driver",
+      "mark-merged",
+      "drv_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "--stream",
+      "ds_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "--pr",
+      "12",
+      "--sha",
+      "abc1234",
+      "--cycles",
+      "3.5",
+    ]);
+    expect(code).toBe(1);
+    expect(stderr.join("")).toMatch(/invalid --cycles: 3.5/);
+  });
+
   test("unknown driver run id exits 1", async () => {
     expect(await runDriver(["driver", "status", "drv_missing"])).toBe(1);
     expect(stderr.join("")).toMatch(/not found/);
@@ -171,6 +205,17 @@ batches:
 ---
 `,
     );
+    stdout.length = 0;
+    await runDriver(["driver", "status", imported.driverRunId]);
+    expect(stdout.join("")).toContain("manifest modified since import");
+  });
+
+  test("status warns when manifest is edited into something unparseable", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    await runDriver(["driver", "import", layout.manifestPath]);
+    const imported = JSON.parse(stdout.join("").trim()) as { driverRunId: string };
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(layout.manifestPath, "---\nbatches: [unclosed\n---\n");
     stdout.length = 0;
     await runDriver(["driver", "status", imported.driverRunId]);
     expect(stdout.join("")).toContain("manifest modified since import");

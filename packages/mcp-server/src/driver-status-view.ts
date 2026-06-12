@@ -41,7 +41,8 @@ function detectManifestModified(run: DriverRun): boolean {
   }
   const onDisk = parseManifest(onDiskText);
   if (!onDisk.ok) {
-    return false;
+    // A readable manifest that no longer parses was necessarily edited.
+    return true;
   }
   return stored.rawFrontmatter !== onDisk.rawFrontmatter;
 }

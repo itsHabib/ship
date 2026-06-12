@@ -7,6 +7,7 @@ import type { Command } from "commander";
 
 import { parsePruneDuration, PruneDurationError } from "@ship/core";
 import { DriverRunNotFoundEngineError } from "@ship/driver";
+import { DRIVER_RUN_ID_PATTERN } from "@ship/mcp";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 
@@ -38,10 +39,10 @@ interface DecideOpts {
 
 interface MarkMergedOpts {
   stream: string;
-  pr: number;
+  pr: string;
   sha: string;
   mergedAt?: string;
-  cycles?: number;
+  cycles?: string;
 }
 
 interface RenderOpts {
@@ -83,7 +84,7 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
         );
         const batch =
           rawOpts.batch !== undefined
-            ? parsePositiveIntOption(rawOpts.batch, "--batch")
+            ? parseIntOptionAtLeast(rawOpts.batch, "--batch", 1)
             : undefined;
         const result = await factory().run(driverRunRef, {
           ...(batch !== undefined ? { batch } : {}),
@@ -114,10 +115,10 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     .command("mark-merged <driverRunId>")
     .description("record merge facts for a landed stream")
     .requiredOption("--stream <ds_id>", "driver stream id")
-    .requiredOption("--pr <n>", "merged PR number", parseIntOption)
+    .requiredOption("--pr <n>", "merged PR number")
     .requiredOption("--sha <sha>", "merge commit sha")
     .option("--merged-at <iso>", "merge timestamp (ISO-8601)")
-    .option("--cycles <n>", "review cycles completed", parseIntOption)
+    .option("--cycles <n>", "review cycles completed")
     .action((driverRunId: string, rawOpts: MarkMergedOpts) => {
       runDriverAction(() => {
         const facts = buildMergeFacts(rawOpts);
@@ -195,28 +196,22 @@ function handleDriverError(err: unknown): never {
 }
 
 function resolveDriverRunRef(ref: string): DriverRunRef {
-  if (ref.startsWith("drv_")) {
+  // Full-id match, not a prefix check — a manifest path can plausibly
+  // start with `drv_` (e.g. a dir named after a driver run).
+  if (DRIVER_RUN_ID_PATTERN.test(ref)) {
     return { driverRunId: ref };
   }
   return { manifestPath: resolvePath(ref) };
 }
 
-function parseIntOption(raw: string): number {
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n)) {
-    throw new InvalidArgumentError(`invalid integer: ${raw}`);
-  }
-  return n;
-}
-
 /**
- * Action-time positive-int parse (`Number`, not `parseInt`, so `10abc`
- * rejects instead of coercing). Batch indices are 1-based in the manifest
- * format, matching the MCP schema's `.positive()`.
+ * Action-time int parse (`Number`, not `parseInt`, so `10abc` rejects
+ * instead of coercing) with a lower bound: batch indices and PR numbers
+ * are 1-based, review-cycle counts may be zero.
  */
-function parsePositiveIntOption(raw: string, flag: string): number {
+function parseIntOptionAtLeast(raw: string, flag: string, min: number): number {
   const n = Number(raw);
-  if (!Number.isInteger(n) || n <= 0) {
+  if (!Number.isInteger(n) || n < min) {
     throw new InvalidArgumentError(`invalid ${flag}: ${raw}`);
   }
   return n;
@@ -279,9 +274,11 @@ function parseDecision(kind: string, opts: DecideOpts): Decision {
 function buildMergeFacts(opts: MarkMergedOpts): MergeFacts {
   const facts: MergeFacts = {
     mergeCommit: opts.sha,
-    prNumber: opts.pr,
+    prNumber: parseIntOptionAtLeast(opts.pr, "--pr", 1),
   };
   if (opts.mergedAt !== undefined) facts.mergedAt = opts.mergedAt;
-  if (opts.cycles !== undefined) facts.cycles = opts.cycles;
+  if (opts.cycles !== undefined) {
+    facts.cycles = parseIntOptionAtLeast(opts.cycles, "--cycles", 0);
+  }
   return facts;
 }

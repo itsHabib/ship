@@ -26,11 +26,14 @@ async function main(): Promise<void> {
   const dbPath = resolveDbPath();
   const runsDir = resolveRunsDir();
   const useFake = process.env["SHIP_TEST_FAKE_CURSOR"] === "1";
+  // One fake serves both runtimes — cloud-runtime driver streams must
+  // not construct a real CloudCursorRunner in fake mode.
+  const fakeCursor = useFake ? createFakeCursorRunner() : undefined;
   const serviceOpts = {
     dbPath,
     runsDir,
     logger,
-    ...(useFake ? { cursor: createFakeCursorRunner() } : {}),
+    ...(fakeCursor !== undefined ? { cursor: fakeCursor, cloudCursor: fakeCursor } : {}),
   };
   const factory = createCliService(serviceOpts);
   const driverFactory = createCliDriverService(serviceOpts, factory);

@@ -150,6 +150,19 @@ batches:
     expect(text).toMatch(/not found/i);
   });
 
+  test("driver_status flags manifestModified when manifest is edited into something unparseable", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const imported = h.driver.importManifest(layout.manifestPath);
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(layout.manifestPath, "---\nbatches: [unclosed\n---\n");
+    const raw = await h.client.callTool({
+      name: "driver_status",
+      arguments: { driverRunId: imported.run.id },
+    });
+    const status = parseToolJson(raw) as { manifestModified?: true };
+    expect(status.manifestModified).toBe(true);
+  });
+
   test("driver_status omits manifestModified when manifest file is deleted", async () => {
     const layout = writeOneStreamManifest(h.repoRoot);
     const imported = h.driver.importManifest(layout.manifestPath);

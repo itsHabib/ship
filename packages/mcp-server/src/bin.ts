@@ -61,7 +61,9 @@ async function main(): Promise<void> {
         result: { status: "succeeded", durationMs: 0, branches: [] },
       },
     });
-    Object.assign(opts, { cursor: fake });
+    // One fake serves both runtimes — cloud-runtime dispatches must
+    // not construct a real CloudCursorRunner in fake mode.
+    Object.assign(opts, { cursor: fake, cloudCursor: fake });
   }
   const shipFactory = createDefaultShipService(opts);
   const driverFactory = createMcpDriverServiceFactory(opts, shipFactory);

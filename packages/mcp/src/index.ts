@@ -8,6 +8,7 @@ export {
   cloudRunSpecSchema,
   downloadArtifactInputSchema,
   downloadArtifactOutputSchema,
+  DRIVER_RUN_ID_PATTERN,
   driverDecideInputSchema,
   driverDecideOutputSchema,
   driverRunInputSchema,

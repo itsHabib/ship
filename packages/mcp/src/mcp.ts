@@ -367,7 +367,8 @@ export type DownloadArtifactOutput = z.infer<typeof downloadArtifactOutputSchema
 // driver_* tools (work-driver engine surface)
 // =====================================================================
 
-const DRIVER_RUN_ID_PATTERN = /^drv_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+/** Exported so the CLI's run-ref disambiguation matches the schema exactly. */
+export const DRIVER_RUN_ID_PATTERN = /^drv_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const DRIVER_STREAM_ID_PATTERN = /^ds_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const driverRunIdSchema = z.string().regex(DRIVER_RUN_ID_PATTERN);
 const driverStreamIdSchema = z.string().regex(DRIVER_STREAM_ID_PATTERN);
