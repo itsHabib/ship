@@ -151,6 +151,18 @@ describe("ship driver", () => {
     expect(stderr.join("")).toMatch(/not found/);
   });
 
+  test("import of a missing manifest path exits 1", async () => {
+    const code = await runDriver(["driver", "import", "does-not-exist.driver.md"]);
+    expect(code).toBe(1);
+    expect(stderr.join("")).toMatch(/cannot read manifest/);
+  });
+
+  test("render of an unknown driver run id exits 1", async () => {
+    const code = await runDriver(["driver", "render", "drv_01ARZ3NDEKTSV4RRFFQ69G5FAV"]);
+    expect(code).toBe(1);
+    expect(stderr.join("")).toMatch(/driver run not found/);
+  });
+
   test("decide skip without --reason exits 1", async () => {
     const layout = writeOneStreamManifest(h.repoRoot);
     await runDriver(["driver", "import", layout.manifestPath]);

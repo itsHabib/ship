@@ -141,6 +141,24 @@ batches:
     expect(batch2.every((s) => s.status === "pending")).toBe(true);
   }, 15_000);
 
+  test("driver_run rejects a relative manifestPath", async () => {
+    const raw = await h.client.callTool({
+      name: "driver_run",
+      arguments: { manifestPath: "docs/driver.md" },
+    });
+    const { text } = expectToolError(raw);
+    expect(text).toMatch(/manifestPath must be absolute/);
+  });
+
+  test("driver_run maps a missing manifest file to invalid params", async () => {
+    const raw = await h.client.callTool({
+      name: "driver_run",
+      arguments: { manifestPath: join(h.repoRoot, "does-not-exist.driver.md") },
+    });
+    const { text } = expectToolError(raw);
+    expect(text).toMatch(/cannot read manifest/);
+  });
+
   test("driver_status returns not found for unknown driverRunId", async () => {
     const raw = await h.client.callTool({
       name: "driver_status",

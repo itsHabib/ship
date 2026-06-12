@@ -6,7 +6,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { DriverRunRef } from "@ship/driver";
 import type { DriverRunInput } from "@ship/mcp";
 
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { driverRunInputSchema, driverTickResultSchema } from "@ship/mcp";
+import { isAbsolute } from "node:path";
 
 import type { DriverServiceFactory } from "../driver-service.js";
 
@@ -42,6 +44,16 @@ export function registerDriverRunTool(server: McpServer, factory: DriverServiceF
 
 function toDriverRunRef(input: DriverRunInput): DriverRunRef {
   if (input.driverRunId !== undefined) return { driverRunId: input.driverRunId };
-  if (input.manifestPath !== undefined) return { manifestPath: input.manifestPath };
+  if (input.manifestPath !== undefined) {
+    // The MCP server's cwd is not meaningful to callers — a relative
+    // path would resolve against wherever the host launched the server.
+    if (!isAbsolute(input.manifestPath)) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `manifestPath must be absolute: ${input.manifestPath}`,
+      );
+    }
+    return { manifestPath: input.manifestPath };
+  }
   throw new Error("unreachable: schema requires exactly one of driverRunId or manifestPath");
 }

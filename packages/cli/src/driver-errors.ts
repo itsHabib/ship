@@ -13,15 +13,19 @@ import {
   PreconditionError,
   TickLiveError,
 } from "@ship/driver";
+import { DriverRunNotFoundError } from "@ship/store";
 
 import { InvalidArgumentError } from "./errors.js";
 
+// `@ship/driver` engine errors plus the store's row-not-found, which
+// store-direct verbs (`render`) surface without an engine wrapper.
 const DRIVER_ENGINE_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   TickLiveError,
   PreconditionError,
   DecideError,
   CancelError,
   DriverRunNotFoundEngineError,
+  DriverRunNotFoundError,
   ImportManifestError,
 ];
 
