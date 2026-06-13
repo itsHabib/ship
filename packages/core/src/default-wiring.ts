@@ -88,6 +88,11 @@ export interface DefaultShipServiceOpts {
    * `createLogger({ stream: process.stderr })` explicitly.
    */
   readonly logger?: Logger;
+  /**
+   * When `true`, the first `ShipService` construction runs the orphan
+   * resume sweep (mcp-server boot crash recovery). Default `false`.
+   */
+  readonly resumeOrphans?: boolean;
 }
 
 // Memoizing factory shape. Returns the same `ShipService` across calls.
@@ -167,6 +172,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
       activeRuns: infra.activeRuns,
       docSource: createRemoteDocSource(),
       logger,
+      ...(opts.resumeOrphans === true ? { resumeOrphans: true } : {}),
       config: {
         runsDir: opts.runsDir,
         defaultModel: resolveConfiguredDefaultModel(opts),

@@ -75,6 +75,7 @@ import {
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
 import { runWithDurationCap } from "./cursor-runs/duration-cap.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
+import { selectStaleOrphanResumeCandidates } from "./cursor-runs/orphan-resume.js";
 import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
 import {
   ArtifactGoneError,
@@ -83,6 +84,7 @@ import {
   ArtifactTooLargeError,
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
+  CursorRunStartTimedOutError,
   MissingRepoError,
   RoomRunnerNotConfiguredError,
   WorkdirNotFoundError,
@@ -130,6 +132,12 @@ export interface ShipServiceDeps {
   readonly docSource?: DocSource;
   /** Structured diagnostics logger; defaults to stderr JSON when omitted. */
   readonly logger?: Logger;
+  /**
+   * When `true`, construction eagerly runs `resumeOrphanedRuns` (mcp-server
+   * boot crash recovery). Default `false` — CLI read paths must not adopt
+   * sibling-process live runs.
+   */
+  readonly resumeOrphans?: boolean;
 }
 
 // Registry of in-flight runs. Each entry carries an `AbortController`
@@ -462,9 +470,12 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     store,
   };
 
-  const initialResume = resumeOrphanedRunsTracked(resumeCtx).catch((err: unknown) => {
-    logResumeFailure(logger, err);
-  });
+  const resumeOrphans = deps.resumeOrphans === true;
+  const initialResume = resumeOrphans
+    ? resumeOrphanedRunsTracked(resumeCtx).catch((err: unknown) => {
+        logResumeFailure(logger, err);
+      })
+    : Promise.resolve();
 
   const service: ShipService = {
     ship: (input) => runShip(makeCtx(input)),
@@ -1946,7 +1957,63 @@ async function resumeOrphanedRuns(ctx: ResumeContext): Promise<void> {
   const rows = ctx.store.listResumableCloudCursorRuns();
   if (rows.length === 0) return;
 
-  await Promise.allSettled(rows.map((row) => resumeOneOrphanedCloudRun(ctx, row)));
+  // The staleness guard applies to attach-resume only: a fresh heartbeat
+  // means a sibling process is streaming that run. Rows whose parent
+  // workflow is already terminal carry no such risk — reconciling them
+  // (resumeOneOrphanedCloudRun closes the row, no attach) is safe at any
+  // freshness, and gating them would strand e.g. a cancel that bumped
+  // `updated_at` right before this process booted.
+  const nowMs = Date.parse(ctx.clock());
+  const eligible = collectOrphanResumeRows(ctx, rows);
+  const staleIds = new Set(
+    selectStaleOrphanResumeCandidates(
+      eligible.live.map(({ row, updatedAt }) => ({ workflowRunId: row.workflowRunId, updatedAt })),
+      nowMs,
+    ).map((candidate) => candidate.workflowRunId),
+  );
+  for (const { row, updatedAt } of eligible.live) {
+    if (staleIds.has(row.workflowRunId)) continue;
+    ctx.logger.debug(
+      { updatedAt, workflowRunId: row.workflowRunId },
+      "skipping fresh orphan resume candidate",
+    );
+  }
+
+  const resumable = [
+    ...eligible.terminalParent,
+    ...eligible.live.filter(({ row }) => staleIds.has(row.workflowRunId)).map(({ row }) => row),
+  ];
+  await Promise.allSettled(resumable.map((row) => resumeOneOrphanedCloudRun(ctx, row)));
+}
+
+interface OrphanResumeRows {
+  /** Parent workflow still pending/running — staleness-guarded attach candidates. */
+  live: { row: ResumableCloudCursorRun; updatedAt: string }[];
+  /** Parent workflow already terminal — reconcile-only, exempt from staleness. */
+  terminalParent: ResumableCloudCursorRun[];
+}
+
+function collectOrphanResumeRows(
+  ctx: ResumeContext,
+  rows: readonly ResumableCloudCursorRun[],
+): OrphanResumeRows {
+  const out: OrphanResumeRows = { live: [], terminalParent: [] };
+  for (const row of rows) {
+    const workflowRun = ctx.store.getRun(row.workflowRunId);
+    if (workflowRun === null) {
+      ctx.logger.warn(
+        { cursorRunId: row.id, workflowRunId: row.workflowRunId },
+        "orphan cursor run has no workflow row — skipping",
+      );
+      continue;
+    }
+    if (workflowRun.status !== "pending" && workflowRun.status !== "running") {
+      out.terminalParent.push(row);
+      continue;
+    }
+    out.live.push({ row, updatedAt: workflowRun.updatedAt });
+  }
+  return out;
 }
 
 function resumeOrphanedRunsTracked(ctx: ResumeContext): Promise<void> {
@@ -2126,26 +2193,40 @@ function resumeElapsedMs(ctx: ResumeContext, cursorRunId: string): number {
   return elapsed;
 }
 
+// Attach errors split by what they prove about the run. A duration-cap
+// expiry is this process's own policy verdict on the attempt it started,
+// and a not-found agent means the cloud side can never produce a result
+// — both terminalize. Anything else (auth, network) may be transient or
+// environmental: the row stays `running` for a later sweep to retry;
+// permanent environmental causes require an explicit `cancelRun`.
 async function handleResumeAttachError(
   ctx: ResumeContext,
   target: ResumeAttachContext,
   err: unknown,
 ): Promise<void> {
+  if (err instanceof CursorRunStartTimedOutError) {
+    await finalizeFailure({
+      ctx: target.shipCtx,
+      cursorRunId: target.row.id,
+      err,
+      paths: target.paths,
+      phaseId: target.phaseId,
+      worktree: target.worktree,
+      workflowRunId: target.row.workflowRunId,
+    });
+    return;
+  }
   if (err instanceof CursorAgentNotFoundError) {
     await finalizeResumeFailure(ctx, target.row, target.phaseId, target.worktree, {
       message: `cloud agent ${target.row.agentId} no longer reachable on resume`,
     });
     return;
   }
-  await finalizeFailure({
-    ctx: target.shipCtx,
-    cursorRunId: target.row.id,
-    err,
-    paths: target.paths,
-    phaseId: target.phaseId,
-    worktree: target.worktree,
-    workflowRunId: target.row.workflowRunId,
-  });
+  const message = err instanceof Error ? err.message : String(err);
+  target.shipCtx.logger.error(
+    { err: message, workflowRunId: target.row.workflowRunId },
+    "orphan resume attach failed — row left running",
+  );
 }
 
 function resumeCtxAsShipContext(ctx: ResumeContext, workflowRunId: string): ShipContext {

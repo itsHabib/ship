@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { DocSource } from "./doc-source/doc-source.js";
 
+import { ORPHAN_RESUME_STALENESS_MS } from "./cursor-runs/orphan-resume.js";
 import {
   CloudRunnerNotConfiguredError,
   DocNotFoundError,
@@ -1782,7 +1783,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     );
 
     const service = createShipService({
-      clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
+      clock: deterministicClock("2026-05-09T00:06:00.000Z", 1000),
       config: {
         cloudCursor,
         cursor: new FakeCursorRunner(),
@@ -1790,6 +1791,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
         runsDir: RUNS_DIR,
       },
       fs,
+      resumeOrphans: true,
       store,
       ids: deterministicIds(),
     });
@@ -1809,7 +1811,11 @@ describe("ShipService.resumeOrphanedRuns", () => {
     store.close();
   });
 
-  test("CursorAgentNotFoundError finalizes row as failed with resume message", async () => {
+  test("agent-gone on a stale row terminalizes the run", async () => {
+    // A not-found agent can never produce a result; leaving the row
+    // running would strand it until a manual cancelRun. The staleness
+    // guard already keeps live sibling runs out of the attach path, so
+    // not-found here is proof of a dead run, not a race.
     const fs = createMemoryShipFs();
     await fs.mkdir(RUNS_DIR, { recursive: true });
     const store = createStore({
@@ -1837,7 +1843,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     );
 
     const service = createShipService({
-      clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
+      clock: deterministicClock("2026-05-09T00:06:00.000Z", 1000),
       config: {
         cloudCursor,
         cursor: new FakeCursorRunner(),
@@ -1845,19 +1851,70 @@ describe("ShipService.resumeOrphanedRuns", () => {
         runsDir: RUNS_DIR,
       },
       fs,
+      resumeOrphans: true,
       store,
       ids: deterministicIds(),
     });
 
     await service.drainBackground();
     await service.resumeReady();
-    const row = await waitForRunTerminal(service, "wf_00000000000000000000000002");
-    expect(row.status).toBe("failed");
-    expect(row.phases[0]?.errorMessage).toMatch(/^sdk-throw; /);
-    expect(row.phases[0]?.errorMessage).toContain(
-      "cloud agent bc-resume-0001 no longer reachable on resume",
+    const row = await service.getRun("wf_00000000000000000000000002");
+    expect(row?.status).toBe("failed");
+    expect(row?.phases[0]?.errorMessage).toMatch(/no longer reachable/);
+    expect(cloudCursor.attachCalls).toHaveLength(1);
+    store.close();
+  });
+
+  test("transient attach failure leaves row running and logs error", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    // Errors the classification can't prove terminal (auth, network) must
+    // not touch the row — a later sweep retries once the cause clears.
+    const flakyCloud: typeof cloudCursor = Object.assign(Object.create(cloudCursor) as never, {
+      attach: () => Promise.reject(new Error("transient: socket hang up")),
+    });
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        roomCursor: null as never,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000010",
+        phaseId: "ph_00000000000000000000000010",
+        workflowRunId: "wf_00000000000000000000000010",
+      },
     );
-    expect(store.getCursorRun("cr_00000000000000000000000002")?.status).toBe("failed");
+
+    const service = createShipService({
+      clock: deterministicClock("2026-05-09T00:06:00.000Z", 1000),
+      config: {
+        cloudCursor: flakyCloud,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    const row = await service.getRun("wf_00000000000000000000000010");
+    expect(row?.status).toBe("running");
+    expect(store.getCursorRun("cr_00000000000000000000000010")?.status).toBe("running");
     store.close();
   });
 
@@ -1910,7 +1967,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     store.updateWorkflowRunStatus("wf_00000000000000000000000004", "cancelled");
 
     const service = createShipService({
-      clock: deterministicClock("2026-05-09T00:00:00.000Z", 1000),
+      clock: deterministicClock("2026-05-09T00:06:00.000Z", 1000),
       config: {
         cloudCursor,
         cursor: new FakeCursorRunner(),
@@ -1918,6 +1975,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
         runsDir: RUNS_DIR,
       },
       fs,
+      resumeOrphans: true,
       store,
       ids: deterministicIds(),
     });
@@ -1934,6 +1992,272 @@ describe("ShipService.resumeOrphanedRuns", () => {
     expect(cursorRow?.durationMs).toBeDefined();
     expect(cursorRow?.durationMs ?? -1).toBeGreaterThanOrEqual(0);
 
+    store.close();
+  });
+
+  test("construction without resumeOrphans does not attach sibling-process live runs", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-06-12T12:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    const workflowRunId = "wf_00000000000000000000000005";
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        roomCursor: null as never,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000005",
+        phaseId: "ph_00000000000000000000000005",
+        workflowRunId,
+      },
+    );
+
+    const readOnlyService = createShipService({
+      clock: deterministicClock("2026-06-12T12:00:00.000Z", 1000),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await readOnlyService.drainBackground();
+    await readOnlyService.resumeReady();
+    expect(cloudCursor.attachCalls).toHaveLength(0);
+    expect((await readOnlyService.getRun(workflowRunId))?.status).toBe("running");
+    store.close();
+  });
+
+  test("resumeOrphans with fresh updatedAt skips attach for sibling live runs", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-06-12T12:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    const workflowRunId = "wf_00000000000000000000000006";
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        roomCursor: null as never,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000006",
+        phaseId: "ph_00000000000000000000000006",
+        workflowRunId,
+      },
+    );
+
+    const mcpBootService = createShipService({
+      clock: deterministicClock("2026-06-12T12:00:00.000Z", 1000),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await mcpBootService.drainBackground();
+    await mcpBootService.resumeReady();
+    expect(cloudCursor.attachCalls).toHaveLength(0);
+    expect((await mcpBootService.getRun(workflowRunId))?.status).toBe("running");
+    store.close();
+  });
+
+  test("two services on one db: stale row resumes when resumeOrphans is true", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-06-12T12:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    const workflowRunId = "wf_00000000000000000000000007";
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        roomCursor: null as never,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000007",
+        phaseId: "ph_00000000000000000000000007",
+        workflowRunId,
+      },
+    );
+
+    cloudCursor.enqueueAttach({
+      events: [],
+      result: { status: "succeeded", durationMs: 100, branches: [], summary: "resumed ok" },
+    });
+
+    const resumedService = createShipService({
+      clock: deterministicClock("2026-06-12T12:06:00.000Z", 1000),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await resumedService.drainBackground();
+    await resumedService.resumeReady();
+    const row = await waitForRunTerminal(resumedService, workflowRunId);
+    expect(row.status).toBe("succeeded");
+    expect(cloudCursor.attachCalls).toHaveLength(1);
+    store.close();
+  });
+
+  test("fresh-at-boot row is adopted by a later resumeOrphanedRuns sweep once stale", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-06-12T12:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    const workflowRunId = "wf_00000000000000000000000008";
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        roomCursor: null as never,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000008",
+        phaseId: "ph_00000000000000000000000008",
+        workflowRunId,
+      },
+    );
+
+    // Crash-then-fast-restart: the boot sweep sees a fresh heartbeat and
+    // must skip; the periodic re-sweep (mcp-server bin cadence) calls
+    // resumeOrphanedRuns again after the threshold and must adopt.
+    let nowMs = Date.parse("2026-06-12T12:00:30.000Z");
+    const service = createShipService({
+      clock: () => new Date(nowMs).toISOString(),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    expect(cloudCursor.attachCalls).toHaveLength(0);
+
+    cloudCursor.enqueueAttach({
+      events: [],
+      result: { status: "succeeded", durationMs: 100, branches: [], summary: "resumed late" },
+    });
+    nowMs += ORPHAN_RESUME_STALENESS_MS + 60_000;
+    await service.resumeOrphanedRuns();
+    await service.drainBackground();
+
+    const row = await waitForRunTerminal(service, workflowRunId);
+    expect(row.status).toBe("succeeded");
+    expect(cloudCursor.attachCalls).toHaveLength(1);
+    store.close();
+  });
+
+  test("terminal-parent cursor row reconciles immediately despite a fresh heartbeat", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-06-12T12:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    const workflowRunId = "wf_00000000000000000000000009";
+
+    await seedOrphanedCloudRun(
+      {
+        cloudCursor,
+        config: null as never,
+        cursor: null as never,
+        fs,
+        roomCursor: null as never,
+        service: null as never,
+        store,
+      },
+      {
+        cursorRunId: "cr_00000000000000000000000009",
+        phaseId: "ph_00000000000000000000000009",
+        workflowRunId,
+      },
+    );
+
+    // A cancel just before boot bumps updated_at (fresh) but leaves the
+    // cursor row running. Reconciliation carries no attach risk, so the
+    // staleness guard must not apply to it.
+    store.cancelRun(workflowRunId);
+
+    const service = createShipService({
+      clock: deterministicClock("2026-06-12T12:00:30.000Z", 1000),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    expect(cloudCursor.attachCalls).toHaveLength(0);
+    expect(store.listResumableCloudCursorRuns()).toHaveLength(0);
+    expect((await service.getRun(workflowRunId))?.status).toBe("cancelled");
     store.close();
   });
 });
