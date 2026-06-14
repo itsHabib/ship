@@ -52,6 +52,13 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
     markMerged: (driverRunId, streamId, facts) => markMergedFn(store, driverRunId, streamId, facts),
     render: (driverRunId) => renderDriverRun(store, driverRunId),
     run: async (ref, runOpts) => {
+      // A tick is the one driver operation that polls in-flight work, so it
+      // owns orphan recovery: re-attach this process's cloud runs that a prior
+      // tick left orphaned (kill+resume), then let the poll loop harvest the
+      // result. Fire-and-forget keeps the tick within its maxWait bound — the
+      // staleness-guarded re-attach lands in this poll window or the next
+      // re-invocation. Read verbs (status/render/decide/...) never resume.
+      void ship.resumeOrphanedRuns?.().catch(() => undefined);
       const resolved = resolveRunOpts(runOpts);
       const driverRunId = resolveRunRef(store, ref);
       const deps: Parameters<typeof runTick>[2] = { ship, store };

@@ -23,7 +23,7 @@ export interface FakeRunScript {
 }
 
 export interface FakeShipPortCall {
-  kind: "startShip" | "getRun" | "listRuns" | "cancelRun";
+  kind: "startShip" | "getRun" | "listRuns" | "cancelRun" | "resumeOrphanedRuns";
   input?: ShipInput | ListRunsFilter | string;
 }
 
@@ -61,6 +61,10 @@ export function createFakeShipPort(
     listRuns: (filter) => {
       calls.push({ input: filter, kind: "listRuns" });
       return Promise.resolve(filterRuns([...runs.values()], filter));
+    },
+    resumeOrphanedRuns: () => {
+      calls.push({ kind: "resumeOrphanedRuns" });
+      return Promise.resolve();
     },
     startShip: (input) => {
       calls.push({ input, kind: "startShip" });

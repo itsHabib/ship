@@ -34,23 +34,20 @@ export function createCliService(opts: CliPathOpts): ServiceFactory {
 }
 
 /**
- * Returns a memoizing `DriverService` factory backed by the driver's own
- * resume-enabled `ShipService`. The driver opts into orphan resume so a
- * re-run tick after a kill re-attaches its own in-flight cloud runs to
- * harvest their result — that re-attach is the driver's resume story.
- *
- * This service is a distinct instance from the CLI's plain-command service,
- * which stays resume-off so a read command (`list`, `status`) never adopts
- * another process's live run (#137). Both share the `Store` and `activeRuns`
- * registry through the dbPath-keyed shared infra, so dispatch and cancel
- * observe one in-flight state across the two instances.
+ * Returns a memoizing `DriverService` factory wired to the same store +
+ * `ShipService` instance as `shipFactory` (mirrors the mcp-server's
+ * `createMcpDriverServiceFactory` shape). Orphan resume is not enabled at
+ * construction — the driver engine's `run` tick invokes the ship's
+ * `resumeOrphanedRuns` on demand, so read verbs never sweep.
  */
-export function createCliDriverService(opts: CliPathOpts): DriverServiceFactory {
-  const shipFactory = createCliService({ ...opts, resumeOrphans: true });
+export function createCliDriverService(
+  opts: CliPathOpts,
+  shipFactory: ServiceFactory,
+): DriverServiceFactory {
   let cached: DriverService | undefined;
   return () => {
     if (cached !== undefined) return cached;
-    // Ensure ship wiring (mkdir runsDir, open store, boot resume sweep) ran first.
+    // Ensure ship wiring (mkdir runsDir, open store) ran first.
     const ship = shipFactory();
     const store = getDefaultSharedStore({
       dbPath: opts.dbPath,

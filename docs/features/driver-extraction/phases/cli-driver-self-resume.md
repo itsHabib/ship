@@ -1,103 +1,97 @@
-# CLI driver self-resume — the driver tick re-attaches its own orphaned cloud runs
+# Driver tick self-resume — a `run` tick re-attaches its own orphaned cloud runs
 
 **Status:** ready · **Owner:** work-driver:michael · **Date:** 2026-06-13
-**Repo:** itsHabib/ship · **Scope budget:** ~150 weighted LOC (source 1.0× + tests 0.5×)
+**Repo:** itsHabib/ship · **Scope budget:** ~120 weighted LOC (source 1.0× + tests 0.5×)
 
 ## Problem
 
-#137 made cloud orphan-resume opt-in (default off) to stop a read-only sibling
-process — e.g. a keyless `ship driver status` poll — from adopting and failing
+#137 made cloud orphan-resume opt-in (default off) so a read-only sibling
+process — e.g. a keyless `ship driver status` poll — can no longer adopt-and-fail
 another process's live cloud runs. Only the long-lived `@ship/mcp-server` bin
-opts in. The **CLI driver does not**, which silently broke the driver's cloud
-kill+resume story:
-
-- A CLI `ship driver run` dispatches a cloud stream; that tick's in-process
-  event pump keeps the run's store row fresh.
-- Kill the tick mid-flight (the validation-gate criterion). The pump dies; the
-  cloud agent keeps working; the store row freezes at `running`.
-- Re-run `ship driver run`. The new tick constructs its `ShipService` with
-  `resumeOrphans` defaulting to **false**, so it never re-attaches the orphaned
-  cloud run. The engine polls `getRun`, sees the frozen row, never reaches
-  terminal — the stream is stranded `dispatched` until `--max-wait` expires.
-
-Before #137 the CLI always swept on construction (that *was* the multi-process
-bug), so this used to work. #137 correctly fixed the bug but left the driver's
-cloud resume off. This phase puts it back — scoped to the driver only.
+opts in. That silently broke the driver's cloud kill+resume: a re-run
+`ship driver run` tick constructs a resume-off `ShipService`, never re-attaches
+its own orphaned cloud run after a kill, and the stream strands `dispatched`
+until `--max-wait` expires. Before #137 the CLI always swept on construction
+(that *was* the multi-process bug); #137 fixed the bug but left the driver's
+resume off.
 
 ## Fix
 
-`createCliDriverService` builds its **own** resume-enabled `ShipService`
-(`createCliService({ ...opts, resumeOrphans: true })`) instead of reusing the
-plain-command ship factory. The plain CLI commands (`list`, `status`, `get`,
-`ship`, `cancel`) keep their resume-off service, so a read command still never
-adopts a sibling's live run — the #137 guarantee holds. Both services share the
-`Store` and `activeRuns` registry via the dbPath-keyed shared infra
-(`getOrCreateSharedInfra`), so dispatch and cancel still observe one in-flight
-state across the two instances.
+Resume is a property of the **tick**, not of service construction. The driver
+engine's `run` invokes the ship's `resumeOrphanedRuns` as its first step, then
+runs the dispatch/poll tick. The poll loop (or the caller's re-invocation)
+harvests the re-attached result. Concretely:
 
-This reverts P4's "take an external `shipFactory`" signature (#134) for a
-concrete reason that didn't exist then: the driver and the plain commands now
-need **different resume policy**, so they must be distinct `ShipService`
-instances. The composition still shares everything that matters (store +
-activeRuns); only the encapsulated resume flag differs.
+- `DriverShipPort` gains an optional `resumeOrphanedRuns?: () => Promise<void>`
+  (the real `ShipService` already exposes it; engine L1 fakes may omit it).
+- `DriverService.run` fires it fire-and-forget at tick entry. Fire-and-forget
+  keeps the tick inside its `maxWaitMs` bound — the staleness-guarded re-attach
+  lands in this poll window or the next re-invocation, rather than blocking the
+  tick on an unrelated still-streaming orphan.
+
+This scopes resume precisely to ticks and covers **both** callers (the CLI
+`ship driver run` and the MCP `driver_run` tool) through the one `run` path. The
+read verbs — `status`, `render`, `decide`, `mark-merged`, `cancel`, `import` —
+never sweep, so #137's read/write separation holds. No CLI wiring change is
+needed: `createCliDriverService` keeps its #134 shape (shares the plain ship
+factory); the ship's `resumeOrphanedRuns` method works on demand regardless of
+the construction-time opt-in flag.
 
 ## Engineering decisions
 
-- **ED-1: policy lives in the driver's CLI wiring, not the entrypoint.**
-  `createCliDriverService` owns "the driver resumes"; `bin.ts` and every test
-  harness just call `createCliDriverService(opts)`. Centralizing it keeps the
-  flag from being re-derived at each call site and makes every caller exercise
-  the real wiring.
-- **ED-2: always-on for the driver, not configurable.** The driver's entire
-  purpose is to survive a kill and continue; there is no driver mode that
-  shouldn't resume. No new config surface (operator preference: no premature
-  config).
-- **ED-3: the mcp-server asymmetry is intentional.** `createMcpDriverServiceFactory`
-  still takes the server's ship factory because in that single long-lived
-  process *everything* resumes (the bin sets `resumeOrphans: true` globally).
-  The CLI is a mix of short-lived commands where only the driver should resume,
-  so the CLI driver needs its own instance.
+- **ED-1: resume belongs in the tick, not construction.** Construction-time
+  resume fires for whichever verb happens to construct the service first — that
+  is exactly the read/write leak codex flagged (a `status` poll would sweep).
+  The tick is the one operation that polls in-flight work, so it owns recovery.
+- **ED-2: fire-and-forget, not await.** A tick is bounded by `maxWaitMs`;
+  awaiting a DB-wide re-attach (which blocks until each orphan reaches terminal)
+  could exceed that bound or hang on an unrelated process's still-streaming
+  orphan. Firing it lets the existing poll/re-invoke loop observe the harvested
+  row, consistent with the bounded-tick contract.
+- **ED-3: optional port method.** `resumeOrphanedRuns?` is optional so the
+  engine's existing L1 fakes need no change and the `run` path tolerates a port
+  without it (covered by a test). Production always provides it.
 
 ## Tradeoffs / known behavior
 
-- **Resume waits out the staleness window (~5 min), by design.** A re-run tick
-  within `ORPHAN_RESUME_STALENESS_MS` of the kill sees the orphan as still
-  "fresh" and skips it (the guard that protects live sibling runs). The stream
-  resumes on a re-tick after the window. Instant self-resume — the driver
-  re-attaching *its own* streams by positive manifest ownership rather than the
-  generic staleness heuristic — is a future refinement, deliberately out of
-  scope here (keep the step small).
+- **Resume waits out the staleness window (~5 min), by design.** A re-tick
+  within `ORPHAN_RESUME_STALENESS_MS` of the kill sees the orphan as "fresh" and
+  skips it (the guard that protects live sibling runs); it resumes on a re-tick
+  after the window. Instant self-resume — the driver re-attaching *its own*
+  streams by positive manifest ownership rather than the generic staleness
+  heuristic — is a future refinement, deliberately out of scope.
+- The sweep is DB-wide (re-attaches any stale orphan, not only this driver
+  run's streams). Acceptable: a tick is a mutating, progress-making operation;
+  harvesting other stale orphans is harmless and idempotent.
 
 ## Validation
 
-- **Wiring test (new):** a CLI-layer test seeds a terminal-parent cloud orphan
-  (staleness-exempt) and asserts the resume-enabled ship — the exact instance
-  `createCliDriverService` builds — reconciles it, while the default
-  (resume-off) ship leaves it. This pins the flag plumbing through the
-  production default-wiring path at the one layer where the ship's background
-  sweep is drainable.
-- **Mechanism:** the staleness-gated *running*-orphan re-attach and every other
-  branch stay covered by the `@ship/core` `resumeOrphanedRuns` suite — behavior
-  unchanged by this PR; only the opt-in caller moved.
-- **Testability note:** the staleness-gated re-attach is not unit-testable above
-  `createShipService` because the production wiring hardcodes the clock
-  (`getOrCreateSharedInfra`). The live validation gate is its integration proof.
+- **Driver test (new):** `run` invokes `port.resumeOrphanedRuns` while the read
+  verbs (`render`, `getDriverRun`) do not — asserted via the fake port's call
+  log. Plus a test that `run` tolerates a port without `resumeOrphanedRuns`.
+- **Mechanism:** the staleness-gated re-attach and every other branch stay
+  covered by the `@ship/core` `resumeOrphanedRuns` suite (behavior unchanged;
+  this PR only adds a caller). It is not unit-testable above `createShipService`
+  because production wiring hardcodes the clock — the live validation gate is its
+  integration proof.
 - `make check` green (typecheck + lint + format + tests, ubuntu + windows).
 
 ## Out of scope
 
 - Instant driver self-resume by manifest ownership (future refinement above).
 - CLI honoring `SHIP_DB_PATH` (separate friction).
-- Any change to the mcp-server driver wiring or the core resume mechanism.
+- Any change to the core resume mechanism or the mcp-server boot/periodic sweep.
 
 ## Implementation plan
 
-1. `createCliDriverService(opts)`: build an internal resume-enabled ship
-   factory; drop the external `shipFactory` parameter.
-2. Update the three call sites (`bin.ts`, `driver-disk-harness.ts`, the e2e
-   driver harness) to the one-arg form.
-3. Add the wiring test (terminal-parent reconcile via the resume-enabled ship).
+1. `DriverShipPort`: add optional `resumeOrphanedRuns`.
+2. `DriverService.run`: fire it at tick entry (fire-and-forget, errors swallowed
+   — the ship logs per-orphan attach failures internally).
+3. Fake ship port: record `resumeOrphanedRuns` calls for the test.
+4. Driver service test: run-resumes / read-verbs-don't + tolerates-absent-method.
 
 ## PR
 
-Title: `fix(cli): driver tick resumes its own orphaned cloud runs (opt the driver into staleness-guarded resume)`. Body: reference #137 (made resume opt-in) and the validation gate that needs this.
+Title: `fix(driver): a run tick re-attaches its own orphaned cloud runs`. Body:
+reference #137 (made resume opt-in) and the validation gate that needs this;
+note read verbs stay sweep-free (the codex read/write-separation point).

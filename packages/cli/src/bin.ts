@@ -36,7 +36,7 @@ async function main(): Promise<void> {
     ...(fakeCursor !== undefined ? { cursor: fakeCursor, cloudCursor: fakeCursor } : {}),
   };
   const factory = createCliService(serviceOpts);
-  const driverFactory = createCliDriverService(serviceOpts);
+  const driverFactory = createCliDriverService(serviceOpts, factory);
   const program = buildProgram(factory, driverFactory);
   await program.parseAsync(process.argv);
 }
