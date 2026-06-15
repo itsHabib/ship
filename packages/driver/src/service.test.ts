@@ -68,6 +68,88 @@ batches:
     store.close();
   });
 
+  test("run resumes orphaned cloud runs; read verbs do not", async () => {
+    const repoRoot = join(tmpDir, "repo");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-a"), { recursive: true });
+    mkdirSync(join(repoRoot, "docs"), { recursive: true });
+    writeFileSync(join(repoRoot, "docs", "task.md"), "# task\n");
+
+    const manifestPath = join(repoRoot, "driver.md");
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-06-12T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: svc
+repo: ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/task.md
+        branch_name: feat-a
+        runtime: local
+        status: done
+---
+`,
+    );
+
+    const store = createStore({ dbPath: ":memory:" });
+    const { port, calls } = createFakeShipPort([]);
+    const driver = createDriverService({ ship: port, store });
+    const imported = driver.importManifest(manifestPath);
+
+    // Read verbs must not sweep — that was the #137 read/write-separation point.
+    driver.render(imported.run.id);
+    driver.getDriverRun(imported.run.id);
+    expect(calls.some((c) => c.kind === "resumeOrphanedRuns")).toBe(false);
+
+    // A tick owns orphan recovery.
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+    expect(calls.some((c) => c.kind === "resumeOrphanedRuns")).toBe(true);
+    store.close();
+  });
+
+  test("run tolerates a port without resumeOrphanedRuns", async () => {
+    const store = createStore({ dbPath: ":memory:" });
+    const { port } = createFakeShipPort([]);
+    // Omit the optional method entirely (exactOptionalPropertyTypes forbids
+    // an explicit `undefined`) — the run path must tolerate its absence.
+    const { resumeOrphanedRuns: _omit, ...portWithoutResume } = port;
+    const driver = createDriverService({ ship: portWithoutResume, store });
+    const manifestPath = join(tmpDir, "noresume.driver.md");
+    mkdirSync(join(tmpDir, ".git"), { recursive: true });
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-06-12T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: svc
+repo: ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/task.md
+        branch_name: feat-a
+        runtime: local
+        status: done
+---
+`,
+    );
+    const imported = driver.importManifest(manifestPath);
+    const result = await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+    expect(result.status).toBe("done");
+    store.close();
+  });
+
   test("startShip throw marks stream failed and continues tick", async () => {
     const repoRoot = join(tmpDir, "repo");
     mkdirSync(join(repoRoot, ".git"), { recursive: true });

@@ -36,7 +36,9 @@ export function createCliService(opts: CliPathOpts): ServiceFactory {
 /**
  * Returns a memoizing `DriverService` factory wired to the same store +
  * `ShipService` instance as `shipFactory` (mirrors the mcp-server's
- * `createMcpDriverServiceFactory` shape).
+ * `createMcpDriverServiceFactory` shape). Orphan resume is not enabled at
+ * construction — the driver engine's `run` tick invokes the ship's
+ * `resumeOrphanedRuns` on demand, so read verbs never sweep.
  */
 export function createCliDriverService(
   opts: CliPathOpts,
