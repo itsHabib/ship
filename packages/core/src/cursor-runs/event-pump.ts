@@ -53,6 +53,9 @@ export function startEventPump(opts: EventPumpOptions): EventPumpHandle {
   };
 
   timer = setInterval(heartbeat, intervalMs);
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
 
   // Initial heartbeat at start so short-lived runs (<intervalMs) still
   // bump `updated_at` at least once. Wrapped in the same try/catch path

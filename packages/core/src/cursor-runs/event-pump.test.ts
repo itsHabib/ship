@@ -119,6 +119,25 @@ describe("startEventPump", () => {
     expect(DEFAULT_EVENT_PUMP_INTERVAL_MS).toBe(30_000);
   });
 
+  test("heartbeat timer is unref'd so it does not keep the process alive alone", () => {
+    const unref = vi.fn();
+    const realSetInterval = globalThis.setInterval;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation((handler, timeout) => {
+        const timer = realSetInterval(handler, timeout);
+        return Object.assign(timer, { unref });
+      });
+
+    try {
+      const pump = startEventPump({ store, workflowRunId: "wf_test_001" });
+      expect(unref).toHaveBeenCalledOnce();
+      pump.stop();
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   test("heartbeat error self-stops the pump (no further bumps, no uncaught throw)", () => {
     const pump = startEventPump({
       intervalMs: 1_000,
