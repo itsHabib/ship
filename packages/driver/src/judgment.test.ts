@@ -16,8 +16,8 @@ import {
   recoverDispatchingStreams,
   rollBatchStatus,
 } from "./judgment.js";
-import { renderDriverRun } from "./render.js";
 import { parseManifest } from "./manifest.js";
+import { renderDriverRun } from "./render.js";
 import { createFakeShipPort } from "./test/fake-ship-port.js";
 
 describe("judgment", () => {
