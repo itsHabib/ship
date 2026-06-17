@@ -2,7 +2,7 @@
  * `ship driver <subverb>` — brain-facing driver surface (spec §6).
  */
 
-import type { Decision, DriverRunRef, MergeFacts } from "@ship/driver";
+import type { Decision, DriverRunRef, LandOpts, MergeFacts } from "@ship/driver";
 import type { Command } from "commander";
 
 import { parsePruneDuration, PruneDurationError } from "@ship/core";
@@ -42,6 +42,12 @@ interface MarkMergedOpts {
   pr: string;
   sha: string;
   mergedAt?: string;
+  cycles?: string;
+}
+
+interface LandCommandOpts {
+  pr: string;
+  stream?: string;
   cycles?: string;
 }
 
@@ -123,6 +129,20 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
       runDriverAction(() => {
         const facts = buildMergeFacts(rawOpts);
         const run = factory().markMerged(driverRunId, rawOpts.stream, facts);
+        process.stdout.write(`${formatDriverDecideOutput(run)}\n`);
+      });
+    });
+
+  driver
+    .command("land <driverRunId>")
+    .description("merge PR (if needed), read sha/time from gh, and record merge facts")
+    .requiredOption("--pr <n>", "PR number to merge and record")
+    .option("--stream <ds_id>", "driver stream id (required when prUrl is absent or ambiguous)")
+    .option("--cycles <n>", "review cycles completed")
+    .action(async (driverRunId: string, rawOpts: LandCommandOpts) => {
+      await runDriverActionAsync(async () => {
+        const landOpts = buildLandOpts(rawOpts);
+        const run = await factory().land(driverRunId, landOpts);
         process.stdout.write(`${formatDriverDecideOutput(run)}\n`);
       });
     });
@@ -281,4 +301,15 @@ function buildMergeFacts(opts: MarkMergedOpts): MergeFacts {
     facts.cycles = parseIntOptionAtLeast(opts.cycles, "--cycles", 0);
   }
   return facts;
+}
+
+function buildLandOpts(opts: LandCommandOpts): LandOpts {
+  const landOpts: LandOpts = {
+    prNumber: parseIntOptionAtLeast(opts.pr, "--pr", 1),
+  };
+  if (opts.stream !== undefined) landOpts.streamId = opts.stream;
+  if (opts.cycles !== undefined) {
+    landOpts.cycles = parseIntOptionAtLeast(opts.cycles, "--cycles", 0);
+  }
+  return landOpts;
 }

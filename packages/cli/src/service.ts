@@ -9,12 +9,14 @@
 // neither `core` nor `mcp-server` needs them.
 
 import type { DefaultShipServiceOpts, ShipServiceFactory } from "@ship/core";
-import type { DriverService } from "@ship/driver";
+import type { DriverGhPort, DriverService } from "@ship/driver";
 
 import { createDefaultShipService, getDefaultSharedStore } from "@ship/core";
 import { createDriverService } from "@ship/driver";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+
+import { createExecGhPort } from "./gh-port.js";
 
 // CLI's option bag — alias of `DefaultShipServiceOpts`, kept for source
 // compatibility with Phase 7's `createCliService` callers.
@@ -43,6 +45,7 @@ export function createCliService(opts: CliPathOpts): ServiceFactory {
 export function createCliDriverService(
   opts: CliPathOpts,
   shipFactory: ServiceFactory,
+  ghPort?: DriverGhPort,
 ): DriverServiceFactory {
   let cached: DriverService | undefined;
   return () => {
@@ -53,7 +56,7 @@ export function createCliDriverService(
       dbPath: opts.dbPath,
       ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
     });
-    cached = createDriverService({ ship, store });
+    cached = createDriverService({ gh: ghPort ?? createExecGhPort(), ship, store });
     return cached;
   };
 }

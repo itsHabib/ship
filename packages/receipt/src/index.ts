@@ -11,7 +11,12 @@ export type { Receipt, ReceiptOutcome, ReceiptRuntime, ReceiptSource } from "./s
 export { buildReceipt, RECEIPT_SCHEMA_VERSION, receiptIdentity, receiptSchema } from "./schema.js";
 
 export { CYCLE_CAP, manifestToReceipts } from "./manifest.js";
-export { loadShipRunReceipts, resolveDefaultRunsDir, runResultToReceipt } from "./runs.js";
+export {
+  loadShipRunReceipts,
+  prNumberFromUrl,
+  resolveDefaultRunsDir,
+  runResultToReceipt,
+} from "./runs.js";
 export { sortReceipts, upsertReceipts } from "./build.js";
 
 export type { DriverMetrics, ReportSummary, ShipRunMetrics } from "./report.js";

@@ -82,6 +82,7 @@ source:
   project: ship
   phase: ${phase}
 repo: ship
+repo_url: https://github.com/org/ship
 batches:
 ${batches}
 ---

@@ -32,6 +32,8 @@ export {
   storeStatusToManifest,
 } from "./status-mapping.js";
 
+export type { DriverGhPort, GhMergeCommit, GhPullRequestView } from "./gh-port.js";
+
 export type { DriverShipPort } from "./ship-port.js";
 
 export type {
@@ -40,6 +42,7 @@ export type {
   DriverStreamView,
   DriverTickResult,
   JudgmentRequest,
+  LandOpts,
   MergeFacts,
   RunOpts,
 } from "./types.js";

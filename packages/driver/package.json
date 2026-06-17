@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./test/fake-gh": {
+      "types": "./src/test/fake-gh-port.ts",
+      "default": "./src/test/fake-gh-port.ts"
     }
   },
   "scripts": {
@@ -16,6 +20,7 @@
   },
   "dependencies": {
     "@ship/core": "workspace:*",
+    "@ship/receipt": "workspace:*",
     "@ship/store": "workspace:*",
     "@ship/workflow": "workspace:*",
     "yaml": "^2.6.1",

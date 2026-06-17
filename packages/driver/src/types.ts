@@ -28,6 +28,12 @@ export interface MergeFacts {
   cycles?: number;
 }
 
+export interface LandOpts {
+  prNumber: number;
+  streamId?: string;
+  cycles?: number;
+}
+
 export interface DriverStreamView {
   streamId: string;
   batchIndex: number;

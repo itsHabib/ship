@@ -4,10 +4,12 @@
  */
 
 import type { DefaultShipServiceOpts, ShipServiceFactory } from "@ship/core";
-import type { DriverService } from "@ship/driver";
+import type { DriverGhPort, DriverService } from "@ship/driver";
 
 import { getDefaultSharedStore } from "@ship/core";
 import { createDriverService } from "@ship/driver";
+
+import { createExecGhPort } from "./gh-port.js";
 
 export type DriverServiceFactory = () => DriverService;
 
@@ -15,6 +17,7 @@ export type DriverServiceFactory = () => DriverService;
 export function createMcpDriverServiceFactory(
   opts: DefaultShipServiceOpts,
   shipFactory: ShipServiceFactory,
+  ghPort?: DriverGhPort,
 ): DriverServiceFactory {
   let cached: DriverService | undefined;
   return () => {
@@ -24,7 +27,7 @@ export function createMcpDriverServiceFactory(
       dbPath: opts.dbPath,
       ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
     });
-    cached = createDriverService({ ship, store });
+    cached = createDriverService({ gh: ghPort ?? createExecGhPort(), ship, store });
     return cached;
   };
 }
