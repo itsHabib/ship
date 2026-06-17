@@ -81,6 +81,31 @@ function isStreamDoneOrSkipped(stream: DriverStream): boolean {
   return stream.status === "done" || stream.status === "skipped";
 }
 
+/** Mark each batch `done` once all its streams are terminal (done|skipped). */
+export function rollBatchStatus(store: Store, run: DriverRun, completedAt?: string): void {
+  const stampedAt = completedAt ?? new Date().toISOString();
+  for (const batch of run.batches) {
+    if (batch.status === "done") continue;
+    if (!batch.streams.every(isStreamDoneOrSkipped)) continue;
+    store.updateDriverBatch(batch.id, { completedAt: stampedAt, status: "done" });
+  }
+}
+
+function hasUndecidedFailedStreams(run: DriverRun): boolean {
+  return allStreams(run).some((s) => s.status === "failed");
+}
+
+function resumeAfterDecision(store: Store, driverRunId: string): DriverRun {
+  const refreshed = store.getDriverRun(driverRunId);
+  if (refreshed === null) {
+    throw new DecideError(`driver run not found: ${driverRunId}`);
+  }
+  if (hasUndecidedFailedStreams(refreshed)) {
+    return refreshed;
+  }
+  return store.updateDriverRunStatus(driverRunId, "running");
+}
+
 /** §7.3 recovery for streams stuck in `dispatching`. */
 export async function recoverDispatchingStreams(
   store: Store,
@@ -301,7 +326,7 @@ function applyRetryDecision(
     );
   }
   store.updateDriverStream(streamId, { status: "pending" });
-  return store.updateDriverRunStatus(driverRunId, "running");
+  return resumeAfterDecision(store, driverRunId);
 }
 
 function applySkipDecision(
@@ -315,7 +340,7 @@ function applySkipDecision(
     throw new DecideError(`stream ${streamId} is not failed (status=${stream.status})`);
   }
   store.updateDriverStream(streamId, { errorMessage: reason, status: "skipped" });
-  return store.updateDriverRunStatus(driverRunId, "running");
+  return resumeAfterDecision(store, driverRunId);
 }
 
 function applyAdoptDecision(
@@ -335,7 +360,7 @@ function applyAdoptDecision(
     status: "dispatched",
     workflowRunId,
   });
-  return store.updateDriverRunStatus(driverRunId, "running");
+  return resumeAfterDecision(store, driverRunId);
 }
 
 export function markMerged(
@@ -364,7 +389,14 @@ export function markMerged(
   if (facts.mergedAt !== undefined) patch.mergedAt = facts.mergedAt;
   if (facts.cycles !== undefined) patch.cycles = facts.cycles;
   store.updateDriverStream(streamId, patch);
-  return store.getDriverRun(driverRunId) ?? run;
+
+  let refreshed = store.getDriverRun(driverRunId) ?? run;
+  rollBatchStatus(store, refreshed, facts.mergedAt);
+  refreshed = store.getDriverRun(driverRunId) ?? refreshed;
+  if (everyStreamTerminalDoneOrSkipped(refreshed)) {
+    return store.updateDriverRunStatus(driverRunId, "done");
+  }
+  return refreshed;
 }
 
 export async function cancelRun(
