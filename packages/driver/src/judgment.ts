@@ -301,7 +301,7 @@ function applyRetryDecision(
     );
   }
   store.updateDriverStream(streamId, { status: "pending" });
-  return store.updateDriverRunStatus(driverRunId, "running");
+  return resumeRunAfterDecision(store, driverRunId);
 }
 
 function applySkipDecision(
@@ -315,7 +315,7 @@ function applySkipDecision(
     throw new DecideError(`stream ${streamId} is not failed (status=${stream.status})`);
   }
   store.updateDriverStream(streamId, { errorMessage: reason, status: "skipped" });
-  return store.updateDriverRunStatus(driverRunId, "running");
+  return resumeRunAfterDecision(store, driverRunId);
 }
 
 function applyAdoptDecision(
@@ -335,6 +335,19 @@ function applyAdoptDecision(
     status: "dispatched",
     workflowRunId,
   });
+  return resumeRunAfterDecision(store, driverRunId);
+}
+
+/** Design B: hold `awaiting_judgment` until every failed stream is decided. */
+function resumeRunAfterDecision(store: Store, driverRunId: string): DriverRun {
+  const run = store.getDriverRun(driverRunId);
+  if (run === null) {
+    throw new DecideError(`driver run not found: ${driverRunId}`);
+  }
+  const hasFailed = allStreams(run).some((s) => s.status === "failed");
+  if (hasFailed && !hasInFlightStreams(run)) {
+    return run;
+  }
   return store.updateDriverRunStatus(driverRunId, "running");
 }
 
@@ -364,7 +377,14 @@ export function markMerged(
   if (facts.mergedAt !== undefined) patch.mergedAt = facts.mergedAt;
   if (facts.cycles !== undefined) patch.cycles = facts.cycles;
   store.updateDriverStream(streamId, patch);
-  return store.getDriverRun(driverRunId) ?? run;
+
+  const refreshed = store.getDriverRun(driverRunId) ?? run;
+  rollBatchStatus(store, refreshed);
+  const rolled = store.getDriverRun(driverRunId) ?? refreshed;
+  if (everyStreamTerminalDoneOrSkipped(rolled)) {
+    return store.updateDriverRunStatus(driverRunId, "done");
+  }
+  return rolled;
 }
 
 export async function cancelRun(
@@ -456,4 +476,21 @@ export function batchHasPendingDispatchable(batch: DriverBatch, batches: DriverB
 
 export function everyStreamTerminalDoneOrSkipped(run: DriverRun): boolean {
   return allStreams(run).every((s) => s.status === "done" || s.status === "skipped");
+}
+
+function everyStreamInBatchTerminalDoneOrSkipped(batch: DriverBatch): boolean {
+  return batch.streams.every((s) => s.status === "done" || s.status === "skipped");
+}
+
+/** Mark each batch `done` once all its streams are terminal (done|skipped). */
+export function rollBatchStatus(
+  store: Store,
+  run: DriverRun,
+  completedAt: string = new Date().toISOString(),
+): void {
+  for (const batch of run.batches) {
+    if (batch.status === "done") continue;
+    if (!everyStreamInBatchTerminalDoneOrSkipped(batch)) continue;
+    store.updateDriverBatch(batch.id, { completedAt, status: "done" });
+  }
 }

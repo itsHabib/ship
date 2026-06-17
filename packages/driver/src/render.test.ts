@@ -3,7 +3,7 @@
 import type { Store } from "@ship/store";
 
 import { DriverRunNotFoundError } from "@ship/store";
-import { createStore } from "@ship/store";
+import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ManifestBatch } from "./manifest.js";
 
 import { importManifest } from "./import.js";
+import { markMerged } from "./judgment.js";
 import { parseManifest } from "./manifest.js";
 import { renderDriverRun } from "./render.js";
 
@@ -125,6 +126,63 @@ describe("renderDriverRun", () => {
     expect(streams[1]?.status).toBe("done");
     expect(streams[1]?.pr_number).toBe(7);
     rmSync(dir, { force: true, recursive: true });
+  });
+
+  it("never shows batch pending when run and streams are done", () => {
+    const streamId = newDriverStreamId();
+    const batchId = newDriverBatchId();
+    const runId = store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "running",
+          streams: [
+            {
+              attempts: [],
+              id: streamId,
+              runtime: "local",
+              specPath: "docs/task.md",
+              status: "landed",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: newDriverRunId(),
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-06-12T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: render",
+        "repo: ship",
+        "batches:",
+        "  - id: 1",
+        "    depends_on: []",
+        "    streams:",
+        "      - spec_path: docs/task.md",
+        "---",
+        "",
+      ].join("\n"),
+      status: "running",
+    }).id;
+
+    markMerged(store, runId, streamId, { mergeCommit: "abc", prNumber: 1 });
+    expect(store.getDriverRun(runId)?.status).toBe("done");
+
+    const rendered = renderDriverRun(store, runId);
+    const parsed = parseManifest(rendered);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.manifest.batches[0]?.status).toBe("done");
+    expect(parsed.manifest.batches[0]?.status).not.toBe("pending");
   });
 
   it("two-render determinism: same state yields byte-identical output", () => {

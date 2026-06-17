@@ -30,6 +30,7 @@ import {
   isBatchEligible,
   isBlockedOnMerges,
   recoverDispatchingStreams,
+  rollBatchStatus,
 } from "./judgment.js";
 
 const DEFAULT_MAX_WAIT_MS = 20 * 60 * 1000;
@@ -196,6 +197,7 @@ function finalizeExit(
     store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
   }
   if (status === "done") {
+    rollBatchStatus(store, run);
     store.updateDriverRunStatus(driverRunId, "done");
   }
   const refreshed = store.getDriverRun(driverRunId) ?? run;

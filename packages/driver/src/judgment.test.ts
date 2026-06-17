@@ -39,6 +39,7 @@ describe("judgment", () => {
     store.updateDriverRunStatus(runId, "awaiting_judgment");
     store.updateDriverStream(streamId, { status: "failed" });
     decide(store, runId, streamId, { kind: "skip", reason: "not worth it" });
+    expect(store.getDriverRun(runId)?.status).toBe("running");
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("skipped");
 
     store.updateDriverRunStatus(runId, "awaiting_judgment");
@@ -98,13 +99,14 @@ describe("judgment", () => {
   });
 
   test("markMerged records merge facts on landed stream", () => {
+    const batchId = newDriverBatchId();
     const streamId = newDriverStreamId();
     const runId = store.insertDriverRun({
       batches: [
         {
           batchIndex: 1,
           dependsOn: [],
-          id: newDriverBatchId(),
+          id: batchId,
           status: "running",
           streams: [
             {
@@ -131,9 +133,13 @@ describe("judgment", () => {
       mergedAt: "2026-06-12T00:00:00.000Z",
       prNumber: 42,
     });
-    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    const run = store.getDriverRun(runId);
+    const stream = run?.batches[0]?.streams[0];
     expect(stream?.status).toBe("done");
     expect(stream?.prNumber).toBe(42);
+    expect(run?.status).toBe("done");
+    expect(run?.batches[0]?.status).toBe("done");
+    expect(run?.batches[0]?.completedAt).toBeDefined();
   });
 
   test("cancelRun marks in-flight streams failed and run cancelled", async () => {
@@ -254,6 +260,170 @@ describe("judgment", () => {
     const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
     expect(stream?.status).toBe("dispatched");
     expect(stream?.workflowRunId).toBe("wf_picked");
+  });
+
+  test("two failed streams can both be decided without a re-tick", () => {
+    const streamA = newDriverStreamId();
+    const streamB = newDriverStreamId();
+    const runId = store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: newDriverBatchId(),
+          status: "pending",
+          streams: [
+            {
+              attempts: [
+                { dispatchedAt: "2026-06-12T00:00:00.000Z", terminal: true, workflowRunId: "wf_a" },
+              ],
+              id: streamA,
+              runtime: "local",
+              specPath: "a.md",
+              status: "failed",
+              streamIndex: 0,
+              touches: [],
+            },
+            {
+              attempts: [
+                { dispatchedAt: "2026-06-12T00:00:00.000Z", terminal: true, workflowRunId: "wf_b" },
+              ],
+              id: streamB,
+              runtime: "local",
+              specPath: "b.md",
+              status: "failed",
+              streamIndex: 1,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: newDriverRunId(),
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: minimalSource(),
+      status: "awaiting_judgment",
+    }).id;
+
+    decide(store, runId, streamA, { kind: "skip", reason: "skip a" });
+    expect(store.getDriverRun(runId)?.status).toBe("awaiting_judgment");
+
+    decide(store, runId, streamB, { kind: "retry" });
+    expect(store.getDriverRun(runId)?.status).toBe("running");
+  });
+
+  test("mark-merged on non-final stream leaves run running and later batch pending", () => {
+    const batch1Id = newDriverBatchId();
+    const batch2Id = newDriverBatchId();
+    const stream1Id = newDriverStreamId();
+    const stream2Id = newDriverStreamId();
+    const runId = store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batch1Id,
+          status: "running",
+          streams: [
+            {
+              attempts: [],
+              id: stream1Id,
+              runtime: "local",
+              specPath: "a.md",
+              status: "landed",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+        {
+          batchIndex: 2,
+          dependsOn: [1],
+          id: batch2Id,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              id: stream2Id,
+              runtime: "local",
+              specPath: "b.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: newDriverRunId(),
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: minimalSource(),
+      status: "running",
+    }).id;
+
+    markMerged(store, runId, stream1Id, { mergeCommit: "abc", prNumber: 1 });
+    const run = store.getDriverRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.batches[0]?.status).toBe("done");
+    expect(run?.batches[1]?.status).toBe("pending");
+  });
+
+  test("final mark-merged flips run to done and rolls every batch to done", () => {
+    const batch1Id = newDriverBatchId();
+    const batch2Id = newDriverBatchId();
+    const stream1Id = newDriverStreamId();
+    const stream2Id = newDriverStreamId();
+    const runId = store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batch1Id,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              id: stream1Id,
+              mergeCommit: "abc",
+              prNumber: 1,
+              runtime: "local",
+              specPath: "a.md",
+              status: "done",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+        {
+          batchIndex: 2,
+          dependsOn: [1],
+          id: batch2Id,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              id: stream2Id,
+              runtime: "local",
+              specPath: "b.md",
+              status: "landed",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: newDriverRunId(),
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: minimalSource(),
+      status: "running",
+    }).id;
+
+    markMerged(store, runId, stream2Id, { mergeCommit: "def", prNumber: 2 });
+    const run = store.getDriverRun(runId);
+    expect(run?.status).toBe("done");
+    expect(run?.batches.every((b) => b.status === "done")).toBe(true);
+    expect(run?.batches.every((b) => b.completedAt !== undefined)).toBe(true);
   });
 
   test("§7.6 isBatchEligible and blocked_on_merges", () => {

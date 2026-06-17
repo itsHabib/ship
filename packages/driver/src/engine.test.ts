@@ -332,6 +332,8 @@ batches:
     const imported = driver.importManifest(manifest);
     const result = await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
     expect(result.status).toBe("done");
+    const run = store.getDriverRun(imported.run.id);
+    expect(run?.batches.every((b) => b.status === "done")).toBe(true);
     store.close();
   });
 
