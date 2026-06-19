@@ -52,10 +52,10 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
   const { manifest, warnings } = parsed;
   const project = manifest.source.project;
   const phase = manifest.source.phase;
-  const importWarnings = warnings.length > 0 ? warnings : undefined;
+  const warningExtras = warnings.length > 0 ? { warnings } : {};
   const existing = findExistingRun(store, manifest.repo, project, phase, manifest.generated_at);
   if (existing !== undefined) {
-    return { alreadyImported: true, run: existing, warnings: importWarnings };
+    return { alreadyImported: true, run: existing, ...warningExtras };
   }
 
   const batches = manifest.batches.map((batch) => buildBatchInput(batch, manifest.default_runtime));
@@ -72,7 +72,7 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
     status: runStatus,
   });
 
-  return { run, warnings: importWarnings };
+  return { run, ...warningExtras };
 }
 
 function findExistingRun(

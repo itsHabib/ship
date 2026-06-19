@@ -299,9 +299,9 @@ describe("parseManifest invalid manifests", () => {
     if (!result.ok) {
       return;
     }
-    expect(
-      result.warnings.some((warning) => warning.includes('unknown field "unknown_top"')),
-    ).toBe(true);
+    expect(result.warnings.some((warning) => warning.includes('unknown field "unknown_top"'))).toBe(
+      true,
+    );
   });
 
   it("warns on unknown batch field", () => {
@@ -326,9 +326,9 @@ describe("parseManifest invalid manifests", () => {
     if (!result.ok) {
       return;
     }
-    expect(
-      result.warnings.some((warning) => warning.includes('unknown field "batch_prefx"')),
-    ).toBe(true);
+    expect(result.warnings.some((warning) => warning.includes('unknown field "batch_prefx"'))).toBe(
+      true,
+    );
   });
 
   it("warns on unknown stream field", () => {
@@ -593,9 +593,7 @@ describe("parseManifest invalid manifests", () => {
     if (!result.ok) {
       return;
     }
-    const warning = result.warnings.find((entry) =>
-      entry.includes('unknown field "branch_prefx"'),
-    );
+    const warning = result.warnings.find((entry) => entry.includes('unknown field "branch_prefx"'));
     expect(warning).toMatch(/^line \d+, column \d+:/);
   });
 });
@@ -610,14 +608,35 @@ describe("parseManifest unknown-key warnings", () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it("still rejects a malformed known field alongside unknown keys", () => {
-    const text = minimalManifest("unknown_top: true\ndefault_runtime: satellite");
+  it("warns on each unknown key at top level, batch, and stream", () => {
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-06-10T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "base_branch: main",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    excluded_from_driver: true",
+      "    streams:",
+      "      - spec_path: docs/x.md",
+      "        rolls_up: tsk_01",
+      "---",
+    ].join("\n");
     const result = parseManifest(text);
-    expect(result.ok).toBe(false);
-    if (result.ok) {
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
       return;
     }
-    expect(result.errors.some((error) => error.path === "default_runtime")).toBe(true);
+    expect(result.warnings).toHaveLength(3);
+    expect(result.warnings.some((warning) => warning.includes("base_branch"))).toBe(true);
+    expect(result.warnings.some((warning) => warning.includes("excluded_from_driver"))).toBe(true);
+    expect(result.warnings.some((warning) => warning.includes("rolls_up"))).toBe(true);
   });
 });
 
