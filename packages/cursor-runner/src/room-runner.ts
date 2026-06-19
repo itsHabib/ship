@@ -455,6 +455,13 @@ function emitRoomEvent(line: string, onEvent: CursorRunInput["onEvent"]): void {
 // the GH_TOKEN / CURSOR_API_KEY / ANTHROPIC_API_KEY that ride buildRoomsEnv()
 // onto the subprocess env. Without elevation `rooms run` exits before it can
 // boot a VM.
+//
+// Host requirement: passwordless sudo for `rooms` whose policy ALSO permits
+// environment preservation — a `SETENV` tag, `setenv` default, or an
+// `env_keep` covering HOME + the token vars. A least-privilege sudoers that
+// omits this rejects `-E` with "sorry, you are not allowed to preserve the
+// environment", or silently drops HOME/GH_TOKEN. (Default Ubuntu `NOPASSWD`
+// sudoers permits `-E`.)
 const ELEVATE_BIN = "sudo";
 const ELEVATE_FLAGS: readonly string[] = ["-E"];
 

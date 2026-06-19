@@ -21,10 +21,11 @@
  * SSH identity at `$HOME/.ssh/id_rooms`, and `gh`.
  *
  * The runner invokes rooms as `sudo -E rooms run` — the Firecracker jailer
- * needs root (rooms #44) — so the host needs passwordless sudo and a `rooms`
- * that sudo can resolve (on `secure_path`, e.g. /usr/local/bin, or an absolute
- * `roomsBin`). `-E` preserves HOME so the jailed rooms still finds the SSH
- * identity + image dirs below.
+ * needs root (rooms #44) — so the host needs passwordless sudo that ALSO
+ * permits env preservation (a `SETENV` tag / `env_keep`; default Ubuntu
+ * NOPASSWD sudoers does) and a `rooms` that sudo can resolve (on `secure_path`,
+ * e.g. /usr/local/bin, or an absolute `roomsBin`). `-E` preserves HOME so the
+ * jailed rooms still finds the SSH identity + image dirs below.
  *
  * IMPORTANT: HOME is NOT isolated here. `rooms` resolves the guest SSH
  * identity from `$HOME/.ssh/id_rooms`; the cloud-harness HOME-isolation trick
