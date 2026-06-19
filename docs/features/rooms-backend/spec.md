@@ -51,9 +51,9 @@ Consequences, all of which fall out of the existing cloud path:
 
 ### `RoomCursorRunner` (`packages/cursor-runner/src/room-runner.ts`)
 Implements `CursorRunner`. Unlike Local/Cloud it does **not** call `@cursor/sdk` in-process — it's a subprocess orchestrator over the `rooms` binary:
-- `run(input)`: validate `runtime === "rooms"` + `room` present (else `WrongRunnerError` / a new `MissingRoomSpecError`). Spawn `rooms run` with `GH_TOKEN` (+ `CURSOR_API_KEY`/`ANTHROPIC_API_KEY`) on the **subprocess env** — rooms reads them from its env and forwards push-only into the guest, so no token lands on argv:
+- `run(input)`: validate `runtime === "rooms"` + `room` present (else `WrongRunnerError` / a new `MissingRoomSpecError`). Spawn `sudo -E rooms run` — the Firecracker jailer needs root (rooms #44), and `-E` preserves the **subprocess env** so the jailed rooms keeps HOME + `GH_TOKEN` (+ `CURSOR_API_KEY`/`ANTHROPIC_API_KEY`); rooms reads them from its env and forwards push-only into the guest, so no token lands on argv:
   ```
-  rooms run --runner cursor \
+  sudo -E rooms run --runner cursor \
     --image <room.image ?? default> --repo <room.repos[0].url> \
     --base-sha <room.repos[0].startingRef ?? "HEAD"> \
     --task <tmpfile(input.prompt)> --model <modelArgFromInput> \
