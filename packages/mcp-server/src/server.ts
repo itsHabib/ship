@@ -16,6 +16,7 @@ import { registerRunsResource } from "./resources/runs.js";
 import { registerCancelWorkflowRunTool } from "./tools/cancel-workflow-run.js";
 import { registerDownloadArtifactTool } from "./tools/download-artifact.js";
 import { registerDriverDecideTool } from "./tools/driver-decide.js";
+import { registerDriverLandTool } from "./tools/driver-land.js";
 import { registerDriverRunTool } from "./tools/driver-run.js";
 import { registerDriverStatusTool } from "./tools/driver-status.js";
 import { registerGetWorkflowRunTool } from "./tools/get-workflow-run.js";
@@ -50,6 +51,7 @@ export function buildServer(
     registerDriverRunTool(server, driverFactory);
     registerDriverStatusTool(server, driverFactory);
     registerDriverDecideTool(server, driverFactory);
+    registerDriverLandTool(server, driverFactory);
   }
   registerRunsResource(server, shipFactory);
   return server;

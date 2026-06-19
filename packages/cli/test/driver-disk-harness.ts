@@ -3,6 +3,7 @@
  * paths on disk while the default CLI harness wires `MemoryShipFs`.
  */
 
+import type { DriverGhPort } from "@ship/driver";
 import type { Command } from "commander";
 
 import { closeDefaultSharedStore } from "@ship/core";
@@ -23,7 +24,7 @@ export interface DriverDiskHarness {
   readonly dispose: () => void;
 }
 
-export function createDriverDiskHarness(): DriverDiskHarness {
+export function createDriverDiskHarness(ghPort?: DriverGhPort): DriverDiskHarness {
   const tmp = mkdtempSync(join(tmpdir(), "driver-disk-"));
   const dbPath = join(tmp, "state.db");
   const runsDir = join(tmp, "runs");
@@ -31,7 +32,7 @@ export function createDriverDiskHarness(): DriverDiskHarness {
   const cursor = new FakeCursorRunner();
   const opts = { dbPath, runsDir, cursor };
   const shipFactory = createCliService(opts);
-  const program = buildProgram(shipFactory, createCliDriverService(opts, shipFactory));
+  const program = buildProgram(shipFactory, createCliDriverService(opts, shipFactory, ghPort));
   const dispose = (): void => {
     closeDefaultSharedStore(dbPath);
     rmSync(tmp, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });

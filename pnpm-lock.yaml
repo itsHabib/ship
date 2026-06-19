@@ -204,6 +204,9 @@ importers:
       '@ship/core':
         specifier: workspace:*
         version: link:../core
+      '@ship/receipt':
+        specifier: workspace:*
+        version: link:../receipt
       '@ship/store':
         specifier: workspace:*
         version: link:../store

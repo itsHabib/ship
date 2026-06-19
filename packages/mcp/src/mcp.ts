@@ -544,3 +544,18 @@ export const driverDecideOutputSchema = z
   })
   .strict();
 export type DriverDecideOutput = z.infer<typeof driverDecideOutputSchema>;
+
+export const driverLandInputSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+    prNumber: z.number().int().positive(),
+    streamId: driverStreamIdSchema.optional(),
+    cycles: z.number().int().nonnegative().optional(),
+    /** Merge with `--admin` (bypass branch protection). Default false. */
+    admin: z.boolean().optional(),
+  })
+  .strict();
+export type DriverLandInput = z.infer<typeof driverLandInputSchema>;
+
+export const driverLandOutputSchema = driverDecideOutputSchema;
+export type DriverLandOutput = z.infer<typeof driverLandOutputSchema>;

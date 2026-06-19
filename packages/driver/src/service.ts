@@ -5,14 +5,23 @@
 import type { Store } from "@ship/store";
 import type { DriverRun, DriverRunStatus, ListDriverRunsFilter } from "@ship/store";
 
+import type { DriverGhPort } from "./gh-port.js";
 import type { ImportManifestResult } from "./import.js";
 import type { DriverShipPort } from "./ship-port.js";
-import type { Decision, DriverRunRef, DriverTickResult, MergeFacts, RunOpts } from "./types.js";
+import type {
+  Decision,
+  DriverRunRef,
+  DriverTickResult,
+  LandOpts,
+  MergeFacts,
+  RunOpts,
+} from "./types.js";
 
 import { resolveRunOpts, runTick } from "./engine.js";
-import { DriverRunNotFoundEngineError } from "./errors.js";
+import { DecideError, DriverRunNotFoundEngineError } from "./errors.js";
 import { importManifest as importManifestFn } from "./import.js";
 import { cancelRun, decide as decideFn, markMerged as markMergedFn } from "./judgment.js";
+import { land as landFn } from "./land.js";
 import { renderDriverRun } from "./render.js";
 
 export interface DriverService {
@@ -20,6 +29,7 @@ export interface DriverService {
   run(ref: DriverRunRef, opts?: RunOpts): Promise<DriverTickResult>;
   decide(driverRunId: string, streamId: string, decision: Decision): DriverRun;
   markMerged(driverRunId: string, streamId: string, facts: MergeFacts): DriverRun;
+  land(driverRunId: string, opts: LandOpts): Promise<DriverRun>;
   cancel(driverRunId: string): Promise<DriverRun>;
   render(driverRunId: string): string;
   getDriverRun(id: string): DriverRun | null;
@@ -33,13 +43,14 @@ export interface DriverService {
 export interface CreateDriverServiceOpts {
   store: Store;
   ship: DriverShipPort;
+  gh?: DriverGhPort;
   clock?: () => number;
   rng?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
 
 export function createDriverService(opts: CreateDriverServiceOpts): DriverService {
-  const { store, ship, clock, rng, sleep } = opts;
+  const { store, ship, gh, clock, rng, sleep } = opts;
 
   const now = (): string => new Date((clock ?? Date.now)()).toISOString();
 
@@ -49,6 +60,12 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
     getDriverRun: (id) => store.getDriverRun(id),
     importManifest: (manifestPath) => importManifestFn(store, manifestPath),
     listDriverRuns: (filter) => store.listDriverRuns(filter ?? {}),
+    land: async (driverRunId, landOpts) => {
+      if (gh === undefined) {
+        throw new DecideError("land requires a GitHub port — wire gh in createDriverService");
+      }
+      return landFn(store, gh, driverRunId, landOpts);
+    },
     markMerged: (driverRunId, streamId, facts) => markMergedFn(store, driverRunId, streamId, facts),
     render: (driverRunId) => renderDriverRun(store, driverRunId),
     run: async (ref, runOpts) => {

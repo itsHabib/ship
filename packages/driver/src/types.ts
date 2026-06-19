@@ -28,6 +28,14 @@ export interface MergeFacts {
   cycles?: number;
 }
 
+export interface LandOpts {
+  prNumber: number;
+  streamId?: string;
+  cycles?: number;
+  /** Pass `--admin` to the merge (bypass branch protection). Default false. */
+  admin?: boolean;
+}
+
 export interface DriverStreamView {
   streamId: string;
   batchIndex: number;

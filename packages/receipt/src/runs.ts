@@ -198,7 +198,7 @@ function firstPrUrl(branches: { prUrl?: string | undefined }[] | undefined): str
   return undefined;
 }
 
-function prNumberFromUrl(prUrl: string | undefined): number | undefined {
+export function prNumberFromUrl(prUrl: string | undefined): number | undefined {
   if (prUrl === undefined) {
     return undefined;
   }

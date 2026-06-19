@@ -164,6 +164,7 @@ describe("ship tool", () => {
       "cancel_workflow_run",
       "download_artifact",
       "driver_decide",
+      "driver_land",
       "driver_run",
       "driver_status",
       "get_workflow_run",
