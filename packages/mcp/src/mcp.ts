@@ -551,6 +551,8 @@ export const driverLandInputSchema = z
     prNumber: z.number().int().positive(),
     streamId: driverStreamIdSchema.optional(),
     cycles: z.number().int().nonnegative().optional(),
+    /** Merge with `--admin` (bypass branch protection). Default false. */
+    admin: z.boolean().optional(),
   })
   .strict();
 export type DriverLandInput = z.infer<typeof driverLandInputSchema>;

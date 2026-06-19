@@ -32,10 +32,27 @@ describe("land", () => {
 
     expect(gh.mergeCalls).toHaveLength(1);
     expect(gh.mergeCalls[0]?.prNumber).toBe(42);
+    // --admin is opt-in: the default land path merges without it.
+    expect(gh.mergeCalls[0]?.admin).toBe(false);
     expect(stream?.status).toBe("done");
     expect(stream?.prNumber).toBe(42);
     expect(stream?.mergeCommit).toBe("fake-merge-sha");
     expect(stream?.mergedAt).toBeDefined();
+  });
+
+  test("threads admin:true through to the merge", async () => {
+    const streamId = newDriverStreamId();
+    const runId = seedLandedRun(store, streamId, {
+      prUrl: "https://github.com/org/repo/pull/43",
+    });
+    const gh = createFakeGhPort({
+      43: { mergeCommit: null, mergedAt: null, state: "OPEN" },
+    });
+
+    await land(store, gh, runId, { admin: true, prNumber: 43 });
+
+    expect(gh.mergeCalls).toHaveLength(1);
+    expect(gh.mergeCalls[0]?.admin).toBe(true);
   });
 
   test("records an already-MERGED PR without re-merging", async () => {
@@ -75,6 +92,24 @@ describe("land", () => {
     expect(run.batches[0]?.streams[0]?.id).toBe(streamId);
   });
 
+  test("resolves an already-done stream from --pr (idempotent re-land)", async () => {
+    const streamId = newDriverStreamId();
+    const runId = seedDoneRun(store, streamId, "https://github.com/org/repo/pull/77");
+    const gh = createFakeGhPort({
+      77: {
+        mergeCommit: { oid: "sha77" },
+        mergedAt: "2026-06-12T05:00:00.000Z",
+        state: "MERGED",
+      },
+    });
+
+    const run = await land(store, gh, runId, { prNumber: 77 });
+    // The stream was already `done`; resolving by --pr must not throw.
+    expect(run.batches[0]?.streams[0]?.id).toBe(streamId);
+    expect(run.batches[0]?.streams[0]?.status).toBe("done");
+    expect(gh.mergeCalls).toEqual([]);
+  });
+
   test("resolves stream via explicit streamId fallback", async () => {
     const streamId = newDriverStreamId();
     const runId = seedLandedRun(store, streamId, {});
@@ -99,7 +134,7 @@ describe("land", () => {
     await expect(land(store, gh, runId, { prNumber: 5 })).rejects.toThrow(/pass --stream/);
   });
 
-  test("errors when stream is not landed", async () => {
+  test("errors when stream is not in a landable state", async () => {
     const streamId = newDriverStreamId();
     const runId = store.insertDriverRun({
       batches: [
@@ -130,7 +165,9 @@ describe("land", () => {
     }).id;
     const gh = createFakeGhPort();
 
-    await expect(land(store, gh, runId, { prNumber: 11, streamId })).rejects.toThrow(/not landed/);
+    await expect(land(store, gh, runId, { prNumber: 11, streamId })).rejects.toThrow(
+      /is not in a landable state \(expected landed or done; got dispatched\)/,
+    );
   });
 });
 
@@ -156,6 +193,40 @@ function seedLandedRun(
             streamIndex: 0,
             touches: [],
             ...(opts.prUrl !== undefined ? { prUrl: opts.prUrl } : {}),
+          },
+        ],
+      },
+    ],
+    id: newDriverRunId(),
+    manifestPath: "/tmp/driver.md",
+    repo: "ship",
+    sourceJson: minimalSource(),
+    status: "running",
+  }).id;
+}
+
+function seedDoneRun(
+  store: ReturnType<typeof createStore>,
+  streamId: string,
+  prUrl: string,
+): string {
+  return store.insertDriverRun({
+    batches: [
+      {
+        batchIndex: 1,
+        dependsOn: [],
+        id: newDriverBatchId(),
+        status: "running",
+        streams: [
+          {
+            attempts: [],
+            id: streamId,
+            prUrl,
+            runtime: "cloud",
+            specPath: "a.md",
+            status: "done",
+            streamIndex: 0,
+            touches: [],
           },
         ],
       },

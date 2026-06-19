@@ -1,6 +1,6 @@
 /** In-memory gh port for driver land tests. */
 
-import type { DriverGhPort, GhPullRequestView } from "../gh-port.js";
+import type { DriverGhPort, GhMergeOpts, GhPullRequestView } from "../gh-port.js";
 
 export interface FakeGhPrState {
   state: GhPullRequestView["state"];
@@ -9,19 +9,19 @@ export interface FakeGhPrState {
 }
 
 export interface FakeGhPort extends DriverGhPort {
-  mergeCalls: { repo: string; prNumber: number }[];
+  mergeCalls: { repo: string; prNumber: number; admin: boolean }[];
 }
 
 export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): FakeGhPort {
   const prs = new Map<number, FakeGhPrState>(
     Object.entries(initial).map(([k, v]) => [Number(k), v]),
   );
-  const mergeCalls: { repo: string; prNumber: number }[] = [];
+  const mergeCalls: { repo: string; prNumber: number; admin: boolean }[] = [];
 
   return {
     mergeCalls,
-    mergePullRequest(_repo: string, prNumber: number): Promise<void> {
-      mergeCalls.push({ prNumber, repo: _repo });
+    mergePullRequest(_repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void> {
+      mergeCalls.push({ admin: opts?.admin === true, prNumber, repo: _repo });
       const current = prs.get(prNumber);
       if (current === undefined) {
         prs.set(prNumber, {

@@ -192,6 +192,48 @@ describe("ship driver", () => {
     expect(stream?.mergeCommit).toBe("fake-merge-sha");
     expect(gh.mergeCalls).toHaveLength(1);
     expect(gh.mergeCalls[0]?.prNumber).toBe(55);
+    // --admin not passed: the default land path merges without it.
+    expect(gh.mergeCalls[0]?.admin).toBe(false);
+  });
+
+  test("land --admin threads the admin opt-in through to the merge", async () => {
+    const gh = createFakeGhPort({
+      66: { mergeCommit: null, mergedAt: null, state: "OPEN" },
+    });
+    h.dispose();
+    h = createDriverDiskHarness(gh);
+    const layout = writeOneStreamManifest(h.repoRoot);
+    h.cursor.enqueue({
+      events: [],
+      result: {
+        status: "succeeded",
+        durationMs: 0,
+        branches: [
+          {
+            branch: "feat-a",
+            prUrl: "https://github.com/org/ship/pull/66",
+            repoUrl: "https://github.com/org/ship",
+          },
+        ],
+      },
+    });
+    await runDriver([
+      "driver",
+      "run",
+      layout.manifestPath,
+      "--max-wait",
+      "30s",
+      "--poll-interval",
+      "1s",
+      "--json",
+    ]);
+    const imported = JSON.parse(stdout.join("").trim()) as { driverRunId: string };
+    stdout.length = 0;
+    expect(
+      await runDriver(["driver", "land", imported.driverRunId, "--pr", "66", "--admin"]),
+    ).toBe(0);
+    expect(gh.mergeCalls).toHaveLength(1);
+    expect(gh.mergeCalls[0]?.admin).toBe(true);
   });
 
   test("land records an already-MERGED PR without re-merging", async () => {

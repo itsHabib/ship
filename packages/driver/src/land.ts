@@ -24,7 +24,7 @@ export async function land(
   const streamId = resolveLandStream(run, opts);
   assertStreamLandable(run, streamId);
 
-  const prView = await fetchMergedPrView(gh, repo, opts.prNumber);
+  const prView = await fetchMergedPrView(gh, repo, opts.prNumber, opts.admin === true);
   const facts = buildLandFacts(prView, opts);
   return markMerged(store, driverRunId, streamId, facts);
 }
@@ -51,7 +51,9 @@ function assertStreamLandable(run: DriverRun, streamId: string): void {
     throw new DecideError(`stream not found: ${streamId}`);
   }
   if (stream.status !== "landed" && stream.status !== "done") {
-    throw new DecideError(`stream ${streamId} is not landed (status=${stream.status})`);
+    throw new DecideError(
+      `stream ${streamId} is not in a landable state (expected landed or done; got ${stream.status})`,
+    );
   }
 }
 
@@ -59,11 +61,12 @@ async function fetchMergedPrView(
   gh: DriverGhPort,
   repo: string,
   prNumber: number,
+  admin: boolean,
 ): Promise<GhPullRequestView> {
   try {
     let prView = await gh.viewPullRequest(repo, prNumber);
     if (prView.state !== "MERGED") {
-      await gh.mergePullRequest(repo, prNumber);
+      await gh.mergePullRequest(repo, prNumber, { admin });
       prView = await gh.viewPullRequest(repo, prNumber);
     }
 
@@ -126,8 +129,9 @@ function resolveExplicitStream(run: DriverRun, streamId: string, prNumber: numbe
 
 function resolveStreamByPr(run: DriverRun, prNumber: number): string {
   const matches = allStreams(run).filter(
-    (stream): stream is DriverStream & { status: "landed" } =>
-      stream.status === "landed" && prNumberFromUrl(stream.prUrl) === prNumber,
+    (stream): stream is DriverStream & { status: "done" | "landed" } =>
+      (stream.status === "landed" || stream.status === "done") &&
+      prNumberFromUrl(stream.prUrl) === prNumber,
   );
 
   if (matches.length === 0) {

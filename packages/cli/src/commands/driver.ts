@@ -49,6 +49,7 @@ interface LandCommandOpts {
   pr: string;
   stream?: string;
   cycles?: string;
+  admin?: boolean;
 }
 
 interface RenderOpts {
@@ -139,6 +140,7 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     .requiredOption("--pr <n>", "PR number to merge and record")
     .option("--stream <ds_id>", "driver stream id (required when prUrl is absent or ambiguous)")
     .option("--cycles <n>", "review cycles completed")
+    .option("--admin", "merge with --admin (bypass branch protection)")
     .action(async (driverRunId: string, rawOpts: LandCommandOpts) => {
       await runDriverActionAsync(async () => {
         const landOpts = buildLandOpts(rawOpts);
@@ -311,5 +313,6 @@ function buildLandOpts(opts: LandCommandOpts): LandOpts {
   if (opts.cycles !== undefined) {
     landOpts.cycles = parseIntOptionAtLeast(opts.cycles, "--cycles", 0);
   }
+  if (opts.admin === true) landOpts.admin = true;
   return landOpts;
 }

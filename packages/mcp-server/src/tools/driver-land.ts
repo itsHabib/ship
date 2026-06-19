@@ -25,6 +25,7 @@ export function registerDriverLandTool(server: McpServer, factory: DriverService
           prNumber: validated.prNumber,
           ...(validated.streamId !== undefined ? { streamId: validated.streamId } : {}),
           ...(validated.cycles !== undefined ? { cycles: validated.cycles } : {}),
+          ...(validated.admin !== undefined ? { admin: validated.admin } : {}),
         });
         const validatedOut = driverLandOutputSchema.parse({
           driverRunId: run.id,
