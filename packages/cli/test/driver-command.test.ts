@@ -229,9 +229,9 @@ describe("ship driver", () => {
     ]);
     const imported = JSON.parse(stdout.join("").trim()) as { driverRunId: string };
     stdout.length = 0;
-    expect(
-      await runDriver(["driver", "land", imported.driverRunId, "--pr", "66", "--admin"]),
-    ).toBe(0);
+    expect(await runDriver(["driver", "land", imported.driverRunId, "--pr", "66", "--admin"])).toBe(
+      0,
+    );
     expect(gh.mergeCalls).toHaveLength(1);
     expect(gh.mergeCalls[0]?.admin).toBe(true);
   });
