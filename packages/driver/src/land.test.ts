@@ -334,6 +334,69 @@ describe("land", () => {
       );
       expect(gh.mergeCalls).toEqual([]);
     });
+
+    test("allows a PR whose only check is SKIPPED (merge proceeds)", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/108",
+      });
+      const gh = createFakeGhPort({
+        108: {
+          checks: [{ conclusion: "SKIPPED", name: "optional", status: "COMPLETED" }],
+          mergeable: "MERGEABLE",
+          mergeCommit: null,
+          mergedAt: null,
+          state: "OPEN",
+        },
+      });
+
+      const run = await land(store, gh, runId, { prNumber: 108 });
+
+      expect(gh.mergeCalls).toHaveLength(1);
+      expect(run.batches[0]?.streams[0]?.status).toBe("done");
+    });
+
+    test("allows a PR whose only check is NEUTRAL (merge proceeds)", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/109",
+      });
+      const gh = createFakeGhPort({
+        109: {
+          checks: [{ conclusion: "NEUTRAL", name: "advisory", status: "COMPLETED" }],
+          mergeable: "MERGEABLE",
+          mergeCommit: null,
+          mergedAt: null,
+          state: "OPEN",
+        },
+      });
+
+      const run = await land(store, gh, runId, { prNumber: 109 });
+
+      expect(gh.mergeCalls).toHaveLength(1);
+      expect(run.batches[0]?.streams[0]?.status).toBe("done");
+    });
+
+    test("blocks a PR with a QUEUED check (still running)", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/110",
+      });
+      const gh = createFakeGhPort({
+        110: {
+          checks: [{ conclusion: "", name: "test", status: "QUEUED" }],
+          mergeable: "MERGEABLE",
+          mergeCommit: null,
+          mergedAt: null,
+          state: "OPEN",
+        },
+      });
+
+      await expect(land(store, gh, runId, { prNumber: 110 })).rejects.toThrow(
+        /refusing to merge PR #110: not ready — checks still running: test/,
+      );
+      expect(gh.mergeCalls).toEqual([]);
+    });
   });
 });
 

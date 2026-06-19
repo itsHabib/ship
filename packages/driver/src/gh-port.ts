@@ -130,7 +130,12 @@ function normalizeRollupNode(node: GhPrRollupNode): GhPrCheck {
   if (node.status !== undefined && node.status !== null) {
     return { conclusion: node.conclusion ?? "", name, status: node.status };
   }
-  // Commit-status node: `state` is already terminal (SUCCESS/FAILURE/...).
+  // Commit-status node: `state` is SUCCESS/FAILURE/ERROR (terminal) or
+  // PENDING/EXPECTED (still running). Map the non-terminal states to a
+  // non-terminal check so the guard reports "still running", not "failing".
   const state = node.state ?? "";
+  if (state === "PENDING" || state === "EXPECTED") {
+    return { conclusion: "", name, status: state };
+  }
   return { conclusion: state, name, status: "COMPLETED" };
 }
