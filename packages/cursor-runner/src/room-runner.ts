@@ -2,7 +2,8 @@
  * `RoomCursorRunner` — drives a Cursor agent inside a disposable rooms
  * microVM. Unlike Local/Cloud it is NOT an `@cursor/sdk` caller (the SDK
  * runs inside the VM): it is a subprocess orchestrator over the `rooms`
- * binary (ED-1). It spawns `rooms run`, reads the host-collected `--out`
+ * binary (ED-1). It spawns `sudo -E rooms run` (the Firecracker jailer needs
+ * root — rooms #44), reads the host-collected `--out`
  * contract artifacts, replays `events.ndjson` through `onEvent`, then
  * resolves a `CursorRunResult` whose `branches[]` carries the pushed
  * branch — the same shape `CloudCursorRunner` returns (ED-2). PR opening
@@ -222,7 +223,7 @@ export class RoomCursorRunner implements CursorRunner {
         return;
       }
 
-      const args = buildRoomsArgs({
+      const roomsArgs = buildRoomsArgs({
         baseSha: room.repos[0].startingRef ?? "HEAD",
         image,
         model: input.model.id,
@@ -231,7 +232,8 @@ export class RoomCursorRunner implements CursorRunner {
         repoUrl: room.repos[0].url,
         taskPath,
       });
-      const child = this.#spawn(this.#roomsBin, args, { env: buildRoomsEnv() });
+      const { command, args } = elevateRoomsCommand(this.#roomsBin, roomsArgs);
+      const child = this.#spawn(command, args, { env: buildRoomsEnv() });
       cb.setChild(child);
       this.#wireChild(child, { cb, input, outDir, repoUrl: room.repos[0].url, tmpRoot });
     } catch (err) {
@@ -444,6 +446,27 @@ function emitRoomEvent(line: string, onEvent: CursorRunInput["onEvent"]): void {
 }
 
 // --- argv / env builders ---
+
+// `rooms run` drives the Firecracker jailer, which chroots, bind-mounts the
+// rootfs, and drops to an unprivileged `firecracker` user — all of which
+// require root (rooms #44). The runner therefore spawns `sudo`, not `rooms`,
+// so the jailer can elevate. `-E` preserves the caller's environment so the
+// jailed `rooms` keeps HOME (→ the operator's ~/rooms image + state dirs) and
+// the GH_TOKEN / CURSOR_API_KEY / ANTHROPIC_API_KEY that ride buildRoomsEnv()
+// onto the subprocess env. Without elevation `rooms run` exits before it can
+// boot a VM.
+const ELEVATE_BIN = "sudo";
+const ELEVATE_FLAGS: readonly string[] = ["-E"];
+
+// Wrap the rooms invocation: `sudo -E <roomsBin> <roomsArgs…>`. `roomsBin`
+// becomes sudo's first non-flag argument; an absolute path bypasses sudo's
+// `secure_path` lookup when `rooms` lives outside it.
+function elevateRoomsCommand(
+  roomsBin: string,
+  roomsArgs: readonly string[],
+): { command: string; args: string[] } {
+  return { args: [...ELEVATE_FLAGS, roomsBin, ...roomsArgs], command: ELEVATE_BIN };
+}
 
 function buildRoomsArgs(args: {
   baseSha: string;

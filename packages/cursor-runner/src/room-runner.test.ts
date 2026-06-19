@@ -183,8 +183,10 @@ describe("RoomCursorRunner.run — argv + env", () => {
       await handle.result;
 
       const call = f.calls[0]!;
-      expect(call.command).toBe("rooms");
-      expect(call.args.slice(0, 3)).toEqual(["run", "--runner", "cursor"]);
+      // rooms run drives the jailer (root-only since rooms #44), so the runner
+      // spawns `sudo -E rooms run …` rather than `rooms` directly.
+      expect(call.command).toBe("sudo");
+      expect(call.args.slice(0, 5)).toEqual(["-E", "rooms", "run", "--runner", "cursor"]);
       expect(argVal(call.args, "--repo")).toBe(REPO_URL);
       expect(argVal(call.args, "--base-sha")).toBe("HEAD");
       expect(argVal(call.args, "--model")).toBe("composer-2.5");
@@ -261,6 +263,17 @@ describe("RoomCursorRunner.run — argv + env", () => {
     ).result;
     expect(argVal(f.calls[0]!.args, "--base-sha")).toBe("abc123");
     expect(argVal(f.calls[0]!.args, "--push-branch")).toBe("rooms/custom");
+  });
+
+  test("a custom roomsBin is the sudo'd binary (absolute-path escape hatch for secure_path)", async () => {
+    const f = fakeRooms({ result: successResult() });
+    const runner = new RoomCursorRunner({ roomsBin: "/opt/rooms/bin/rooms", spawn: f.spawn });
+    await (
+      await runner.run(roomsInput())
+    ).result;
+    const call = f.calls[0]!;
+    expect(call.command).toBe("sudo");
+    expect(call.args.slice(0, 3)).toEqual(["-E", "/opt/rooms/bin/rooms", "run"]);
   });
 });
 
@@ -375,8 +388,8 @@ describe("RoomCursorRunner.run — artifact contract failures (reject result)", 
     await expect(handle.result).rejects.toBeInstanceOf(RoomArtifactError);
   });
 
-  test("spawn error (binary missing) → result rejects", async () => {
-    const f = fakeRooms({ spawnError: new Error("spawn rooms ENOENT") });
+  test("spawn error (sudo missing) → result rejects", async () => {
+    const f = fakeRooms({ spawnError: new Error("spawn sudo ENOENT") });
     const handle = await new RoomCursorRunner({ spawn: f.spawn }).run(roomsInput());
     await expect(handle.result).rejects.toThrow(/rooms subprocess failed/);
   });
