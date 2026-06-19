@@ -4,6 +4,7 @@ import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { DecideError } from "./errors.js";
+import { toGhRepo } from "./gh-port.js";
 import { land } from "./land.js";
 import { createFakeGhPort } from "./test/fake-gh-port.js";
 
@@ -397,6 +398,42 @@ describe("land", () => {
       );
       expect(gh.mergeCalls).toEqual([]);
     });
+
+    test("allows a PR with UNKNOWN mergeability (still computing, not a conflict)", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/111",
+      });
+      const gh = createFakeGhPort({
+        111: {
+          checks: [{ conclusion: "SUCCESS", name: "ci", status: "COMPLETED" }],
+          mergeable: "UNKNOWN",
+          mergeCommit: null,
+          mergedAt: null,
+          state: "OPEN",
+        },
+      });
+
+      const run = await land(store, gh, runId, { prNumber: 111 });
+
+      expect(gh.mergeCalls).toHaveLength(1);
+      expect(run.batches[0]?.streams[0]?.status).toBe("done");
+    });
+  });
+});
+
+describe("toGhRepo", () => {
+  test("extracts owner/repo from a full https URL", () => {
+    expect(toGhRepo("https://github.com/itsHabib/ship")).toBe("itsHabib/ship");
+  });
+  test("strips a trailing .git", () => {
+    expect(toGhRepo("https://github.com/itsHabib/ship.git")).toBe("itsHabib/ship");
+  });
+  test("handles an ssh remote", () => {
+    expect(toGhRepo("git@github.com:itsHabib/ship.git")).toBe("itsHabib/ship");
+  });
+  test("passes through a short owner/repo unchanged", () => {
+    expect(toGhRepo("itsHabib/ship")).toBe("itsHabib/ship");
   });
 });
 

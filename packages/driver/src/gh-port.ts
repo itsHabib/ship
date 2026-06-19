@@ -73,10 +73,28 @@ interface GhPrReadinessJson {
  * --delete-branch`; `--admin` is opt-in (`opts.admin === true`) so the default
  * path respects branch protection and only the operator's flow bypasses it.
  */
+/**
+ * `gh -R` wants `OWNER/REPO`; driver manifests carry `repo_url` as a full
+ * `https://github.com/owner/repo` (or `git@github.com:owner/repo`) URL. Pull
+ * out `owner/repo`; pass through a value that is already in short form.
+ */
+export function toGhRepo(repo: string): string {
+  const match = /github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(repo);
+  return match?.[1] ?? repo;
+}
+
 export function createExecGhPort(): DriverGhPort {
   return {
     async mergePullRequest(repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void> {
-      const args = ["pr", "merge", String(prNumber), "--squash", "--delete-branch", "-R", repo];
+      const args = [
+        "pr",
+        "merge",
+        String(prNumber),
+        "--squash",
+        "--delete-branch",
+        "-R",
+        toGhRepo(repo),
+      ];
       if (opts?.admin === true) {
         args.splice(4, 0, "--admin");
       }
@@ -90,7 +108,7 @@ export function createExecGhPort(): DriverGhPort {
         "--json",
         "mergeCommit,mergedAt,state",
         "-R",
-        repo,
+        toGhRepo(repo),
       ]);
       const parsed = JSON.parse(stdout) as GhPrViewJson;
       return {
@@ -107,7 +125,7 @@ export function createExecGhPort(): DriverGhPort {
         "--json",
         "state,isDraft,mergeable,statusCheckRollup",
         "-R",
-        repo,
+        toGhRepo(repo),
       ]);
       const parsed = JSON.parse(stdout) as GhPrReadinessJson;
       return {

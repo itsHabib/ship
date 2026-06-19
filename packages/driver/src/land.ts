@@ -100,11 +100,7 @@ const PASSING_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
  * which reads BLOCKED for the bots-only-comment workflow (missing required
  * approval) that --admin intentionally bypasses.
  */
-async function assertReady(
-  gh: DriverGhPort,
-  repo: string,
-  prNumber: number,
-): Promise<void> {
+async function assertReady(gh: DriverGhPort, repo: string, prNumber: number): Promise<void> {
   const readiness = await gh.fetchPrReadiness(repo, prNumber);
   const reason = unreadyReason(readiness);
   if (reason !== undefined) {
@@ -116,7 +112,7 @@ function unreadyReason(readiness: GhPrReadiness): string | undefined {
   if (readiness.isDraft) {
     return "draft";
   }
-  if (readiness.mergeable !== "MERGEABLE") {
+  if (readiness.mergeable === "CONFLICTING") {
     return "merge conflicts";
   }
   const failing = readiness.checks.filter(isFailingCheck).map((c) => c.name);
