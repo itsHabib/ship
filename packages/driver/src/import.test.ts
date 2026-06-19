@@ -134,4 +134,55 @@ describe("importManifest", () => {
     expect(() => importManifest(store, path)).toThrow(ImportManifestError);
     expect(() => importManifest(store, path)).toThrow(/cannot read manifest/);
   });
+
+  it("returns warnings for manifests with unknown keys", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-import-warn-"));
+    const path = join(dir, "driver.md");
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-06-10T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "base_branch: main",
+      "batches: []",
+      "---",
+    ].join("\n");
+    writeFileSync(path, text, "utf8");
+
+    const { run, warnings } = importManifest(store, path);
+    expect(run.repo).toBe("ship");
+    expect(warnings).toBeDefined();
+    expect(warnings?.some((warning) => warning.includes('unknown field "base_branch"'))).toBe(true);
+    rmSync(dir, { force: true, recursive: true });
+  });
+
+  it("re-import of manifest with unknown keys still returns warnings", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-import-rewarn-"));
+    const path = join(dir, "driver.md");
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-06-10T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "rolls_up_task_ids: [tsk_01]",
+      "batches: []",
+      "---",
+    ].join("\n");
+    writeFileSync(path, text, "utf8");
+
+    const first = importManifest(store, path);
+    const second = importManifest(store, path);
+    expect(second.alreadyImported).toBe(true);
+    expect(second.run.id).toBe(first.run.id);
+    expect(second.warnings?.some((warning) => warning.includes("rolls_up_task_ids"))).toBe(true);
+    rmSync(dir, { force: true, recursive: true });
+  });
 });

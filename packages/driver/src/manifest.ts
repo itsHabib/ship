@@ -85,7 +85,7 @@ export interface ManifestParseError {
 }
 
 export type ParseManifestResult =
-  | { ok: true; manifest: DriverManifest; rawFrontmatter: string }
+  | { ok: true; manifest: DriverManifest; rawFrontmatter: string; warnings: string[] }
   | { ok: false; errors: ManifestParseError[] };
 
 interface ExtractFrontmatterSuccess {
@@ -100,6 +100,13 @@ interface ExtractFrontmatterFailure {
 }
 
 type ExtractFrontmatterResult = ExtractFrontmatterSuccess | ExtractFrontmatterFailure;
+
+interface ManifestLocationContext {
+  doc: Document.Parsed;
+  startLine: number;
+  lineCounter: LineCounter;
+  frontmatter: string;
+}
 
 /** Parse a `driver.md` manifest string. Total — never throws. */
 export function parseManifest(text: string): ParseManifestResult {
@@ -148,29 +155,12 @@ export function parseManifest(text: string): ParseManifestResult {
     return { ok: false, errors: [versionError] };
   }
 
-  const schemaResult = driverManifestSchema.safeParse(parsed);
-  if (!schemaResult.success) {
-    return {
-      ok: false,
-      errors: zodIssuesToManifestErrors(schemaResult.error.issues, doc, startLine, lineCounter),
-    };
-  }
-
-  const referentialErrors = validateReferentialIntegrity(
-    schemaResult.data,
+  return parseValidatedManifestObject(parsed, {
     doc,
-    startLine,
+    frontmatter,
     lineCounter,
-  );
-  if (referentialErrors.length > 0) {
-    return { ok: false, errors: referentialErrors };
-  }
-
-  return {
-    ok: true,
-    manifest: schemaResult.data,
-    rawFrontmatter: frontmatter,
-  };
+    startLine,
+  });
 }
 
 function extractFrontmatter(text: string): ExtractFrontmatterResult {
@@ -282,6 +272,150 @@ function unsupportedDriverVersionError(
   return error;
 }
 
+type UnrecognizedKeyIssue = z.ZodIssue & { code: "unrecognized_keys" };
+
+function parseValidatedManifestObject(
+  parsed: Record<string, unknown>,
+  ctx: ManifestLocationContext,
+): ParseManifestResult {
+  const schemaResult = driverManifestSchema.safeParse(parsed);
+  if (schemaResult.success) {
+    return completeManifestParse(schemaResult.data, ctx, []);
+  }
+
+  const { unrecognized, errors: hardIssues } = partitionZodIssues(schemaResult.error.issues);
+  if (hardIssues.length > 0) {
+    return {
+      ok: false,
+      errors: zodIssuesToManifestErrors(hardIssues, ctx.doc, ctx.startLine, ctx.lineCounter),
+    };
+  }
+
+  const warnings = unrecognizedKeyIssuesToWarnings(
+    unrecognized,
+    ctx.doc,
+    ctx.startLine,
+    ctx.lineCounter,
+  );
+  const stripped = stripUnrecognizedKeys(parsed, unrecognized);
+  const retryResult = driverManifestSchema.safeParse(stripped);
+  if (!retryResult.success) {
+    return {
+      ok: false,
+      errors: zodIssuesToManifestErrors(
+        retryResult.error.issues,
+        ctx.doc,
+        ctx.startLine,
+        ctx.lineCounter,
+      ),
+    };
+  }
+
+  return completeManifestParse(retryResult.data, ctx, warnings);
+}
+
+function completeManifestParse(
+  manifest: DriverManifest,
+  ctx: ManifestLocationContext,
+  warnings: string[],
+): ParseManifestResult {
+  const referentialErrors = validateReferentialIntegrity(
+    manifest,
+    ctx.doc,
+    ctx.startLine,
+    ctx.lineCounter,
+  );
+  if (referentialErrors.length > 0) {
+    return { ok: false, errors: referentialErrors };
+  }
+
+  return {
+    ok: true,
+    manifest,
+    rawFrontmatter: ctx.frontmatter,
+    warnings,
+  };
+}
+
+function partitionZodIssues(issues: z.ZodIssue[]): {
+  unrecognized: UnrecognizedKeyIssue[];
+  errors: z.ZodIssue[];
+} {
+  const unrecognized: UnrecognizedKeyIssue[] = [];
+  const errors: z.ZodIssue[] = [];
+  for (const issue of issues) {
+    if (issue.code === "unrecognized_keys") {
+      unrecognized.push(issue);
+      continue;
+    }
+    errors.push(issue);
+  }
+  return { unrecognized, errors };
+}
+
+function stripUnrecognizedKeys(
+  parsed: Record<string, unknown>,
+  issues: UnrecognizedKeyIssue[],
+): Record<string, unknown> {
+  const clone = structuredClone(parsed);
+  for (const issue of issues) {
+    const container = getContainerAtPath(clone, issue.path);
+    if (container === undefined) {
+      continue;
+    }
+    for (const key of issue.keys) {
+      Reflect.deleteProperty(container, key);
+    }
+  }
+  return clone;
+}
+
+function getContainerAtPath(
+  root: Record<string, unknown>,
+  path: (string | number)[],
+): Record<string, unknown> | undefined {
+  if (path.length === 0) {
+    return root;
+  }
+  let current: unknown = root;
+  for (const segment of path) {
+    if (current === null || typeof current !== "object") {
+      return undefined;
+    }
+    if (Array.isArray(current)) {
+      if (typeof segment !== "number") {
+        return undefined;
+      }
+      current = current[segment];
+      continue;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return isRecord(current) ? current : undefined;
+}
+
+function unrecognizedKeyIssuesToWarnings(
+  issues: UnrecognizedKeyIssue[],
+  doc: Document.Parsed,
+  startLine: number,
+  lineCounter: LineCounter,
+): string[] {
+  return issues.flatMap((issue) => {
+    const path = formatZodPath(issue.path);
+    return mapUnrecognizedKeyIssue(issue, doc, path, startLine, lineCounter).map(
+      formatManifestWarning,
+    );
+  });
+}
+
+function formatManifestWarning(error: ManifestParseError): string {
+  if (error.line === undefined) {
+    return error.message;
+  }
+  const columnSuffix = error.column !== undefined ? `, column ${String(error.column)}` : "";
+  return `line ${String(error.line)}${columnSuffix}: ${error.message}`;
+}
+
 function zodIssuesToManifestErrors(
   issues: z.ZodIssue[],
   doc: Document.Parsed,
@@ -299,10 +433,6 @@ function mapZodIssue(
 ): ManifestParseError[] {
   const path = formatZodPath(issue.path);
   const location = resolveNodeLocation(doc, issue.path, startLine, lineCounter);
-
-  if (issue.code === "unrecognized_keys") {
-    return mapUnrecognizedKeyIssue(issue, doc, path, startLine, lineCounter);
-  }
 
   if (issue.path[0] === "driver_version" && issue.code === "invalid_type") {
     return [

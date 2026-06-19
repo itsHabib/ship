@@ -144,8 +144,12 @@ export function formatCancelOutput(
 }
 
 /** Compact JSON for `ship driver import`. */
-export function formatDriverImportOutput(driverRunId: string): string {
-  return JSON.stringify({ driverRunId });
+export function formatDriverImportOutput(driverRunId: string, warnings?: string[]): string {
+  const payload: { driverRunId: string; warnings?: string[] } = { driverRunId };
+  if (warnings !== undefined && warnings.length > 0) {
+    payload.warnings = warnings;
+  }
+  return JSON.stringify(payload);
 }
 
 /** Renders a `DriverTickResult` for `ship driver run`. */

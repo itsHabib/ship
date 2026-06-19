@@ -9,6 +9,7 @@ import { describe, expect, test } from "vitest";
 import {
   formatCancelOutput,
   formatDiagnoseRun,
+  formatDriverImportOutput,
   formatShipOutput,
   formatWorkflowRun,
   formatWorkflowRunList,
@@ -59,6 +60,22 @@ const SAMPLE_RUN: WorkflowRun = {
     },
   ],
 };
+
+describe("formatDriverImportOutput", () => {
+  test("emits driverRunId only when there are no warnings", () => {
+    expect(formatDriverImportOutput("drv_01")).toBe('{"driverRunId":"drv_01"}');
+  });
+
+  test("includes warnings when present", () => {
+    const text = formatDriverImportOutput("drv_01", [
+      'line 10: unknown field "base_branch" at manifest root',
+    ]);
+    expect(JSON.parse(text)).toEqual({
+      driverRunId: "drv_01",
+      warnings: ['line 10: unknown field "base_branch" at manifest root'],
+    });
+  });
+});
 
 describe("formatShipOutput", () => {
   test("pretty mode lists status, id, summary, artifact paths", () => {
