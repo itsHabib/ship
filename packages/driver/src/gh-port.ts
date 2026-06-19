@@ -23,15 +23,49 @@ export interface GhMergeOpts {
   admin?: boolean;
 }
 
+/** One status check from a PR's `statusCheckRollup`, normalized for the guard. */
+export interface GhPrCheck {
+  name: string;
+  /** Check run / commit status state, e.g. COMPLETED, IN_PROGRESS, QUEUED, PENDING. */
+  status: string;
+  /** Terminal conclusion, e.g. SUCCESS, FAILURE, SKIPPED, NEUTRAL; "" while non-terminal. */
+  conclusion: string;
+}
+
+/** Readiness facts the land guard inspects before merging an open PR. */
+export interface GhPrReadiness {
+  state: GhPullRequestView["state"];
+  isDraft: boolean;
+  /** Conflict state, e.g. MERGEABLE, CONFLICTING, UNKNOWN. */
+  mergeable: string;
+  checks: GhPrCheck[];
+}
+
 export interface DriverGhPort {
   mergePullRequest(repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void>;
   viewPullRequest(repo: string, prNumber: number): Promise<GhPullRequestView>;
+  fetchPrReadiness(repo: string, prNumber: number): Promise<GhPrReadiness>;
 }
 
 interface GhPrViewJson {
   state: GhPullRequestView["state"];
   mergeCommit?: { oid: string } | null;
   mergedAt?: string | null;
+}
+
+interface GhPrRollupNode {
+  name?: string | null;
+  context?: string | null;
+  status?: string | null;
+  state?: string | null;
+  conclusion?: string | null;
+}
+
+interface GhPrReadinessJson {
+  state: GhPullRequestView["state"];
+  isDraft?: boolean | null;
+  mergeable?: string | null;
+  statusCheckRollup?: GhPrRollupNode[] | null;
 }
 
 /**
@@ -65,5 +99,38 @@ export function createExecGhPort(): DriverGhPort {
         state: parsed.state,
       };
     },
+    async fetchPrReadiness(repo: string, prNumber: number): Promise<GhPrReadiness> {
+      const { stdout } = await execFileAsync("gh", [
+        "pr",
+        "view",
+        String(prNumber),
+        "--json",
+        "state,isDraft,mergeable,statusCheckRollup",
+        "-R",
+        repo,
+      ]);
+      const parsed = JSON.parse(stdout) as GhPrReadinessJson;
+      return {
+        checks: (parsed.statusCheckRollup ?? []).map(normalizeRollupNode),
+        isDraft: parsed.isDraft === true,
+        mergeable: parsed.mergeable ?? "UNKNOWN",
+        state: parsed.state,
+      };
+    },
   };
+}
+
+/**
+ * Normalize a `statusCheckRollup` node into a uniform check. Check-run nodes
+ * carry `name`/`status`/`conclusion`; legacy commit-status nodes carry
+ * `context`/`state` (terminal) — fold both into `{name,status,conclusion}`.
+ */
+function normalizeRollupNode(node: GhPrRollupNode): GhPrCheck {
+  const name = node.name ?? node.context ?? "(unnamed check)";
+  if (node.status !== undefined && node.status !== null) {
+    return { conclusion: node.conclusion ?? "", name, status: node.status };
+  }
+  // Commit-status node: `state` is already terminal (SUCCESS/FAILURE/...).
+  const state = node.state ?? "";
+  return { conclusion: state, name, status: "COMPLETED" };
 }

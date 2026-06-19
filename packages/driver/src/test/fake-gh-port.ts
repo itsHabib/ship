@@ -1,11 +1,23 @@
 /** In-memory gh port for driver land tests. */
 
-import type { DriverGhPort, GhMergeOpts, GhPullRequestView } from "../gh-port.js";
+import type {
+  DriverGhPort,
+  GhMergeOpts,
+  GhPrCheck,
+  GhPrReadiness,
+  GhPullRequestView,
+} from "../gh-port.js";
 
 export interface FakeGhPrState {
   state: GhPullRequestView["state"];
   mergeCommit?: { oid: string } | null;
   mergedAt?: string | null;
+  /** Readiness facts the land guard reads via `fetchPrReadiness`. */
+  isDraft?: boolean;
+  /** Conflict state; defaults to MERGEABLE when omitted. */
+  mergeable?: string;
+  /** statusCheckRollup, normalized. Defaults to a single green check. */
+  checks?: GhPrCheck[];
 }
 
 export interface FakeGhPort extends DriverGhPort {
@@ -45,6 +57,21 @@ export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): F
         return Promise.resolve({ state: "OPEN", mergeCommit: null, mergedAt: null });
       }
       return Promise.resolve(current);
+    },
+    fetchPrReadiness(_repo: string, prNumber: number): Promise<GhPrReadiness> {
+      const current = prs.get(prNumber);
+      const state = current?.state ?? "OPEN";
+      const greenCheck: GhPrCheck = {
+        conclusion: "SUCCESS",
+        name: "ci",
+        status: "COMPLETED",
+      };
+      return Promise.resolve({
+        checks: current?.checks ?? [greenCheck],
+        isDraft: current?.isDraft === true,
+        mergeable: current?.mergeable ?? "MERGEABLE",
+        state,
+      });
     },
   };
 }

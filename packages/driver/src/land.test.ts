@@ -169,6 +169,172 @@ describe("land", () => {
       /is not in a landable state \(expected landed or done; got dispatched\)/,
     );
   });
+
+  describe("readiness guard", () => {
+    test("passes a green, non-draft, conflict-free PR (merge proceeds)", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/100",
+      });
+      const gh = createFakeGhPort({
+        100: {
+          checks: [{ conclusion: "SUCCESS", name: "ci", status: "COMPLETED" }],
+          isDraft: false,
+          mergeCommit: null,
+          mergeable: "MERGEABLE",
+          mergedAt: null,
+          state: "OPEN",
+        },
+      });
+
+      const run = await land(store, gh, runId, { prNumber: 100 });
+
+      expect(gh.mergeCalls).toHaveLength(1);
+      expect(gh.mergeCalls[0]?.prNumber).toBe(100);
+      expect(run.batches[0]?.streams[0]?.status).toBe("done");
+    });
+
+    test("blocks a draft PR", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/101",
+      });
+      const gh = createFakeGhPort({
+        101: { isDraft: true, mergeCommit: null, mergedAt: null, state: "OPEN" },
+      });
+
+      await expect(land(store, gh, runId, { prNumber: 101 })).rejects.toThrow(
+        /refusing to merge PR #101: not ready — draft/,
+      );
+      expect(gh.mergeCalls).toEqual([]);
+    });
+
+    test("blocks a PR with a FAILURE check", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/102",
+      });
+      const gh = createFakeGhPort({
+        102: {
+          checks: [
+            { conclusion: "SUCCESS", name: "lint", status: "COMPLETED" },
+            { conclusion: "FAILURE", name: "test", status: "COMPLETED" },
+          ],
+          mergeCommit: null,
+          mergedAt: null,
+          state: "OPEN",
+        },
+      });
+
+      await expect(land(store, gh, runId, { prNumber: 102 })).rejects.toThrow(
+        /refusing to merge PR #102: not ready — failing checks: test/,
+      );
+      expect(gh.mergeCalls).toEqual([]);
+    });
+
+    test("blocks a PR with an IN_PROGRESS check", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/103",
+      });
+      const gh = createFakeGhPort({
+        103: {
+          checks: [
+            { conclusion: "SUCCESS", name: "lint", status: "COMPLETED" },
+            { conclusion: "", name: "test", status: "IN_PROGRESS" },
+          ],
+          mergeCommit: null,
+          mergedAt: null,
+          state: "OPEN",
+        },
+      });
+
+      await expect(land(store, gh, runId, { prNumber: 103 })).rejects.toThrow(
+        /refusing to merge PR #103: not ready — checks still running: test/,
+      );
+      expect(gh.mergeCalls).toEqual([]);
+    });
+
+    test("blocks a PR with merge conflicts (mergeable !== MERGEABLE)", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/104",
+      });
+      const gh = createFakeGhPort({
+        104: {
+          mergeable: "CONFLICTING",
+          mergeCommit: null,
+          mergedAt: null,
+          state: "OPEN",
+        },
+      });
+
+      await expect(land(store, gh, runId, { prNumber: 104 })).rejects.toThrow(
+        /refusing to merge PR #104: not ready — merge conflicts/,
+      );
+      expect(gh.mergeCalls).toEqual([]);
+    });
+
+    test("skips the guard for an already-MERGED PR (records facts, no readiness error)", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/105",
+      });
+      // Draft + conflicting + red, yet MERGED — the guard must not fire.
+      const gh = createFakeGhPort({
+        105: {
+          checks: [{ conclusion: "FAILURE", name: "test", status: "COMPLETED" }],
+          isDraft: true,
+          mergeable: "CONFLICTING",
+          mergeCommit: { oid: "merged-sha" },
+          mergedAt: "2026-06-12T06:00:00.000Z",
+          state: "MERGED",
+        },
+      });
+
+      const run = await land(store, gh, runId, { prNumber: 105 });
+
+      expect(gh.mergeCalls).toEqual([]);
+      expect(run.batches[0]?.streams[0]?.mergeCommit).toBe("merged-sha");
+      expect(run.batches[0]?.streams[0]?.mergedAt).toBe("2026-06-12T06:00:00.000Z");
+    });
+
+    test("composes with --admin: guard still runs, green PR merges with --admin", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/106",
+      });
+      const gh = createFakeGhPort({
+        106: {
+          checks: [{ conclusion: "SUCCESS", name: "ci", status: "COMPLETED" }],
+          mergeable: "MERGEABLE",
+          mergeCommit: null,
+          mergedAt: null,
+          state: "OPEN",
+        },
+      });
+
+      await land(store, gh, runId, { admin: true, prNumber: 106 });
+
+      expect(gh.mergeCalls).toHaveLength(1);
+      expect(gh.mergeCalls[0]?.admin).toBe(true);
+    });
+
+    test("admin:true still blocks an unready (draft) PR", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/repo/pull/107",
+      });
+      const gh = createFakeGhPort({
+        107: { isDraft: true, mergeCommit: null, mergedAt: null, state: "OPEN" },
+      });
+
+      await expect(land(store, gh, runId, { admin: true, prNumber: 107 })).rejects.toThrow(
+        /refusing to merge PR #107: not ready — draft/,
+      );
+      expect(gh.mergeCalls).toEqual([]);
+    });
+  });
 });
 
 function seedLandedRun(

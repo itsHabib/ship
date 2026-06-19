@@ -7,7 +7,7 @@ import type { DriverRun, DriverStream } from "@ship/store";
 
 import { prNumberFromUrl } from "@ship/receipt";
 
-import type { DriverGhPort, GhPullRequestView } from "./gh-port.js";
+import type { DriverGhPort, GhPrReadiness, GhPullRequestView } from "./gh-port.js";
 import type { LandOpts, MergeFacts } from "./types.js";
 
 import { DecideError } from "./errors.js";
@@ -66,6 +66,9 @@ async function fetchMergedPrView(
   try {
     let prView = await gh.viewPullRequest(repo, prNumber);
     if (prView.state !== "MERGED") {
+      // Always-on readiness guard: refuse to merge an unready PR. Runs even
+      // under --admin (admin bypasses the *approval* gate, not this check).
+      await assertReady(gh, repo, prNumber);
       await gh.mergePullRequest(repo, prNumber, { admin });
       prView = await gh.viewPullRequest(repo, prNumber);
     }
@@ -85,6 +88,58 @@ async function fetchMergedPrView(
     const detail = err instanceof Error ? err.message : String(err);
     throw new DecideError(`gh operation failed for PR #${String(prNumber)}: ${detail}`);
   }
+}
+
+/** Conclusions that count as a passing terminal check. */
+const PASSING_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
+
+/**
+ * Readiness guard — refuse to merge a PR that is not genuinely ready. Always
+ * on (no flag, no --force in v1). Gates on isDraft + mergeable(conflicts) +
+ * the CHECKS rollup ONLY — deliberately NOT on the overall mergeStateStatus,
+ * which reads BLOCKED for the bots-only-comment workflow (missing required
+ * approval) that --admin intentionally bypasses.
+ */
+async function assertReady(
+  gh: DriverGhPort,
+  repo: string,
+  prNumber: number,
+): Promise<void> {
+  const readiness = await gh.fetchPrReadiness(repo, prNumber);
+  const reason = unreadyReason(readiness);
+  if (reason !== undefined) {
+    throw new DecideError(`refusing to merge PR #${String(prNumber)}: not ready — ${reason}`);
+  }
+}
+
+function unreadyReason(readiness: GhPrReadiness): string | undefined {
+  if (readiness.isDraft) {
+    return "draft";
+  }
+  if (readiness.mergeable !== "MERGEABLE") {
+    return "merge conflicts";
+  }
+  const failing = readiness.checks.filter(isFailingCheck).map((c) => c.name);
+  if (failing.length > 0) {
+    return `failing checks: ${failing.join(", ")}`;
+  }
+  const running = readiness.checks.filter(isNonTerminalCheck).map((c) => c.name);
+  if (running.length > 0) {
+    return `checks still running: ${running.join(", ")}`;
+  }
+  return undefined;
+}
+
+function isTerminalCheck(check: { status: string; conclusion: string }): boolean {
+  return check.status === "COMPLETED" && check.conclusion !== "";
+}
+
+function isNonTerminalCheck(check: { status: string; conclusion: string }): boolean {
+  return !isTerminalCheck(check);
+}
+
+function isFailingCheck(check: { status: string; conclusion: string }): boolean {
+  return isTerminalCheck(check) && !PASSING_CONCLUSIONS.has(check.conclusion);
 }
 
 function buildLandFacts(prView: GhPullRequestView, opts: LandOpts): MergeFacts {
