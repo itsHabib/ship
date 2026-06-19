@@ -69,7 +69,7 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     .action((manifestPath: string) => {
       runDriverAction(() => {
         const result = factory().importManifest(resolvePath(manifestPath));
-        process.stdout.write(`${formatDriverImportOutput(result.run.id)}\n`);
+        process.stdout.write(`${formatDriverImportOutput(result.run.id, result.warnings)}\n`);
       });
     });
 

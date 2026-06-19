@@ -27,6 +27,7 @@ export class ImportManifestError extends Error {
 export interface ImportManifestResult {
   run: DriverRun;
   alreadyImported?: boolean;
+  warnings?: string[];
 }
 
 // A missing or unreadable manifest is caller error, same as an unparseable
@@ -48,12 +49,13 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
     throw new ImportManifestError(parsed.errors);
   }
 
-  const { manifest } = parsed;
+  const { manifest, warnings } = parsed;
   const project = manifest.source.project;
   const phase = manifest.source.phase;
+  const importWarnings = warnings.length > 0 ? warnings : undefined;
   const existing = findExistingRun(store, manifest.repo, project, phase, manifest.generated_at);
   if (existing !== undefined) {
-    return { alreadyImported: true, run: existing };
+    return { alreadyImported: true, run: existing, warnings: importWarnings };
   }
 
   const batches = manifest.batches.map((batch) => buildBatchInput(batch, manifest.default_runtime));
@@ -70,7 +72,7 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
     status: runStatus,
   });
 
-  return { run };
+  return { run, warnings: importWarnings };
 }
 
 function findExistingRun(

@@ -85,7 +85,7 @@ export interface ManifestParseError {
 }
 
 export type ParseManifestResult =
-  | { ok: true; manifest: DriverManifest; rawFrontmatter: string }
+  | { ok: true; manifest: DriverManifest; rawFrontmatter: string; warnings: string[] }
   | { ok: false; errors: ManifestParseError[] };
 
 interface ExtractFrontmatterSuccess {
@@ -149,15 +149,45 @@ export function parseManifest(text: string): ParseManifestResult {
   }
 
   const schemaResult = driverManifestSchema.safeParse(parsed);
-  if (!schemaResult.success) {
+  if (schemaResult.success) {
+    const referentialErrors = validateReferentialIntegrity(
+      schemaResult.data,
+      doc,
+      startLine,
+      lineCounter,
+    );
+    if (referentialErrors.length > 0) {
+      return { ok: false, errors: referentialErrors };
+    }
+
+    return {
+      ok: true,
+      manifest: schemaResult.data,
+      rawFrontmatter: frontmatter,
+      warnings: [],
+    };
+  }
+
+  const { unrecognized, errors: hardIssues } = partitionZodIssues(schemaResult.error.issues);
+  if (hardIssues.length > 0) {
     return {
       ok: false,
-      errors: zodIssuesToManifestErrors(schemaResult.error.issues, doc, startLine, lineCounter),
+      errors: zodIssuesToManifestErrors(hardIssues, doc, startLine, lineCounter),
+    };
+  }
+
+  const warnings = unrecognizedKeyIssuesToWarnings(unrecognized, doc, startLine, lineCounter);
+  const stripped = stripUnrecognizedKeys(parsed, unrecognized);
+  const retryResult = driverManifestSchema.safeParse(stripped);
+  if (!retryResult.success) {
+    return {
+      ok: false,
+      errors: zodIssuesToManifestErrors(retryResult.error.issues, doc, startLine, lineCounter),
     };
   }
 
   const referentialErrors = validateReferentialIntegrity(
-    schemaResult.data,
+    retryResult.data,
     doc,
     startLine,
     lineCounter,
@@ -168,8 +198,9 @@ export function parseManifest(text: string): ParseManifestResult {
 
   return {
     ok: true,
-    manifest: schemaResult.data,
+    manifest: retryResult.data,
     rawFrontmatter: frontmatter,
+    warnings,
   };
 }
 
@@ -282,6 +313,85 @@ function unsupportedDriverVersionError(
   return error;
 }
 
+function partitionZodIssues(issues: z.ZodIssue[]): {
+  unrecognized: Array<z.ZodIssue & { code: "unrecognized_keys" }>;
+  errors: z.ZodIssue[];
+} {
+  const unrecognized: Array<z.ZodIssue & { code: "unrecognized_keys" }> = [];
+  const errors: z.ZodIssue[] = [];
+  for (const issue of issues) {
+    if (issue.code === "unrecognized_keys") {
+      unrecognized.push(issue);
+      continue;
+    }
+    errors.push(issue);
+  }
+  return { unrecognized, errors };
+}
+
+function stripUnrecognizedKeys(
+  parsed: Record<string, unknown>,
+  issues: Array<z.ZodIssue & { code: "unrecognized_keys" }>,
+): Record<string, unknown> {
+  const clone = structuredClone(parsed);
+  for (const issue of issues) {
+    const container = getContainerAtPath(clone, issue.path);
+    if (container === undefined) {
+      continue;
+    }
+    for (const key of issue.keys) {
+      delete container[key];
+    }
+  }
+  return clone;
+}
+
+function getContainerAtPath(
+  root: Record<string, unknown>,
+  path: (string | number)[],
+): Record<string, unknown> | undefined {
+  if (path.length === 0) {
+    return root;
+  }
+  let current: unknown = root;
+  for (const segment of path) {
+    if (current === null || typeof current !== "object") {
+      return undefined;
+    }
+    if (Array.isArray(current)) {
+      if (typeof segment !== "number") {
+        return undefined;
+      }
+      current = current[segment];
+      continue;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return isRecord(current) ? current : undefined;
+}
+
+function unrecognizedKeyIssuesToWarnings(
+  issues: Array<z.ZodIssue & { code: "unrecognized_keys" }>,
+  doc: Document.Parsed,
+  startLine: number,
+  lineCounter: LineCounter,
+): string[] {
+  return issues.flatMap((issue) => {
+    const path = formatZodPath(issue.path);
+    return mapUnrecognizedKeyIssue(issue, doc, path, startLine, lineCounter).map(
+      formatManifestWarning,
+    );
+  });
+}
+
+function formatManifestWarning(error: ManifestParseError): string {
+  if (error.line === undefined) {
+    return error.message;
+  }
+  const columnSuffix = error.column !== undefined ? `, column ${String(error.column)}` : "";
+  return `line ${String(error.line)}${columnSuffix}: ${error.message}`;
+}
+
 function zodIssuesToManifestErrors(
   issues: z.ZodIssue[],
   doc: Document.Parsed,
@@ -299,10 +409,6 @@ function mapZodIssue(
 ): ManifestParseError[] {
   const path = formatZodPath(issue.path);
   const location = resolveNodeLocation(doc, issue.path, startLine, lineCounter);
-
-  if (issue.code === "unrecognized_keys") {
-    return mapUnrecognizedKeyIssue(issue, doc, path, startLine, lineCounter);
-  }
 
   if (issue.path[0] === "driver_version" && issue.code === "invalid_type") {
     return [

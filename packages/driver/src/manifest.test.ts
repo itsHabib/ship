@@ -292,19 +292,19 @@ describe("parseManifest invalid manifests", () => {
     expectError(text, 'unsupported driver_version "1" (expected the number 1)');
   });
 
-  it("rejects unknown top-level field", () => {
+  it("warns on unknown top-level field", () => {
     const text = minimalManifest("unknown_top: true");
     const result = parseManifest(text);
-    expect(result.ok).toBe(false);
-    if (result.ok) {
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
       return;
     }
     expect(
-      result.errors.some((error) => error.message.includes('unknown field "unknown_top"')),
+      result.warnings.some((warning) => warning.includes('unknown field "unknown_top"')),
     ).toBe(true);
   });
 
-  it("rejects unknown batch field", () => {
+  it("warns on unknown batch field", () => {
     const text = [
       "---",
       "driver_version: 1",
@@ -322,16 +322,16 @@ describe("parseManifest invalid manifests", () => {
       "---",
     ].join("\n");
     const result = parseManifest(text);
-    expect(result.ok).toBe(false);
-    if (result.ok) {
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
       return;
     }
     expect(
-      result.errors.some((error) => error.message.includes('unknown field "batch_prefx"')),
+      result.warnings.some((warning) => warning.includes('unknown field "batch_prefx"')),
     ).toBe(true);
   });
 
-  it("rejects unknown stream field", () => {
+  it("warns on unknown stream field", () => {
     const text = [
       "---",
       "driver_version: 1",
@@ -350,12 +350,12 @@ describe("parseManifest invalid manifests", () => {
       "---",
     ].join("\n");
     const result = parseManifest(text);
-    expect(result.ok).toBe(false);
-    if (result.ok) {
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
       return;
     }
     expect(
-      result.errors.some((error) => error.message.includes('unknown field "branch_prefx"')),
+      result.warnings.some((warning) => warning.includes('unknown field "branch_prefx"')),
     ).toBe(true);
   });
 
@@ -468,34 +468,32 @@ describe("parseManifest invalid manifests", () => {
     expect(result.errors.some((error) => error.path === "repo")).toBe(true);
   });
 
-  it("rejects unknown source field", () => {
+  it("warns on unknown source field", () => {
     const text = minimalManifest().replace("  phase: test", "  phase: test\n  extra: true");
     const result = parseManifest(text);
-    expect(result.ok).toBe(false);
-    if (result.ok) {
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
       return;
     }
-    expect(result.errors.some((error) => error.message.includes('unknown field "extra"'))).toBe(
-      true,
-    );
+    expect(result.warnings.some((warning) => warning.includes('unknown field "extra"'))).toBe(true);
   });
 
   it("reports every unknown field in one object, each at its own line", () => {
     const text = minimalManifest("spec_prefx: a\nbranch_prefx: b");
     const result = parseManifest(text);
-    expect(result.ok).toBe(false);
-    if (result.ok) {
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
       return;
     }
-    const specError = result.errors.find((error) =>
-      error.message.includes('unknown field "spec_prefx"'),
+    const specWarning = result.warnings.find((warning) =>
+      warning.includes('unknown field "spec_prefx"'),
     );
-    const branchError = result.errors.find((error) =>
-      error.message.includes('unknown field "branch_prefx"'),
+    const branchWarning = result.warnings.find((warning) =>
+      warning.includes('unknown field "branch_prefx"'),
     );
     // minimalManifest: fence line 1, eight required lines, overrides at 10–11.
-    expect(specError?.line).toBe(10);
-    expect(branchError?.line).toBe(11);
+    expect(specWarning).toMatch(/^line 10,/);
+    expect(branchWarning).toMatch(/^line 11,/);
   });
 
   it("rejects a non-integer depends_on entry", () => {
@@ -591,15 +589,35 @@ describe("parseManifest invalid manifests", () => {
       "---",
     ].join("\n");
     const result = parseManifest(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const warning = result.warnings.find((entry) =>
+      entry.includes('unknown field "branch_prefx"'),
+    );
+    expect(warning).toMatch(/^line \d+, column \d+:/);
+  });
+});
+
+describe("parseManifest unknown-key warnings", () => {
+  it("returns an empty warnings array for a clean manifest", () => {
+    const result = parseManifest(minimalManifest());
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("still rejects a malformed known field alongside unknown keys", () => {
+    const text = minimalManifest("unknown_top: true\ndefault_runtime: satellite");
+    const result = parseManifest(text);
     expect(result.ok).toBe(false);
     if (result.ok) {
       return;
     }
-    const error = result.errors.find((entry) =>
-      entry.message.includes('unknown field "branch_prefx"'),
-    );
-    expect(error?.line).toBeTypeOf("number");
-    expect(error?.column).toBeTypeOf("number");
+    expect(result.errors.some((error) => error.path === "default_runtime")).toBe(true);
   });
 });
 
