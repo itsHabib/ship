@@ -8,6 +8,15 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Exec seam — run a `gh` subcommand and hand back stdout. Injectable so unit
+ * tests drive the adapter's arg-building and JSON parsing without a real `gh`
+ * binary on PATH; production omits the arg and gets `defaultGhExec`.
+ */
+export type GhExec = (file: string, args: readonly string[]) => Promise<{ stdout: string }>;
+
+const defaultGhExec: GhExec = (file, args) => execFileAsync(file, args);
+
 export interface GhMergeCommit {
   oid: string;
 }
@@ -69,11 +78,6 @@ interface GhPrReadinessJson {
 }
 
 /**
- * Default `gh` CLI adapter. The merge is `gh pr merge <n> --squash
- * --delete-branch`; `--admin` is opt-in (`opts.admin === true`) so the default
- * path respects branch protection and only the operator's flow bypasses it.
- */
-/**
  * `gh -R` wants `OWNER/REPO`; driver manifests carry `repo_url` as a full
  * `https://github.com/owner/repo` (or `git@github.com:owner/repo`) URL. Pull
  * out `owner/repo`; pass through a value that is already in short form.
@@ -83,7 +87,12 @@ export function toGhRepo(repo: string): string {
   return match?.[1] ?? repo;
 }
 
-export function createExecGhPort(): DriverGhPort {
+/**
+ * Default `gh` CLI adapter. The merge is `gh pr merge <n> --squash
+ * --delete-branch`; `--admin` is opt-in (`opts.admin === true`) so the default
+ * path respects branch protection and only the operator's flow bypasses it.
+ */
+export function createExecGhPort(exec: GhExec = defaultGhExec): DriverGhPort {
   return {
     async mergePullRequest(repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void> {
       const args = [
@@ -98,10 +107,10 @@ export function createExecGhPort(): DriverGhPort {
       if (opts?.admin === true) {
         args.splice(4, 0, "--admin");
       }
-      await execFileAsync("gh", args);
+      await exec("gh", args);
     },
     async viewPullRequest(repo: string, prNumber: number): Promise<GhPullRequestView> {
-      const { stdout } = await execFileAsync("gh", [
+      const { stdout } = await exec("gh", [
         "pr",
         "view",
         String(prNumber),
@@ -118,7 +127,7 @@ export function createExecGhPort(): DriverGhPort {
       };
     },
     async fetchPrReadiness(repo: string, prNumber: number): Promise<GhPrReadiness> {
-      const { stdout } = await execFileAsync("gh", [
+      const { stdout } = await exec("gh", [
         "pr",
         "view",
         String(prNumber),
