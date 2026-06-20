@@ -78,11 +78,6 @@ interface GhPrReadinessJson {
 }
 
 /**
- * Default `gh` CLI adapter. The merge is `gh pr merge <n> --squash
- * --delete-branch`; `--admin` is opt-in (`opts.admin === true`) so the default
- * path respects branch protection and only the operator's flow bypasses it.
- */
-/**
  * `gh -R` wants `OWNER/REPO`; driver manifests carry `repo_url` as a full
  * `https://github.com/owner/repo` (or `git@github.com:owner/repo`) URL. Pull
  * out `owner/repo`; pass through a value that is already in short form.
@@ -92,6 +87,11 @@ export function toGhRepo(repo: string): string {
   return match?.[1] ?? repo;
 }
 
+/**
+ * Default `gh` CLI adapter. The merge is `gh pr merge <n> --squash
+ * --delete-branch`; `--admin` is opt-in (`opts.admin === true`) so the default
+ * path respects branch protection and only the operator's flow bypasses it.
+ */
 export function createExecGhPort(exec: GhExec = defaultGhExec): DriverGhPort {
   return {
     async mergePullRequest(repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void> {
