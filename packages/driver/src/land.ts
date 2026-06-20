@@ -11,7 +11,22 @@ import type { DriverGhPort, GhPrReadiness, GhPullRequestView } from "./gh-port.j
 import type { LandOpts, MergeFacts } from "./types.js";
 
 import { DecideError } from "./errors.js";
+import { toGhRepo } from "./gh-port.js";
 import { allStreams, extractRepoUrl, markMerged } from "./judgment.js";
+
+// Post-merge view poll — GitHub can lag briefly after mergePullRequest.
+const POST_MERGE_VIEW_ATTEMPTS = 3;
+const POST_MERGE_VIEW_DELAY_MS = 200;
+
+type SleepFn = (ms: number) => Promise<void>;
+
+interface PostMergeViewRetryOpts {
+  sleep: SleepFn;
+  attempts?: number;
+  delayMs?: number;
+}
+
+const defaultSleep: SleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function land(
   store: Store,
@@ -21,7 +36,7 @@ export async function land(
 ): Promise<DriverRun> {
   const run = loadRun(store, driverRunId);
   const repo = resolveRepoForGh(run);
-  const streamId = resolveLandStream(run, opts);
+  const streamId = resolveLandStream(run, opts, repo);
   assertStreamLandable(run, streamId);
 
   const prView = await fetchMergedPrView(gh, repo, opts.prNumber, opts.admin === true);
@@ -62,6 +77,7 @@ async function fetchMergedPrView(
   repo: string,
   prNumber: number,
   admin: boolean,
+  sleep: SleepFn = defaultSleep,
 ): Promise<GhPullRequestView> {
   try {
     let prView = await gh.viewPullRequest(repo, prNumber);
@@ -70,7 +86,7 @@ async function fetchMergedPrView(
       // under --admin (admin bypasses the *approval* gate, not this check).
       await assertReady(gh, repo, prNumber);
       await gh.mergePullRequest(repo, prNumber, { admin });
-      prView = await gh.viewPullRequest(repo, prNumber);
+      prView = await readMergedViewWithRetry(gh, repo, prNumber, { sleep });
     }
 
     if (prView.state !== "MERGED") {
@@ -88,6 +104,22 @@ async function fetchMergedPrView(
     const detail = err instanceof Error ? err.message : String(err);
     throw new DecideError(`gh operation failed for PR #${String(prNumber)}: ${detail}`);
   }
+}
+
+async function readMergedViewWithRetry(
+  gh: DriverGhPort,
+  repo: string,
+  prNumber: number,
+  retry: PostMergeViewRetryOpts,
+): Promise<GhPullRequestView> {
+  const attempts = retry.attempts ?? POST_MERGE_VIEW_ATTEMPTS;
+  const delayMs = retry.delayMs ?? POST_MERGE_VIEW_DELAY_MS;
+  let prView = await gh.viewPullRequest(repo, prNumber);
+  for (let attempt = 1; attempt < attempts && prView.state !== "MERGED"; attempt++) {
+    await retry.sleep(delayMs);
+    prView = await gh.viewPullRequest(repo, prNumber);
+  }
+  return prView;
 }
 
 /** Conclusions that count as a passing terminal check. */
@@ -157,11 +189,11 @@ function buildLandFacts(prView: GhPullRequestView, opts: LandOpts): MergeFacts {
   return facts;
 }
 
-function resolveLandStream(run: DriverRun, opts: LandOpts): string {
+function resolveLandStream(run: DriverRun, opts: LandOpts, runRepo: string): string {
   if (opts.streamId !== undefined) {
     return resolveExplicitStream(run, opts.streamId, opts.prNumber);
   }
-  return resolveStreamByPr(run, opts.prNumber);
+  return resolveStreamByPr(run, opts.prNumber, runRepo);
 }
 
 function resolveExplicitStream(run: DriverRun, streamId: string, prNumber: number): string {
@@ -178,11 +210,29 @@ function resolveExplicitStream(run: DriverRun, streamId: string, prNumber: numbe
   return streamId;
 }
 
-function resolveStreamByPr(run: DriverRun, prNumber: number): string {
+function repoSlugFromPrUrl(prUrl: string | undefined): string | undefined {
+  if (prUrl === undefined) {
+    return undefined;
+  }
+  const match = /github\.com[/:]([^/]+\/[^/]+)\/pull\/\d+/i.exec(prUrl);
+  return match?.[1];
+}
+
+function streamMatchesRunRepo(stream: DriverStream, runRepo: string): boolean {
+  const streamRepo = repoSlugFromPrUrl(stream.prUrl);
+  if (streamRepo === undefined) {
+    return false;
+  }
+  return streamRepo.toLowerCase() === runRepo.toLowerCase();
+}
+
+function resolveStreamByPr(run: DriverRun, prNumber: number, runRepo: string): string {
+  const normalizedRunRepo = toGhRepo(runRepo);
   const matches = allStreams(run).filter(
     (stream): stream is DriverStream & { status: "done" | "landed" } =>
       (stream.status === "landed" || stream.status === "done") &&
-      prNumberFromUrl(stream.prUrl) === prNumber,
+      prNumberFromUrl(stream.prUrl) === prNumber &&
+      streamMatchesRunRepo(stream, normalizedRunRepo),
   );
 
   if (matches.length === 0) {
