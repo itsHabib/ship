@@ -422,6 +422,10 @@ describe("land", () => {
   });
 
   describe("post-merge view lag", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     test("retries when the first post-merge view is still OPEN", async () => {
       vi.useFakeTimers();
       const streamId = newDriverStreamId();
@@ -439,7 +443,6 @@ describe("land", () => {
       expect(gh.viewCalls).toHaveLength(3);
       expect(run.batches[0]?.streams[0]?.status).toBe("done");
       expect(run.batches[0]?.streams[0]?.mergeCommit).toBe("fake-merge-sha");
-      vi.useRealTimers();
     });
 
     test("errors when post-merge view never reaches MERGED", async () => {
@@ -457,7 +460,6 @@ describe("land", () => {
       await vi.runAllTimersAsync();
       await expectation;
       expect(gh.viewCalls).toHaveLength(4);
-      vi.useRealTimers();
     });
   });
 
@@ -506,7 +508,9 @@ describe("land", () => {
         },
       });
 
-      await expect(land(store, gh, runId, { prNumber: 61 })).rejects.toThrow(/no landed stream matches/);
+      await expect(land(store, gh, runId, { prNumber: 61 })).rejects.toThrow(
+        /no landed stream matches/,
+      );
     });
 
     test("errors when multiple streams match the same repo and PR number", async () => {
@@ -532,7 +536,9 @@ describe("land", () => {
         },
       });
 
-      await expect(land(store, gh, runId, { prNumber: 62 })).rejects.toThrow(/multiple landed streams match/);
+      await expect(land(store, gh, runId, { prNumber: 62 })).rejects.toThrow(
+        /multiple landed streams match/,
+      );
     });
   });
 });

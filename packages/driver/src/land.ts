@@ -8,17 +8,23 @@ import type { DriverRun, DriverStream } from "@ship/store";
 import { prNumberFromUrl } from "@ship/receipt";
 
 import type { DriverGhPort, GhPrReadiness, GhPullRequestView } from "./gh-port.js";
-import { toGhRepo } from "./gh-port.js";
 import type { LandOpts, MergeFacts } from "./types.js";
 
 import { DecideError } from "./errors.js";
+import { toGhRepo } from "./gh-port.js";
 import { allStreams, extractRepoUrl, markMerged } from "./judgment.js";
 
-/** Post-merge view poll — GitHub can lag briefly after mergePullRequest. */
-export const POST_MERGE_VIEW_ATTEMPTS = 3;
-export const POST_MERGE_VIEW_DELAY_MS = 200;
+// Post-merge view poll — GitHub can lag briefly after mergePullRequest.
+const POST_MERGE_VIEW_ATTEMPTS = 3;
+const POST_MERGE_VIEW_DELAY_MS = 200;
 
 type SleepFn = (ms: number) => Promise<void>;
+
+interface PostMergeViewRetryOpts {
+  sleep: SleepFn;
+  attempts?: number;
+  delayMs?: number;
+}
 
 const defaultSleep: SleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -30,7 +36,7 @@ export async function land(
 ): Promise<DriverRun> {
   const run = loadRun(store, driverRunId);
   const repo = resolveRepoForGh(run);
-  const streamId = resolveLandStream(run, opts);
+  const streamId = resolveLandStream(run, opts, repo);
   assertStreamLandable(run, streamId);
 
   const prView = await fetchMergedPrView(gh, repo, opts.prNumber, opts.admin === true);
@@ -80,7 +86,7 @@ async function fetchMergedPrView(
       // under --admin (admin bypasses the *approval* gate, not this check).
       await assertReady(gh, repo, prNumber);
       await gh.mergePullRequest(repo, prNumber, { admin });
-      prView = await readMergedViewWithRetry(gh, repo, prNumber, sleep);
+      prView = await readMergedViewWithRetry(gh, repo, prNumber, { sleep });
     }
 
     if (prView.state !== "MERGED") {
@@ -104,13 +110,13 @@ async function readMergedViewWithRetry(
   gh: DriverGhPort,
   repo: string,
   prNumber: number,
-  sleep: SleepFn,
-  attempts: number = POST_MERGE_VIEW_ATTEMPTS,
-  delayMs: number = POST_MERGE_VIEW_DELAY_MS,
+  retry: PostMergeViewRetryOpts,
 ): Promise<GhPullRequestView> {
+  const attempts = retry.attempts ?? POST_MERGE_VIEW_ATTEMPTS;
+  const delayMs = retry.delayMs ?? POST_MERGE_VIEW_DELAY_MS;
   let prView = await gh.viewPullRequest(repo, prNumber);
   for (let attempt = 1; attempt < attempts && prView.state !== "MERGED"; attempt++) {
-    await sleep(delayMs);
+    await retry.sleep(delayMs);
     prView = await gh.viewPullRequest(repo, prNumber);
   }
   return prView;
@@ -183,11 +189,11 @@ function buildLandFacts(prView: GhPullRequestView, opts: LandOpts): MergeFacts {
   return facts;
 }
 
-function resolveLandStream(run: DriverRun, opts: LandOpts): string {
+function resolveLandStream(run: DriverRun, opts: LandOpts, runRepo: string): string {
   if (opts.streamId !== undefined) {
     return resolveExplicitStream(run, opts.streamId, opts.prNumber);
   }
-  return resolveStreamByPr(run, opts.prNumber, resolveRepoForGh(run));
+  return resolveStreamByPr(run, opts.prNumber, runRepo);
 }
 
 function resolveExplicitStream(run: DriverRun, streamId: string, prNumber: number): string {
