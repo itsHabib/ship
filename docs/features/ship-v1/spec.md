@@ -32,8 +32,8 @@ V1 explicitly does not include any of:
 - Cloud Cursor runtime — V2 at earliest. Local-only.
 - Recipes, the recipe runner, recipe MCP tools — V2 at earliest.
 - Communication-layer primitives (claims, decisions, handoffs, capability registry, observe/publish/route) — out of scope. Lives in a separate sibling project, not on Ship's roadmap. Ship is one layer of the broader pipeline; the comm layer is its own.
-- Dashboard or any web UI — out of scope, possibly never.
-- Cross-repo coordination, multi-tenant features, hosted service — out of scope.
+- Dashboard or any web UI — not where this job is best done today; the MCP + CLI surface is the interface. Revisit if a real need shows up.
+- Cross-repo coordination, multi-tenant features, hosted service — not needed at single-machine, single-repo scale today; sequenced in if the work grows to require them.
 - Doc generation (`create_task_doc`) and doc review (`review_task_doc`) — V2.
 - Subagent orchestration *from* Ship. Subagents declared on the Cursor agent are fine (they're SDK-native), but Ship does not add a layer above them in V1.
 
