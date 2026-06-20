@@ -98,9 +98,7 @@ describe("formatDriverRunOutput", () => {
     const warnings = ['line 10: unknown field "base_branch" at manifest root'];
     const text = formatDriverRunOutput({ ...BASE_TICK, warnings }, false);
     expect(text).toContain("driverRunId: drv_01");
-    expect(text).toContain(
-      `warnings:    ${JSON.stringify(warnings)}`,
-    );
+    expect(text).toContain(`warnings:    ${JSON.stringify(warnings)}`);
   });
 
   test("text mode omits warnings line when absent", () => {
