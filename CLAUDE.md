@@ -37,7 +37,7 @@ Subagents live in `.cursor/agents/`. See [docs/features/ship-v2/phases/03-subage
 
 Several MCP servers + skills are available in any Claude session on this machine — the dev-workflow infrastructure built across the portfolio. **This is ship — the workflow-execution plane itself** — so the ship verbs are the most directly relevant when working in this repo, alongside dossier (project memory), huddle (multi-seat coordination), and the `/worktree-*` skill family for git worktrees. When the signal matches, **just call the verb**. Don't ask permission.
 
-Dogfood reality: ship runs cursor against ship's own task docs when iterating on ship-the-codebase — every PR shipped here passes through `mcp__ship__ship` at least once.
+Dogfood reality: ship runs cursor against ship's own task docs when iterating on ship-the-codebase — every PR shipped here passes through a ship run (now driven by the `ship driver` engine) at least once.
 
 ### dossier — project memory
 
@@ -115,7 +115,7 @@ Headless / headed browser control via Playwright. Use when an agent task genuine
 
 ### `/work-driver` — drive agent-led impl end-to-end
 
-Coordinates one or N parallel streams through the full loop: pre-flight worktrees, fan out via `ship.ship`, poll terminal states, verify cursor's auto-commit (or commit manually if absent), open PRs, drive review cycles, merge in dep order, cleanup. Reads a manifest produced by `/work-driver-prep` (the common case) or a list of one-off spec docs (ad-hoc).
+Drives one or N parallel streams to merge through the `ship driver` engine: the engine owns dispatch → poll → judgment → land, and the skill owns prep, the review cycles, and the merge call. Reads a manifest produced by `/work-driver-prep` (the common case), or resolves dossier task IDs / a phase directly.
 
 **Triggers:** "drive this impl work", "run this through ship", "fire N parallel streams", "ship and merge", explicit `/work-driver`.
 
