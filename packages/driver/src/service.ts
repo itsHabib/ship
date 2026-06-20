@@ -77,25 +77,36 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
       // re-invocation. Read verbs (status/render/decide/...) never resume.
       void ship.resumeOrphanedRuns?.().catch(() => undefined);
       const resolved = resolveRunOpts(runOpts);
-      const driverRunId = resolveRunRef(store, ref);
+      const { driverRunId, warnings } = resolveRunRef(store, ref);
       const deps: Parameters<typeof runTick>[2] = { ship, store };
       if (clock !== undefined) deps.clock = clock;
       if (rng !== undefined) deps.rng = rng;
       if (sleep !== undefined) deps.sleep = sleep;
-      return runTick(driverRunId, resolved, deps);
+      const tick = await runTick(driverRunId, resolved, deps);
+      if (warnings === undefined || warnings.length === 0) return tick;
+      return { ...tick, warnings };
     },
   };
 }
 
-function resolveRunRef(store: Store, ref: DriverRunRef): string {
+interface ResolvedRunRef {
+  driverRunId: string;
+  warnings?: string[];
+}
+
+function resolveRunRef(store: Store, ref: DriverRunRef): ResolvedRunRef {
   if ("driverRunId" in ref) {
     if (store.getDriverRun(ref.driverRunId) === null) {
       throw new DriverRunNotFoundEngineError(ref.driverRunId);
     }
-    return ref.driverRunId;
+    return { driverRunId: ref.driverRunId };
   }
   const imported = importManifestFn(store, ref.manifestPath);
-  return imported.run.id;
+  const resolved: ResolvedRunRef = { driverRunId: imported.run.id };
+  if (imported.warnings !== undefined && imported.warnings.length > 0) {
+    resolved.warnings = imported.warnings;
+  }
+  return resolved;
 }
 
 export type { ImportManifestResult, ListDriverRunsFilter };

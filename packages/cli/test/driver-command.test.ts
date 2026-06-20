@@ -53,6 +53,61 @@ describe("ship driver", () => {
     expect(parsed.driverRunId).toMatch(/^drv_/);
   });
 
+  test("run auto-import prints manifest warnings", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const manifestText = readFileSync(layout.manifestPath, "utf8");
+    writeFileSync(
+      layout.manifestPath,
+      manifestText.replace("repo: ship", "repo: ship\nbase_branch: main"),
+    );
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const code = await runDriver([
+      "driver",
+      "run",
+      layout.manifestPath,
+      "--max-wait",
+      "30s",
+      "--poll-interval",
+      "1s",
+    ]);
+    expect(code).toBe(0);
+    const out = stdout.join("");
+    expect(out).toContain("warnings:");
+    expect(out).toContain("base_branch");
+  });
+
+  test("run by driverRunId does not print import warnings", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const manifestText = readFileSync(layout.manifestPath, "utf8");
+    writeFileSync(
+      layout.manifestPath,
+      manifestText.replace("repo: ship", "repo: ship\nbase_branch: main"),
+    );
+    expect(await runDriver(["driver", "import", layout.manifestPath])).toBe(0);
+    const imported = JSON.parse(stdout.join("").trim()) as { driverRunId: string };
+    stdout.length = 0;
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const code = await runDriver([
+      "driver",
+      "run",
+      imported.driverRunId,
+      "--max-wait",
+      "30s",
+      "--poll-interval",
+      "1s",
+    ]);
+    expect(code).toBe(0);
+    expect(stdout.join("")).not.toContain("warnings:");
+  });
+
   test("run auto-import exits 0 blocked_on_merges for landed stream", async () => {
     const layout = writeOneStreamManifest(h.repoRoot);
     h.cursor.enqueue({
