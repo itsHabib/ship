@@ -154,7 +154,11 @@ export function formatDriverImportOutput(driverRunId: string, warnings?: string[
 
 /** Renders a `DriverTickResult` for `ship driver run`. */
 export function formatDriverRunOutput(result: DriverTickResult, json: boolean): string {
-  return formatDriverTickResult(result, json);
+  const tickText = formatDriverTickResult(result, json);
+  if (json) return tickText;
+  if (result.warnings === undefined || result.warnings.length === 0) return tickText;
+  const warningsLine = formatDriverImportWarningsLine(result.warnings);
+  return `${tickText}\n${warningsLine}`;
 }
 
 /** Shared tick formatter — also used by MCP output validation tests. */
@@ -172,6 +176,11 @@ export function formatDriverTickResult(result: DriverTickResult, json: boolean):
     lines.push(`unmerged:    ${String(result.unmerged.length)} stream(s) awaiting merge`);
   }
   return lines.join("\n");
+}
+
+/** Text-mode warnings line — mirrors `formatDriverImportOutput` JSON field shape. */
+function formatDriverImportWarningsLine(warnings: string[]): string {
+  return `warnings:    ${JSON.stringify(warnings)}`;
 }
 
 /** JSON view for decide / mark-merged / cancel — compact DriverRun id + status. */

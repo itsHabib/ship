@@ -150,6 +150,64 @@ batches:
     store.close();
   });
 
+  test("run auto-import surfaces manifest warnings on the tick result", async () => {
+    const repoRoot = join(tmpDir, "repo-warn");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    const manifestPath = join(repoRoot, "driver.md");
+    writeFileSync(
+      manifestPath,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-06-12T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: svc",
+        "repo: ship",
+        "base_branch: main",
+        "batches: []",
+        "---",
+      ].join("\n"),
+    );
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: createFakeShipPort([]).port, store });
+    const result = await driver.run({ manifestPath }, { maxWaitMs: 0 });
+    expect(result.warnings).toBeDefined();
+    expect(result.warnings?.some((w) => w.includes('unknown field "base_branch"'))).toBe(true);
+    store.close();
+  });
+
+  test("run by driverRunId does not carry import warnings", async () => {
+    const repoRoot = join(tmpDir, "repo-resume");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    const manifestPath = join(repoRoot, "driver.md");
+    writeFileSync(
+      manifestPath,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-06-12T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: svc",
+        "repo: ship",
+        "base_branch: main",
+        "batches: []",
+        "---",
+      ].join("\n"),
+    );
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: createFakeShipPort([]).port, store });
+    const imported = driver.importManifest(manifestPath);
+    const result = await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+    expect(result.warnings).toBeUndefined();
+    store.close();
+  });
+
   test("startShip throw marks stream failed and continues tick", async () => {
     const repoRoot = join(tmpDir, "repo");
     mkdirSync(join(repoRoot, ".git"), { recursive: true });

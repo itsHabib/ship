@@ -455,6 +455,7 @@ export const driverTickResultSchema = z
     unmerged: z.array(driverStreamViewSchema),
     progress: driverTickProgressSchema,
     streams: z.array(driverStreamViewSchema),
+    warnings: z.array(z.string()).optional(),
   })
   .strict();
 export type DriverTickResultOutput = z.infer<typeof driverTickResultSchema>;

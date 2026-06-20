@@ -82,6 +82,8 @@ export interface DriverTickResult {
     remaining: number;
   };
   streams: DriverStreamView[];
+  /** Populated only when this tick auto-imported a manifest with ignored unknown keys. */
+  warnings?: string[];
 }
 
 export type { DriverRun, DriverRunStatus };

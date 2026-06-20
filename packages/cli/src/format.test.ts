@@ -10,6 +10,7 @@ import {
   formatCancelOutput,
   formatDiagnoseRun,
   formatDriverImportOutput,
+  formatDriverRunOutput,
   formatShipOutput,
   formatWorkflowRun,
   formatWorkflowRunList,
@@ -74,6 +75,43 @@ describe("formatDriverImportOutput", () => {
       driverRunId: "drv_01",
       warnings: ['line 10: unknown field "base_branch" at manifest root'],
     });
+  });
+});
+
+describe("formatDriverRunOutput", () => {
+  const BASE_TICK = {
+    driverRunId: "drv_01",
+    status: "done" as const,
+    awaiting: [],
+    unmerged: [],
+    progress: {
+      batchIndex: 1,
+      dispatched: 0,
+      landed: 0,
+      failed: 0,
+      remaining: 0,
+    },
+    streams: [],
+  };
+
+  test("text mode appends warnings line when import warnings are present", () => {
+    const warnings = ['line 10: unknown field "base_branch" at manifest root'];
+    const text = formatDriverRunOutput({ ...BASE_TICK, warnings }, false);
+    expect(text).toContain("driverRunId: drv_01");
+    expect(text).toContain(`warnings:    ${JSON.stringify(warnings)}`);
+  });
+
+  test("text mode omits warnings line when absent", () => {
+    const text = formatDriverRunOutput(BASE_TICK, false);
+    expect(text).not.toContain("warnings:");
+  });
+
+  test("--json includes warnings in the tick result object", () => {
+    const warnings = ['line 10: unknown field "base_branch" at manifest root'];
+    const parsed = JSON.parse(formatDriverRunOutput({ ...BASE_TICK, warnings }, true)) as {
+      warnings?: string[];
+    };
+    expect(parsed.warnings).toEqual(warnings);
   });
 });
 

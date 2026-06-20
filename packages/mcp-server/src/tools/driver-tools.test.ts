@@ -87,6 +87,49 @@ describe("driver MCP tools", () => {
     expect(result.streams.some((s) => s.status === "dispatched")).toBe(true);
   });
 
+  test("driver_run auto-import returns manifest warnings", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const manifestText = readFileSync(layout.manifestPath, "utf8");
+    writeFileSync(
+      layout.manifestPath,
+      manifestText.replace("repo: ship", "repo: ship\nbase_branch: main"),
+    );
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+      delayMsBetweenEvents: 60_000,
+    });
+    const raw = await h.client.callTool({
+      name: "driver_run",
+      arguments: { manifestPath: layout.manifestPath },
+    });
+    const result = parseToolJson(raw) as { warnings?: string[] };
+    expect(result.warnings?.some((w) => w.includes('unknown field "base_branch"'))).toBe(true);
+  });
+
+  test("driver_run by driverRunId does not re-emit import warnings", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const manifestText = readFileSync(layout.manifestPath, "utf8");
+    writeFileSync(
+      layout.manifestPath,
+      manifestText.replace("repo: ship", "repo: ship\nbase_branch: main"),
+    );
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+      delayMsBetweenEvents: 60_000,
+    });
+    const imported = h.driver.importManifest(layout.manifestPath);
+    const raw = await h.client.callTool({
+      name: "driver_run",
+      arguments: { driverRunId: imported.run.id },
+    });
+    const result = parseToolJson(raw) as { warnings?: string[] };
+    expect(result.warnings).toBeUndefined();
+  });
+
   test("driver_status returns manifestModified when frontmatter drifted", async () => {
     const layout = writeOneStreamManifest(h.repoRoot);
     const imported = h.driver.importManifest(layout.manifestPath);
