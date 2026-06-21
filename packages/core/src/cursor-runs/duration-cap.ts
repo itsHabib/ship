@@ -14,7 +14,7 @@
  * finalize path classifies `sdk-throw`.
  */
 
-import type { CursorRunHandle, CursorRunResult } from "@ship/cursor-runner";
+import type { AgentRunHandle, AgentRunResult } from "@ship/cursor-runner";
 import type { Logger } from "@ship/logger";
 
 import { CursorRunStartTimedOutError } from "../errors.js";
@@ -39,14 +39,14 @@ export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export interface DurationCapRunArgs {
   /** Starts the run (fresh dispatch) or attach (resume); invoked once, immediately. */
-  readonly start: () => Promise<CursorRunHandle>;
+  readonly start: () => Promise<AgentRunHandle>;
   /**
    * Registration hook (store rows, event pump, active-runs entry); invoked
    * once iff the handle arrives before the cap expires. A handle arriving
    * after expiry is cancelled and never registered, so no bookkeeping
    * outlives the already-finalized run.
    */
-  readonly onHandle: (handle: CursorRunHandle) => void;
+  readonly onHandle: (handle: AgentRunHandle) => void;
   /** `policy.maxRunDurationMs` for this run. */
   readonly maxRunDurationMs: number;
   /**
@@ -65,10 +65,10 @@ export interface DurationCapRunArgs {
  * when the registration hook throws, or when the window expires before
  * `start` produced a handle (`CursorRunStartTimedOutError`).
  */
-export async function runWithDurationCap(args: DurationCapRunArgs): Promise<CursorRunResult> {
+export async function runWithDurationCap(args: DurationCapRunArgs): Promise<AgentRunResult> {
   const elapsedMs = args.elapsedMs ?? 0;
   const windowMs = capWindowMs(args.maxRunDurationMs, elapsedMs);
-  let handle: CursorRunHandle | undefined;
+  let handle: AgentRunHandle | undefined;
   let expired = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -76,7 +76,7 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Curs
   // so a synchronous throw from an injected runner still hits the finally
   // and clears the cap timer rather than leaking it.
   try {
-    const capExpiry = new Promise<CursorRunResult>((resolve, reject) => {
+    const capExpiry = new Promise<AgentRunResult>((resolve, reject) => {
       timer = setTimeout(
         () => {
           expired = true;
@@ -143,13 +143,13 @@ function capWindowMs(maxRunDurationMs: number, elapsedMs: number): number {
 
 // Best-effort: the cap verdict stands whether or not the SDK-side cancel
 // lands (a hung agent may not acknowledge it).
-function cancelBestEffort(handle: CursorRunHandle): void {
+function cancelBestEffort(handle: AgentRunHandle): void {
   handle.cancel().catch(() => {
     /* swallow */
   });
 }
 
-function capExceededResult(durationMs: number): CursorRunResult {
+function capExceededResult(durationMs: number): AgentRunResult {
   return {
     branches: [],
     durationMs,

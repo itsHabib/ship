@@ -1,5 +1,5 @@
 /**
- * Property-based checks for shared RunResult → CursorRunResult mapping.
+ * Property-based checks for shared RunResult → AgentRunResult mapping.
  */
 
 import type { RunResult } from "@cursor/sdk";
@@ -7,7 +7,7 @@ import type { RunResult } from "@cursor/sdk";
 import { fc, test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
 
-import type { CloudRunSpec, CursorRunInput } from "./runner.js";
+import type { AgentRunInput, CloudRunSpec } from "./runner.js";
 
 import { mapRunResult, mapTerminalResult } from "./_shared.js";
 
@@ -70,7 +70,7 @@ const runResultArbitrary = fc.oneof(
   }),
 ) as fc.Arbitrary<RunResult>;
 
-const minimalInput: CursorRunInput = {
+const minimalInput: AgentRunInput = {
   cwd: "/tmp",
   model: { id: "composer-2.5" },
   onEvent: () => undefined,

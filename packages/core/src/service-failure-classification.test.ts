@@ -67,7 +67,7 @@ describe("ShipService failure classification wiring", () => {
     h.store.close();
   });
 
-  test("finalizeSuccess (failed CursorRunResult) persists logic category from tool_call events", async () => {
+  test("finalizeSuccess (failed AgentRunResult) persists logic category from tool_call events", async () => {
     const toolErr = {
       type: "tool_call",
       status: "error",

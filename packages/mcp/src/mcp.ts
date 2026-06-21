@@ -223,7 +223,7 @@ export type GetWorkflowRunInput = z.infer<typeof getWorkflowRunInputSchema>;
 const recentRunEventSchema = z.record(z.string(), z.unknown());
 
 /**
- * One branch a terminal run produced — structural twin of `CursorRunResult.branches[]`.
+ * One branch a terminal run produced — structural twin of `AgentRunResult.branches[]`.
  * Surfaced from `result.json` for cloud + rooms runs so downstream (`/work-driver`)
  * can read `branches[0].branch` and open the PR with `gh pr create`.
  */

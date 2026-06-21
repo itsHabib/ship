@@ -5,7 +5,7 @@
 import { fc, test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
 
-import type { CursorRunInput } from "./runner.js";
+import type { AgentRunInput } from "./runner.js";
 
 import { modelArgFromInput } from "./_shared.js";
 
@@ -56,7 +56,7 @@ describe("cloud-runner properties (fast-check)", () => {
   test.prop([fc.array(modelParamArbitrary, { maxLength: 8 })], { numRuns: ITER })(
     "CL1: modelArgFromInput coerces every param value to string",
     (params) => {
-      const input: CursorRunInput = {
+      const input: AgentRunInput = {
         cwd: "/tmp",
         model: { id: "composer-2.5", params },
         onEvent: () => undefined,

@@ -6,8 +6,6 @@
  * real `rooms` binary, no microVM. See `phases/room-cursor-runner.md`.
  */
 
-import type { SDKMessage } from "@cursor/sdk";
-
 import { EventEmitter } from "node:events";
 import { writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -15,7 +13,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import type { RoomsChild, RoomsSpawn } from "./room-runner.js";
-import type { CursorRunHandle, CursorRunInput, RoomRunSpec } from "./runner.js";
+import type { AgentRunHandle, AgentRunInput, RoomRunSpec } from "./runner.js";
 
 import {
   InvalidRoomReposError,
@@ -121,7 +119,7 @@ function writeArtifacts(outDir: string, opts: FakeRoomsOpts): void {
   if (opts.events !== undefined) writeFileSync(join(outDir, "events.ndjson"), opts.events);
 }
 
-function roomsInput(overrides: Partial<CursorRunInput> = {}): CursorRunInput {
+function roomsInput(overrides: Partial<AgentRunInput> = {}): AgentRunInput {
   return {
     cwd: "",
     model: { id: "composer-2.5" },
@@ -278,7 +276,7 @@ describe("RoomCursorRunner.run — argv + env", () => {
 });
 
 describe("RoomCursorRunner.run — terminal result", () => {
-  test("success → CursorRunResult with branches, durationMs, summary; synthetic ids", async () => {
+  test("success → AgentRunResult with branches, durationMs, summary; synthetic ids", async () => {
     const f = fakeRooms({ result: successResult(), summary: "implementation done" });
     const runner = new RoomCursorRunner({ spawn: f.spawn });
     const handle = await runner.run(roomsInput());
@@ -302,8 +300,8 @@ describe("RoomCursorRunner.run — terminal result", () => {
     const runner = new RoomCursorRunner({ spawn: f.spawn });
     const handle = await runner.run(
       roomsInput({
-        onEvent: (ev: SDKMessage) => {
-          seen.push((ev as unknown as { type?: string }).type ?? "?");
+        onEvent: (ev: unknown) => {
+          seen.push((ev as { type?: string }).type ?? "?");
         },
       }),
     );
@@ -408,7 +406,7 @@ describe("RoomCursorRunner — cancel + attach", () => {
     // onEvent (fired during the events.ndjson replay inside collectRoomRun)
     // requests cancel — the post-collection recheck must win.
     const f = fakeRooms({ events: '{"type":"a"}\n', result: successResult() });
-    const ref: { handle?: CursorRunHandle } = {};
+    const ref: { handle?: AgentRunHandle } = {};
     const input = roomsInput({
       onEvent: () => {
         void ref.handle?.cancel();

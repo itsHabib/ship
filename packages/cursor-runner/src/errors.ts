@@ -1,75 +1,14 @@
 /**
- * Typed error subclasses for `@ship/cursor-runner`. Two top-level
- * categories of caller-discriminable failures:
- *
- *   1. `MissingApiKeyError` — env-var precondition before any SDK call.
- *   2. `CursorRunFailedError` + subclasses — the SDK could not start or
- *      attach to a run. Subclasses (`MissingCloudSpecError`,
- *      `InvalidCloudReposError`, `CursorCloudIntegrationError`,
- *      `WrongRunnerError`, `CursorAgentNotFoundError`,
- *      `LocalResumeNotSupportedError`) tag the specific cause; downstream
- *      catchers can match the umbrella `CursorRunFailedError` to handle
- *      any of them.
- *
- * Post-run SDK failures are NOT thrown — they surface as `handle.result`
- * resolving with `status: "failed"`.
+ * Cursor-specific typed errors. The neutral taxonomy (`MissingApiKeyError`,
+ * `AgentRunFailedError`) lives in `@ship/agent-runner`.
  */
 
-/** Thrown when `CURSOR_API_KEY` is unset (or empty) at `run()` time, before any SDK call. */
-export class MissingApiKeyError extends Error {
-  override readonly name = "MissingApiKeyError";
+import { AgentNotFoundError, AgentRunFailedError } from "@ship/agent-runner";
 
-  constructor() {
-    super("CURSOR_API_KEY environment variable is not set");
-  }
-}
-
-/**
- * Thrown when `Agent.create` or `agent.send` rejects before the run
- * reaches a streaming state. The original SDK error lives in `cause`.
- * Not used for `RunResult.status === "error"` — see file-level comment.
- */
-export class CursorRunFailedError extends Error {
-  override readonly name: string = "CursorRunFailedError";
-}
-
-// Renders the directly-stringifiable primitive causes; returns undefined when
-// `cause` is a non-primitive (object/function/symbol) the caller must handle.
-function renderPrimitiveCause(cause: unknown): string | undefined {
-  if (cause instanceof Error && cause.message !== "") return cause.message;
-  if (typeof cause === "string") return cause;
-  if (typeof cause === "number" || typeof cause === "boolean" || typeof cause === "bigint") {
-    return String(cause);
-  }
-  if (cause === null || cause === undefined) return "";
-  return undefined;
-}
-
-function causeMessage(cause: unknown): string {
-  const primitive = renderPrimitiveCause(cause);
-  if (primitive !== undefined) return primitive;
-  // JSON.stringify returns undefined for function/symbol; handle them explicitly
-  // so the stringify below always yields a string for the remaining object case.
-  if (typeof cause === "function" || typeof cause === "symbol") return "[unstringifiable cause]";
-  try {
-    return JSON.stringify(cause);
-  } catch {
-    return "[unstringifiable cause]";
-  }
-}
-
-/**
- * Pre-run / stream failure with the underlying SDK message folded into
- * `.message` so single-level `errorMessage` consumers see the real cause.
- */
-export function cursorRunFailedError(message: string, cause: unknown): CursorRunFailedError {
-  const detail = causeMessage(cause);
-  const combined = detail !== "" && !message.includes(detail) ? `${message}: ${detail}` : message;
-  return new CursorRunFailedError(combined, { cause });
-}
+export { AgentRunFailedError, agentRunFailedError, MissingApiKeyError } from "@ship/agent-runner";
 
 /** Cloud inputs passed to {@link CloudCursorRunner} without `cloud` config. */
-export class MissingCloudSpecError extends CursorRunFailedError {
+export class MissingCloudSpecError extends AgentRunFailedError {
   override readonly name: string = "MissingCloudSpecError";
 
   constructor() {
@@ -77,12 +16,7 @@ export class MissingCloudSpecError extends CursorRunFailedError {
   }
 }
 
-/**
- * Cloud inputs passed to {@link CloudCursorRunner} whose `cloud.repos` array
- * doesn't match the single-repo contract (per phase 04 design § F2 / Out-of-scope).
- * Covers both empty (`length === 0`) and multi-repo (`length > 1`) cases.
- */
-export class InvalidCloudReposError extends CursorRunFailedError {
+export class InvalidCloudReposError extends AgentRunFailedError {
   override readonly name: string = "InvalidCloudReposError";
 
   constructor(receivedLength: number) {
@@ -92,8 +26,7 @@ export class InvalidCloudReposError extends CursorRunFailedError {
   }
 }
 
-/** SCM integration is not connected for the target repo (SDK pre-run failure). */
-export class CursorCloudIntegrationError extends CursorRunFailedError {
+export class CursorCloudIntegrationError extends AgentRunFailedError {
   override readonly name: string = "CursorCloudIntegrationError";
 
   constructor(
@@ -108,20 +41,14 @@ export class CursorCloudIntegrationError extends CursorRunFailedError {
   }
 }
 
-/** Wrong `input.runtime` for the selected runner implementation. */
-export class WrongRunnerError extends CursorRunFailedError {
+export class WrongRunnerError extends AgentRunFailedError {
   override readonly name: string = "WrongRunnerError";
 }
 
-/**
- * Thrown when `Agent.resume` / `Agent.getRun` indicates the agent or run
- * is gone. Extends {@link CursorRunFailedError} so downstream catchers
- * that match the umbrella pre-run/attach failure type pick this up too.
- */
-export class CursorAgentNotFoundError extends CursorRunFailedError {
+export class CursorAgentNotFoundError extends AgentNotFoundError {
   override readonly name: string = "CursorAgentNotFoundError";
-  readonly agentId: string;
-  readonly runId: string;
+  declare readonly agentId: string;
+  declare readonly runId: string;
   readonly runtime: "local" | "cloud";
 
   constructor(args: {
@@ -130,22 +57,17 @@ export class CursorAgentNotFoundError extends CursorRunFailedError {
     runtime: "local" | "cloud";
     cause?: unknown;
   }) {
-    super(
-      `Cursor agent not found (agentId=${args.agentId}, runId=${args.runId}, runtime=${args.runtime})`,
-      args.cause !== undefined ? { cause: args.cause } : undefined,
-    );
-    this.agentId = args.agentId;
-    this.runId = args.runId;
+    super({
+      agentId: args.agentId,
+      cause: args.cause,
+      message: `Cursor agent not found (agentId=${args.agentId}, runId=${args.runId}, runtime=${args.runtime})`,
+      runId: args.runId,
+    });
     this.runtime = args.runtime;
   }
 }
 
-/**
- * Thrown by {@link LocalCursorRunner.attach} — local agents die with the
- * parent process, so resume is not supported. Extends
- * {@link CursorRunFailedError} for parity with the other attach failures.
- */
-export class LocalResumeNotSupportedError extends CursorRunFailedError {
+export class LocalResumeNotSupportedError extends AgentRunFailedError {
   override readonly name: string = "LocalResumeNotSupportedError";
   readonly agentId: string;
 
@@ -155,8 +77,7 @@ export class LocalResumeNotSupportedError extends CursorRunFailedError {
   }
 }
 
-/** Rooms inputs passed to {@link RoomCursorRunner} without `room` config. */
-export class MissingRoomSpecError extends CursorRunFailedError {
+export class MissingRoomSpecError extends AgentRunFailedError {
   override readonly name: string = "MissingRoomSpecError";
 
   constructor() {
@@ -164,11 +85,7 @@ export class MissingRoomSpecError extends CursorRunFailedError {
   }
 }
 
-/**
- * Rooms inputs whose `room.repos` array doesn't match the single-repo
- * contract. Covers both empty (`length === 0`) and multi-repo (`length > 1`).
- */
-export class InvalidRoomReposError extends CursorRunFailedError {
+export class InvalidRoomReposError extends AgentRunFailedError {
   override readonly name: string = "InvalidRoomReposError";
 
   constructor(receivedLength: number) {
@@ -178,13 +95,7 @@ export class InvalidRoomReposError extends CursorRunFailedError {
   }
 }
 
-/**
- * Rooms run with no resolvable guest image. The `rooms` CLI requires
- * `--image` (no default), so {@link RoomCursorRunner} rejects up front when
- * neither `room.image` nor the runner's `defaultImage` is set — a clear
- * pre-run error instead of an opaque clap failure inside the subprocess.
- */
-export class MissingRoomImageError extends CursorRunFailedError {
+export class MissingRoomImageError extends AgentRunFailedError {
   override readonly name: string = "MissingRoomImageError";
 
   constructor() {
@@ -194,11 +105,7 @@ export class MissingRoomImageError extends CursorRunFailedError {
   }
 }
 
-/**
- * Thrown by {@link RoomCursorRunner.attach} — rooms microVMs are disposable,
- * so resume is not supported (ED-5). Mirrors {@link LocalResumeNotSupportedError}.
- */
-export class RoomResumeNotSupportedError extends CursorRunFailedError {
+export class RoomResumeNotSupportedError extends AgentRunFailedError {
   override readonly name: string = "RoomResumeNotSupportedError";
   readonly agentId: string;
 
@@ -208,20 +115,11 @@ export class RoomResumeNotSupportedError extends CursorRunFailedError {
   }
 }
 
-/**
- * `rooms run` exited but the host-collected `--out` artifacts couldn't be
- * read or parsed (missing `result.json`, malformed JSON). A contract/harness
- * failure, not an agent failure — surfaces via `handle.result` rejection.
- */
-export class RoomArtifactError extends CursorRunFailedError {
+export class RoomArtifactError extends AgentRunFailedError {
   override readonly name: string = "RoomArtifactError";
 }
 
-/**
- * `result.json.schema_version` did not match the pinned rooms contract
- * version. Bails loudly so a silent contract drift can't mis-report a run.
- */
-export class RoomSchemaVersionError extends CursorRunFailedError {
+export class RoomSchemaVersionError extends AgentRunFailedError {
   override readonly name: string = "RoomSchemaVersionError";
   readonly expected: number;
   readonly received: unknown;

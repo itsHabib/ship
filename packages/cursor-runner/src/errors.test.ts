@@ -3,9 +3,9 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  AgentRunFailedError,
+  agentRunFailedError,
   CursorAgentNotFoundError,
-  CursorRunFailedError,
-  cursorRunFailedError,
   LocalResumeNotSupportedError,
   MissingApiKeyError,
 } from "./errors.js";
@@ -19,41 +19,41 @@ describe("MissingApiKeyError", () => {
     expect(err.message).toMatch(/CURSOR_API_KEY/);
   });
 
-  test("is discriminable from CursorRunFailedError via instanceof", () => {
+  test("is discriminable from AgentRunFailedError via instanceof", () => {
     const err: Error = new MissingApiKeyError();
-    expect(err instanceof CursorRunFailedError).toBe(false);
+    expect(err instanceof AgentRunFailedError).toBe(false);
   });
 });
 
-describe("CursorRunFailedError", () => {
+describe("AgentRunFailedError", () => {
   test("is an Error subclass with the expected name", () => {
-    const err = new CursorRunFailedError("agent.send threw");
+    const err = new AgentRunFailedError("agent.send threw");
     expect(err).toBeInstanceOf(Error);
-    expect(err).toBeInstanceOf(CursorRunFailedError);
-    expect(err.name).toBe("CursorRunFailedError");
+    expect(err).toBeInstanceOf(AgentRunFailedError);
+    expect(err.name).toBe("AgentRunFailedError");
     expect(err.message).toBe("agent.send threw");
   });
 
   test("preserves the original SDK error in cause", () => {
     const sdkError = new Error("AuthenticationError: bad key");
-    const wrapped = new CursorRunFailedError("Agent.create rejected", { cause: sdkError });
+    const wrapped = new AgentRunFailedError("Agent.create rejected", { cause: sdkError });
     expect(wrapped.cause).toBe(sdkError);
   });
 
-  test("cursorRunFailedError folds cause message into .message", () => {
+  test("agentRunFailedError folds cause message into .message", () => {
     const sdkError = new Error("database is locked");
-    const wrapped = cursorRunFailedError("run.wait() rejected after a clean stream", sdkError);
+    const wrapped = agentRunFailedError("run.wait() rejected after a clean stream", sdkError);
     expect(wrapped.message).toContain("database is locked");
     expect(wrapped.cause).toBe(sdkError);
   });
 
   test("works without a cause (plain message-only construction)", () => {
-    const err = new CursorRunFailedError("something broke");
+    const err = new AgentRunFailedError("something broke");
     expect(err.cause).toBeUndefined();
   });
 
   test("is discriminable from MissingApiKeyError via instanceof", () => {
-    const err: Error = new CursorRunFailedError("x");
+    const err: Error = new AgentRunFailedError("x");
     expect(err instanceof MissingApiKeyError).toBe(false);
   });
 });
@@ -69,9 +69,9 @@ describe("CursorAgentNotFoundError", () => {
     });
     expect(err).toBeInstanceOf(Error);
     expect(err).toBeInstanceOf(CursorAgentNotFoundError);
-    // Extends CursorRunFailedError so umbrella catch sites (e.g. phase 12's
+    // Extends AgentRunFailedError so umbrella catch sites (e.g. phase 12's
     // resumeOrphanedRuns) pick this up alongside the run-start failures.
-    expect(err).toBeInstanceOf(CursorRunFailedError);
+    expect(err).toBeInstanceOf(AgentRunFailedError);
     expect(err.name).toBe("CursorAgentNotFoundError");
     expect(err.agentId).toBe("bc-abc123");
     expect(err.runId).toBe("run-xyz789");
@@ -97,8 +97,8 @@ describe("LocalResumeNotSupportedError", () => {
     const err = new LocalResumeNotSupportedError({ agentId: "agent-local-001" });
     expect(err).toBeInstanceOf(Error);
     expect(err).toBeInstanceOf(LocalResumeNotSupportedError);
-    // Extends CursorRunFailedError for parity with the other attach failures.
-    expect(err).toBeInstanceOf(CursorRunFailedError);
+    // Extends AgentRunFailedError for parity with the other attach failures.
+    expect(err).toBeInstanceOf(AgentRunFailedError);
     expect(err.name).toBe("LocalResumeNotSupportedError");
     expect(err.agentId).toBe("agent-local-001");
     expect(err.message).toMatch(/agent-local-001/);

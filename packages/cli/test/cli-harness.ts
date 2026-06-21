@@ -9,7 +9,7 @@
  */
 
 import type { ShipService } from "@ship/core";
-import type { CursorRunner } from "@ship/cursor-runner";
+import type { AgentRunner } from "@ship/cursor-runner";
 import type { DriverService } from "@ship/driver";
 import type { Harness, ServiceBundle } from "@ship/test-harness";
 import type { ModelSelection } from "@ship/workflow";
@@ -35,14 +35,14 @@ export interface CliHarness {
   readonly bundle: ServiceBundle;
   readonly harness: Harness;
   // Present when `createCliHarness({ cloudCursor })` wired a cloud runner.
-  readonly cloudCursor?: CursorRunner;
+  readonly cloudCursor?: AgentRunner;
   readonly stdout: string[];
   readonly stderr: string[];
   readonly close: () => void;
 }
 
 export async function createCliHarness(
-  opts: { defaultModel?: ModelSelection; cloudCursor?: CursorRunner } = {},
+  opts: { defaultModel?: ModelSelection; cloudCursor?: AgentRunner } = {},
 ): Promise<CliHarness> {
   const harness = createHarness();
   const bundle = createServiceFromHarness(harness, {

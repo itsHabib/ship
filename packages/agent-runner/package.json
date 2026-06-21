@@ -1,5 +1,5 @@
 {
-  "name": "@ship/core",
+  "name": "@ship/agent-runner",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,24 +9,20 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./test/fake": {
+      "types": "./src/fake.ts",
+      "default": "./src/fake.ts"
     }
   },
   "scripts": {
     "test": "vitest run"
   },
   "dependencies": {
-    "@octokit/request-error": "^6.1.8",
-    "@octokit/rest": "^21.0.2",
-    "@ship/agent-runner": "workspace:*",
-    "@ship/cursor-runner": "workspace:*",
     "@ship/logger": "workspace:*",
-    "@ship/mcp": "workspace:*",
-    "@ship/store": "workspace:*",
     "@ship/workflow": "workspace:*"
   },
   "devDependencies": {
-    "@fast-check/vitest": "0.3.0",
-    "@ship/test-harness": "workspace:*",
     "@stryker-mutator/core": "9.6.1",
     "@stryker-mutator/vitest-runner": "9.6.1",
     "vitest": "2.1.9"

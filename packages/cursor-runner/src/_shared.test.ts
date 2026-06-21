@@ -5,7 +5,7 @@ import type { RunResult, SDKMessage } from "@cursor/sdk";
 import { LOCAL_RUN_CONTENTION_HINT } from "@ship/workflow";
 import { describe, expect, test } from "vitest";
 
-import type { CloudRunSpec, CursorRunInput } from "./runner.js";
+import type { AgentRunInput, CloudRunSpec } from "./runner.js";
 
 import {
   buildTerminalErrorMessage,
@@ -295,7 +295,7 @@ describe("buildTerminalErrorMessage", () => {
 
 describe("mapRunResult cloud-spec gating", () => {
   test("local-style call (no third arg) does NOT derive warnings even when input.cloud is set", () => {
-    // Regression guard: a CursorRunInput with a stray .cloud field handed to
+    // Regression guard: a AgentRunInput with a stray .cloud field handed to
     // the local runtime must not surface cloud-divergence warnings on the
     // persisted local result.
     const result = {
@@ -310,7 +310,7 @@ describe("mapRunResult cloud-spec gating", () => {
       onEvent: () => undefined,
       prompt: "noop",
       runtime: "local",
-    } as unknown as CursorRunInput;
+    } as unknown as AgentRunInput;
     const mapped = mapRunResult(result, input);
     expect(mapped).not.toHaveProperty("warnings");
   });

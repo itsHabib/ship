@@ -7,7 +7,7 @@
 
 /* eslint-disable sonarjs/no-os-command-from-path -- integration: exercises system `gh`. */
 
-import type { CursorRunResult } from "@ship/cursor-runner";
+import type { AgentRunResult } from "@ship/cursor-runner";
 import type { ShipStartOutput } from "@ship/mcp";
 import type { WorkflowRun } from "@ship/workflow";
 
@@ -152,7 +152,7 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — no workdir / no repo (MCP)
       });
       const hydrated = parseToolJson(got) as WorkflowRun;
       const resultPath = join(homeRoot, "runs", shipped.workflowRunId, "result.json");
-      const persisted = JSON.parse(readFileSync(resultPath, "utf-8")) as CursorRunResult;
+      const persisted = JSON.parse(readFileSync(resultPath, "utf-8")) as AgentRunResult;
       expect(persisted.branches.length).toBeGreaterThan(0);
       const b0 = persisted.branches[0]!;
       expect((b0.branch ?? "").length).toBeGreaterThan(0);

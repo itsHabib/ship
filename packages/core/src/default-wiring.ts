@@ -10,7 +10,7 @@
 // `<UserConfigDir>/ship/...` defaults; the mcp-server reads paths
 // from env vars.
 
-import type { CursorRunner } from "@ship/cursor-runner";
+import type { AgentRunner } from "@ship/agent-runner";
 import type { Logger } from "@ship/logger";
 import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
@@ -71,18 +71,18 @@ export interface DefaultShipServiceOpts {
    * so they can exercise real `node:fs` + real SQLite without an API
    * key + without burning real model quota.
    */
-  readonly cursor?: CursorRunner;
+  readonly cursor?: AgentRunner;
   /**
    * Cloud runner override. Production omits this and gets
    * `CloudCursorRunner`. Tests may omit via config construction (no
    * `cloudCursor` field) to exercise not-configured errors.
    */
-  readonly cloudCursor?: CursorRunner;
+  readonly cloudCursor?: AgentRunner;
   /**
    * Rooms runner override. Production omits this and gets
    * `RoomCursorRunner`. Tests may inject a `FakeCursorRunner`.
    */
-  readonly roomCursor?: CursorRunner;
+  readonly roomCursor?: AgentRunner;
   /**
    * Structured diagnostics logger. Production entrypoints pass
    * `createLogger({ stream: process.stderr })` explicitly.

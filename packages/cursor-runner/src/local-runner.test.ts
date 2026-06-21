@@ -3,20 +3,14 @@
  * so tests run without `CURSOR_API_KEY` or network.
  */
 
-import type {
-  AgentDefinition,
-  AgentOptions,
-  Run,
-  RunResult,
-  SDKAgent,
-  SDKMessage,
-} from "@cursor/sdk";
+import type { AgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
+import type { AgentDefinition } from "@ship/agent-runner";
 
 import { Agent } from "@cursor/sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
-  CursorRunFailedError,
+  AgentRunFailedError,
   LocalResumeNotSupportedError,
   MissingApiKeyError,
   WrongRunnerError,
@@ -247,17 +241,17 @@ describe("LocalCursorRunner — env / pre-run errors", () => {
     expect(Agent.create).not.toHaveBeenCalled();
   });
 
-  test("Agent.create throw → CursorRunFailedError; agent NOT disposed (none was created)", async () => {
+  test("Agent.create throw → AgentRunFailedError; agent NOT disposed (none was created)", async () => {
     const sdkErr = new Error("AuthenticationError: bad key");
     vi.mocked(Agent.create).mockRejectedValue(sdkErr);
     const runner = new LocalCursorRunner();
     const promise = runner.run(baseInput());
-    await expect(promise).rejects.toBeInstanceOf(CursorRunFailedError);
+    await expect(promise).rejects.toBeInstanceOf(AgentRunFailedError);
     await expect(promise).rejects.toThrow(/Agent\.create failed/);
     await expect(promise).rejects.toMatchObject({ cause: sdkErr });
   });
 
-  test("agent.send throw after Agent.create → CursorRunFailedError; agent IS disposed", async () => {
+  test("agent.send throw after Agent.create → AgentRunFailedError; agent IS disposed", async () => {
     const { run } = makeMockRun({});
     const sendErr = new Error("RateLimitError");
     const { agent, disposeSpy } = makeMockAgent({ run, sendThrows: sendErr });
@@ -491,7 +485,7 @@ describe("LocalCursorRunner — onEvent contract", () => {
     }
   });
 
-  test("stream errors with no terminal RunResult → handle.result rejects with CursorRunFailedError", async () => {
+  test("stream errors with no terminal RunResult → handle.result rejects with AgentRunFailedError", async () => {
     const streamErr = new Error("network disconnected mid-stream");
     const { run } = makeMockRun({ streamThrows: streamErr, waitThrows: streamErr });
     const { agent, disposeSpy } = makeMockAgent({ run });

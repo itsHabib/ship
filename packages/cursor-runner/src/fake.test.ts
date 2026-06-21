@@ -5,7 +5,7 @@ import type { SDKMessage } from "@cursor/sdk";
 import { getEventListeners } from "node:events";
 import { describe, expect, test, vi } from "vitest";
 
-import type { CursorRunAttachInput, CursorRunInput, CursorRunResult } from "./runner.js";
+import type { AgentRunAttachInput, AgentRunInput, AgentRunResult } from "./runner.js";
 
 import { CursorAgentNotFoundError } from "./errors.js";
 import { FakeCursorRunner, type FakeCursorScript } from "./fake.js";
@@ -34,7 +34,7 @@ const evC: SDKMessage = {
   status: "FINISHED",
 } as unknown as SDKMessage;
 
-function baseResult(overrides: Partial<CursorRunResult> = {}): CursorRunResult {
+function baseResult(overrides: Partial<AgentRunResult> = {}): AgentRunResult {
   return {
     status: "succeeded",
     summary: "scripted summary",
@@ -44,7 +44,7 @@ function baseResult(overrides: Partial<CursorRunResult> = {}): CursorRunResult {
   };
 }
 
-function baseInput(overrides: Partial<CursorRunInput> = {}): CursorRunInput {
+function baseInput(overrides: Partial<AgentRunInput> = {}): AgentRunInput {
   return {
     cwd: "/tmp/fake",
     prompt: "scripted prompt",
@@ -66,7 +66,7 @@ describe("FakeCursorRunner — script consumption", () => {
     expect(onEvent.mock.calls.map((c) => (c as [SDKMessage])[0])).toEqual([evA, evB, evC]);
   });
 
-  test("result resolves to the scripted CursorRunResult", async () => {
+  test("result resolves to the scripted AgentRunResult", async () => {
     const runner = new FakeCursorRunner();
     const scripted = baseResult({ status: "failed", errorMessage: "scripted failure" });
     runner.enqueue({ events: [], result: scripted });
@@ -80,8 +80,8 @@ describe("FakeCursorRunner — script consumption", () => {
     runner.enqueue({ events: [evA, evB], result: baseResult(), delayMsBetweenEvents: 5 });
 
     const observed: SDKMessage[] = [];
-    const onEvent = (ev: SDKMessage): void => {
-      observed.push(ev);
+    const onEvent = (ev: unknown): void => {
+      observed.push(ev as SDKMessage);
     };
 
     const start = Date.now();
@@ -490,7 +490,7 @@ describe("FakeCursorRunner — queue mechanics", () => {
   });
 });
 
-function attachBaseInput(overrides: Partial<CursorRunAttachInput> = {}): CursorRunAttachInput {
+function attachBaseInput(overrides: Partial<AgentRunAttachInput> = {}): AgentRunAttachInput {
   return {
     agentId: "bc-fake-attach-0001",
     model: { id: "composer-2" },

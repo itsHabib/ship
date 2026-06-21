@@ -5,7 +5,7 @@
  * binary (ED-1). It spawns `sudo -E rooms run` (the Firecracker jailer needs
  * root — rooms #44), reads the host-collected `--out`
  * contract artifacts, replays `events.ndjson` through `onEvent`, then
- * resolves a `CursorRunResult` whose `branches[]` carries the pushed
+ * resolves a `AgentRunResult` whose `branches[]` carries the pushed
  * branch — the same shape `CloudCursorRunner` returns (ED-2). PR opening
  * is downstream (ED-3). See `docs/features/rooms-backend/spec.md`.
  */
@@ -19,17 +19,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type {
-  CursorRunAttachInput,
-  CursorRunHandle,
-  CursorRunInput,
-  CursorRunner,
-  CursorRunResult,
+  AgentRunAttachInput,
+  AgentRunHandle,
+  AgentRunInput,
+  AgentRunner,
+  AgentRunResult,
   RoomRunSpec,
 } from "./runner.js";
 
 import {
-  cursorRunFailedError,
-  CursorRunFailedError,
+  agentRunFailedError,
+  AgentRunFailedError,
   InvalidRoomReposError,
   MissingRoomImageError,
   MissingRoomSpecError,
@@ -103,7 +103,7 @@ export interface RoomCursorRunnerOptions {
 }
 
 /** Construct once, reuse across runs. The runner holds no per-run state. */
-export class RoomCursorRunner implements CursorRunner {
+export class RoomCursorRunner implements AgentRunner {
   readonly #roomsBin: string;
   readonly #spawn: RoomsSpawn;
   readonly #defaultImage: string | undefined;
@@ -114,7 +114,7 @@ export class RoomCursorRunner implements CursorRunner {
     this.#defaultImage = opts.defaultImage;
   }
 
-  run(input: CursorRunInput): Promise<CursorRunHandle> {
+  run(input: AgentRunInput): Promise<AgentRunHandle> {
     if (input.runtime !== "rooms") {
       return Promise.reject(
         new WrongRunnerError('RoomCursorRunner requires input.runtime === "rooms"'),
@@ -137,19 +137,19 @@ export class RoomCursorRunner implements CursorRunner {
     return Promise.resolve(this.#buildHandle(input, input.room, image));
   }
 
-  attach(input: CursorRunAttachInput): Promise<CursorRunHandle> {
+  attach(input: AgentRunAttachInput): Promise<AgentRunHandle> {
     return Promise.reject(new RoomResumeNotSupportedError({ agentId: input.agentId }));
   }
 
-  #buildHandle(input: CursorRunInput, room: RoomRunSpec, image: string): CursorRunHandle {
+  #buildHandle(input: AgentRunInput, room: RoomRunSpec, image: string): AgentRunHandle {
     const agentId = `room-${randomUUID()}`;
     const runId = `run-${randomUUID()}`;
     let terminated = false;
     let cancelRequested = false;
     let child: RoomsChild | undefined;
-    let resolveResult!: (value: CursorRunResult) => void;
+    let resolveResult!: (value: AgentRunResult) => void;
     let rejectResult!: (reason: unknown) => void;
-    const result = new Promise<CursorRunResult>((resolve, reject) => {
+    const result = new Promise<AgentRunResult>((resolve, reject) => {
       resolveResult = resolve;
       rejectResult = reject;
     });
@@ -204,7 +204,7 @@ export class RoomCursorRunner implements CursorRunner {
   }
 
   async #runPipeline(
-    input: CursorRunInput,
+    input: AgentRunInput,
     room: RoomRunSpec,
     image: string,
     cb: RoomPipelineCallbacks,
@@ -240,13 +240,13 @@ export class RoomCursorRunner implements CursorRunner {
       // Setup failed before any artifacts were written — nothing to debug, so
       // clean up the temp dir we may have created.
       if (tmpRoot !== undefined) await safeRemove(tmpRoot);
-      cb.finalizeError(cursorRunFailedError("rooms run setup failed", err));
+      cb.finalizeError(agentRunFailedError("rooms run setup failed", err));
     }
   }
 
   #wireChild(child: RoomsChild, ctx: RoomCollectContext): void {
     child.on("error", (err: Error): void => {
-      ctx.cb.finalizeError(cursorRunFailedError("rooms subprocess failed", err));
+      ctx.cb.finalizeError(agentRunFailedError("rooms subprocess failed", err));
     });
     child.on("close", (code: number | null): void => {
       void this.#collectAndFinalize(ctx, code);
@@ -279,16 +279,16 @@ export class RoomCursorRunner implements CursorRunner {
       if (finalResult.status === "succeeded") await safeRemove(ctx.tmpRoot);
     } catch (err) {
       ctx.cb.finalizeError(
-        err instanceof CursorRunFailedError
+        err instanceof AgentRunFailedError
           ? err
-          : cursorRunFailedError("failed to collect rooms artifacts", err),
+          : agentRunFailedError("failed to collect rooms artifacts", err),
       );
     }
   }
 }
 
 interface RoomPipelineCallbacks {
-  finalizeOk: (terminal: CursorRunResult) => void;
+  finalizeOk: (terminal: AgentRunResult) => void;
   finalizeError: (err: unknown) => void;
   isCancelRequested: () => boolean;
   setChild: (child: RoomsChild) => void;
@@ -296,7 +296,7 @@ interface RoomPipelineCallbacks {
 
 interface RoomCollectContext {
   cb: Pick<RoomPipelineCallbacks, "finalizeOk" | "finalizeError" | "isCancelRequested">;
-  input: CursorRunInput;
+  input: AgentRunInput;
   outDir: string;
   repoUrl: string;
   tmpRoot: string;
@@ -316,8 +316,8 @@ interface RoomResultJson {
 async function collectRoomRun(args: {
   outDir: string;
   repoUrl: string;
-  onEvent: CursorRunInput["onEvent"];
-}): Promise<CursorRunResult> {
+  onEvent: AgentRunInput["onEvent"];
+}): Promise<AgentRunResult> {
   const parsed = await readResultJson(join(args.outDir, "result.json"));
   assertSchemaVersion(parsed);
   // Replay BEFORE the result resolves — local/cloud stream live; rooms
@@ -356,16 +356,16 @@ function buildRoomResult(
   parsed: RoomResultJson,
   summary: string | undefined,
   repoUrl: string,
-): CursorRunResult {
+): AgentRunResult {
   const status = mapRoomsStatus(parsed.status, parsed.exit_code);
   const pushedBranch =
     typeof parsed.pushed_branch === "string" && parsed.pushed_branch !== ""
       ? parsed.pushed_branch
       : undefined;
   const out: {
-    status: CursorRunResult["status"];
+    status: AgentRunResult["status"];
     durationMs: number;
-    branches: CursorRunResult["branches"];
+    branches: AgentRunResult["branches"];
     summary?: string;
     errorMessage?: string;
     sdkTerminalStatus?: string;
@@ -415,7 +415,7 @@ function buildRoomErrorMessage(parsed: RoomResultJson, summary: string | undefin
 
 async function replayRoomEvents(
   eventsPath: string,
-  onEvent: CursorRunInput["onEvent"],
+  onEvent: AgentRunInput["onEvent"],
 ): Promise<void> {
   const raw = await readFileOptional(eventsPath);
   if (raw === undefined) return;
@@ -426,7 +426,7 @@ async function replayRoomEvents(
   }
 }
 
-function emitRoomEvent(line: string, onEvent: CursorRunInput["onEvent"]): void {
+function emitRoomEvent(line: string, onEvent: AgentRunInput["onEvent"]): void {
   let ev: SDKMessage;
   try {
     ev = JSON.parse(line) as SDKMessage;
@@ -510,7 +510,7 @@ function buildRoomsArgs(args: {
 // a push failure can leave a stale `succeeded` there while the process exits
 // nonzero. A non-clean exit downgrades a `succeeded` result to `failed`;
 // results that already reported failed/cancelled are left untouched.
-function applyExitCode(result: CursorRunResult, exitCode: number | null): CursorRunResult {
+function applyExitCode(result: AgentRunResult, exitCode: number | null): AgentRunResult {
   if (exitCode === 0) return result;
   if (result.status !== "succeeded") return result;
   const detail = exitCode === null ? "a signal" : `code ${String(exitCode)}`;
@@ -556,7 +556,7 @@ function slugify(value: string): string {
 
 // --- small helpers ---
 
-function cancelledResult(): CursorRunResult {
+function cancelledResult(): AgentRunResult {
   return { branches: [], durationMs: 0, status: "cancelled" };
 }
 

@@ -88,6 +88,25 @@ importers:
         specifier: ^4.19.0
         version: 4.21.0
 
+  packages/agent-runner:
+    dependencies:
+      '@ship/logger':
+        specifier: workspace:*
+        version: link:../logger
+      '@ship/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+    devDependencies:
+      '@stryker-mutator/core':
+        specifier: 9.6.1
+        version: 9.6.1(@types/node@22.19.17)
+      '@stryker-mutator/vitest-runner':
+        specifier: 9.6.1
+        version: 9.6.1(@stryker-mutator/core@9.6.1(@types/node@22.19.17))(vitest@2.1.9(@types/node@22.19.17))
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.19.17)
+
   packages/cli:
     dependencies:
       '@ship/core':
@@ -142,6 +161,9 @@ importers:
       '@octokit/rest':
         specifier: ^21.0.2
         version: 21.1.1
+      '@ship/agent-runner':
+        specifier: workspace:*
+        version: link:../agent-runner
       '@ship/cursor-runner':
         specifier: workspace:*
         version: link:../cursor-runner
@@ -179,6 +201,9 @@ importers:
       '@cursor/sdk':
         specifier: ^1.0.12
         version: 1.0.12
+      '@ship/agent-runner':
+        specifier: workspace:*
+        version: link:../agent-runner
       '@ship/logger':
         specifier: workspace:*
         version: link:../logger

@@ -3,12 +3,12 @@
  * `--cloud-auto-create-pr`). Gated on `SHIP_LIVE=1` + `SHIP_CLOUD=1`
  * + `CURSOR_API_KEY` + `GITHUB_TOKEN`.
  *
- * Branch info is read from `result.json` (the on-disk `CursorRunResult`
+ * Branch info is read from `result.json` (the on-disk `AgentRunResult`
  * per phase doc § F6). This scenario verifies the partial-mode
  * (branch-only, no PR) persists correctly.
  */
 
-import type { CursorRunResult } from "@ship/cursor-runner";
+import type { AgentRunResult } from "@ship/cursor-runner";
 import type { ShipOutput } from "@ship/mcp";
 
 import { spawn } from "node:child_process";
@@ -93,7 +93,7 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — auto-create PR off", () =>
 
       const persisted = JSON.parse(
         readFileSync(shipped.artifacts.resultPath, "utf-8"),
-      ) as CursorRunResult;
+      ) as AgentRunResult;
       expect(persisted.branches.length).toBeGreaterThan(0);
       const b0 = persisted.branches[0]!;
       expect((b0.branch ?? "").length).toBeGreaterThan(0);

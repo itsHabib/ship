@@ -1,12 +1,9 @@
 /**
- * `@ship/cursor-runner` — public barrel. Other packages reach SDK
- * types via the re-exports below; ED-2's import-isolation test
- * (`test/sdk-import-isolation.test.ts`) enforces that no other package
- * names `@cursor/sdk` directly. `FakeCursorRunner` is exposed under
- * the `./test/fake` subpath, not this barrel.
+ * `@ship/cursor-runner` — public barrel. Other packages reach SDK types
+ * via the re-exports below; ED-2's import-isolation test enforces that no
+ * other package names `@cursor/sdk` directly.
  */
 
-// --- classify-failure.ts ---
 export {
   buildFailureDetail,
   classifyFailure,
@@ -14,27 +11,23 @@ export {
 } from "./classify-failure.js";
 export type { BuildFailureDetailInput, ClassifyFailureInput } from "./classify-failure.js";
 
-// --- runner.ts ---
 export type {
+  AgentRunAttachInput,
+  AgentRunHandle,
+  AgentRunInput,
+  AgentRunner,
+  AgentRunResult,
   CloudRunSpec,
-  CursorRunAttachInput,
-  CursorRunHandle,
-  CursorRunInput,
-  CursorRunner,
-  CursorRunResult,
   RoomRunSpec,
 } from "./runner.js";
 
-export type { ArtifactRef } from "@ship/workflow";
+export type { AgentDefinition, McpServerConfig } from "@ship/agent-runner";
 
-// --- cloud-runner.ts ---
 export { CloudCursorRunner } from "./cloud-runner.js";
 export { LIST_ARTIFACTS_TIMEOUT_MS } from "./artifacts-capture.js";
 
-// --- local-runner.ts ---
 export { LocalCursorRunner } from "./local-runner.js";
 
-// --- room-runner.ts ---
 export { RoomCursorRunner } from "./room-runner.js";
 export type {
   RoomCursorRunnerOptions,
@@ -43,11 +36,9 @@ export type {
   RoomsSpawnOptions,
 } from "./room-runner.js";
 
-// --- errors.ts ---
 export {
   CursorAgentNotFoundError,
   CursorCloudIntegrationError,
-  CursorRunFailedError,
   InvalidCloudReposError,
   InvalidRoomReposError,
   LocalResumeNotSupportedError,
@@ -60,6 +51,10 @@ export {
   RoomSchemaVersionError,
   WrongRunnerError,
 } from "./errors.js";
+export { AgentRunFailedError } from "./errors.js";
 
-// --- @cursor/sdk re-exports ---
-export type { AgentDefinition, McpServerConfig, SDKMessage } from "@cursor/sdk";
+export type { ArtifactRef } from "@ship/workflow";
+
+export type { SDKMessage } from "@cursor/sdk";
+
+export { cursorEventProjection } from "./cursor-event-projection.js";

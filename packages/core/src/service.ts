@@ -7,15 +7,15 @@
 
 import type {
   AgentDefinition,
+  AgentRunAttachInput,
+  AgentRunHandle,
+  AgentRunInput,
+  AgentRunner,
+  AgentRunResult,
   CloudRunSpec,
-  CursorRunAttachInput,
-  CursorRunHandle,
-  CursorRunInput,
-  CursorRunner,
-  CursorRunResult,
   McpServerConfig,
   RoomRunSpec,
-} from "@ship/cursor-runner";
+} from "@ship/agent-runner";
 import type {
   GetWorkflowRunOutput,
   RunBranchRef,
@@ -103,11 +103,11 @@ export interface ShipServiceConfig {
   /** Optional inline subagents re-passed on cloud resume per ED-5. */
   readonly agents?: Record<string, AgentDefinition>;
   /** Local/desktop runner; used when `input.runtime` is `"local"` or omitted. */
-  readonly cursor: CursorRunner;
+  readonly cursor: AgentRunner;
   /** Optional cloud runner; required at dispatch time only for `runtime: "cloud"`. */
-  readonly cloudCursor?: CursorRunner;
+  readonly cloudCursor?: AgentRunner;
   /** Optional rooms runner; required at dispatch time only for `runtime: "rooms"`. */
-  readonly roomCursor?: CursorRunner;
+  readonly roomCursor?: AgentRunner;
   /** Preflight cap for `downloadArtifact` (ED-5). Default: 100 MiB. */
   readonly artifactMaxBytes?: number;
 }
@@ -198,7 +198,7 @@ export interface ShipService {
 // in-flight run.
 export interface ActiveRun {
   readonly controller: AbortController;
-  handle?: CursorRunHandle;
+  handle?: AgentRunHandle;
 }
 
 /** Latest cloud `cursor_runs.agent_id` linked from the run's phases (by `startedAt`). */
@@ -242,14 +242,17 @@ function parseResultJsonDiagnostics(raw: string): {
   return out;
 }
 
-function sdkStatusFromRecentEvents(events: readonly Record<string, unknown>[]): string | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
-    if (ev?.["type"] === "status" && typeof ev["status"] === "string") {
-      return ev["status"];
-    }
+async function readEventsDiagnostics(
+  fs: ShipFs,
+  eventsPath: string,
+): Promise<{ recentEvents?: Record<string, unknown>[] }> {
+  try {
+    const recentEvents = parseRecentEventsNdjson(await fs.readFile(eventsPath, "utf-8"));
+    if (recentEvents.length === 0) return {};
+    return { recentEvents };
+  } catch {
+    return {};
   }
-  return undefined;
 }
 
 function durationMsFromImplementPhase(run: WorkflowRun): number | undefined {
@@ -291,20 +294,6 @@ async function readResultJsonDiagnostics(
   }
 }
 
-async function readEventsDiagnostics(
-  fs: ShipFs,
-  eventsPath: string,
-): Promise<{ recentEvents?: Record<string, unknown>[]; sdkTerminalStatus?: string }> {
-  try {
-    const recentEvents = parseRecentEventsNdjson(await fs.readFile(eventsPath, "utf-8"));
-    if (recentEvents.length === 0) return {};
-    const sdkTerminalStatus = sdkStatusFromRecentEvents(recentEvents);
-    return sdkTerminalStatus === undefined ? { recentEvents } : { recentEvents, sdkTerminalStatus };
-  } catch {
-    return {}; // events.ndjson may not exist
-  }
-}
-
 // runDurationMs fallback when result.json didn't carry it: the persisted cursor
 // run first, then the implement-phase wall time.
 function fallbackRunDurationMs(store: Store, run: WorkflowRun): number | undefined {
@@ -333,9 +322,6 @@ async function loadRunDiagnostics(
 
   const events = await readEventsDiagnostics(fs, paths.events);
   if (events.recentEvents !== undefined) out.recentEvents = events.recentEvents;
-  if (out.sdkTerminalStatus === undefined && events.sdkTerminalStatus !== undefined) {
-    out.sdkTerminalStatus = events.sdkTerminalStatus;
-  }
 
   if (out.runDurationMs === undefined) {
     const fallback = fallbackRunDurationMs(store, run);
@@ -547,7 +533,7 @@ interface ShipContext {
   readonly logger: Logger;
   /** Value persisted to `cursor_runs.runtime` for this invocation. */
   readonly resolvedCursorRuntime: CursorRunRuntime;
-  readonly runner: CursorRunner;
+  readonly runner: AgentRunner;
   readonly store: Store;
 }
 
@@ -580,7 +566,7 @@ function resolvePersistedRuntime(input: ShipInput): CursorRunRuntime {
   return "local";
 }
 
-function selectRunner(config: ShipServiceConfig, input: ShipInput): CursorRunner {
+function selectRunner(config: ShipServiceConfig, input: ShipInput): AgentRunner {
   if (input.runtime === "cloud") {
     if (config.cloudCursor === undefined) {
       throw new CloudRunnerNotConfiguredError();
@@ -596,17 +582,17 @@ function selectRunner(config: ShipServiceConfig, input: ShipInput): CursorRunner
   return config.cursor;
 }
 
-interface BuildCursorRunInputArgs {
+interface BuildAgentRunInputArgs {
   readonly ctx: ShipContext;
   readonly prep: PreparedRun;
   readonly prompt: string;
   readonly model: ModelSelection;
   readonly controller: AbortController;
-  readonly onEvent: CursorRunInput["onEvent"];
+  readonly onEvent: AgentRunInput["onEvent"];
   readonly runLog: Logger;
 }
 
-function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput {
+function buildShipAgentRunInput(args: BuildAgentRunInputArgs): AgentRunInput {
   const { ctx, prep, prompt, model, controller, onEvent, runLog } = args;
   const policy = ctx.store.getRun(prep.workflowRunId)?.policy ?? DEFAULT_WORKFLOW_POLICY;
   const base = {
@@ -626,7 +612,7 @@ function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput 
       ...base,
       runtime: "cloud",
       ...(ctx.input.cloud !== undefined && {
-        cloud: ctx.input.cloud as NonNullable<CursorRunInput["cloud"]>,
+        cloud: ctx.input.cloud as NonNullable<AgentRunInput["cloud"]>,
       }),
     };
   }
@@ -635,7 +621,7 @@ function buildShipCursorRunInput(args: BuildCursorRunInputArgs): CursorRunInput 
       ...base,
       runtime: "rooms",
       ...(ctx.input.room !== undefined && {
-        room: ctx.input.room as NonNullable<CursorRunInput["room"]>,
+        room: ctx.input.room as NonNullable<AgentRunInput["room"]>,
       }),
     };
   }
@@ -972,12 +958,12 @@ async function runToTerminal(
     ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
     const ndjsonRef = ndjson;
 
-    const onEvent: CursorRunInput["onEvent"] = (ev) => {
+    const onEvent: AgentRunInput["onEvent"] = (ev) => {
       ndjsonRef.write(ev);
       eventPump?.heartbeat();
     };
 
-    const runInput = buildShipCursorRunInput({
+    const runInput = buildShipAgentRunInput({
       ctx,
       prep,
       prompt,
@@ -1138,7 +1124,7 @@ interface FinalizeSuccessArgs {
   readonly cursorRunId: string;
   readonly paths: RunArtifactPaths;
   readonly phaseId: string;
-  readonly result: CursorRunResult;
+  readonly result: AgentRunResult;
   readonly worktree: WorktreeRef;
   readonly workflowRunId: string;
 }
@@ -1150,7 +1136,7 @@ function classifyFinalizedResult(
   args: FinalizeSuccessArgs,
   isCancelled: boolean,
   terminal: TerminalWorkflowStatus,
-): { readonly result: CursorRunResult; readonly classified?: ClassifiedFailure } {
+): { readonly result: AgentRunResult; readonly classified?: ClassifiedFailure } {
   if (terminal !== "failed" || isCancelled) return { result: args.result };
   const classified = classifyFailedRun(ctx, args.workflowRunId, args.result);
   return {
@@ -1169,7 +1155,7 @@ interface FinalizeSuccessPersistArgs {
   readonly args: FinalizeSuccessArgs;
   readonly endedAt: string;
   readonly terminal: TerminalWorkflowStatus;
-  readonly result: CursorRunResult;
+  readonly result: AgentRunResult;
   readonly classified?: ClassifiedFailure;
 }
 
@@ -1251,7 +1237,7 @@ type WriteOutcome = { ok: true } | { ok: false; err: unknown };
 // Writes `result.json` and `summary.md`. Returns a tagged outcome so the
 // caller can route to `finalizeFailure` without a try block at this
 // layer, and without ambiguity over what counts as "success."
-function cursorRunResultForPersistence(result: CursorRunResult): CursorRunResult {
+function cursorRunResultForPersistence(result: AgentRunResult): AgentRunResult {
   if (result.classificationEvents === undefined) return result;
   const rest = { ...result };
   Reflect.deleteProperty(rest, "classificationEvents");
@@ -1261,7 +1247,7 @@ function cursorRunResultForPersistence(result: CursorRunResult): CursorRunResult
 async function tryWriteSuccessArtifacts(
   ctx: ShipContext,
   paths: RunArtifactPaths,
-  result: CursorRunResult,
+  result: AgentRunResult,
 ): Promise<WriteOutcome> {
   try {
     const persisted = cursorRunResultForPersistence(result);
@@ -1290,7 +1276,7 @@ function resolveMaxRunDurationMs(store: Store, workflowRunId: string): number {
 function classifyFailedRun(
   ctx: ShipContext,
   workflowRunId: string,
-  result: CursorRunResult,
+  result: AgentRunResult,
 ): ClassifiedFailure {
   const events = result.classificationEvents ?? [];
   const maxRunDurationMs = resolveMaxRunDurationMs(ctx.store, workflowRunId);
@@ -1369,7 +1355,7 @@ interface PersistSuccessRowsArgs {
   readonly terminal: TerminalWorkflowStatus;
   readonly endedAt: string;
   readonly isCancelled: boolean;
-  readonly result: CursorRunResult;
+  readonly result: AgentRunResult;
   readonly failureCategory?: FailureCategory;
 }
 
@@ -1489,7 +1475,7 @@ function assertDownloadedArtifactSize(
 }
 
 async function fetchCloudArtifactBytes(
-  runner: CursorRunner,
+  runner: AgentRunner,
   agentId: string,
   workflowRunId: string,
   sdkPath: string,
@@ -2132,7 +2118,7 @@ async function runResumeAttach(
   if (cloudCursor === undefined) return;
 
   let eventPump: EventPumpHandle | undefined;
-  const onEvent: CursorRunAttachInput["onEvent"] = (ev) => {
+  const onEvent: AgentRunAttachInput["onEvent"] = (ev) => {
     target.ndjson.write(ev);
     eventPump?.heartbeat();
   };
