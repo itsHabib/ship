@@ -11,7 +11,7 @@
 |---|---|---|---|
 | Production — new pkg | `packages/agent-runner/src/*`: `AgentRunner` interface, handle/promise/cancel state machine, `FailureCategory` classification policy, duration formatters, error taxonomy, `FakeAgentRunner`, the `EventProjection` interface, neutral `McpServerConfig`/`AgentDefinition` interfaces — much **moved** from cursor-runner | ~430 | 430 |
 | Production — cursor-runner | rename `CursorRunner`/`CursorRun*`→`AgentRunner`/`AgentRun*` across `runner.ts`/`_shared.ts`/`classify-failure.ts`/`local-runner.ts`/`cloud-runner.ts`/`room-runner.ts`/`index.ts`; add `CursorEventProjection`; re-point `_shared.ts`/`classify-failure.ts` decoders through the projection | ~220 | 220 |
-| Production — consumers | import-name shifts only in `core`/`store`/`workflow`/`mcp` (no logic change) | ~40 | 40 |
+| Production — consumers | import-name shifts in `core`/`store`/`workflow`/`mcp`/**`cli`** (review — `cli/src/bin.ts` imports `CursorRunner`/`FakeCursorRunner`); **+ a real change at core's classify call site** (ED-4 / step 4), not "names only" | ~70 | 70 |
 | Tests | re-fixtured cursor-runner tests + the projection-equivalence test + golden `events.ndjson` fixtures | ~400 | 200 |
 | **Total** | | | **~890** |
 

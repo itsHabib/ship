@@ -33,6 +33,7 @@ batches:
           - packages/core/src/service.ts          # import-name shifts only
           - packages/store/src/cursor-runs.ts     # import-name shifts only
           - packages/mcp/src/mcp.ts               # import-name shifts only
+          - packages/cli/src/bin.ts               # CursorRunner/FakeCursorRunner import-name shift (review)
         status: pending
 
   - id: 2
