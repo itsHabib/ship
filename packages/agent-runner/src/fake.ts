@@ -15,6 +15,7 @@ import type {
   AgentRunResult,
 } from "./runner.js";
 
+import { captureListedArtifacts } from "./artifacts-capture.js";
 import { attachInputAsRunInput } from "./attach-input.js";
 import { AgentNotFoundError } from "./errors.js";
 import { MAX_CLASSIFICATION_EVENTS } from "./formatters.js";
@@ -247,8 +248,8 @@ export class FakeAgentRunner implements AgentRunner {
     }
     if (!isTerminated()) {
       if (script.listArtifacts !== undefined) {
-        const artifacts = await script.listArtifacts();
-        const terminal = artifacts !== undefined ? { ...script.result, artifacts } : script.result;
+        const artifacts = await captureListedArtifacts(script.listArtifacts, input.log);
+        const terminal = artifacts.length > 0 ? { ...script.result, artifacts } : script.result;
         finalize(finalizeFakeResult(script, terminal));
         return;
       }

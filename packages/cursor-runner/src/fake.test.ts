@@ -2,6 +2,7 @@
 
 import type { SDKMessage } from "@cursor/sdk";
 
+import { AgentNotFoundError } from "@ship/agent-runner";
 import { getEventListeners } from "node:events";
 import { describe, expect, test, vi } from "vitest";
 
@@ -515,7 +516,7 @@ describe("FakeCursorRunner — attach", () => {
     expect(result).toMatchObject({ status: "succeeded", summary: "attached" });
   });
 
-  test("not-found script throws CursorAgentNotFoundError with input ids", async () => {
+  test("not-found script throws AgentNotFoundError with input ids", async () => {
     const runner = new FakeCursorRunner();
     runner.enqueueAttach({ notFound: true });
 
@@ -525,11 +526,11 @@ describe("FakeCursorRunner — attach", () => {
         runId: "run-missing",
       }),
     );
-    await expect(promise).rejects.toBeInstanceOf(CursorAgentNotFoundError);
+    await expect(promise).rejects.toBeInstanceOf(AgentNotFoundError);
+    await expect(promise).rejects.not.toBeInstanceOf(CursorAgentNotFoundError);
     await expect(promise).rejects.toMatchObject({
       agentId: "bc-missing",
       runId: "run-missing",
-      runtime: "cloud",
     });
   });
 

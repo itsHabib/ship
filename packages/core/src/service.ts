@@ -37,10 +37,10 @@ import type {
   WorktreeRef,
 } from "@ship/workflow";
 
+import { AgentNotFoundError } from "@ship/agent-runner";
 import {
   buildFailureDetail,
   classifyFailure,
-  CursorAgentNotFoundError,
   formatClassifiedErrorMessage,
 } from "@ship/cursor-runner";
 import { createLogger, type LogFields, type Logger } from "@ship/logger";
@@ -1486,7 +1486,7 @@ async function fetchCloudArtifactBytes(
   try {
     return await runner.downloadArtifact(agentId, sdkPath);
   } catch (err) {
-    if (err instanceof CursorAgentNotFoundError) {
+    if (err instanceof AgentNotFoundError) {
       throw new ArtifactGoneError(workflowRunId, sdkPath);
     }
     throw err;
@@ -2202,7 +2202,7 @@ async function handleResumeAttachError(
     });
     return;
   }
-  if (err instanceof CursorAgentNotFoundError) {
+  if (err instanceof AgentNotFoundError) {
     await finalizeResumeFailure(ctx, target.row, target.phaseId, target.worktree, {
       message: `cloud agent ${target.row.agentId} no longer reachable on resume`,
     });

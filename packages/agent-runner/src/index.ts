@@ -4,6 +4,8 @@
 
 export type { AgentDefinition, McpServerConfig } from "./agent-config.js";
 
+export { captureListedArtifacts, LIST_ARTIFACTS_TIMEOUT_MS } from "./artifacts-capture.js";
+
 export {
   buildFailureDetail,
   classifyFailure,
