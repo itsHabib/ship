@@ -5,6 +5,7 @@
  */
 
 import {
+  agentProviderSchema,
   artifactRefSchema,
   failureCategorySchema,
   terminalCursorRunRefSchema,
@@ -238,6 +239,8 @@ export type RunBranchRef = z.infer<typeof runBranchRefSchema>;
 
 export const getWorkflowRunOutputSchema = workflowRunSchema
   .extend({
+    agentId: z.string().min(1).optional(),
+    provider: agentProviderSchema.optional(),
     cursorAgentId: z.string().min(1).optional(),
     watchUrl: z.string().url().optional(),
     /** Cursor run wall time from `result.json` / cursor row (failed runs). */

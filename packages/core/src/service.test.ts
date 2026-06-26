@@ -11,8 +11,8 @@ import type { WorkflowRun } from "@ship/workflow";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore } from "@ship/store";
 import {
+  agentWatchUrl,
   CLOUD_WORKTREE_SENTINEL,
-  cursorWatchUrl,
   DEFAULT_WORKFLOW_POLICY,
   isTerminal,
 } from "@ship/workflow";
@@ -1635,7 +1635,7 @@ describe("ShipService.getRun — failure diagnostics enrichment", () => {
 });
 
 describe("ShipService.getRun — cloud watchUrl enrichment", () => {
-  test("cloud run with cursor row exposes cursorAgentId and watchUrl", async () => {
+  test("cloud run with cursor row exposes agentId, provider, cursorAgentId and watchUrl", async () => {
     const h = await createHarness();
     h.cloudCursor.enqueue({
       events: [],
@@ -1649,12 +1649,14 @@ describe("ShipService.getRun — cloud watchUrl enrichment", () => {
       cloud: { repos: [{ url: "https://github.com/owner/repo" }] },
     });
     const row = await h.service.getRun(out.workflowRunId);
+    expect(row?.agentId).toBe("agent-fake-0001");
+    expect(row?.provider).toBe("cursor");
     expect(row?.cursorAgentId).toBe("agent-fake-0001");
-    expect(row?.watchUrl).toBe(cursorWatchUrl("agent-fake-0001"));
+    expect(row?.watchUrl).toBe(agentWatchUrl("cursor", "agent-fake-0001"));
     h.store.close();
   });
 
-  test("local run omits cursorAgentId and watchUrl", async () => {
+  test("local run omits agentId, provider, cursorAgentId and watchUrl", async () => {
     const h = await createHarness();
     h.cursor.enqueue({
       events: [],
@@ -1666,6 +1668,8 @@ describe("ShipService.getRun — cloud watchUrl enrichment", () => {
       docPath: "docs.md",
     });
     const row = await h.service.getRun(out.workflowRunId);
+    expect(row).not.toHaveProperty("agentId");
+    expect(row).not.toHaveProperty("provider");
     expect(row).not.toHaveProperty("cursorAgentId");
     expect(row).not.toHaveProperty("watchUrl");
     h.store.close();
@@ -1697,6 +1701,8 @@ describe("ShipService.getRun — cloud watchUrl enrichment", () => {
     });
     h.store.markRunStarted(wfId, phaseId, "2026-05-09T00:00:00.000Z");
     const row = await h.service.getRun(wfId);
+    expect(row).not.toHaveProperty("agentId");
+    expect(row).not.toHaveProperty("provider");
     expect(row).not.toHaveProperty("cursorAgentId");
     expect(row).not.toHaveProperty("watchUrl");
     h.store.close();

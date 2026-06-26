@@ -4,6 +4,7 @@
  */
 
 import type {
+  AgentProvider,
   ArtifactRef,
   CursorRunRef,
   CursorRunRuntime,
@@ -25,6 +26,8 @@ export interface RecordCursorRunInput {
   id: string;
   workflowRunId: string;
   agentId: string;
+  /** Agent backend; defaults to `cursor` when omitted. */
+  provider?: AgentProvider;
   /** SDK run id (`run-<uuid>`). Required for cloud resume. */
   runId?: string;
   runtime: CursorRunRuntime;
@@ -70,6 +73,7 @@ interface CursorRunRow {
   id: string;
   workflow_run_id: string;
   agent_id: string;
+  provider: string;
   run_id: string | null;
   runtime: string;
   model_json: string | null;
@@ -82,7 +86,7 @@ interface CursorRunRow {
 }
 
 const CURSOR_RUN_COLUMNS =
-  "id, workflow_run_id, agent_id, run_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir, artifacts_json";
+  "id, workflow_run_id, agent_id, provider, run_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir, artifacts_json";
 
 /**
  * Constructs the `cursor_runs` ops. Caches static prepared statements
@@ -90,8 +94,8 @@ const CURSOR_RUN_COLUMNS =
  */
 export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
   const insertStmt = db.prepare(
-    `INSERT INTO cursor_runs (id, workflow_run_id, agent_id, run_id, runtime, model_json, status, started_at, artifacts_dir)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO cursor_runs (id, workflow_run_id, agent_id, provider, run_id, runtime, model_json, status, started_at, artifacts_dir)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], CursorRunRow>(
     `SELECT ${CURSOR_RUN_COLUMNS} FROM cursor_runs WHERE id = ?`,
@@ -111,6 +115,7 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
           input.id,
           input.workflowRunId,
           input.agentId,
+          input.provider ?? "cursor",
           input.runId ?? null,
           input.runtime,
           input.model !== undefined ? JSON.stringify(input.model) : null,
@@ -265,6 +270,7 @@ function parseCursorRun(row: CursorRunRow): CursorRunRef {
   const candidate: {
     id: string;
     agentId: string;
+    provider: string;
     runtime: string;
     startedAt: string;
     status: string;
@@ -276,6 +282,7 @@ function parseCursorRun(row: CursorRunRow): CursorRunRef {
     agentId: row.agent_id,
     artifactsDir: row.artifacts_dir,
     id: row.id,
+    provider: row.provider,
     runtime: row.runtime,
     startedAt: row.started_at,
     status: row.status,

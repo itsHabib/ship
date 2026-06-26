@@ -25,6 +25,7 @@ import type {
 } from "@ship/mcp";
 import type { ListRunsFilter, ResumableCloudCursorRun, Store } from "@ship/store";
 import type {
+  AgentProvider,
   ArtifactRef,
   CursorRunRef,
   CursorRunRuntime,
@@ -46,8 +47,9 @@ import {
 import { createLogger, type LogFields, type Logger } from "@ship/logger";
 import { StoreContentionError, WorkflowRunNotFoundError } from "@ship/store";
 import {
+  agentNotCreatedSentinel,
+  agentWatchUrl,
   CLOUD_WORKTREE_SENTINEL,
-  cursorWatchUrl,
   DEFAULT_WORKFLOW_POLICY,
   isTerminal,
   newCursorRunId,
@@ -201,8 +203,11 @@ export interface ActiveRun {
   handle?: AgentRunHandle;
 }
 
-/** Latest cloud `cursor_runs.agent_id` linked from the run's phases (by `startedAt`). */
-function resolveLatestCloudCursorAgentId(store: Store, run: WorkflowRun): string | undefined {
+/** Latest cloud agent run linked from the run's phases (by `startedAt`). */
+function resolveLatestCloudAgentRun(
+  store: Store,
+  run: WorkflowRun,
+): { readonly agentId: string; readonly provider: AgentProvider } | undefined {
   let latest: CursorRunRef | undefined;
   for (const phase of run.phases) {
     const cursorRunId = phase.cursorRunId;
@@ -215,7 +220,8 @@ function resolveLatestCloudCursorAgentId(store: Store, run: WorkflowRun): string
       latest = cursorRun;
     }
   }
-  return latest?.agentId;
+  if (latest === undefined) return undefined;
+  return { agentId: latest.agentId, provider: latest.provider };
 }
 
 const DIAGNOSTIC_RECENT_EVENTS_LIMIT = 20;
@@ -331,6 +337,26 @@ async function loadRunDiagnostics(
   return out;
 }
 
+/** Cloud agent identity fields derived from the latest cloud cursor_runs row. */
+function enrichCloudAgentFields(
+  view: GetWorkflowRunOutput,
+  latestCloud: { readonly agentId: string; readonly provider: AgentProvider },
+): GetWorkflowRunOutput {
+  let enriched: GetWorkflowRunOutput = {
+    ...view,
+    agentId: latestCloud.agentId,
+    provider: latestCloud.provider,
+  };
+  if (latestCloud.provider === "cursor") {
+    enriched = { ...enriched, cursorAgentId: latestCloud.agentId };
+  }
+  const watchUrl = agentWatchUrl(latestCloud.provider, latestCloud.agentId);
+  if (watchUrl !== undefined) {
+    enriched = { ...enriched, watchUrl };
+  }
+  return enriched;
+}
+
 /** MCP `get_workflow_run` view: domain run plus derived cloud watch + failure diagnostics. */
 async function enrichWorkflowRunView(
   deps: { readonly store: Store; readonly fs: ShipFs; readonly runsDir: string },
@@ -338,9 +364,9 @@ async function enrichWorkflowRunView(
 ): Promise<GetWorkflowRunOutput | null> {
   if (run === null) return null;
   let view: GetWorkflowRunOutput = { ...run };
-  const agentId = resolveLatestCloudCursorAgentId(deps.store, run);
-  if (agentId !== undefined) {
-    view = { ...view, cursorAgentId: agentId, watchUrl: cursorWatchUrl(agentId) };
+  const latestCloud = resolveLatestCloudAgentRun(deps.store, run);
+  if (latestCloud !== undefined) {
+    view = enrichCloudAgentFields(view, latestCloud);
   }
   const diagnostics = await loadRunDiagnostics(deps.store, deps.fs, deps.runsDir, run);
   if (diagnostics !== undefined) {
@@ -1552,13 +1578,13 @@ function finalizeAlreadyCancelled(ctx: ShipContext, prep: PreparedRun): ShipOutp
     workflowRunId: prep.workflowRunId,
     status: "cancelled",
     worktree: updatedRun?.worktree ?? prep.worktree,
-    cursorRun: synthesizeFailedCursorRun(
-      prep.workflowRunId,
-      prep.paths.dir,
+    cursorRun: synthesizeFailedCursorRun({
+      workflowRunId: prep.workflowRunId,
+      artifactsDir: prep.paths.dir,
       endedAt,
-      "cancelled",
-      ctx.resolvedCursorRuntime,
-    ),
+      status: "cancelled",
+      runtime: ctx.resolvedCursorRuntime,
+    }),
     paths: prep.paths,
     summary: undefined,
   });
@@ -1845,13 +1871,13 @@ function resolveFailureCursorRunRef(
 ): CursorRunRef & { status: TerminalCursorRunStatus } {
   const ref = args.cursorRunId !== undefined ? ctx.store.getCursorRun(args.cursorRunId) : null;
   if (ref !== null) return assertTerminalCursorRunRef(ref, terminal);
-  return synthesizeFailedCursorRun(
-    args.workflowRunId,
-    args.paths.dir,
-    ctx.clock(),
-    terminal,
-    ctx.resolvedCursorRuntime,
-  );
+  return synthesizeFailedCursorRun({
+    workflowRunId: args.workflowRunId,
+    artifactsDir: args.paths.dir,
+    endedAt: ctx.clock(),
+    status: terminal,
+    runtime: ctx.resolvedCursorRuntime,
+  });
 }
 
 interface BuildShipOutputArgs {
@@ -1920,21 +1946,28 @@ function resolveModelSelection(input: ShipInput, defaultModel: ModelSelection): 
  * far enough to record one (e.g. cursor.run() rejected before returning
  * a handle). Used to produce a coherent ShipOutput in those edge cases.
  */
-function synthesizeFailedCursorRun(
-  workflowRunId: string,
-  artifactsDir: string,
-  endedAt: string,
-  status: TerminalCursorRunStatus,
-  runtime: CursorRunRuntime,
-): CursorRunRef & { status: TerminalCursorRunStatus } {
+interface SynthesizeFailedCursorRunInput {
+  readonly workflowRunId: string;
+  readonly artifactsDir: string;
+  readonly endedAt: string;
+  readonly status: TerminalCursorRunStatus;
+  readonly runtime: CursorRunRuntime;
+  readonly provider?: AgentProvider;
+}
+
+function synthesizeFailedCursorRun(input: SynthesizeFailedCursorRunInput): CursorRunRef & {
+  status: TerminalCursorRunStatus;
+} {
+  const provider = input.provider ?? "cursor";
   return {
-    id: `cr_synthetic_${workflowRunId}`,
-    agentId: "agent-not-created",
-    runtime,
-    status,
-    startedAt: endedAt,
-    endedAt,
-    artifactsDir,
+    id: `cr_synthetic_${input.workflowRunId}`,
+    agentId: agentNotCreatedSentinel(provider),
+    provider,
+    runtime: input.runtime,
+    status: input.status,
+    startedAt: input.endedAt,
+    endedAt: input.endedAt,
+    artifactsDir: input.artifactsDir,
   };
 }
 

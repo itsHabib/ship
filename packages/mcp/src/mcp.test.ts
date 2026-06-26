@@ -36,6 +36,7 @@ const validWorktree: WorktreeRef = {
 const validCursorRunRef: TerminalCursorRunRef = {
   id: "cr_01ARZ3NDEKTSV4RRFFQ69G5FAV",
   agentId: "agent_abc",
+  provider: "cursor",
   runtime: "local",
   startedAt: "2026-05-06T12:00:00Z",
   status: "succeeded",
@@ -447,10 +448,21 @@ describe("getWorkflowRunOutputSchema", () => {
   test("accepts optional cursorAgentId and watchUrl for cloud runs", () => {
     const withWatch = {
       ...validWorkflowRun,
+      agentId: "bc-test-agent-0001",
+      provider: "cursor" as const,
       cursorAgentId: "bc-test-agent-0001",
       watchUrl: "https://cursor.com/agents/bc-test-agent-0001",
     };
     expect(getWorkflowRunOutputSchema.parse(withWatch)).toEqual(withWatch);
+  });
+
+  test("accepts optional agentId and provider without cursorAgentId", () => {
+    const withAgent = {
+      ...validWorkflowRun,
+      agentId: "sess_claude_001",
+      provider: "claude" as const,
+    };
+    expect(getWorkflowRunOutputSchema.parse(withAgent)).toEqual(withAgent);
   });
 
   test("rejects unknown keys", () => {

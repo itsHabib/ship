@@ -6,8 +6,12 @@
 
 // --- workflow.ts: schemas, helpers, constants ---
 export {
+  agentNotCreatedSentinel,
+  agentProviderSchema,
+  agentWatchUrl,
   artifactRefSchema,
   canTransition,
+  commitCoAuthoredByTrailer,
   cursorWatchUrl,
   CLOUD_WORKTREE_SENTINEL,
   cursorRunRefSchema,
@@ -32,6 +36,7 @@ export {
 
 // --- workflow.ts: inferred types ---
 export type {
+  AgentProvider,
   ArtifactRef,
   CursorRunRef,
   CursorRunRuntime,

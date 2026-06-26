@@ -24,6 +24,7 @@ const SAMPLE_OUTPUT: ShipOutput = {
   cursorRun: {
     id: "cr_01",
     agentId: "agent-1",
+    provider: "cursor",
     runtime: "local",
     status: "succeeded",
     startedAt: "2026-05-10T00:00:00.000Z",
