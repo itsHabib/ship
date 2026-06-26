@@ -31,6 +31,38 @@ function followUpCommitTrailerClause(trailer: string | undefined): string {
   return ` and \`${trailer}\``;
 }
 
+function cursorSubagentDispatchRules(followUpTrailerClause: string): string[] {
+  return [
+    "7. As you implement, dispatch to the repo's registered subagents at the natural points. If you ultimately produce no commits in this run (rule 6 skipped per its clean-tree clause), the diff-reviewing subagents (code-reviewer / validator) have no diff to review — skip those and note the gap in the structured summary's blockers section; security-auditor still fires if its trigger fired during implementation. Use `task` with subagent_type:",
+    '   - `code-reviewer` — always use before producing the structured summary. Pass the diff. Covers bugs, edge cases, and operator conventions, including the 5 naming rules (per its body\'s "Naming checklist" section) and the scope check against the task doc\'s Scope / Out-of-scope sections (per its body\'s "Scope checklist" section).',
+    "   - `validator` — always use before producing the structured summary. Runs the repo's check commands.",
+    "   - `security-auditor` — use proactively when the diff touches auth, payments, secrets, env vars, or third-party API calls.",
+    "",
+    "   Note: Cursor provides built-in subagents (`Explore`, `Bash`, `Browser`) for context-heavy operations — codebase search, shell command isolation, browser-DOM filtering. These load automatically; do not redefine them.",
+    "",
+    "   If the `task` tool's subagent_type enum only lists `generalPurpose | cursor-guide | best-of-n-runner` (no repo-registered subagents), skip this rule entirely and note the gap in the structured summary's blockers section.",
+    `   If any subagent returned a P0 or P1 finding, address it in the code, then make a new second commit (not \`--amend\`) with an appropriate Conventional Commit prefix per rule 6 (e.g. \`fix(...)\`, \`refactor(...)\`, \`test(...)\`, \`docs(...)\`)${followUpTrailerClause}. Multiple commits per run are expected and fine — the follow-up commit should be separately reviewable. If you previously invoked \`validator\` on the pre-fix diff, re-invoke it on the post-fix diff before producing the structured summary. Skip if you didn't invoke validator earlier in this run. Surface P2/P3 findings in the structured summary's risks section instead.`,
+    "   If `task` returns an error for an invocation you did attempt, write `task-error: <verbatim error message>` in the blockers section — do NOT fabricate subagent output.",
+  ];
+}
+
+function claudeSubagentDispatchRules(): string[] {
+  return [
+    "7. As you implement, dispatch to the repo's registered subagents (passed via the SDK `agents` option) at the natural points. If you ultimately produce no commits in this run (rule 6 skipped per its clean-tree clause), the diff-reviewing subagents (code-reviewer / validator) have no diff to review — skip those and note the gap in the structured summary's blockers section; security-auditor still fires if its trigger fired during implementation. Invoke them by name:",
+    '   - `code-reviewer` — always use before producing the structured summary. Pass the diff. Covers bugs, edge cases, and operator conventions, including the 5 naming rules (per its body\'s "Naming checklist" section) and the scope check against the task doc\'s Scope / Out-of-scope sections (per its body\'s "Scope checklist" section).',
+    "   - `validator` — always use before producing the structured summary. Runs the repo's check commands.",
+    "   - `security-auditor` — use proactively when the diff touches auth, payments, secrets, env vars, or third-party API calls.",
+    "",
+    "   If any subagent returned a P0 or P1 finding, address it in the code, then make a new second commit (not `--amend`) with an appropriate Conventional Commit prefix per rule 6 (e.g. `fix(...)`, `refactor(...)`, `test(...)`, `docs(...)`). Multiple commits per run are expected and fine — the follow-up commit should be separately reviewable. If you previously invoked `validator` on the pre-fix diff, re-invoke it on the post-fix diff before producing the structured summary. Skip if you didn't invoke validator earlier in this run. Surface P2/P3 findings in the structured summary's risks section instead.",
+    "   If a subagent invocation fails, write `subagent-error: <verbatim error message>` in the blockers section — do NOT fabricate subagent output.",
+  ];
+}
+
+function subagentDispatchRules(provider: AgentProvider, followUpTrailerClause: string): string[] {
+  if (provider === "claude") return claudeSubagentDispatchRules();
+  return cursorSubagentDispatchRules(followUpTrailerClause);
+}
+
 export function renderImplementationPrompt(input: RenderImplementationPromptInput): string {
   const branch = input.branch ?? "(unknown)";
   const baseRef = input.baseRef ?? "(unknown)";
@@ -61,16 +93,7 @@ export function renderImplementationPrompt(input: RenderImplementationPromptInpu
     "   - Commit with a Conventional Commit subject derived from the task (e.g. `feat(...)`, `fix(...)`, `test(...)`, `docs(...)`, `refactor(...)`).",
     ...commitTrailerRuleLine(commitTrailer),
     "   - If you do push or open a PR, mark the PR as `--draft`. The driver promotes from draft to ready when reviewing.",
-    "7. As you implement, dispatch to the repo's registered subagents at the natural points. If you ultimately produce no commits in this run (rule 6 skipped per its clean-tree clause), the diff-reviewing subagents (code-reviewer / validator) have no diff to review — skip those and note the gap in the structured summary's blockers section; security-auditor still fires if its trigger fired during implementation. Use `task` with subagent_type:",
-    '   - `code-reviewer` — always use before producing the structured summary. Pass the diff. Covers bugs, edge cases, and operator conventions, including the 5 naming rules (per its body\'s "Naming checklist" section) and the scope check against the task doc\'s Scope / Out-of-scope sections (per its body\'s "Scope checklist" section).',
-    "   - `validator` — always use before producing the structured summary. Runs the repo's check commands.",
-    "   - `security-auditor` — use proactively when the diff touches auth, payments, secrets, env vars, or third-party API calls.",
-    "",
-    "   Note: Cursor provides built-in subagents (`Explore`, `Bash`, `Browser`) for context-heavy operations — codebase search, shell command isolation, browser-DOM filtering. These load automatically; do not redefine them.",
-    "",
-    "   If the `task` tool's subagent_type enum only lists `generalPurpose | cursor-guide | best-of-n-runner` (no repo-registered subagents), skip this rule entirely and note the gap in the structured summary's blockers section.",
-    `   If any subagent returned a P0 or P1 finding, address it in the code, then make a new second commit (not \`--amend\`) with an appropriate Conventional Commit prefix per rule 6 (e.g. \`fix(...)\`, \`refactor(...)\`, \`test(...)\`, \`docs(...)\`)${followUpTrailerClause}. Multiple commits per run are expected and fine — the follow-up commit should be separately reviewable. If you previously invoked \`validator\` on the pre-fix diff, re-invoke it on the post-fix diff before producing the structured summary. Skip if you didn't invoke validator earlier in this run. Surface P2/P3 findings in the structured summary's risks section instead.`,
-    "   If `task` returns an error for an invocation you did attempt, write `task-error: <verbatim error message>` in the blockers section — do NOT fabricate subagent output.",
+    ...subagentDispatchRules(provider, followUpTrailerClause),
     "8. At the end, produce a structured summary as the last assistant message:",
     "   - Files changed (paths)",
     "   - Tests added or updated (paths)",

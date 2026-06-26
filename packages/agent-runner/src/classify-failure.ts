@@ -165,11 +165,32 @@ function detailForUnknown<E>(input: BuildFailureDetailInput<E>): string {
   return "no classification signals";
 }
 
+function detailForGatewayUnreachable<E>(input: BuildFailureDetailInput<E>): string {
+  const fromErr = thrownErrorMessage(input.thrownErr);
+  if (fromErr !== undefined) return fromErr;
+  if (input.rawErrorMessage !== undefined && input.rawErrorMessage.length > 0) {
+    return input.rawErrorMessage;
+  }
+  return "gateway unreachable";
+}
+
+function detailForBudgetExceeded<E>(input: BuildFailureDetailInput<E>): string {
+  if (input.sdkTerminalStatus !== undefined && input.sdkTerminalStatus.length > 0) {
+    return `SDK status ${input.sdkTerminalStatus}`;
+  }
+  if (input.rawErrorMessage !== undefined && input.rawErrorMessage.length > 0) {
+    return input.rawErrorMessage;
+  }
+  return "configured budget or turn cap exceeded";
+}
+
 const DETAIL_BUILDERS: Record<FailureCategory, <E>(input: BuildFailureDetailInput<E>) => string> = {
   contention: detailForContention,
   "timeout-near-cap": detailForTimeoutNearCap,
   "agent-collapse-on-running-tool": detailForAgentCollapse,
   "sdk-throw": detailForSdkThrow,
+  "gateway-unreachable": detailForGatewayUnreachable,
+  "budget-exceeded": detailForBudgetExceeded,
   logic: detailForLogic,
   unknown: detailForUnknown,
 };

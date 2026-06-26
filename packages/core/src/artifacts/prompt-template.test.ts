@@ -116,6 +116,36 @@ describe("renderImplementationPrompt", () => {
     expect(out).not.toMatch(/`Co-authored-by:.*`\. Multiple commits per run/);
   });
 
+  test("claude provider uses SDK agents dispatch contract without Cursor task tool", () => {
+    const out = renderImplementationPrompt({
+      taskDoc: "minimal",
+      repo: "x",
+      worktreePath: "/w",
+      provider: "claude",
+    });
+    expect(out).toContain("registered subagents (passed via the SDK `agents` option)");
+    expect(out).toContain("Invoke them by name:");
+    expect(out).toContain("- `code-reviewer`");
+    expect(out).toContain("- `validator`");
+    expect(out).toContain("- `security-auditor`");
+    expect(out).not.toContain("Use `task` with subagent_type:");
+    expect(out).not.toContain("built-in subagents (`Explore`, `Bash`, `Browser`)");
+    expect(out).not.toContain("generalPurpose | cursor-guide | best-of-n-runner");
+    expect(out).toContain("subagent-error: <verbatim error message>");
+  });
+
+  test("cursor provider retains task-tool dispatch contract", () => {
+    const out = renderImplementationPrompt({
+      taskDoc: "minimal",
+      repo: "x",
+      worktreePath: "/w",
+      provider: "cursor",
+    });
+    expect(out).toContain("Use `task` with subagent_type:");
+    expect(out).toContain("built-in subagents (`Explore`, `Bash`, `Browser`)");
+    expect(out).toContain("task-error: <verbatim error message>");
+  });
+
   test("missing branch + baseRef render as (unknown)", () => {
     const out = renderImplementationPrompt({
       taskDoc: "minimal",
