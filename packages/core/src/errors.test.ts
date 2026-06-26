@@ -6,8 +6,10 @@ import {
   ArtifactWriteFailedError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
+  IllegalProviderRuntimeError,
   MissingRepoError,
   RemoteDocFetchError,
+  RunnerNotConfiguredError,
   WorkdirNotFoundError,
 } from "./errors.js";
 
@@ -62,6 +64,26 @@ describe("MissingRepoError", () => {
     const err = new MissingRepoError();
     expect(err.name).toBe("MissingRepoError");
     expect(err.message).toMatch(/repo is required/);
+  });
+});
+
+describe("RunnerNotConfiguredError", () => {
+  test("preserves provider + runtime + has expected name", () => {
+    const err = new RunnerNotConfiguredError("claude", "local");
+    expect(err.name).toBe("RunnerNotConfiguredError");
+    expect(err.provider).toBe("claude");
+    expect(err.runtime).toBe("local");
+    expect(err.message).toMatch(/claude.*local/);
+  });
+});
+
+describe("IllegalProviderRuntimeError", () => {
+  test("preserves provider + runtime + has expected name", () => {
+    const err = new IllegalProviderRuntimeError("claude", "cloud");
+    expect(err.name).toBe("IllegalProviderRuntimeError");
+    expect(err.provider).toBe("claude");
+    expect(err.runtime).toBe("cloud");
+    expect(err.message).toMatch(/does not support runtime/);
   });
 });
 

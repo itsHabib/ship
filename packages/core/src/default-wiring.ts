@@ -15,6 +15,7 @@ import type { Logger } from "@ship/logger";
 import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
 
+import { LocalClaudeRunner } from "@ship/claude-runner";
 import { CloudCursorRunner, LocalCursorRunner, RoomCursorRunner } from "@ship/cursor-runner";
 import { createLogger } from "@ship/logger";
 import { createStore } from "@ship/store";
@@ -83,6 +84,11 @@ export interface DefaultShipServiceOpts {
    * `RoomCursorRunner`. Tests may inject a `FakeCursorRunner`.
    */
   readonly roomCursor?: AgentRunner;
+  /**
+   * Claude runner override. Production omits this and gets
+   * `LocalClaudeRunner`. Tests inject a `FakeAgentRunner`.
+   */
+  readonly claude?: AgentRunner;
   /**
    * Structured diagnostics logger. Production entrypoints pass
    * `createLogger({ stream: process.stderr })` explicitly.
@@ -164,6 +170,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     const cursor = opts.cursor ?? new LocalCursorRunner();
     const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
     const roomCursor = opts.roomCursor ?? new RoomCursorRunner();
+    const claude = opts.claude ?? new LocalClaudeRunner();
     const fs = createNodeShipFs();
     cached = createShipService({
       store: infra.store,
@@ -179,6 +186,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
         cursor,
         cloudCursor,
         roomCursor,
+        claude,
       },
     });
     return cached;

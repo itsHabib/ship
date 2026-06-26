@@ -116,46 +116,105 @@ export const shipInputSchema = z
      * runner-layer error after persistence).
      */
     runtime: z.enum(["local", "cloud", "rooms"]).optional(),
+    /**
+     * Agent backend selector. Defaults to `"cursor"` when omitted.
+     * `"claude"` supports only `runtime: "local"` in Phase 2.
+     */
+    provider: agentProviderSchema.default("cursor"),
     /** Cloud-specific config; required when `runtime === "cloud"`, ignored otherwise. */
     cloud: cloudRunSpecSchema.optional(),
     /** Rooms-specific config; required when `runtime === "rooms"`, ignored otherwise. */
     room: roomRunSpecSchema.optional(),
   })
   .strict()
-  .superRefine((data, ctx) => {
-    const runtime = data.runtime ?? "local";
-    if (runtime === "cloud" && data.cloud === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["cloud"],
-        message: "cloud config is required when runtime is 'cloud'",
-      });
-    }
-    if (runtime === "rooms" && data.room === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["room"],
-        message: "room config is required when runtime is 'rooms'",
-      });
-    }
-    // workdir + repo are required for local only. Cloud and rooms have no host
-    // worktree (workdir optional) and derive `repo` from their repo URL.
-    if (runtime === "local" && data.workdir === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["workdir"],
-        message: "workdir is required when runtime is 'local'",
-      });
-    }
-    if (runtime === "local" && data.repo === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["repo"],
-        message: "repo is required when runtime is 'local'",
-      });
-    }
+  .superRefine(refineShipInputCrossFields);
+export type ShipInput = z.input<typeof shipInputSchema>;
+
+type ShipInputRuntime = "local" | "cloud" | "rooms";
+type ShipInputProvider = "cursor" | "claude";
+
+interface ShipInputCrossFieldData {
+  readonly workdir?: string | undefined;
+  readonly repo?: string | undefined;
+  readonly runtime?: ShipInputRuntime | undefined;
+  readonly provider?: ShipInputProvider | undefined;
+  readonly cloud?: z.input<typeof cloudRunSpecSchema> | undefined;
+  readonly room?: z.input<typeof roomRunSpecSchema> | undefined;
+}
+
+function refineShipInputCrossFields(data: ShipInputCrossFieldData, ctx: z.RefinementCtx): void {
+  const runtime = data.runtime ?? "local";
+  refineClaudeProviderRuntime(data.provider, runtime, ctx);
+  refineRuntimeCloudSpec(runtime, data.cloud, ctx);
+  refineRuntimeRoomsSpec(runtime, data.room, ctx);
+  refineLocalWorkdirRepo(runtime, data.workdir, data.repo, ctx);
+}
+
+function refineClaudeProviderRuntime(
+  provider: ShipInputProvider | undefined,
+  runtime: ShipInputRuntime,
+  ctx: z.RefinementCtx,
+): void {
+  if (provider !== "claude") return;
+  if (runtime === "local") return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["provider"],
+    message:
+      "claude provider supports only runtime 'local' in Phase 2; cloud is Phase 3, rooms is Phase 4",
   });
-export type ShipInput = z.infer<typeof shipInputSchema>;
+}
+
+function refineRuntimeCloudSpec(
+  runtime: ShipInputRuntime,
+  cloud: z.input<typeof cloudRunSpecSchema> | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  if (runtime !== "cloud") return;
+  if (cloud !== undefined) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["cloud"],
+    message: "cloud config is required when runtime is 'cloud'",
+  });
+}
+
+function refineRuntimeRoomsSpec(
+  runtime: ShipInputRuntime,
+  room: z.input<typeof roomRunSpecSchema> | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  if (runtime !== "rooms") return;
+  if (room !== undefined) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["room"],
+    message: "room config is required when runtime is 'rooms'",
+  });
+}
+
+function refineLocalWorkdirRepo(
+  runtime: ShipInputRuntime,
+  workdir: string | undefined,
+  repo: string | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  if (runtime !== "local") return;
+  if (workdir === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["workdir"],
+      message: "workdir is required when runtime is 'local'",
+    });
+  }
+  if (repo === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["repo"],
+      message: "repo is required when runtime is 'local'",
+    });
+  }
+}
 
 /**
  * Absolute paths to the named artifacts a `ship` run produces (directory is

@@ -22,6 +22,34 @@ export class RoomRunnerNotConfiguredError extends Error {
   }
 }
 
+/** Constructed without a runner for a legal `(provider, runtime)` cell. */
+export class RunnerNotConfiguredError extends Error {
+  override readonly name = "RunnerNotConfiguredError";
+  readonly provider: string;
+  readonly runtime: string;
+
+  constructor(provider: string, runtime: string) {
+    super(
+      `ShipService was constructed without a runner for provider '${provider}' runtime '${runtime}'`,
+    );
+    this.provider = provider;
+    this.runtime = runtime;
+  }
+}
+
+/** An illegal `(provider, runtime)` cell reached the selector (defense-in-depth). */
+export class IllegalProviderRuntimeError extends Error {
+  override readonly name = "IllegalProviderRuntimeError";
+  readonly provider: string;
+  readonly runtime: string;
+
+  constructor(provider: string, runtime: string) {
+    super(`provider '${provider}' does not support runtime '${runtime}'`);
+    this.provider = provider;
+    this.runtime = runtime;
+  }
+}
+
 export class WorkdirNotFoundError extends Error {
   override readonly name = "WorkdirNotFoundError";
   readonly workdir: string;
