@@ -102,6 +102,13 @@ export interface ShipServiceConfig {
   readonly runsDir: string;
   /** Default model when `input.model` is omitted. */
   readonly defaultModel: ModelSelection;
+  /**
+   * Default model for `provider: "claude"` runs when `input.model` is omitted.
+   * A Cursor model id (e.g. `composer-2.5`) is not a valid Claude SDK model, so
+   * claude runs resolve against this instead of `defaultModel`. Optional — the
+   * production wiring sets it; a config that omits it falls back to `defaultModel`.
+   */
+  readonly claudeDefaultModel?: ModelSelection;
   /** Optional MCP servers passed through to every `cursor.run()` call. */
   readonly mcpServers?: Record<string, McpServerConfig>;
   /** Optional inline subagents re-passed on cloud resume per ED-5. */
@@ -1014,7 +1021,11 @@ async function runToTerminal(
       return finalizeAlreadyCancelled(ctx, prep);
     }
 
-    const model: ModelSelection = resolveModelSelection(ctx.input, ctx.config.defaultModel);
+    const baseDefaultModel =
+      ctx.provider === "claude"
+        ? (ctx.config.claudeDefaultModel ?? ctx.config.defaultModel)
+        : ctx.config.defaultModel;
+    const model: ModelSelection = resolveModelSelection(ctx.input, baseDefaultModel);
     ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
     const ndjsonRef = ndjson;
 

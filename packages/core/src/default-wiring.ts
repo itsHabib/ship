@@ -40,12 +40,25 @@ export const DEFAULT_MODEL: ModelSelection = {
   params: [{ id: "fast", value: "true" }],
 };
 
+// Claude Agent SDK default for `provider: "claude"` runs that omit `--model`.
+// A Cursor model id (composer-2.5) is invalid for the Claude SDK, so claude runs
+// need their own default. Override per-deployment via
+// `DefaultShipServiceOpts.claudeDefaultModel` or per-run via `--model`; rotate
+// the id when the catalog changes, and ensure the gateway/key allows it.
+export const DEFAULT_CLAUDE_MODEL: ModelSelection = {
+  id: "claude-sonnet-4-6",
+};
+
 function resolveConfiguredDefaultModel(opts: DefaultShipServiceOpts): ModelSelection {
   if (opts.defaultModel !== undefined) return opts.defaultModel;
   return {
     id: opts.defaultModelId ?? DEFAULT_MODEL.id,
     params: opts.defaultModelParams ?? DEFAULT_MODEL.params,
   };
+}
+
+function resolveConfiguredClaudeDefaultModel(opts: DefaultShipServiceOpts): ModelSelection {
+  return opts.claudeDefaultModel ?? DEFAULT_CLAUDE_MODEL;
 }
 
 /** Construction-time options for the production-wired `ShipService`. */
@@ -66,6 +79,11 @@ export interface DefaultShipServiceOpts {
    * default param grid entirely. When omitted, uses `DEFAULT_MODEL.params`.
    */
   readonly defaultModelParams?: NonNullable<ModelSelection["params"]>;
+  /**
+   * Full default `ModelSelection` for `provider: "claude"` runs. When omitted,
+   * uses `DEFAULT_CLAUDE_MODEL`. Independent of the cursor `defaultModel*` knobs.
+   */
+  readonly claudeDefaultModel?: ModelSelection;
   /**
    * Cursor runner override. Production omits this and gets the real
    * `LocalCursorRunner`; integration tests pass a `FakeCursorRunner`
@@ -183,6 +201,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
       config: {
         runsDir: opts.runsDir,
         defaultModel: resolveConfiguredDefaultModel(opts),
+        claudeDefaultModel: resolveConfiguredClaudeDefaultModel(opts),
         cursor,
         cloudCursor,
         roomCursor,

@@ -97,6 +97,7 @@ interface Harness {
 interface HarnessOpts {
   defaultModelId?: string;
   defaultModelParams?: { id: string; value: string }[];
+  claudeDefaultModelId?: string;
   omitCloudCursor?: boolean;
   omitRoomCursor?: boolean;
   omitClaude?: boolean;
@@ -118,6 +119,9 @@ function makeHarnessConfig(
       id: opts?.defaultModelId ?? "composer-2.5",
       params: opts?.defaultModelParams ?? [{ id: "fast", value: "true" }],
     },
+    ...(opts?.claudeDefaultModelId !== undefined
+      ? { claudeDefaultModel: { id: opts.claudeDefaultModelId } }
+      : {}),
     cursor: runners.cursor,
     ...optionalHarnessRunner(opts?.omitCloudCursor, "cloudCursor", runners.cloudCursor),
     ...optionalHarnessRunner(opts?.omitRoomCursor, "roomCursor", runners.roomCursor),
@@ -1315,6 +1319,40 @@ describe("ShipService.ship — provider routing (L2)", () => {
     expect(h.cloudCursor.calls).toHaveLength(0);
     expect(out.cursorRun.runtime).toBe("local");
     expect(h.store.getCursorRun(out.cursorRun.id)?.provider).toBe("claude");
+    h.store.close();
+  });
+
+  test("provider claude × local with no input.model uses the claude default model", async () => {
+    const h = await createHarness({ claudeDefaultModelId: "claude-sonnet-4-6" });
+    h.claude.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(h.claude.calls[0]?.input.model).toEqual({ id: "claude-sonnet-4-6" });
+    h.store.close();
+  });
+
+  test("provider claude falls back to defaultModel when claudeDefaultModel is unset", async () => {
+    const h = await createHarness();
+    h.claude.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(h.claude.calls[0]?.input.model.id).toBe("composer-2.5");
     h.store.close();
   });
 
