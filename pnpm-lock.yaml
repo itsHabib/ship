@@ -122,9 +122,6 @@ importers:
         specifier: workspace:*
         version: link:../workflow
     devDependencies:
-      '@fast-check/vitest':
-        specifier: 0.3.0
-        version: 0.3.0(vitest@2.1.9(@types/node@22.19.17))
       '@stryker-mutator/core':
         specifier: 9.6.1
         version: 9.6.1(@types/node@22.19.17)
