@@ -47,6 +47,17 @@ function lastToolResultBlock(blocks: readonly ContentBlock[]): ContentBlock | un
   return undefined;
 }
 
+// Claude can return multiple `tool_result` blocks in one user message (parallel
+// tool calls). Prefer a failed block so a batched error is not masked by a later
+// successful one — the failure classifier keys off this status/result.
+function errorOrLastToolResultBlock(blocks: readonly ContentBlock[]): ContentBlock | undefined {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (block?.type === "tool_result" && block.is_error === true) return block;
+  }
+  return lastToolResultBlock(blocks);
+}
+
 function commandFromToolInput(input: unknown): string | undefined {
   if (input === null || typeof input !== "object") return undefined;
   const command = (input as Record<string, unknown>)["command"];
@@ -96,7 +107,7 @@ export const claudeEventProjection: EventProjection<SDKMessage> = {
   resultText(ev) {
     const raw = asRecord(ev);
     if (raw["type"] === "user") {
-      const toolResult = lastToolResultBlock(messageContent(raw));
+      const toolResult = errorOrLastToolResultBlock(messageContent(raw));
       if (toolResult === undefined) return "";
       return stringifyToolCallResult(toolResult.content);
     }
@@ -134,7 +145,7 @@ export const claudeEventProjection: EventProjection<SDKMessage> = {
       return typeof id === "string" && id.length > 0 ? id : undefined;
     }
     if (raw["type"] === "user") {
-      const toolResult = lastToolResultBlock(messageContent(raw));
+      const toolResult = errorOrLastToolResultBlock(messageContent(raw));
       const id = toolResult?.tool_use_id;
       return typeof id === "string" && id.length > 0 ? id : undefined;
     }
@@ -154,7 +165,7 @@ export const claudeEventProjection: EventProjection<SDKMessage> = {
       return undefined;
     }
     if (raw["type"] === "user") {
-      const toolResult = lastToolResultBlock(messageContent(raw));
+      const toolResult = errorOrLastToolResultBlock(messageContent(raw));
       if (toolResult === undefined) return undefined;
       if (toolResult.is_error === true) return "error";
       return "completed";
@@ -163,6 +174,9 @@ export const claudeEventProjection: EventProjection<SDKMessage> = {
   },
 };
 
+// Identity accessor mirroring `@ship/cursor-runner`'s `_shared.ts` raw-record
+// helper — the seam for reading a message as a plain record. Exercised by the
+// projection tests; kept for parity with the cursor projection's surface.
 export function eventRecord(ev: SDKMessage): Record<string, unknown> {
   return ev;
 }

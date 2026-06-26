@@ -46,6 +46,10 @@ function cursorSubagentDispatchRules(followUpTrailerClause: string): string[] {
   ];
 }
 
+// Unlike `cursorSubagentDispatchRules`, this takes no `followUpTrailerClause`:
+// the Claude Agent SDK auto-emits its own `Co-Authored-By: Claude` trailer on
+// commit (so `commitCoAuthoredByTrailer("claude")` is undefined by design), so
+// there is no prompt-instructed trailer to thread into the follow-up commit rule.
 function claudeSubagentDispatchRules(): string[] {
   return [
     "7. As you implement, dispatch to the repo's registered subagents (passed via the SDK `agents` option) at the natural points. If you ultimately produce no commits in this run (rule 6 skipped per its clean-tree clause), the diff-reviewing subagents (code-reviewer / validator) have no diff to review — skip those and note the gap in the structured summary's blockers section; security-auditor still fires if its trigger fired during implementation. Invoke them by name:",

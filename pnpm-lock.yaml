@@ -115,9 +115,6 @@ importers:
       '@ship/agent-runner':
         specifier: workspace:*
         version: link:../agent-runner
-      '@ship/logger':
-        specifier: workspace:*
-        version: link:../logger
       '@ship/workflow':
         specifier: workspace:*
         version: link:../workflow

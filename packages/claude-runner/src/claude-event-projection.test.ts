@@ -39,6 +39,24 @@ describe("claudeEventProjection", () => {
     expect(claudeEventProjection.toolCallStatus(ok)).toBe("completed");
   });
 
+  test("prefers a failed tool_result among batched blocks", () => {
+    // Claude can return multiple tool_result blocks in one user message; an
+    // earlier failure must not be masked by a later success (the classifier
+    // keys off it). The error block precedes the successful one here.
+    const ev = {
+      message: {
+        content: [
+          { content: "boom", is_error: true, tool_use_id: "tu-err", type: "tool_result" },
+          { content: "done", is_error: false, tool_use_id: "tu-ok", type: "tool_result" },
+        ],
+      },
+      type: "user",
+    } as unknown as SDKMessage;
+    expect(claudeEventProjection.toolCallStatus(ev)).toBe("error");
+    expect(claudeEventProjection.resultText(ev)).toBe("boom");
+    expect(claudeEventProjection.toolCallId(ev)).toBe("tu-err");
+  });
+
   test("maps terminal result subtype and text", () => {
     const success = {
       duration_ms: 100,

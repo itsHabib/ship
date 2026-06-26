@@ -8,6 +8,7 @@ import type {
   Query,
   McpServerConfig as SdkMcpServerConfig,
   SDKMessage,
+  SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "@ship/agent-runner";
 import type { ModelSelection } from "@ship/workflow";
@@ -222,11 +223,19 @@ async function consumeQueryStream(
   };
 
   try {
+    // The foreground query emits exactly one terminal `result` message;
+    // subagents / background tasks surface as `task_*` and nested `tool_result`
+    // blocks, never a top-level `result`. We drain the whole stream and keep the
+    // LAST `result` authoritative (rather than finalizing on the first one),
+    // mirroring how the cursor runner consumes its full stream before mapping.
+    let lastResult: SDKResultMessage | undefined;
     for await (const ev of queryInstance) {
       recordEvent(ev);
       safelyEmit(ev);
-      if (ev.type !== "result") continue;
-      callbacks.finalizeOk(mapResultMessage(ev, input, capturedEvents));
+      if (ev.type === "result") lastResult = ev;
+    }
+    if (lastResult !== undefined) {
+      callbacks.finalizeOk(mapResultMessage(lastResult, input, capturedEvents));
       return;
     }
     callbacks.finalizeError(

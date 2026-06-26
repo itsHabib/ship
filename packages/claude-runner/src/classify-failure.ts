@@ -54,15 +54,9 @@ export function classifyFailure(input: ClaudeClassifyFailureInput): FailureCateg
   const mapped = subtypeCategory(input.sdkTerminalStatus);
   if (mapped === "budget-exceeded" || mapped === "logic") return mapped;
 
-  if (input.sdkTerminalStatus === "error_during_execution") {
-    const delegated = classifyFailureBase({
-      ...input,
-      projection: claudeEventProjection,
-    });
-    if (delegated !== "unknown") return delegated;
-    return "unknown";
-  }
-
+  // Remaining subtypes (incl. `error_during_execution`, whose cause lives in
+  // the tool output) are classified from the event tail by the
+  // projection-backed base classifier.
   return classifyFailureBase({
     ...input,
     projection: claudeEventProjection,
