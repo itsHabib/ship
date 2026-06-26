@@ -66,6 +66,8 @@ export const failureCategorySchema = z.enum([
   "timeout-near-cap",
   "agent-collapse-on-running-tool",
   "sdk-throw",
+  "gateway-unreachable",
+  "budget-exceeded",
   "logic",
   "unknown",
 ]);

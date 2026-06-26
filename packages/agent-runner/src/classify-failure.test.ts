@@ -261,4 +261,48 @@ describe("buildFailureDetail", () => {
     expect(detail.length).toBe(512);
     expect(detail.endsWith("...")).toBe(true);
   });
+
+  test("gateway-unreachable detail paths", () => {
+    expect(
+      buildFailureDetail({
+        category: "gateway-unreachable",
+        events: [],
+        projection,
+        thrownErr: new Error("fetch failed"),
+      }),
+    ).toBe("fetch failed");
+    expect(
+      buildFailureDetail({
+        category: "gateway-unreachable",
+        events: [],
+        projection,
+        rawErrorMessage: "gateway 502",
+      }),
+    ).toBe("gateway 502");
+    expect(buildFailureDetail({ category: "gateway-unreachable", events: [], projection })).toBe(
+      "gateway unreachable",
+    );
+  });
+
+  test("budget-exceeded detail paths", () => {
+    expect(
+      buildFailureDetail({
+        category: "budget-exceeded",
+        events: [],
+        projection,
+        sdkTerminalStatus: "error_max_turns",
+      }),
+    ).toBe("SDK status error_max_turns");
+    expect(
+      buildFailureDetail({
+        category: "budget-exceeded",
+        events: [],
+        projection,
+        rawErrorMessage: "cap hit",
+      }),
+    ).toBe("cap hit");
+    expect(buildFailureDetail({ category: "budget-exceeded", events: [], projection })).toBe(
+      "configured budget or turn cap exceeded",
+    );
+  });
 });

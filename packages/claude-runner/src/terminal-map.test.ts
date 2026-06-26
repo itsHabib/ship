@@ -1,0 +1,155 @@
+/** Tests for `terminal-map.ts`. */
+
+import type { SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+
+import { describe, expect, test } from "vitest";
+
+import type { AgentRunInput } from "./runner.js";
+
+import {
+  buildTerminalErrorMessage,
+  mapMidStreamFailure,
+  mapResultMessage,
+} from "./terminal-map.js";
+
+const baseInput = (): AgentRunInput => ({
+  cwd: "/tmp",
+  model: { id: "claude-sonnet-4-20250514" },
+  onEvent: () => undefined,
+  prompt: "do work",
+});
+
+describe("mapResultMessage", () => {
+  test("success maps to succeeded with summary and empty branches", () => {
+    const msg = {
+      duration_ms: 5000,
+      result: "done",
+      subtype: "success",
+      type: "result",
+    } as SDKResultMessage;
+    expect(mapResultMessage(msg, baseInput(), [])).toMatchObject({
+      branches: [],
+      durationMs: 5000,
+      status: "succeeded",
+      summary: "done",
+    });
+  });
+
+  test("error maps to failed with joined errors and budget category", () => {
+    const msg = {
+      duration_ms: 100,
+      errors: ["turn cap hit"],
+      subtype: "error_max_turns",
+      type: "result",
+    } as SDKResultMessage;
+    const result = mapResultMessage(msg, baseInput(), []);
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toBe("turn cap hit");
+    expect(result.failureCategory).toBe("budget-exceeded");
+    expect(result.sdkTerminalStatus).toBe("error_max_turns");
+  });
+
+  test("empty errors fall back to event tail synthesis", () => {
+    const msg = {
+      duration_api_ms: 0,
+      duration_ms: 100,
+      errors: [],
+      is_error: true,
+      modelUsage: {},
+      num_turns: 1,
+      permission_denials: [],
+      stop_reason: null,
+      subtype: "error_during_execution",
+      total_cost_usd: 0,
+      type: "result",
+      usage: {},
+      uuid: "00000000-0000-4000-8000-000000000002",
+      session_id: "sess-1",
+    } as unknown as Extract<SDKResultMessage, { subtype: "error_during_execution" }>;
+    const events = [
+      {
+        message: {
+          content: [
+            { content: "tool broke", is_error: true, tool_use_id: "tu-1", type: "tool_result" },
+          ],
+        },
+        type: "user",
+      },
+    ] as unknown as SDKMessage[];
+    expect(buildTerminalErrorMessage(msg, events)).toBe("tool broke");
+  });
+
+  test("buildTerminalErrorMessage joins errors and terminal_reason", () => {
+    const msg = {
+      duration_api_ms: 0,
+      duration_ms: 10,
+      errors: ["cap"],
+      is_error: true,
+      modelUsage: {},
+      num_turns: 1,
+      permission_denials: [],
+      stop_reason: null,
+      subtype: "error_max_budget_usd",
+      terminal_reason: "max_budget",
+      total_cost_usd: 0,
+      type: "result",
+      usage: {},
+      uuid: "00000000-0000-4000-8000-000000000003",
+      session_id: "sess-1",
+    } as unknown as Extract<SDKResultMessage, { subtype: "error_max_budget_usd" }>;
+    expect(buildTerminalErrorMessage(msg, [])).toBe("cap; max_budget");
+  });
+
+  test("buildTerminalErrorMessage uses generic fallback when no detail exists", () => {
+    const msg = {
+      duration_api_ms: 0,
+      duration_ms: 10,
+      errors: [],
+      is_error: true,
+      modelUsage: {},
+      num_turns: 1,
+      permission_denials: [],
+      stop_reason: null,
+      subtype: "error_max_structured_output_retries",
+      total_cost_usd: 0,
+      type: "result",
+      usage: {},
+      uuid: "00000000-0000-4000-8000-000000000004",
+      session_id: "sess-1",
+    } as unknown as Extract<SDKResultMessage, { subtype: "error_max_structured_output_retries" }>;
+    expect(buildTerminalErrorMessage(msg, [])).toContain("error_max_structured_output_retries");
+  });
+
+  test("failed result includes maxRunDurationMs in classification when set", () => {
+    const msg = {
+      duration_ms: 100,
+      errors: ["turn cap hit"],
+      subtype: "error_max_turns",
+      type: "result",
+    } as SDKResultMessage;
+    const input = { ...baseInput(), maxRunDurationMs: 30 * 60 * 1000 };
+    const result = mapResultMessage(msg, input, []);
+    expect(result.failureDetail).toContain("error_max_turns");
+  });
+});
+
+describe("mapMidStreamFailure", () => {
+  test("gateway transport throw resolves failed with gateway-unreachable", () => {
+    const result = mapMidStreamFailure(new Error("fetch failed"), baseInput(), []);
+    expect(result.status).toBe("failed");
+    expect(result.failureCategory).toBe("gateway-unreachable");
+    expect(result.errorMessage).toBe("fetch failed");
+  });
+
+  test("non-gateway throw resolves sdk-throw category", () => {
+    const result = mapMidStreamFailure(new Error("unexpected"), baseInput(), []);
+    expect(result.failureCategory).toBe("sdk-throw");
+  });
+
+  test("mid-stream failure honors maxRunDurationMs in detail input", () => {
+    const input = { ...baseInput(), maxRunDurationMs: 60_000 };
+    const result = mapMidStreamFailure(new Error("unexpected"), input, []);
+    expect(result.failureCategory).toBe("sdk-throw");
+    expect(result.classificationEvents).toEqual([]);
+  });
+});

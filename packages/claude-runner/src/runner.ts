@@ -1,0 +1,14 @@
+/**
+ * `@ship/claude-runner` type surface — re-exports provider-neutral types
+ * from `@ship/agent-runner`.
+ */
+
+export type {
+  AgentRunAttachInput,
+  AgentRunHandle,
+  AgentRunInput,
+  AgentRunner,
+  AgentRunResult,
+} from "@ship/agent-runner";
+
+export type { AgentDefinition, McpServerConfig } from "@ship/agent-runner";

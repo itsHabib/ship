@@ -1,0 +1,178 @@
+/**
+ * Provider-local `SDKResultMessage` → `AgentRunResult` mapping (spec §6 ED-4).
+ */
+
+import type { SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { AgentRunInput, AgentRunResult } from "@ship/agent-runner";
+
+import { MAX_CLASSIFICATION_EVENTS } from "@ship/agent-runner";
+
+import {
+  buildFailureDetail,
+  classifyFailure,
+  type ClaudeBuildFailureDetailInput,
+  type ClaudeClassifyFailureInput,
+} from "./classify-failure.js";
+import { claudeEventProjection } from "./claude-event-projection.js";
+
+export { MAX_CLASSIFICATION_EVENTS };
+
+function resultErrors(msg: SDKResultMessage): string[] {
+  if (msg.subtype === "success") return [];
+  return msg.errors;
+}
+
+function terminalReasonSuffix(msg: SDKResultMessage): string {
+  if (msg.subtype === "success") return "";
+  const reason = msg.terminal_reason;
+  if (typeof reason === "string" && reason.length > 0) return reason;
+  return "";
+}
+
+function synthesizeErrorMessage(events: readonly SDKMessage[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev === undefined) continue;
+    const text = claudeEventProjection.resultText(ev);
+    if ((text ?? "").length > 0) return text;
+  }
+  return undefined;
+}
+
+function classifyInput(
+  input: AgentRunInput,
+  events: readonly SDKMessage[],
+  sdkTerminalStatus: string,
+  durationMs: number,
+): ClaudeClassifyFailureInput {
+  return {
+    durationMs,
+    events,
+    ...(input.maxRunDurationMs !== undefined && { maxRunDurationMs: input.maxRunDurationMs }),
+    sdkTerminalStatus,
+  };
+}
+
+interface FailureDetailArgs {
+  readonly input: AgentRunInput;
+  readonly events: readonly SDKMessage[];
+  readonly category: ReturnType<typeof classifyFailure>;
+  readonly sdkTerminalStatus: string;
+  readonly durationMs: number;
+  readonly rawErrorMessage: string;
+  readonly thrownErr?: unknown;
+}
+
+function detailInput(args: FailureDetailArgs): ClaudeBuildFailureDetailInput {
+  return {
+    category: args.category,
+    durationMs: args.durationMs,
+    events: args.events,
+    ...(args.input.maxRunDurationMs !== undefined && {
+      maxRunDurationMs: args.input.maxRunDurationMs,
+    }),
+    rawErrorMessage: args.rawErrorMessage,
+    sdkTerminalStatus: args.sdkTerminalStatus,
+    ...(args.thrownErr !== undefined && { thrownErr: args.thrownErr }),
+  };
+}
+
+export function buildTerminalErrorMessage(
+  msg: Extract<
+    SDKResultMessage,
+    {
+      subtype:
+        | "error_during_execution"
+        | "error_max_turns"
+        | "error_max_budget_usd"
+        | "error_max_structured_output_retries";
+    }
+  >,
+  events: readonly SDKMessage[],
+): string {
+  const joined = resultErrors(msg).join("; ");
+  const reason = terminalReasonSuffix(msg);
+  const parts = [joined, reason].filter((part) => part.length > 0);
+  if (parts.length > 0) return parts.join("; ");
+  const synthesized = synthesizeErrorMessage(events);
+  if (synthesized !== undefined) return synthesized;
+  return `Claude SDK reported ${msg.subtype} without a message`;
+}
+
+export function mapResultMessage(
+  msg: SDKResultMessage,
+  input: AgentRunInput,
+  events: readonly SDKMessage[],
+): AgentRunResult {
+  if (msg.subtype === "success") {
+    return {
+      branches: [],
+      durationMs: msg.duration_ms,
+      status: "succeeded",
+      summary: msg.result,
+    };
+  }
+
+  const errorMessage = buildTerminalErrorMessage(msg, events);
+  const failureCategory = classifyFailure(
+    classifyInput(input, events, msg.subtype, msg.duration_ms),
+  );
+  const failureDetail = buildFailureDetail(
+    detailInput({
+      category: failureCategory,
+      durationMs: msg.duration_ms,
+      events,
+      input,
+      rawErrorMessage: errorMessage,
+      sdkTerminalStatus: msg.subtype,
+    }),
+  );
+
+  return {
+    branches: [],
+    classificationEvents: events.slice(-MAX_CLASSIFICATION_EVENTS),
+    durationMs: msg.duration_ms,
+    failureCategory,
+    failureDetail,
+    errorMessage,
+    sdkTerminalStatus: msg.subtype,
+    status: "failed",
+  };
+}
+
+export function mapMidStreamFailure(
+  err: unknown,
+  input: AgentRunInput,
+  events: readonly SDKMessage[],
+): AgentRunResult {
+  const rawErrorMessage = err instanceof Error ? err.message : String(err);
+  const failureCategory = classifyFailure({
+    durationMs: 0,
+    events,
+    ...(input.maxRunDurationMs !== undefined && { maxRunDurationMs: input.maxRunDurationMs }),
+    sdkTerminalStatus: "stream-throw",
+    thrownErr: err,
+    thrownError: true,
+  });
+  const failureDetail = buildFailureDetail(
+    detailInput({
+      category: failureCategory,
+      durationMs: 0,
+      events,
+      input,
+      rawErrorMessage,
+      sdkTerminalStatus: "stream-throw",
+      thrownErr: err,
+    }),
+  );
+  return {
+    branches: [],
+    classificationEvents: events.slice(-MAX_CLASSIFICATION_EVENTS),
+    durationMs: 0,
+    failureCategory,
+    failureDetail,
+    errorMessage: rawErrorMessage,
+    sdkTerminalStatus: "stream-throw",
+    status: "failed",
+  };
+}
