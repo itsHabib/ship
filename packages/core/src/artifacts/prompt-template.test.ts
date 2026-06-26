@@ -1,5 +1,6 @@
 /** Tests for `renderImplementationPrompt`. Pins shape, not exact bytes. */
 
+import { commitCoAuthoredByTrailer } from "@ship/workflow";
 import { describe, expect, test } from "vitest";
 
 import { renderImplementationPrompt } from "./prompt-template.js";
@@ -40,6 +41,9 @@ describe("renderImplementationPrompt", () => {
     // `git commit` on an empty diff. Pin the guard wording.
     expect(out).toContain("skip this step entirely on a clean working tree");
     expect(out).toContain("Co-authored-by: Cursor <cursoragent@cursor.com>");
+    expect(out).toContain(
+      commitCoAuthoredByTrailer("cursor") ?? "missing cursor trailer in test fixture",
+    );
     // Rule 7 dispatches to repo-registered subagents via cursor's
     // `task` tool — lowercase name matters (the SDK tool surface is
     // `task`, not `Agent`). Refusal-fallback wording prevents the
@@ -83,6 +87,33 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("risks section");
     expect(out).toContain("task-error: <verbatim error message>");
     expect(out).toContain("structured summary");
+  });
+
+  test("cursor provider includes co-author trailer in rule 6 and rule 7 follow-up path", () => {
+    const trailer = commitCoAuthoredByTrailer("cursor");
+    if (trailer === undefined) {
+      throw new Error("expected cursor co-author trailer");
+    }
+    const out = renderImplementationPrompt({
+      taskDoc: "minimal",
+      repo: "x",
+      worktreePath: "/w",
+      provider: "cursor",
+    });
+    expect(out).toContain(`Include \`${trailer}\` in the commit message body.`);
+    expect(out).toContain(`\`${trailer}\`. Multiple commits per run`);
+  });
+
+  test("non-cursor provider omits co-author trailer from rule 6 and rule 7", () => {
+    const out = renderImplementationPrompt({
+      taskDoc: "minimal",
+      repo: "x",
+      worktreePath: "/w",
+      provider: "claude",
+    });
+    expect(out).not.toContain("Co-authored-by: Cursor <cursoragent@cursor.com>");
+    expect(out).not.toContain("Include `Co-authored-by:");
+    expect(out).not.toMatch(/`Co-authored-by:.*`\. Multiple commits per run/);
   });
 
   test("missing branch + baseRef render as (unknown)", () => {

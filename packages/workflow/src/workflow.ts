@@ -46,6 +46,10 @@ export type CursorRunStatus = z.infer<typeof cursorRunStatusSchema>;
 export const terminalWorkflowStatusSchema = z.enum(["succeeded", "failed", "cancelled"]);
 export type TerminalWorkflowStatus = z.infer<typeof terminalWorkflowStatusSchema>;
 
+/** Agent backend that produced a cursor_runs row. Orthogonal to `runtime`. */
+export const agentProviderSchema = z.enum(["cursor", "claude"]);
+export type AgentProvider = z.infer<typeof agentProviderSchema>;
+
 /** Terminal subset of `CursorRunStatus`. */
 export const terminalCursorRunStatusSchema = z.enum(["succeeded", "failed", "cancelled"]);
 export type TerminalCursorRunStatus = z.infer<typeof terminalCursorRunStatusSchema>;
@@ -161,6 +165,7 @@ export const cursorRunRefSchema = z
   .object({
     id: z.string().min(1),
     agentId: z.string().min(1),
+    provider: agentProviderSchema.default("cursor"),
     runtime: cursorRunRuntimeSchema,
     model: modelSelectionSchema.optional(),
     startedAt: isoDateTime,
@@ -321,9 +326,38 @@ export function canTransition(from: WorkflowStatus, to: WorkflowStatus): boolean
 }
 
 /**
+ * Provider-aware cloud dashboard URL for an agent id. Cursor →
+ * `https://cursor.com/agents/<id>`; other providers → omitted (undefined).
+ */
+export function agentWatchUrl(provider: AgentProvider, agentId: string): string | undefined {
+  if (provider !== "cursor") return undefined;
+  return `https://cursor.com/agents/${agentId}`;
+}
+
+/**
  * Canonical Cursor cloud dashboard URL for a `bc-` agent id. Single edit
  * point if Cursor changes the `/agents/<id>` scheme.
  */
 export function cursorWatchUrl(agentId: string): string {
-  return `https://cursor.com/agents/${agentId}`;
+  const url = agentWatchUrl("cursor", agentId);
+  if (url === undefined) {
+    throw new Error("internal: cursor watch URL must exist");
+  }
+  return url;
+}
+
+/** Synthetic `agentId` when a run fails before the backend assigns one. */
+const AGENT_NOT_CREATED_SENTINEL: Record<AgentProvider, string> = {
+  claude: "agent-not-created",
+  cursor: "agent-not-created",
+};
+
+export function agentNotCreatedSentinel(provider: AgentProvider): string {
+  return AGENT_NOT_CREATED_SENTINEL[provider];
+}
+
+/** Commit-message co-author trailer for a provider, if any. */
+export function commitCoAuthoredByTrailer(provider: AgentProvider): string | undefined {
+  if (provider !== "cursor") return undefined;
+  return "Co-authored-by: Cursor <cursoragent@cursor.com>";
 }

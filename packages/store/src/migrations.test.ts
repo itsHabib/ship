@@ -1,15 +1,18 @@
 /** Tests for `migrations.ts`. Pins idempotency, atomic rollback, and `MigrationError` shape. */
 
 import Database from "better-sqlite3";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { Db } from "./db.js";
 
 import { MigrationError } from "./errors.js";
 import { runMigrations } from "./migrations.js";
+
+const SHIPPED_MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
 
 interface MigrationRow {
   name: string;
@@ -49,7 +52,7 @@ describe("runMigrations", () => {
     expect(tables).toContain("driver_streams");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(6);
+    expect(applied).toHaveLength(7);
     expect(applied.map((r) => r.name)).toEqual([
       "0001_init.sql",
       "0002_cursor_runs_run_id.sql",
@@ -57,6 +60,7 @@ describe("runMigrations", () => {
       "0004_phases_failure_category.sql",
       "0005_driver_runs.sql",
       "0006_driver_tick_lease.sql",
+      "0007_cursor_runs_provider.sql",
     ]);
 
     const phaseColumns = db
@@ -71,6 +75,7 @@ describe("runMigrations", () => {
       .map((r) => (r as { name: string }).name);
     expect(columns).toContain("run_id");
     expect(columns).toContain("artifacts_json");
+    expect(columns).toContain("provider");
   });
 
   test("re-run on already-migrated DB is a no-op (two _migrations rows)", () => {
@@ -79,7 +84,7 @@ describe("runMigrations", () => {
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(6);
+    expect(applied).toHaveLength(7);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {
@@ -183,5 +188,57 @@ describe("runMigrations", () => {
 
     const row = db.prepare<[], MigrationRow>("SELECT applied_at FROM _migrations").get();
     expect(row?.applied_at).toBe(fakeNow);
+  });
+
+  test("0007_cursor_runs_provider backfills cursor on pre-existing rows", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ship-store-migrations-"));
+    try {
+      for (const name of [
+        "0001_init.sql",
+        "0002_cursor_runs_run_id.sql",
+        "0003_cursor_runs_artifacts_json.sql",
+        "0004_phases_failure_category.sql",
+        "0005_driver_runs.sql",
+        "0006_driver_tick_lease.sql",
+      ]) {
+        writeFileSync(
+          join(tmp, name),
+          readFileSync(join(SHIPPED_MIGRATIONS_DIR, name), "utf8"),
+          "utf8",
+        );
+      }
+      runMigrations(db, { migrationsDir: tmp });
+
+      db.exec(`
+        INSERT INTO workflow_runs (
+          id, repo, doc_path, status, base_ref, worktree_json, policy_json, created_at, updated_at
+        ) VALUES (
+          'wf_test', 'ship', 'docs/x.md', 'running', 'main',
+          '{"repo":"ship","name":"x","branch":"x","path":"/x","baseRef":"main"}',
+          '{"baseRef":"main","maxRunDurationMs":1,"agentTimeoutMs":1}',
+          '2026-05-08T00:00:00.000Z', '2026-05-08T00:00:00.000Z'
+        );
+        INSERT INTO cursor_runs (
+          id, workflow_run_id, agent_id, runtime, status, started_at, artifacts_dir
+        ) VALUES (
+          'cr_test', 'wf_test', 'agent_legacy', 'cloud', 'running',
+          '2026-05-08T00:00:00.000Z', '/runs/wf_test'
+        );
+      `);
+
+      writeFileSync(
+        join(tmp, "0007_cursor_runs_provider.sql"),
+        readFileSync(join(SHIPPED_MIGRATIONS_DIR, "0007_cursor_runs_provider.sql"), "utf8"),
+        "utf8",
+      );
+      runMigrations(db, { migrationsDir: tmp });
+
+      const row = db.prepare("SELECT provider FROM cursor_runs WHERE id = 'cr_test'").get() as {
+        provider: string;
+      };
+      expect(row.provider).toBe("cursor");
+    } finally {
+      rmSync(tmp, { force: true, recursive: true });
+    }
   });
 });

@@ -66,6 +66,7 @@ describe("cursor runs (via createStore)", () => {
     expect(ref.status).toBe("running");
     expect(ref.startedAt).toBe(currentNow);
     expect(ref.artifactsDir).toBe("/runs/wf_x");
+    expect(ref.provider).toBe("cursor");
     expect(ref.endedAt).toBeUndefined();
     expect(ref.durationMs).toBeUndefined();
     expect(ref.model).toBeUndefined();

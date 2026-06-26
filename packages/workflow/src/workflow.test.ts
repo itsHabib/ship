@@ -12,8 +12,11 @@ import type {
 } from "./workflow.js";
 
 import {
+  agentNotCreatedSentinel,
+  agentWatchUrl,
   canTransition,
   CLOUD_WORKTREE_SENTINEL,
+  commitCoAuthoredByTrailer,
   cursorRunRefSchema,
   cursorRunRuntimeSchema,
   cursorRunStatusSchema,
@@ -44,6 +47,7 @@ const validWorktree: WorktreeRef = {
 const validCursorRunRef: CursorRunRef = {
   id: "cr_01ARZ3NDEKTSV4RRFFQ69G5FAV",
   agentId: "agent_abc",
+  provider: "cursor",
   runtime: "local",
   startedAt: "2026-05-06T12:00:00Z",
   status: "running",
@@ -248,6 +252,11 @@ describe("worktreeRefSchema", () => {
 describe("cursorRunRefSchema", () => {
   test("accepts a minimal valid ref", () => {
     expect(cursorRunRefSchema.parse(validCursorRunRef)).toEqual(validCursorRunRef);
+  });
+
+  test("defaults provider to cursor when omitted", () => {
+    const { provider: _provider, ...withoutProvider } = validCursorRunRef;
+    expect(cursorRunRefSchema.parse(withoutProvider)).toEqual(validCursorRunRef);
   });
 
   test("accepts a ref with all optional fields", () => {
@@ -484,5 +493,33 @@ describe("cursorWatchUrl", () => {
     expect(cursorWatchUrl("bc-test-agent-0001")).toBe(
       "https://cursor.com/agents/bc-test-agent-0001",
     );
+  });
+});
+
+describe("agentWatchUrl", () => {
+  test("returns the Cursor dashboard URL for cursor provider", () => {
+    expect(agentWatchUrl("cursor", "bc-test-agent-0001")).toBe(
+      "https://cursor.com/agents/bc-test-agent-0001",
+    );
+  });
+
+  test("returns undefined for non-cursor providers", () => {
+    expect(agentWatchUrl("claude", "sess_abc")).toBeUndefined();
+  });
+});
+
+describe("agentNotCreatedSentinel", () => {
+  test("returns a provider-specific placeholder for each backend", () => {
+    expect(agentNotCreatedSentinel("cursor")).toBe("agent-not-created");
+    expect(agentNotCreatedSentinel("claude")).toBe("agent-not-created");
+  });
+});
+
+describe("commitCoAuthoredByTrailer", () => {
+  test("returns the Cursor trailer for cursor and omits for others", () => {
+    expect(commitCoAuthoredByTrailer("cursor")).toBe(
+      "Co-authored-by: Cursor <cursoragent@cursor.com>",
+    );
+    expect(commitCoAuthoredByTrailer("claude")).toBeUndefined();
   });
 });
