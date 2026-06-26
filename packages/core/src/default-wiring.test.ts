@@ -107,6 +107,62 @@ describe("createDefaultShipService", () => {
     });
   });
 
+  test("claude override is used when input.provider is claude", async () => {
+    const local = new FakeCursorRunner();
+    const claude = new FakeCursorRunner();
+    claude.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const tmpRoot = mkdtempSync(join(tmpdir(), "ship-claude-override-"));
+    const service = createDefaultShipService({
+      dbPath: ":memory:",
+      runsDir: join(tmpRoot, "runs"),
+      cursor: local,
+      claude,
+    })();
+    const workdir = mkdtempSync(join(tmpRoot, "workdir"));
+    writeFileSync(join(workdir, "docs.md"), "# Task\n\nDo it.\n");
+    await service.ship({
+      workdir,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(claude.calls).toHaveLength(1);
+    expect(local.calls).toHaveLength(0);
+    // claude runs default to the Claude model, not cursor's composer-2.5.
+    expect(claude.calls[0]?.input.model).toEqual({ id: "claude-sonnet-4-6" });
+  });
+
+  test("opts.claudeDefaultModel overrides DEFAULT_CLAUDE_MODEL", async () => {
+    const local = new FakeCursorRunner();
+    const claude = new FakeCursorRunner();
+    claude.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const tmpRoot = mkdtempSync(join(tmpdir(), "ship-claude-model-override-"));
+    const service = createDefaultShipService({
+      dbPath: ":memory:",
+      runsDir: join(tmpRoot, "runs"),
+      cursor: local,
+      claude,
+      claudeDefaultModel: { id: "claude-opus-4-8" },
+    })();
+    const workdir = mkdtempSync(join(tmpRoot, "workdir"));
+    writeFileSync(join(workdir, "docs.md"), "# Task\n\nDo it.\n");
+    await service.ship({
+      workdir,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(claude.calls[0]?.input.model).toEqual({ id: "claude-opus-4-8" });
+  });
+
   test("cloudCursor override is used when input.runtime is cloud", async () => {
     const local = new FakeCursorRunner();
     const cloud = new FakeCursorRunner();

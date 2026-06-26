@@ -580,4 +580,62 @@ describe("ship ship", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("--provider claude --runtime local forwards to claude runner", async () => {
+    const claude = new FakeCursorRunner();
+    h.close();
+    h = await createCliHarness({ claude });
+    claude.enqueue(CLOUD_SCRIPT);
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--provider",
+      "claude",
+      "--runtime",
+      "local",
+    ]);
+    expect(code).toBe(0);
+    expect(claude.calls).toHaveLength(1);
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
+  test("--provider claude --runtime cloud fails fast at CLI boundary", async () => {
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--provider",
+      "claude",
+      "--runtime",
+      "cloud",
+      "--cloud-repo",
+      "https://github.com/o/r",
+    ]);
+    expect(code).toBe(1);
+    expect(h.stderr.join("")).toMatch(/claude provider supports only runtime 'local'/);
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
+  test("invalid --provider → exit 1; stderr names the bad value", async () => {
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--provider",
+      "bogus",
+    ]);
+    expect(code).toBe(1);
+    expect(h.stderr.join("")).toMatch(/invalid --provider: bogus/);
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
 });

@@ -87,8 +87,10 @@ import {
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
   CursorRunStartTimedOutError,
+  IllegalProviderRuntimeError,
   MissingRepoError,
   RoomRunnerNotConfiguredError,
+  RunnerNotConfiguredError,
   WorkdirNotFoundError,
 } from "./errors.js";
 import { executePruneRuns, type PruneRunsInput, type PruneRunsOutput } from "./prune/prune.js";
@@ -100,6 +102,13 @@ export interface ShipServiceConfig {
   readonly runsDir: string;
   /** Default model when `input.model` is omitted. */
   readonly defaultModel: ModelSelection;
+  /**
+   * Default model for `provider: "claude"` runs when `input.model` is omitted.
+   * A Cursor model id (e.g. `composer-2.5`) is not a valid Claude SDK model, so
+   * claude runs resolve against this instead of `defaultModel`. Optional — the
+   * production wiring sets it; a config that omits it falls back to `defaultModel`.
+   */
+  readonly claudeDefaultModel?: ModelSelection;
   /** Optional MCP servers passed through to every `cursor.run()` call. */
   readonly mcpServers?: Record<string, McpServerConfig>;
   /** Optional inline subagents re-passed on cloud resume per ED-5. */
@@ -110,6 +119,8 @@ export interface ShipServiceConfig {
   readonly cloudCursor?: AgentRunner;
   /** Optional rooms runner; required at dispatch time only for `runtime: "rooms"`. */
   readonly roomCursor?: AgentRunner;
+  /** Optional claude runner; required at dispatch time only for `provider: "claude"`. */
+  readonly claude?: AgentRunner;
   /** Preflight cap for `downloadArtifact` (ED-5). Default: 100 MiB. */
   readonly artifactMaxBytes?: number;
 }
@@ -458,19 +469,24 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
   // across services.
   const bgPending = new Set<Promise<void>>();
   const resumeBgPending = new Set<Promise<void>>();
-  const makeCtx = (input: ShipInput): ShipContext => ({
-    activeRuns,
-    clock,
-    config,
-    fs,
-    ids,
-    input,
-    logger,
-    resolvedCursorRuntime: resolvePersistedRuntime(input),
-    runner: selectRunner(config, input),
-    store,
-    ...(docSource !== undefined ? { docSource } : {}),
-  });
+  const makeCtx = (input: ShipInput): ShipContext => {
+    const provider = input.provider ?? "cursor";
+    const resolvedCursorRuntime = resolvePersistedRuntime(input);
+    return {
+      activeRuns,
+      clock,
+      config,
+      fs,
+      ids,
+      input,
+      logger,
+      provider,
+      resolvedCursorRuntime,
+      runner: selectRunner(config, provider, resolvedCursorRuntime),
+      store,
+      ...(docSource !== undefined ? { docSource } : {}),
+    };
+  };
 
   const resumeCtx: ResumeContext = {
     activeRuns,
@@ -557,6 +573,8 @@ interface ShipContext {
   readonly ids: NonNullable<ShipServiceDeps["ids"]>;
   readonly input: ShipInput;
   readonly logger: Logger;
+  /** Agent backend selected for this invocation (`cursor` default). */
+  readonly provider: AgentProvider;
   /** Value persisted to `cursor_runs.runtime` for this invocation. */
   readonly resolvedCursorRuntime: CursorRunRuntime;
   readonly runner: AgentRunner;
@@ -592,20 +610,43 @@ function resolvePersistedRuntime(input: ShipInput): CursorRunRuntime {
   return "local";
 }
 
-function selectRunner(config: ShipServiceConfig, input: ShipInput): AgentRunner {
-  if (input.runtime === "cloud") {
-    if (config.cloudCursor === undefined) {
-      throw new CloudRunnerNotConfiguredError();
-    }
-    return config.cloudCursor;
+function selectRunner(
+  config: ShipServiceConfig,
+  provider: AgentProvider,
+  runtime: CursorRunRuntime,
+): AgentRunner {
+  const matrix: Record<
+    AgentProvider,
+    Partial<Record<CursorRunRuntime, AgentRunner | undefined>>
+  > = {
+    cursor: {
+      local: config.cursor,
+      cloud: config.cloudCursor,
+      rooms: config.roomCursor,
+    },
+    claude: {
+      local: config.claude,
+    },
+  };
+
+  const providerRow = matrix[provider];
+  const runner = providerRow[runtime];
+  if (runner !== undefined) return runner;
+
+  // A runtime key absent from the provider's row is an illegal cell (e.g.
+  // claude × cloud); a present-but-undefined key is a legal cell with no runner
+  // wired. Keying off presence is self-documenting and removes the ordered-guard
+  // dependency the two `provider === "claude"` checks would otherwise carry.
+  if (!(runtime in providerRow)) {
+    throw new IllegalProviderRuntimeError(provider, runtime);
   }
-  if (input.runtime === "rooms") {
-    if (config.roomCursor === undefined) {
-      throw new RoomRunnerNotConfiguredError();
-    }
-    return config.roomCursor;
+  if (runtime === "cloud") {
+    throw new CloudRunnerNotConfiguredError();
   }
-  return config.cursor;
+  if (runtime === "rooms") {
+    throw new RoomRunnerNotConfiguredError();
+  }
+  throw new RunnerNotConfiguredError(provider, runtime);
 }
 
 interface BuildAgentRunInputArgs {
@@ -980,7 +1021,11 @@ async function runToTerminal(
       return finalizeAlreadyCancelled(ctx, prep);
     }
 
-    const model: ModelSelection = resolveModelSelection(ctx.input, ctx.config.defaultModel);
+    const baseDefaultModel =
+      ctx.provider === "claude"
+        ? (ctx.config.claudeDefaultModel ?? ctx.config.defaultModel)
+        : ctx.config.defaultModel;
+    const model: ModelSelection = resolveModelSelection(ctx.input, baseDefaultModel);
     ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
     const ndjsonRef = ndjson;
 
@@ -1018,6 +1063,7 @@ async function runToTerminal(
           agentId: handle.agentId,
           runId: handle.runId,
           runtime: ctx.resolvedCursorRuntime,
+          provider: ctx.provider,
           model,
           artifactsDir: prep.paths.dir,
         });
@@ -1125,6 +1171,7 @@ async function prepareArtifacts(
   const prompt = renderImplementationPrompt({
     taskDoc,
     repo: prep.repo,
+    provider: ctx.provider,
     worktreePath:
       prep.worktree.path === CLOUD_WORKTREE_SENTINEL
         ? CLOUD_WORKTREE_SENTINEL
@@ -1304,6 +1351,16 @@ function classifyFailedRun(
   workflowRunId: string,
   result: AgentRunResult,
 ): ClassifiedFailure {
+  if (result.failureCategory !== undefined) {
+    const category = result.failureCategory;
+    const detail = result.failureDetail ?? "";
+    return {
+      category,
+      detail,
+      errorMessage: formatClassifiedErrorMessage(category, detail),
+    };
+  }
+
   const events = result.classificationEvents ?? [];
   const maxRunDurationMs = resolveMaxRunDurationMs(ctx.store, workflowRunId);
   const category = classifyFailure({
@@ -1584,6 +1641,7 @@ function finalizeAlreadyCancelled(ctx: ShipContext, prep: PreparedRun): ShipOutp
       endedAt,
       status: "cancelled",
       runtime: ctx.resolvedCursorRuntime,
+      provider: ctx.provider,
     }),
     paths: prep.paths,
     summary: undefined,
@@ -1877,6 +1935,7 @@ function resolveFailureCursorRunRef(
     endedAt: ctx.clock(),
     status: terminal,
     runtime: ctx.resolvedCursorRuntime,
+    provider: ctx.provider,
   });
 }
 
@@ -2261,6 +2320,9 @@ function resumeCtxAsShipContext(ctx: ResumeContext, workflowRunId: string): Ship
     },
     input: { docPath: "", runtime: "cloud" },
     logger: ctx.logger,
+    // resume is cloud + cursor only today (claude has no cloud/resume in Phase 2);
+    // Phase 3 (cloud claude) must read provider from the persisted run row here.
+    provider: "cursor",
     resolvedCursorRuntime: "cloud",
     runner: ctx.config.cloudCursor ?? ctx.config.cursor,
     store: ctx.store,

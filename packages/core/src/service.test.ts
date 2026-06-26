@@ -4,10 +4,12 @@
  * (:memory:), the in-memory `ShipFs`, and `FakeCursorRunner`.
  */
 
+import type { AgentRunner } from "@ship/agent-runner";
 import type { ShipInput } from "@ship/mcp";
 import type { Store } from "@ship/store";
 import type { WorkflowRun } from "@ship/workflow";
 
+import { FakeAgentRunner } from "@ship/agent-runner/test/fake";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore } from "@ship/store";
 import {
@@ -26,8 +28,10 @@ import {
   CloudRunnerNotConfiguredError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
+  IllegalProviderRuntimeError,
   MissingRepoError,
   RoomRunnerNotConfiguredError,
+  RunnerNotConfiguredError,
   WorkdirNotFoundError,
 } from "./errors.js";
 import { createMemoryShipFs, type MemoryShipFs } from "./fs/memory.js";
@@ -86,14 +90,17 @@ interface Harness {
   cursor: FakeCursorRunner;
   cloudCursor: FakeCursorRunner;
   roomCursor: FakeCursorRunner;
+  claude: FakeAgentRunner;
   config: ShipServiceConfig;
 }
 
 interface HarnessOpts {
   defaultModelId?: string;
   defaultModelParams?: { id: string; value: string }[];
+  claudeDefaultModelId?: string;
   omitCloudCursor?: boolean;
   omitRoomCursor?: boolean;
+  omitClaude?: boolean;
   docSource?: DocSource;
 }
 
@@ -103,6 +110,7 @@ function makeHarnessConfig(
     cursor: FakeCursorRunner;
     cloudCursor: FakeCursorRunner;
     roomCursor: FakeCursorRunner;
+    claude: FakeAgentRunner;
   },
 ): ShipServiceConfig {
   return {
@@ -111,10 +119,23 @@ function makeHarnessConfig(
       id: opts?.defaultModelId ?? "composer-2.5",
       params: opts?.defaultModelParams ?? [{ id: "fast", value: "true" }],
     },
+    ...(opts?.claudeDefaultModelId !== undefined
+      ? { claudeDefaultModel: { id: opts.claudeDefaultModelId } }
+      : {}),
     cursor: runners.cursor,
-    ...(opts?.omitCloudCursor ? {} : { cloudCursor: runners.cloudCursor }),
-    ...(opts?.omitRoomCursor ? {} : { roomCursor: runners.roomCursor }),
+    ...optionalHarnessRunner(opts?.omitCloudCursor, "cloudCursor", runners.cloudCursor),
+    ...optionalHarnessRunner(opts?.omitRoomCursor, "roomCursor", runners.roomCursor),
+    ...optionalHarnessRunner(opts?.omitClaude, "claude", runners.claude),
   };
+}
+
+function optionalHarnessRunner(
+  omit: boolean | undefined,
+  key: "cloudCursor" | "roomCursor" | "claude",
+  runner: AgentRunner,
+): Partial<Pick<ShipServiceConfig, typeof key>> {
+  if (omit === true) return {};
+  return { [key]: runner };
 }
 
 async function createHarness(opts?: HarnessOpts): Promise<Harness> {
@@ -130,7 +151,8 @@ async function createHarness(opts?: HarnessOpts): Promise<Harness> {
   const cursor = new FakeCursorRunner();
   const cloudCursor = new FakeCursorRunner();
   const roomCursor = new FakeCursorRunner();
-  const config = makeHarnessConfig(opts, { cursor, cloudCursor, roomCursor });
+  const claude = new FakeAgentRunner();
+  const config = makeHarnessConfig(opts, { cursor, cloudCursor, roomCursor, claude });
 
   const service = createShipService({
     store,
@@ -141,7 +163,7 @@ async function createHarness(opts?: HarnessOpts): Promise<Harness> {
     ...(opts?.docSource !== undefined ? { docSource: opts.docSource } : {}),
   });
 
-  return { service, fs, store, cursor, cloudCursor, roomCursor, config };
+  return { service, fs, store, cursor, cloudCursor, roomCursor, claude, config };
 }
 
 describe("createShipService — dep injection defaults", () => {
@@ -1202,6 +1224,10 @@ const CLOUD_SPEC: NonNullable<ShipInput["cloud"]> = {
   repos: [{ url: "https://github.com/owner/repo" }],
 };
 
+const ROOM_SPEC: NonNullable<ShipInput["room"]> = {
+  repos: [{ url: "https://github.com/itsHabib/roxiq" }],
+};
+
 describe("ShipService.ship — runtime routing", () => {
   test("runtime: cloud uses cloudCursor.run; local runner not called", async () => {
     const h = await createHarness();
@@ -1274,9 +1300,123 @@ describe("ShipService.ship — runtime routing", () => {
   });
 });
 
-const ROOM_SPEC: NonNullable<ShipInput["room"]> = {
-  repos: [{ url: "https://github.com/itsHabib/roxiq" }],
-};
+describe("ShipService.ship — provider routing (L2)", () => {
+  test("provider: claude × local uses claude runner; cursor runners untouched", async () => {
+    const h = await createHarness();
+    h.claude.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(h.claude.calls).toHaveLength(1);
+    expect(h.cursor.calls).toHaveLength(0);
+    expect(h.cloudCursor.calls).toHaveLength(0);
+    expect(out.cursorRun.runtime).toBe("local");
+    expect(h.store.getCursorRun(out.cursorRun.id)?.provider).toBe("claude");
+    h.store.close();
+  });
+
+  test("provider claude × local with no input.model uses the claude default model", async () => {
+    const h = await createHarness({ claudeDefaultModelId: "claude-sonnet-4-6" });
+    h.claude.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(h.claude.calls[0]?.input.model).toEqual({ id: "claude-sonnet-4-6" });
+    h.store.close();
+  });
+
+  test("provider claude falls back to defaultModel when claudeDefaultModel is unset", async () => {
+    const h = await createHarness();
+    h.claude.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(h.claude.calls[0]?.input.model.id).toBe("composer-2.5");
+    h.store.close();
+  });
+
+  test("provider claude without claude slot throws RunnerNotConfiguredError before persistence", async () => {
+    const h = await createHarness({ omitClaude: true });
+    expect(() => {
+      void h.service.ship({
+        workdir: WORKDIR,
+        repo: "ship",
+        docPath: "docs.md",
+        provider: "claude",
+        runtime: "local",
+      });
+    }).toThrow(RunnerNotConfiguredError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
+    h.store.close();
+  });
+
+  test("provider claude × cloud throws IllegalProviderRuntimeError before persistence", async () => {
+    const h = await createHarness();
+    expect(() => {
+      void h.service.ship({
+        workdir: WORKDIR,
+        repo: "ship",
+        docPath: "docs.md",
+        provider: "claude",
+        runtime: "cloud",
+        cloud: CLOUD_SPEC,
+      });
+    }).toThrow(IllegalProviderRuntimeError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
+    h.store.close();
+  });
+
+  test("provider claude × rooms throws IllegalProviderRuntimeError before persistence", async () => {
+    const h = await createHarness();
+    expect(() => {
+      void h.service.ship({
+        workdir: WORKDIR,
+        repo: "ship",
+        docPath: "docs.md",
+        provider: "claude",
+        runtime: "rooms",
+        room: ROOM_SPEC,
+      });
+    }).toThrow(IllegalProviderRuntimeError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
+    h.store.close();
+  });
+
+  test("pre-agent failure synthesizes cursorRun with claude provider sentinel", async () => {
+    const h = await createHarness();
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(out.status).toBe("failed");
+    expect(out.cursorRun.provider).toBe("claude");
+    h.store.close();
+  });
+});
 
 describe("ShipService.ship — rooms routing (L2)", () => {
   test("runtime: rooms uses roomCursor.run; local + cloud runners untouched", async () => {
@@ -1714,7 +1854,7 @@ const CLOUD_RESUME_SPEC: NonNullable<ShipInput["cloud"]> = {
 };
 
 async function seedOrphanedCloudRun(
-  h: Harness,
+  h: Pick<Harness, "store" | "fs">,
   opts: {
     workflowRunId: string;
     phaseId: string;
@@ -1772,15 +1912,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     });
 
     await seedOrphanedCloudRun(
-      {
-        cloudCursor,
-        config: null as never,
-        cursor: null as never,
-        fs,
-        roomCursor: null as never,
-        service: null as never,
-        store,
-      },
+      { fs, store },
       {
         cursorRunId: "cr_00000000000000000000000001",
         phaseId: "ph_00000000000000000000000001",
@@ -1832,15 +1964,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     cloudCursor.enqueueAttach({ notFound: true });
 
     await seedOrphanedCloudRun(
-      {
-        cloudCursor,
-        config: null as never,
-        cursor: null as never,
-        fs,
-        roomCursor: null as never,
-        service: null as never,
-        store,
-      },
+      { fs, store },
       {
         cursorRunId: "cr_00000000000000000000000002",
         phaseId: "ph_00000000000000000000000002",
@@ -1886,15 +2010,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     });
 
     await seedOrphanedCloudRun(
-      {
-        cloudCursor,
-        config: null as never,
-        cursor: null as never,
-        fs,
-        roomCursor: null as never,
-        service: null as never,
-        store,
-      },
+      { fs, store },
       {
         cursorRunId: "cr_00000000000000000000000010",
         phaseId: "ph_00000000000000000000000010",
@@ -1953,15 +2069,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     // also defends.
 
     await seedOrphanedCloudRun(
-      {
-        cloudCursor,
-        config: null as never,
-        cursor: null as never,
-        fs,
-        roomCursor: null as never,
-        service: null as never,
-        store,
-      },
+      { fs, store },
       {
         cursorRunId: "cr_00000000000000000000000004",
         phaseId: "ph_00000000000000000000000004",
@@ -2012,15 +2120,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     const workflowRunId = "wf_00000000000000000000000005";
 
     await seedOrphanedCloudRun(
-      {
-        cloudCursor,
-        config: null as never,
-        cursor: null as never,
-        fs,
-        roomCursor: null as never,
-        service: null as never,
-        store,
-      },
+      { fs, store },
       {
         cursorRunId: "cr_00000000000000000000000005",
         phaseId: "ph_00000000000000000000000005",
@@ -2059,15 +2159,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     const workflowRunId = "wf_00000000000000000000000006";
 
     await seedOrphanedCloudRun(
-      {
-        cloudCursor,
-        config: null as never,
-        cursor: null as never,
-        fs,
-        roomCursor: null as never,
-        service: null as never,
-        store,
-      },
+      { fs, store },
       {
         cursorRunId: "cr_00000000000000000000000006",
         phaseId: "ph_00000000000000000000000006",
@@ -2107,15 +2199,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     const workflowRunId = "wf_00000000000000000000000007";
 
     await seedOrphanedCloudRun(
-      {
-        cloudCursor,
-        config: null as never,
-        cursor: null as never,
-        fs,
-        roomCursor: null as never,
-        service: null as never,
-        store,
-      },
+      { fs, store },
       {
         cursorRunId: "cr_00000000000000000000000007",
         phaseId: "ph_00000000000000000000000007",
@@ -2161,15 +2245,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     const workflowRunId = "wf_00000000000000000000000008";
 
     await seedOrphanedCloudRun(
-      {
-        cloudCursor,
-        config: null as never,
-        cursor: null as never,
-        fs,
-        roomCursor: null as never,
-        service: null as never,
-        store,
-      },
+      { fs, store },
       {
         cursorRunId: "cr_00000000000000000000000008",
         phaseId: "ph_00000000000000000000000008",
@@ -2224,15 +2300,7 @@ describe("ShipService.resumeOrphanedRuns", () => {
     const workflowRunId = "wf_00000000000000000000000009";
 
     await seedOrphanedCloudRun(
-      {
-        cloudCursor,
-        config: null as never,
-        cursor: null as never,
-        fs,
-        roomCursor: null as never,
-        service: null as never,
-        store,
-      },
+      { fs, store },
       {
         cursorRunId: "cr_00000000000000000000000009",
         phaseId: "ph_00000000000000000000000009",

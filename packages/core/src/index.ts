@@ -50,8 +50,10 @@ export {
   CloudRunnerNotConfiguredError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
+  IllegalProviderRuntimeError,
   MissingRepoError,
   RemoteDocFetchError,
+  RunnerNotConfiguredError,
   WorkdirNotFoundError,
 } from "./errors.js";
 

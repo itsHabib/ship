@@ -17,6 +17,8 @@ import { formatShipOutput } from "../format.js";
 
 /** Wire shape for `ShipInput.cloud` — matches `cloudRunSpecSchema`; narrowed for `ShipService`. */
 type ShipCloud = NonNullable<ShipInput["cloud"]>;
+type CliProvider = "cursor" | "claude";
+type CliRuntime = "local" | "cloud";
 
 interface ShipOpts {
   workdir: string;
@@ -27,6 +29,7 @@ interface ShipOpts {
   model?: string;
   modelParam?: string[];
   json: boolean;
+  provider?: string;
   runtime?: string;
   /** `--cloud` JSON file path; when set, other `--cloud-*` field flags are ignored. */
   cloud?: string;
@@ -53,6 +56,7 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
       [] as string[],
     )
     .option("--runtime <mode>", "cursor runtime (local|cloud); omit to use service default")
+    .option("--provider <name>", "agent provider (cursor|claude); omit to use cursor")
     .option(
       "--cloud <path>",
       "JSON file with full CloudRunSpec (via cloudRunSpecSchema); when set, ignores --cloud-repo and other --cloud-* field flags",
@@ -84,11 +88,32 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
 }
 
 async function buildShipCliInput(opts: ShipOpts, docPath: string): Promise<ShipInput> {
-  const modelParamsRaw = opts.modelParam ?? [];
-  const modelParams = modelParamsRaw.length > 0 ? accumulateModelParams(modelParamsRaw) : undefined;
-
+  const modelParams = buildModelParams(opts.modelParam);
+  const provider = parseProvider(opts.provider);
   const runtime = parseRuntime(opts.runtime);
+  enforceClaudeLocalGuard(provider, runtime);
   const cloud = await resolveCloudSpec(opts, runtime);
+  return buildShipInputFromCli(opts, docPath, { modelParams, provider, runtime, cloud });
+}
+
+function buildModelParams(
+  raw: string[] | undefined,
+): NonNullable<ShipInput["modelParams"]> | undefined {
+  const pairs = raw ?? [];
+  if (pairs.length === 0) return undefined;
+  return accumulateModelParams(pairs);
+}
+
+function buildShipInputFromCli(
+  opts: ShipOpts,
+  docPath: string,
+  parsed: {
+    modelParams: NonNullable<ShipInput["modelParams"]> | undefined;
+    provider: CliProvider | undefined;
+    runtime: CliRuntime | undefined;
+    cloud: ShipCloud | undefined;
+  },
+): ShipInput {
   return {
     workdir: resolvePath(opts.workdir),
     repo: opts.repo,
@@ -97,9 +122,10 @@ async function buildShipCliInput(opts: ShipOpts, docPath: string): Promise<ShipI
     ...(opts.baseRef !== undefined && { baseRef: opts.baseRef }),
     ...(opts.worktreeName !== undefined && { worktreeName: opts.worktreeName }),
     ...(opts.model !== undefined && { model: opts.model }),
-    ...(modelParams !== undefined && { modelParams }),
-    ...(runtime !== undefined && { runtime }),
-    ...(cloud !== undefined && { cloud }),
+    ...(parsed.modelParams !== undefined && { modelParams: parsed.modelParams }),
+    ...(parsed.provider !== undefined && { provider: parsed.provider }),
+    ...(parsed.runtime !== undefined && { runtime: parsed.runtime }),
+    ...(parsed.cloud !== undefined && { cloud: parsed.cloud }),
   };
 }
 
@@ -140,10 +166,28 @@ function parseModelParam(raw: string): { id: string; value: string | boolean } {
 }
 
 /** Mirrors parseModelParam omission → undefined semantics for runtime. */
-function parseRuntime(raw: string | undefined): "local" | "cloud" | undefined {
+function parseRuntime(raw: string | undefined): CliRuntime | undefined {
   if (raw === undefined) return undefined;
   if (raw === "local" || raw === "cloud") return raw;
   throw new InvalidArgumentError(`invalid --runtime: ${raw} (expected: local | cloud)`);
+}
+
+/** Mirrors parseRuntime omission → undefined semantics for provider. */
+function parseProvider(raw: string | undefined): CliProvider | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "cursor" || raw === "claude") return raw;
+  throw new InvalidArgumentError(`invalid --provider: ${raw} (expected: cursor | claude)`);
+}
+
+function enforceClaudeLocalGuard(
+  provider: CliProvider | undefined,
+  runtime: CliRuntime | undefined,
+): void {
+  if (provider !== "claude") return;
+  const effectiveRuntime = runtime ?? "local";
+  if (effectiveRuntime === "cloud") {
+    throw new InvalidArgumentError("claude provider supports only runtime 'local'");
+  }
 }
 
 function hasCloudFieldFlags(opts: ShipOpts): boolean {
@@ -207,7 +251,7 @@ async function loadCloudRunSpecFromFile(pathArg: string): Promise<ShipCloud> {
 
 async function resolveCloudSpec(
   opts: ShipOpts,
-  runtime: "local" | "cloud" | undefined,
+  runtime: CliRuntime | undefined,
 ): Promise<ShipCloud | undefined> {
   const spec = await resolveCloudSpecRaw(opts);
   // CLI is the validation boundary for direct service callers — the

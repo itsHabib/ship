@@ -186,6 +186,9 @@ importers:
       '@ship/agent-runner':
         specifier: workspace:*
         version: link:../agent-runner
+      '@ship/claude-runner':
+        specifier: workspace:*
+        version: link:../claude-runner
       '@ship/cursor-runner':
         specifier: workspace:*
         version: link:../cursor-runner

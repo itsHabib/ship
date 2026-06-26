@@ -59,7 +59,7 @@ const validWorkflowRun: WorkflowRun = {
 describe("shipInputSchema", () => {
   test("accepts a minimal input", () => {
     const v: ShipInput = { workdir: "/work/wt/feat", repo: "ship", docPath: "docs/x.md" };
-    expect(shipInputSchema.parse(v)).toEqual(v);
+    expect(shipInputSchema.parse(v)).toEqual({ ...v, provider: "cursor" });
   });
 
   test("accepts input with all optional fields", () => {
@@ -73,7 +73,7 @@ describe("shipInputSchema", () => {
       model: "composer-2",
       modelParams: [{ id: "fast", value: true }],
     };
-    expect(shipInputSchema.parse(v)).toEqual(v);
+    expect(shipInputSchema.parse(v)).toEqual({ ...v, provider: "cursor" });
   });
 
   test("accepts runtime local / cloud and optional cloud spec", () => {
@@ -259,6 +259,46 @@ describe("shipInputSchema", () => {
     expect(shipInputSchema.safeParse({ workdir: "/w", repo: "ship", docPath: "" }).success).toBe(
       false,
     );
+  });
+
+  test("accepts provider claude with runtime local; defaults provider to cursor when omitted", () => {
+    const claudeLocal = shipInputSchema.parse({
+      workdir: "/w",
+      repo: "ship",
+      docPath: "x",
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(claudeLocal.provider).toBe("claude");
+    expect(claudeLocal.runtime).toBe("local");
+
+    const omitted = shipInputSchema.parse({ workdir: "/w", repo: "ship", docPath: "x" });
+    expect(omitted.provider).toBe("cursor");
+  });
+
+  test("rejects provider claude with runtime cloud or rooms", () => {
+    for (const runtime of ["cloud", "rooms"] as const) {
+      const payload =
+        runtime === "cloud"
+          ? {
+              docPath: "x",
+              provider: "claude" as const,
+              runtime,
+              cloud: { repos: [{ url: "https://github.com/o/r" }] },
+            }
+          : {
+              docPath: "x",
+              provider: "claude" as const,
+              runtime,
+              room: { repos: [{ url: "https://github.com/o/r" }] },
+            };
+      const result = shipInputSchema.safeParse(payload);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const issue = result.error.issues.find((i) => i.path.join(".") === "provider");
+        expect(issue?.message).toMatch(/claude provider supports only runtime 'local'/);
+      }
+    }
   });
 });
 

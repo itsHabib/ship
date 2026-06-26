@@ -112,6 +112,8 @@ export interface CreateServiceFromHarnessOptions {
   cursor?: AgentRunner;
   /** Optional cloud runner; forwarded into `ShipService` config when set. */
   cloudCursor?: AgentRunner;
+  /** Optional claude runner; forwarded into `ShipService` config when set. */
+  claude?: AgentRunner;
   /** Remote doc source; defaults to a fresh `FakeDocSource`. */
   docSource?: DocSource;
 }
@@ -144,6 +146,7 @@ export function createServiceFromHarness(
     defaultModel: defaultSelection,
     cursor: opts.cursor ?? h.cursor,
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
+    ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
   };
   const service = createShipService({
     store: h.store,

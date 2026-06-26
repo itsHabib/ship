@@ -15,6 +15,7 @@ import type { Logger } from "@ship/logger";
 import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
 
+import { LocalClaudeRunner } from "@ship/claude-runner";
 import { CloudCursorRunner, LocalCursorRunner, RoomCursorRunner } from "@ship/cursor-runner";
 import { createLogger } from "@ship/logger";
 import { createStore } from "@ship/store";
@@ -39,12 +40,25 @@ export const DEFAULT_MODEL: ModelSelection = {
   params: [{ id: "fast", value: "true" }],
 };
 
+// Claude Agent SDK default for `provider: "claude"` runs that omit `--model`.
+// A Cursor model id (composer-2.5) is invalid for the Claude SDK, so claude runs
+// need their own default. Override per-deployment via
+// `DefaultShipServiceOpts.claudeDefaultModel` or per-run via `--model`; rotate
+// the id when the catalog changes, and ensure the gateway/key allows it.
+export const DEFAULT_CLAUDE_MODEL: ModelSelection = {
+  id: "claude-sonnet-4-6",
+};
+
 function resolveConfiguredDefaultModel(opts: DefaultShipServiceOpts): ModelSelection {
   if (opts.defaultModel !== undefined) return opts.defaultModel;
   return {
     id: opts.defaultModelId ?? DEFAULT_MODEL.id,
     params: opts.defaultModelParams ?? DEFAULT_MODEL.params,
   };
+}
+
+function resolveConfiguredClaudeDefaultModel(opts: DefaultShipServiceOpts): ModelSelection {
+  return opts.claudeDefaultModel ?? DEFAULT_CLAUDE_MODEL;
 }
 
 /** Construction-time options for the production-wired `ShipService`. */
@@ -66,6 +80,11 @@ export interface DefaultShipServiceOpts {
    */
   readonly defaultModelParams?: NonNullable<ModelSelection["params"]>;
   /**
+   * Full default `ModelSelection` for `provider: "claude"` runs. When omitted,
+   * uses `DEFAULT_CLAUDE_MODEL`. Independent of the cursor `defaultModel*` knobs.
+   */
+  readonly claudeDefaultModel?: ModelSelection;
+  /**
    * Cursor runner override. Production omits this and gets the real
    * `LocalCursorRunner`; integration tests pass a `FakeCursorRunner`
    * so they can exercise real `node:fs` + real SQLite without an API
@@ -83,6 +102,11 @@ export interface DefaultShipServiceOpts {
    * `RoomCursorRunner`. Tests may inject a `FakeCursorRunner`.
    */
   readonly roomCursor?: AgentRunner;
+  /**
+   * Claude runner override. Production omits this and gets
+   * `LocalClaudeRunner`. Tests inject a `FakeAgentRunner`.
+   */
+  readonly claude?: AgentRunner;
   /**
    * Structured diagnostics logger. Production entrypoints pass
    * `createLogger({ stream: process.stderr })` explicitly.
@@ -164,6 +188,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     const cursor = opts.cursor ?? new LocalCursorRunner();
     const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
     const roomCursor = opts.roomCursor ?? new RoomCursorRunner();
+    const claude = opts.claude ?? new LocalClaudeRunner();
     const fs = createNodeShipFs();
     cached = createShipService({
       store: infra.store,
@@ -176,9 +201,11 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
       config: {
         runsDir: opts.runsDir,
         defaultModel: resolveConfiguredDefaultModel(opts),
+        claudeDefaultModel: resolveConfiguredClaudeDefaultModel(opts),
         cursor,
         cloudCursor,
         roomCursor,
+        claude,
       },
     });
     return cached;

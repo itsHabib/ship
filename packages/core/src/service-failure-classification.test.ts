@@ -230,6 +230,33 @@ describe("ShipService failure classification wiring", () => {
     expect(row?.phases[0]?.errorMessage).toMatch(/^timeout-near-cap; /);
   });
 
+  test("runner-provided failureCategory is persisted as-is (claude self-classification)", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: {
+        branches: [],
+        durationMs: 500,
+        failureCategory: "budget-exceeded",
+        failureDetail: "token cap hit",
+        status: "failed",
+      },
+    });
+
+    const out = await h.service.ship({
+      docPath: "docs.md",
+      repo: "ship",
+      workdir: WORKDIR,
+    });
+    expect(out.status).toBe("failed");
+    const row = h.store.getRun(out.workflowRunId);
+    expect(row?.phases[0]?.failureCategory).toBe("budget-exceeded");
+    expect(row?.phases[0]?.errorMessage).toBe("budget-exceeded; token cap hit");
+
+    const resultJson = await readResultJson(h.fs, out.artifacts.resultPath);
+    expect(resultJson["failureCategory"]).toBe("budget-exceeded");
+    expect(resultJson["failureDetail"]).toBe("token cap hit");
+  });
+
   test("a custom logger whose child() throws does not strand the run", async () => {
     const noop = (): void => undefined;
     const throwingChildLogger = {
