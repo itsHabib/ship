@@ -622,14 +622,16 @@ function selectRunner(
     },
   };
 
-  const runner = matrix[provider][runtime];
+  const providerRow = matrix[provider];
+  const runner = providerRow[runtime];
   if (runner !== undefined) return runner;
 
-  if (provider === "claude" && runtime !== "local") {
+  // A runtime key absent from the provider's row is an illegal cell (e.g.
+  // claude × cloud); a present-but-undefined key is a legal cell with no runner
+  // wired. Keying off presence is self-documenting and removes the ordered-guard
+  // dependency the two `provider === "claude"` checks would otherwise carry.
+  if (!(runtime in providerRow)) {
     throw new IllegalProviderRuntimeError(provider, runtime);
-  }
-  if (provider === "claude") {
-    throw new RunnerNotConfiguredError(provider, runtime);
   }
   if (runtime === "cloud") {
     throw new CloudRunnerNotConfiguredError();
@@ -2307,6 +2309,8 @@ function resumeCtxAsShipContext(ctx: ResumeContext, workflowRunId: string): Ship
     },
     input: { docPath: "", runtime: "cloud" },
     logger: ctx.logger,
+    // resume is cloud + cursor only today (claude has no cloud/resume in Phase 2);
+    // Phase 3 (cloud claude) must read provider from the persisted run row here.
     provider: "cursor",
     resolvedCursorRuntime: "cloud",
     runner: ctx.config.cloudCursor ?? ctx.config.cursor,

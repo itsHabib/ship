@@ -160,8 +160,7 @@ function refineClaudeProviderRuntime(
   ctx.addIssue({
     code: z.ZodIssueCode.custom,
     path: ["provider"],
-    message:
-      "claude provider supports only runtime 'local' in Phase 2; cloud is Phase 3, rooms is Phase 4",
+    message: "claude provider supports only runtime 'local'",
   });
 }
 

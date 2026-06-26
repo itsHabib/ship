@@ -186,9 +186,7 @@ function enforceClaudeLocalGuard(
   if (provider !== "claude") return;
   const effectiveRuntime = runtime ?? "local";
   if (effectiveRuntime === "cloud") {
-    throw new InvalidArgumentError(
-      "claude provider supports only runtime 'local' in Phase 2; cloud is Phase 3",
-    );
+    throw new InvalidArgumentError("claude provider supports only runtime 'local'");
   }
 }
 
