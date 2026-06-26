@@ -146,6 +146,25 @@ describe("codexEventProjection", () => {
     expect(codexEventProjection.resultText(ev)).toContain("structured_content");
   });
 
+  test("mcp result with a circular structure does not throw (guarded stringify)", () => {
+    const circular: Record<string, unknown> = {};
+    circular["self"] = circular;
+    const ev = {
+      item: {
+        arguments: {},
+        id: "mcp-3",
+        result: circular,
+        server: "docs",
+        status: "completed",
+        tool: "search",
+        type: "mcp_tool_call",
+      },
+      type: "item.completed",
+    } as unknown as ThreadEvent;
+    expect(() => codexEventProjection.resultText(ev)).not.toThrow();
+    expect(codexEventProjection.resultText(ev)).toBe("tool_call error");
+  });
+
   test("thread.started is other kind", () => {
     const ev = { thread_id: "t-1", type: "thread.started" } as ThreadEvent;
     expect(codexEventProjection.eventKind(ev)).toBe("other");

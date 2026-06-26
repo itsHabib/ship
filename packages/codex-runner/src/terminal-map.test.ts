@@ -7,6 +7,7 @@ import { describe, expect, test } from "vitest";
 import type { AgentRunInput } from "./runner.js";
 
 import {
+  mapCancelled,
   mapMidStreamFailure,
   mapStreamEndWithoutTerminal,
   mapTerminalEvent,
@@ -138,9 +139,17 @@ describe("mapMidStreamFailure", () => {
 });
 
 describe("mapStreamEndWithoutTerminal", () => {
-  test("returns failed when stream ends without terminal turn", () => {
+  test("returns failed sdk-throw when stream ends without terminal turn", () => {
     const result = mapStreamEndWithoutTerminal(baseInput(), [], 200);
     expect(result.status).toBe("failed");
     expect(result.errorMessage).toContain("without a terminal turn event");
+    // A stream that ends with no terminal turn event is a transport/SDK failure.
+    expect(result.failureCategory).toBe("sdk-throw");
+  });
+});
+
+describe("mapCancelled", () => {
+  test("returns a cancelled result with empty branches", () => {
+    expect(mapCancelled(1234)).toEqual({ branches: [], durationMs: 1234, status: "cancelled" });
   });
 });

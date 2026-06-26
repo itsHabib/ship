@@ -39,7 +39,10 @@ function errorText(err: unknown): string {
 
 function isGatewayUnreachableText(text: string): boolean {
   if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(text)) return true;
-  if (/gateway/i.test(text) && /\b[45]\d{2}\b/.test(text)) return true;
+  // Only 5xx (502/503/504) signal an unreachable gateway. 4xx (401/403 auth,
+  // 400/404 wrong-endpoint config) are not transport failures and need different
+  // operator remediation, so they must not land here (claude review).
+  if (/gateway/i.test(text) && /\b5\d{2}\b/.test(text)) return true;
   return false;
 }
 
@@ -47,43 +50,43 @@ function isGatewayUnreachableError(err: unknown): boolean {
   return isGatewayUnreachableText(errorText(err));
 }
 
-function lastFailedSandboxCommand(events: readonly ThreadEvent[]): boolean {
+// Classify by the MOST RECENT failed tool event so a stale earlier sandbox
+// denial can't mask a later patch-apply failure, or vice versa (Bugbot).
+function recentToolFailureCategory(
+  events: readonly ThreadEvent[],
+): "sandbox-denial" | "patch-apply-fail" | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
     if (ev === undefined) continue;
     if (codexEventProjection.eventKind(ev) !== "tool_call") continue;
-    const status = codexEventProjection.toolCallStatus(ev);
-    if (status !== "error") continue;
-    if (codexEventProjection.toolCallName(ev) !== "command_execution") continue;
-    const resultText = codexEventProjection.resultText(ev);
-    if (resultText !== undefined && SANDBOX_DENIAL_PATTERN.test(resultText)) return true;
+    if (codexEventProjection.toolCallStatus(ev) !== "error") continue;
+    const name = codexEventProjection.toolCallName(ev);
+    if (name === "file_change") return "patch-apply-fail";
+    if (name === "command_execution") {
+      const resultText = codexEventProjection.resultText(ev);
+      if (resultText !== undefined && SANDBOX_DENIAL_PATTERN.test(resultText)) {
+        return "sandbox-denial";
+      }
+      return undefined; // a non-sandbox command failure is a logic failure (base classifier)
+    }
+    return undefined; // most-recent failed tool is mcp/other → base classifier
   }
-  return false;
+  return undefined;
 }
 
-function lastFailedFileChange(events: readonly ThreadEvent[]): boolean {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
-    if (ev === undefined) continue;
-    if (codexEventProjection.eventKind(ev) !== "tool_call") continue;
-    const status = codexEventProjection.toolCallStatus(ev);
-    if (status !== "error") continue;
-    if (codexEventProjection.toolCallName(ev) === "file_change") return true;
-  }
-  return false;
-}
-
+// Gateway-unreachable is a transport failure — keyed ONLY off the terminal
+// event's own error message (turn.failed.error.message / top-level error.message),
+// never the tool-output event tail. A command that printed "fetch failed" is a
+// tool/logic failure, not an unreachable gateway (Bugbot + claude review).
 function terminalLooksLikeGatewayFailure(input: CodexClassifyFailureInput): boolean {
   const status = input.sdkTerminalStatus;
   if (status !== "turn.failed" && status !== "error") return false;
-  if (input.rawErrorMessage !== undefined && isGatewayUnreachableText(input.rawErrorMessage)) {
-    return true;
-  }
   for (let i = input.events.length - 1; i >= 0; i--) {
     const ev = input.events[i];
     if (ev === undefined) continue;
-    const text = codexEventProjection.resultText(ev);
-    if (text !== undefined && text.length > 0 && isGatewayUnreachableText(text)) return true;
+    if (codexEventProjection.terminalStatus(ev) === undefined) continue;
+    const message = codexEventProjection.statusMessage(ev);
+    return message !== undefined && isGatewayUnreachableText(message);
   }
   return false;
 }
@@ -96,8 +99,8 @@ export function classifyFailure(input: CodexClassifyFailureInput): FailureCatego
     return "sdk-throw";
   }
 
-  if (lastFailedSandboxCommand(input.events)) return "sandbox-denial";
-  if (lastFailedFileChange(input.events)) return "patch-apply-fail";
+  const toolFailure = recentToolFailureCategory(input.events);
+  if (toolFailure !== undefined) return toolFailure;
 
   if (terminalLooksLikeGatewayFailure(input)) return "gateway-unreachable";
 

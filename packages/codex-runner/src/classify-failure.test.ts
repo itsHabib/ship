@@ -58,14 +58,92 @@ describe("classifyFailure (Codex)", () => {
     ).toBe("sdk-throw");
   });
 
-  test("turn.failed with gateway text → gateway-unreachable", () => {
-    expect(
-      classifyFailure({
-        events: [],
-        rawErrorMessage: "gateway returned 502",
-        sdkTerminalStatus: "turn.failed",
-      }),
-    ).toBe("gateway-unreachable");
+  test("turn.failed with 5xx gateway message → gateway-unreachable", () => {
+    const events = [
+      { error: { message: "gateway returned 502" }, type: "turn.failed" },
+    ] as ThreadEvent[];
+    expect(classifyFailure({ events, sdkTerminalStatus: "turn.failed" })).toBe(
+      "gateway-unreachable",
+    );
+  });
+
+  test("turn.failed with 4xx (401) gateway message → NOT gateway-unreachable", () => {
+    const events = [
+      { error: { message: "gateway returned 401 Unauthorized" }, type: "turn.failed" },
+    ] as ThreadEvent[];
+    // 401 is an auth failure, not transport — must not be mislabeled gateway-unreachable.
+    expect(classifyFailure({ events, sdkTerminalStatus: "turn.failed" })).toBe("unknown");
+  });
+
+  test("failed command whose OUTPUT mentions 'fetch failed' → logic, not gateway", () => {
+    const events = [
+      {
+        item: {
+          aggregated_output: "curl: fetch failed",
+          command: "curl https://api",
+          id: "cmd-1",
+          status: "failed",
+          type: "command_execution",
+        },
+        type: "item.completed",
+      },
+      { error: { message: "command failed" }, type: "turn.failed" },
+    ] as ThreadEvent[];
+    expect(classifyFailure({ events, sdkTerminalStatus: "turn.failed" })).toBe("logic");
+  });
+
+  test("non-terminal status with no signals delegates to base → unknown", () => {
+    expect(classifyFailure({ events: [], sdkTerminalStatus: "stream-end" })).toBe("unknown");
+  });
+
+  test("recency: earlier sandbox denial then later failed file_change → patch-apply-fail", () => {
+    const events = [
+      {
+        item: {
+          aggregated_output: "not permitted in the sandbox",
+          command: "curl evil",
+          id: "cmd-1",
+          status: "failed",
+          type: "command_execution",
+        },
+        type: "item.completed",
+      },
+      {
+        item: {
+          changes: [{ kind: "update", path: "a.ts" }],
+          id: "fc-1",
+          status: "failed",
+          type: "file_change",
+        },
+        type: "item.completed",
+      },
+    ] as ThreadEvent[];
+    expect(classifyFailure({ events, sdkTerminalStatus: "turn.failed" })).toBe("patch-apply-fail");
+  });
+
+  test("recency: earlier failed file_change then later sandbox denial → sandbox-denial", () => {
+    const events = [
+      {
+        item: {
+          changes: [{ kind: "update", path: "a.ts" }],
+          id: "fc-1",
+          status: "failed",
+          type: "file_change",
+        },
+        type: "item.completed",
+      },
+      {
+        item: {
+          aggregated_output: "operation not permitted in the sandbox",
+          command: "rm -rf /",
+          id: "cmd-1",
+          status: "failed",
+          type: "command_execution",
+        },
+        type: "item.completed",
+      },
+    ] as ThreadEvent[];
+    expect(classifyFailure({ events, sdkTerminalStatus: "turn.failed" })).toBe("sandbox-denial");
   });
 
   test("turn.failed without codex-specific signals delegates to base → unknown", () => {

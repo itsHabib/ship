@@ -290,6 +290,31 @@ describe("CodexRunner — SDK options", () => {
     expect(threadArgs?.["mcpServers"]).toBeUndefined();
     expect(threadArgs?.["agents"]).toBeUndefined();
   });
+
+  test("partial gateway config (missing one of three vars) → AgentRunFailedError", async () => {
+    vi.stubEnv("CODEX_MODEL_PROVIDER", "custom");
+    vi.stubEnv("CODEX_MODEL_PROVIDER_BASE_URL", "https://custom.local/v1");
+    // CODEX_MODEL_PROVIDER_ENV_KEY intentionally left unset — partial config must
+    // fail loudly rather than silently running against the default endpoint.
+    const thread = makeMockThread({ events: [agentMessageDone, turnCompleted] });
+    vi.mocked(Codex).mockImplementation(() => makeMockCodex(thread));
+
+    const runner = new CodexRunner();
+    const promise = runner.run(baseInput());
+    await expect(promise).rejects.toBeInstanceOf(AgentRunFailedError);
+    await expect(promise).rejects.toThrow(/CODEX_MODEL_PROVIDER_ENV_KEY/);
+    expect(Codex).not.toHaveBeenCalled();
+  });
+
+  test("no gateway config vars → no config passed", async () => {
+    const thread = makeMockThread({ events: [agentMessageDone, turnCompleted] });
+    vi.mocked(Codex).mockImplementation(() => makeMockCodex(thread));
+
+    const runner = new CodexRunner();
+    await runner.run(baseInput());
+    const opts = vi.mocked(Codex).mock.calls[0]![0] as { config?: unknown };
+    expect(opts.config).toBeUndefined();
+  });
 });
 
 describe("CodexRunner — cancellation", () => {
@@ -306,6 +331,34 @@ describe("CodexRunner — cancellation", () => {
       | { signal?: AbortSignal }
       | undefined;
     expect(runStreamedCall?.signal?.aborted).toBe(true);
+  });
+
+  test("aborted run resolves cancelled, not the terminal turn result", async () => {
+    const thread = makeMockThread({ events: [agentMessageDone, turnCompleted] });
+    vi.mocked(Codex).mockImplementation(() => makeMockCodex(thread));
+
+    const controller = new AbortController();
+    controller.abort();
+    const runner = new CodexRunner();
+    const handle = await runner.run(baseInput({ signal: controller.signal }));
+    const result = await handle.result;
+    // A cancel must not be recorded as a failure or a (stale) success.
+    expect(result.status).toBe("cancelled");
+    expect(result.branches).toEqual([]);
+  });
+
+  test("abort that surfaces as a stream throw still resolves cancelled", async () => {
+    const thread = makeMockThread({
+      streamThrows: new Error("AbortError: the operation was aborted"),
+    });
+    vi.mocked(Codex).mockImplementation(() => makeMockCodex(thread));
+
+    const controller = new AbortController();
+    controller.abort();
+    const runner = new CodexRunner();
+    const handle = await runner.run(baseInput({ signal: controller.signal }));
+    const result = await handle.result;
+    expect(result.status).toBe("cancelled");
   });
 });
 

@@ -168,9 +168,17 @@ export function mapStreamEndWithoutTerminal(
   durationMs: number,
 ): AgentRunResult {
   const rawErrorMessage = "Codex stream ended without a terminal turn event";
-  const failureCategory = classifyFailure(
-    classifyInput(input, events, "stream-end", durationMs, rawErrorMessage),
-  );
+  // A stream that ends with no turn.completed/turn.failed/error is an SDK/transport
+  // failure, not a logic failure — classify it as sdk-throw, consistent with how
+  // core treats thrown runner errors (Copilot review).
+  const failureCategory = classifyFailure({
+    durationMs,
+    events,
+    ...(input.maxRunDurationMs !== undefined && { maxRunDurationMs: input.maxRunDurationMs }),
+    rawErrorMessage,
+    sdkTerminalStatus: "stream-end",
+    thrownError: true,
+  });
   return failedResult({
     category: failureCategory,
     durationMs,
@@ -179,4 +187,11 @@ export function mapStreamEndWithoutTerminal(
     rawErrorMessage,
     sdkTerminalStatus: "stream-end",
   });
+}
+
+// A run aborted via `handle.cancel()` / `input.signal` resolves as cancelled,
+// not failed — the SDK rejects the stream with an abort error, but that is a
+// user cancellation, not a run failure (codex review).
+export function mapCancelled(durationMs: number): AgentRunResult {
+  return { branches: [], durationMs, status: "cancelled" };
 }

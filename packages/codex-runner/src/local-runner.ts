@@ -30,6 +30,7 @@ import {
   WrongRunnerError,
 } from "./errors.js";
 import {
+  mapCancelled,
   mapMidStreamFailure,
   mapStreamEndWithoutTerminal,
   mapTerminalEvent,
@@ -89,19 +90,36 @@ function buildGatewayConfig(): CodexOptions["config"] | undefined {
   const providerId = readEnvString(MODEL_PROVIDER_ENV);
   const providerBaseUrl = readEnvString(MODEL_PROVIDER_BASE_URL_ENV);
   const providerEnvKey = readEnvString(MODEL_PROVIDER_ENV_KEY_ENV);
-  if (providerId === undefined || providerBaseUrl === undefined || providerEnvKey === undefined) {
+  if (providerId !== undefined && providerBaseUrl !== undefined && providerEnvKey !== undefined) {
+    return {
+      model_provider: providerId,
+      model_providers: {
+        [providerId]: {
+          base_url: providerBaseUrl,
+          env_key: providerEnvKey,
+          // Codex only supports the Responses API (since 2026-02); a
+          // Chat-Completions-only gateway is unsupported. Hardcoded until/unless
+          // the SDK gains Chat-Completions support (claude review).
+          wire_api: "responses",
+        },
+      },
+    };
+  }
+  // None set → no custom gateway (run against the default endpoint).
+  if (providerId === undefined && providerBaseUrl === undefined && providerEnvKey === undefined) {
     return undefined;
   }
-  return {
-    model_provider: providerId,
-    model_providers: {
-      [providerId]: {
-        base_url: providerBaseUrl,
-        env_key: providerEnvKey,
-        wire_api: "responses",
-      },
-    },
-  };
+  // Partial config (some but not all three) is almost always a typo or omission —
+  // fail loudly rather than silently ignoring it and running against the default
+  // endpoint, which the operator did not intend (claude review).
+  const missing = [
+    providerId === undefined ? MODEL_PROVIDER_ENV : undefined,
+    providerBaseUrl === undefined ? MODEL_PROVIDER_BASE_URL_ENV : undefined,
+    providerEnvKey === undefined ? MODEL_PROVIDER_ENV_KEY_ENV : undefined,
+  ].filter((name): name is string => name !== undefined);
+  throw new AgentRunFailedError(
+    `incomplete codex gateway config: set all of ${MODEL_PROVIDER_ENV}, ${MODEL_PROVIDER_BASE_URL_ENV}, ${MODEL_PROVIDER_ENV_KEY_ENV} (missing: ${missing.join(", ")})`,
+  );
 }
 
 function buildCodexOptions(apiKey: string): CodexOptions {
@@ -190,6 +208,10 @@ async function consumeEventStream(
       if (codexEventProjection.terminalStatus(ev) !== undefined) lastTerminal = ev;
     }
     const durationMs = Date.now() - startedAt;
+    if (abortController.signal.aborted) {
+      callbacks.finalizeOk(mapCancelled(durationMs));
+      return;
+    }
     if (lastTerminal !== undefined) {
       callbacks.finalizeOk(mapTerminalEvent(lastTerminal, input, capturedEvents, durationMs));
       return;
@@ -197,6 +219,13 @@ async function consumeEventStream(
     callbacks.finalizeOk(mapStreamEndWithoutTerminal(input, capturedEvents, durationMs));
   } catch (streamErr) {
     const durationMs = Date.now() - startedAt;
+    // A cancel (handle.cancel() / input.signal) aborts the controller, so the SDK
+    // rejects the stream with an abort error — surface that as cancelled, not a
+    // failure, so a user cancellation isn't recorded as failed (codex review).
+    if (abortController.signal.aborted) {
+      callbacks.finalizeOk(mapCancelled(durationMs));
+      return;
+    }
     callbacks.finalizeOk(mapMidStreamFailure(streamErr, input, capturedEvents, durationMs));
   }
 }
@@ -212,10 +241,14 @@ export class CodexRunner implements AgentRunner {
       const runId = randomUUID();
       const abortController = new AbortController();
 
+      // buildCodexOptions validates the gateway config and throws a clear
+      // AgentRunFailedError on partial config — kept OUT of the try below so that
+      // message surfaces directly rather than wrapped as "construction failed".
+      const codexOptions = buildCodexOptions(apiKey);
       let codex: Codex;
       let thread: Thread;
       try {
-        codex = new Codex(buildCodexOptions(apiKey));
+        codex = new Codex(codexOptions);
         thread = codex.startThread(buildThreadOptions(input));
       } catch (err) {
         throw new AgentRunFailedError("Codex construction failed", { cause: err });

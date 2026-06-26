@@ -6,6 +6,8 @@
 import type { ThreadEvent, ThreadItem } from "@openai/codex-sdk";
 import type { EventProjection } from "@ship/agent-runner";
 
+import { stringifyToolCallResult } from "@ship/agent-runner";
+
 const TOOL_ITEM_TYPES = new Set(["command_execution", "file_change", "mcp_tool_call"]);
 
 function asRecord(ev: unknown): Record<string, unknown> {
@@ -47,7 +49,9 @@ function itemResultText(item: ThreadItem): string {
   if (item.type === "mcp_tool_call") {
     if (item.error?.message !== undefined && item.error.message.length > 0)
       return item.error.message;
-    if (item.result !== undefined) return JSON.stringify(item.result);
+    // Guarded stringify — a raw JSON.stringify throws on circular structures or
+    // BigInt, which would break event projection + downstream mapping (Copilot review).
+    if (item.result !== undefined) return stringifyToolCallResult(item.result);
     return "";
   }
   if (item.type === "agent_message") return item.text;
