@@ -39,7 +39,7 @@ export class LocalCursorRunner implements AgentRunner {
     }
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
-      throw new MissingApiKeyError();
+      throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
     }
     const { agent, sdkRun } = await this.#startAgent(apiKey, input);
     return this.#buildHandle(agent, sdkRun, input);

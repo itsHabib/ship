@@ -3,11 +3,15 @@
  * subclasses live in their runner packages and extend `AgentRunFailedError`.
  */
 
-/** Thrown when a required API key env var is unset before any provider call. */
+/**
+ * Thrown when a required API key env var is unset before any provider call.
+ * The default message is provider-neutral; each provider adapter passes the
+ * specific env var name it requires (e.g. cursor-runner names `CURSOR_API_KEY`).
+ */
 export class MissingApiKeyError extends Error {
   override readonly name = "MissingApiKeyError";
 
-  constructor(message = "CURSOR_API_KEY environment variable is not set") {
+  constructor(message = "API key environment variable is not set") {
     super(message);
   }
 }

@@ -146,7 +146,7 @@ export class CloudCursorRunner implements AgentRunner {
   async downloadArtifact(agentId: string, path: string): Promise<Buffer> {
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
-      throw new MissingApiKeyError();
+      throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
     }
     let agent: SDKAgent | undefined;
     try {
@@ -189,7 +189,7 @@ export class CloudCursorRunner implements AgentRunner {
     }
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
-      throw new MissingApiKeyError();
+      throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
     }
     const { agent, sdkRun } = await this.#startAgent(apiKey, input.cloud, input);
     return this.#buildHandle(agent, sdkRun, input);
@@ -202,7 +202,7 @@ export class CloudCursorRunner implements AgentRunner {
     assertSingleCloudRepo(input.cloud);
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
-      throw new MissingApiKeyError();
+      throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
     }
     const runInput = attachInputAsRunInput(input, "cloud");
     let agent: SDKAgent | undefined;

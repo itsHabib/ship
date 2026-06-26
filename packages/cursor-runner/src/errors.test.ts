@@ -11,12 +11,12 @@ import {
 } from "./errors.js";
 
 describe("MissingApiKeyError", () => {
-  test("is an Error subclass with the expected name and message", () => {
+  test("is an Error subclass with the expected name and a provider-neutral default message", () => {
     const err = new MissingApiKeyError();
     expect(err).toBeInstanceOf(Error);
     expect(err).toBeInstanceOf(MissingApiKeyError);
     expect(err.name).toBe("MissingApiKeyError");
-    expect(err.message).toMatch(/CURSOR_API_KEY/);
+    expect(err.message).toMatch(/API key/);
   });
 
   test("is discriminable from AgentRunFailedError via instanceof", () => {

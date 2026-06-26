@@ -11,8 +11,6 @@ import {
 
 import { cursorEventProjection } from "./cursor-event-projection.js";
 
-export type { BuildFailureDetailInput, ClassifyFailureInput };
-
 export { formatClassifiedErrorMessage };
 
 export type CursorClassifyFailureInput = Omit<ClassifyFailureInput, "projection">;

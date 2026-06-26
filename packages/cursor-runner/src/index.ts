@@ -9,7 +9,10 @@ export {
   classifyFailure,
   formatClassifiedErrorMessage,
 } from "./classify-failure.js";
-export type { BuildFailureDetailInput, ClassifyFailureInput } from "./classify-failure.js";
+export type {
+  CursorBuildFailureDetailInput,
+  CursorClassifyFailureInput,
+} from "./classify-failure.js";
 
 export type {
   AgentRunAttachInput,

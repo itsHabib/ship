@@ -5,7 +5,7 @@
  * binary (ED-1). It spawns `sudo -E rooms run` (the Firecracker jailer needs
  * root — rooms #44), reads the host-collected `--out`
  * contract artifacts, replays `events.ndjson` through `onEvent`, then
- * resolves a `AgentRunResult` whose `branches[]` carries the pushed
+ * resolves an `AgentRunResult` whose `branches[]` carries the pushed
  * branch — the same shape `CloudCursorRunner` returns (ED-2). PR opening
  * is downstream (ED-3). See `docs/features/rooms-backend/spec.md`.
  */

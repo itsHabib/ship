@@ -23,7 +23,11 @@ export interface EventProjection<E = AgentEvent> {
   commandArg(event: E): string | undefined;
   /** Epoch ms from event timestamp fields (`ts`, `startedAt`, …). */
   timestamp(event: E): number | undefined;
-  /** Free-text status message on terminal status events. */
+  /**
+   * Free-text status message on terminal status events. Part of the projection
+   * contract for provider-local terminal-error mappers (seam-extract ED-4); the
+   * shared classifier does not consume it — keep it for parity across providers.
+   */
   statusMessage(event: E): string | undefined;
   /** Tool-call result payload as text. */
   resultText(event: E): string | undefined;
