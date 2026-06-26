@@ -47,7 +47,7 @@ export const terminalWorkflowStatusSchema = z.enum(["succeeded", "failed", "canc
 export type TerminalWorkflowStatus = z.infer<typeof terminalWorkflowStatusSchema>;
 
 /** Agent backend that produced a cursor_runs row. Orthogonal to `runtime`. */
-export const agentProviderSchema = z.enum(["cursor", "claude"]);
+export const agentProviderSchema = z.enum(["cursor", "claude", "codex"]);
 export type AgentProvider = z.infer<typeof agentProviderSchema>;
 
 /** Terminal subset of `CursorRunStatus`. */
@@ -68,6 +68,8 @@ export const failureCategorySchema = z.enum([
   "sdk-throw",
   "gateway-unreachable",
   "budget-exceeded",
+  "sandbox-denial",
+  "patch-apply-fail",
   "logic",
   "unknown",
 ]);
@@ -351,6 +353,7 @@ export function cursorWatchUrl(agentId: string): string {
 /** Synthetic `agentId` when a run fails before the backend assigns one. */
 const AGENT_NOT_CREATED_SENTINEL: Record<AgentProvider, string> = {
   claude: "agent-not-created",
+  codex: "agent-not-created",
   cursor: "agent-not-created",
 };
 

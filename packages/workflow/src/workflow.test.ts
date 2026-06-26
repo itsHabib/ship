@@ -512,6 +512,7 @@ describe("agentNotCreatedSentinel", () => {
   test("returns a provider-specific placeholder for each backend", () => {
     expect(agentNotCreatedSentinel("cursor")).toBe("agent-not-created");
     expect(agentNotCreatedSentinel("claude")).toBe("agent-not-created");
+    expect(agentNotCreatedSentinel("codex")).toBe("agent-not-created");
   });
 });
 

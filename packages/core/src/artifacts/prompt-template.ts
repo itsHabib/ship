@@ -62,8 +62,15 @@ function claudeSubagentDispatchRules(): string[] {
   ];
 }
 
+function codexSubagentDispatchRules(): string[] {
+  return [
+    "7. Before producing the structured summary, self-review your work: re-read the diff for the operator's conventions and run the repo's check commands (`make check` or the equivalent detected from the repo). Codex has no inline subagent dispatch surface — do not invoke a `task` tool or fabricate subagent output.",
+  ];
+}
+
 function subagentDispatchRules(provider: AgentProvider, followUpTrailerClause: string): string[] {
   if (provider === "claude") return claudeSubagentDispatchRules();
+  if (provider === "codex") return codexSubagentDispatchRules();
   return cursorSubagentDispatchRules(followUpTrailerClause);
 }
 
