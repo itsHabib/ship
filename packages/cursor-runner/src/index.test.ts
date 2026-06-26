@@ -11,7 +11,7 @@ import * as cursorRunner from "./index.js";
 describe("@ship/cursor-runner barrel export (index.ts)", () => {
   test("re-exports the typed error classes", () => {
     expect(typeof cursorRunner.MissingApiKeyError).toBe("function");
-    expect(typeof cursorRunner.CursorRunFailedError).toBe("function");
+    expect(typeof cursorRunner.AgentRunFailedError).toBe("function");
     expect(new cursorRunner.MissingApiKeyError()).toBeInstanceOf(Error);
   });
 

@@ -6,13 +6,13 @@
  * sandbox flows).
  *
  * Branch + PR info is read from `result.json` (the on-disk
- * `CursorRunResult` per phase doc § F6) — `ShipOutput.cursorRun` has
+ * `AgentRunResult` per phase doc § F6) — `ShipOutput.cursorRun` has
  * no `branches` field by design (no schema change).
  */
 
 /* eslint-disable sonarjs/no-os-command-from-path -- integration: exercises system `gh`. */
 
-import type { CursorRunResult } from "@ship/cursor-runner";
+import type { AgentRunResult } from "@ship/cursor-runner";
 import type { ShipOutput } from "@ship/mcp";
 
 import { execFileSync, spawn } from "node:child_process";
@@ -109,10 +109,10 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — happy path (auto-create PR
       const shipped = JSON.parse(stdout.trim()) as ShipOutput;
       expect(shipped.status).toBe("succeeded");
 
-      // CursorRunResult is persisted to disk as result.json (§ F6).
+      // AgentRunResult is persisted to disk as result.json (§ F6).
       const persisted = JSON.parse(
         readFileSync(shipped.artifacts.resultPath, "utf-8"),
-      ) as CursorRunResult;
+      ) as AgentRunResult;
       expect(persisted.branches.length).toBeGreaterThan(0);
       const b0 = persisted.branches[0]!;
       const diag = `result.branches[0]=${JSON.stringify(b0)} warnings=${JSON.stringify(persisted.warnings ?? null)}`;

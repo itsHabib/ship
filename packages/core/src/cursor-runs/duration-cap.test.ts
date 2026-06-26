@@ -3,7 +3,7 @@
  * start → terminal sequence.
  */
 
-import type { CursorRunHandle, CursorRunResult } from "@ship/cursor-runner";
+import type { AgentRunHandle, AgentRunResult } from "@ship/cursor-runner";
 import type { Mock } from "vitest";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -17,7 +17,7 @@ import {
 
 const CAP_MS = 30 * 60 * 1000;
 
-const succeededResult: CursorRunResult = {
+const succeededResult: AgentRunResult = {
   branches: [],
   durationMs: 1234,
   status: "succeeded",
@@ -30,9 +30,9 @@ function pendingForever<T>(): Promise<T> {
   });
 }
 
-function fakeHandle(result: Promise<CursorRunResult>): {
+function fakeHandle(result: Promise<AgentRunResult>): {
   cancel: Mock<() => Promise<void>>;
-  handle: CursorRunHandle;
+  handle: AgentRunHandle;
 } {
   const cancel = vi.fn(() => Promise.resolve());
   return { cancel, handle: { agentId: "agent-x", cancel, result, runId: "run-x" } };
@@ -116,8 +116,8 @@ describe("runWithDurationCap", () => {
 
   test("cap expiry before the handle exists rejects CursorRunStartTimedOutError", async () => {
     const onHandle = vi.fn();
-    let resolveStart!: (h: CursorRunHandle) => void;
-    const start = new Promise<CursorRunHandle>((resolve) => {
+    let resolveStart!: (h: AgentRunHandle) => void;
+    const start = new Promise<AgentRunHandle>((resolve) => {
       resolveStart = resolve;
     });
     const pending = runWithDurationCap({
@@ -143,7 +143,7 @@ describe("runWithDurationCap", () => {
 
   test("a rejecting cancel is swallowed; the synthetic terminal still stands", async () => {
     const cancel = vi.fn(() => Promise.reject(new Error("cancel round-trip failed")));
-    const handle: CursorRunHandle = {
+    const handle: AgentRunHandle = {
       agentId: "agent-x",
       cancel,
       result: pendingForever(),
@@ -213,7 +213,7 @@ describe("runWithDurationCap", () => {
   // loser to reject AFTER the race resolved, then flushes microtasks.
   test("post-handle: a late handle.result rejection after the synthetic verdict is swallowed", async () => {
     let rejectResult!: (e: unknown) => void;
-    const result = new Promise<CursorRunResult>((_resolve, reject) => {
+    const result = new Promise<AgentRunResult>((_resolve, reject) => {
       rejectResult = reject;
     });
     const { cancel, handle } = fakeHandle(result);
@@ -235,7 +235,7 @@ describe("runWithDurationCap", () => {
   test("pre-handle: a late start() rejection after CursorRunStartTimedOutError is swallowed", async () => {
     const onHandle = vi.fn();
     let rejectStart!: (e: unknown) => void;
-    const start = new Promise<CursorRunHandle>((_resolve, reject) => {
+    const start = new Promise<AgentRunHandle>((_resolve, reject) => {
       rejectStart = reject;
     });
     const pending = runWithDurationCap({
@@ -291,8 +291,8 @@ describe("runWithDurationCap", () => {
   });
 
   test("a result landing inside the grace window beats the synthetic terminal", async () => {
-    let resolveRunner!: (r: CursorRunResult) => void;
-    const runner = new Promise<CursorRunResult>((resolve) => {
+    let resolveRunner!: (r: AgentRunResult) => void;
+    const runner = new Promise<AgentRunResult>((resolve) => {
       resolveRunner = resolve;
     });
     const { cancel, handle } = fakeHandle(runner);

@@ -19,7 +19,7 @@
  * tests pin the equivalence.
  */
 
-import type { CursorRunner } from "@ship/cursor-runner";
+import type { AgentRunner } from "@ship/cursor-runner";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createDefaultShipService, ORPHAN_RESUME_STALENESS_MS } from "@ship/core";
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
     // `ship` call so the L3 subprocess test exercises the stdio /
     // SDK / persistence path without needing test-side enqueueing.
     // Cursor behavior is covered by the cursor-runner unit tests.
-    const fake: CursorRunner = new FakeCursorRunner({
+    const fake: AgentRunner = new FakeCursorRunner({
       defaultScript: {
         events: [],
         result: { status: "succeeded", durationMs: 0, branches: [] },

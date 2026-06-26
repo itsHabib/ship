@@ -13,15 +13,15 @@ import {
 import { createLogger } from "@ship/logger";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import type { CloudRunSpec, CursorRunInput } from "../src/runner.js";
+import type { AgentRunInput, CloudRunSpec } from "../src/runner.js";
 
 import { mapTerminalResult } from "../src/_shared.js";
 import { LIST_ARTIFACTS_TIMEOUT_MS } from "../src/artifacts-capture.js";
 import { CloudCursorRunner } from "../src/cloud-runner.js";
 import {
+  AgentRunFailedError,
   CursorAgentNotFoundError,
   CursorCloudIntegrationError,
-  CursorRunFailedError,
   InvalidCloudReposError,
   MissingApiKeyError,
   MissingCloudSpecError,
@@ -452,17 +452,17 @@ describe("CloudCursorRunner — env / pre-run errors", () => {
     expect(Agent.create).not.toHaveBeenCalled();
   });
 
-  test("Agent.create throw → CursorRunFailedError; agent NOT disposed (none was created)", async () => {
+  test("Agent.create throw → AgentRunFailedError; agent NOT disposed (none was created)", async () => {
     const sdkErr = new Error("AuthenticationError: bad key");
     vi.mocked(Agent.create).mockRejectedValue(sdkErr);
     const runner = new CloudCursorRunner();
     const promise = runner.run(cloudBaseInput());
-    await expect(promise).rejects.toBeInstanceOf(CursorRunFailedError);
+    await expect(promise).rejects.toBeInstanceOf(AgentRunFailedError);
     await expect(promise).rejects.toThrow(/Agent\.create failed/);
     await expect(promise).rejects.toMatchObject({ cause: sdkErr });
   });
 
-  test("agent.send throw after Agent.create → CursorRunFailedError; agent IS disposed", async () => {
+  test("agent.send throw after Agent.create → AgentRunFailedError; agent IS disposed", async () => {
     const { run } = makeMockRun({});
     const sendErr = new Error("RateLimitError");
     const { agent, disposeSpy } = makeMockAgent({ run, sendThrows: sendErr });
@@ -488,7 +488,7 @@ describe("CloudCursorRunner — env / pre-run errors", () => {
 });
 
 describe("CloudCursorRunner — Agent.create cloud payload", () => {
-  test("maps CursorRunInput.cloud into Agent.create cloud options", async () => {
+  test("maps AgentRunInput.cloud into Agent.create cloud options", async () => {
     const { run } = makeMockRun({});
     const { agent } = makeMockAgent({ run });
     vi.mocked(Agent.create).mockResolvedValue(agent);
@@ -525,7 +525,7 @@ describe("CloudCursorRunner — Agent.create cloud payload", () => {
         workOnCurrentBranch: true,
       },
       mcpServers: { docs: { type: "http", url: "https://docs" } },
-      // Boolean `true` from CursorRunInput is coerced to the string "true"
+      // Boolean `true` from AgentRunInput is coerced to the string "true"
       // before being passed to Agent.create — Cursor's cloud API rejects
       // boolean param values with a 400 "[validation_error] Expected
       // string, received boolean".
@@ -938,7 +938,7 @@ describe("CloudCursorRunner — onEvent contract", () => {
     await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
   });
 
-  test("stream errors AND wait() rejects → CursorRunFailedError", async () => {
+  test("stream errors AND wait() rejects → AgentRunFailedError", async () => {
     const streamErr = new Error("network disconnected mid-stream");
     const { run } = makeMockRun({ streamThrows: streamErr, waitThrows: streamErr });
     const { agent, disposeSpy } = makeMockAgent({ run });
@@ -951,7 +951,7 @@ describe("CloudCursorRunner — onEvent contract", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("run.wait() rejects after a clean stream → CursorRunFailedError", async () => {
+  test("run.wait() rejects after a clean stream → AgentRunFailedError", async () => {
     const waitErr = new Error("SDK runtime crashed after clean stream");
     const { run } = makeMockRun({ events: [evA], waitThrows: waitErr });
     const { agent, disposeSpy } = makeMockAgent({ run });
@@ -1182,7 +1182,7 @@ describe("CloudCursorRunner — SHIP_CLOUD_DEBUG diagnostics", () => {
           repos: [{ url: "https://github.com/owner/repo" }],
           envVars: { MY_SECRET_TOKEN: "ghp_actual_secret_value_xyz" },
         },
-      } as CursorRunInput;
+      } as AgentRunInput;
 
       const runner = new CloudCursorRunner();
       const handle = await runner.run(inputWithSecret);

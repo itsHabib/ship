@@ -7,7 +7,7 @@
  */
 
 import type { ShipService, ShipServiceConfig } from "@ship/core";
-import type { CursorRunner } from "@ship/cursor-runner";
+import type { AgentRunner } from "@ship/cursor-runner";
 import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
 
@@ -108,10 +108,10 @@ export interface CreateServiceFromHarnessOptions {
   defaultModelParams?: NonNullable<ModelSelection["params"]>;
   /** Absolute artifacts directory inside the in-memory `ShipFs`. Default `/state/runs`. */
   runsDir?: string;
-  /** Optional override `CursorRunner`. Defaults to the harness's `FakeCursorRunner`. */
-  cursor?: CursorRunner;
+  /** Optional override `AgentRunner`. Defaults to the harness's `FakeCursorRunner`. */
+  cursor?: AgentRunner;
   /** Optional cloud runner; forwarded into `ShipService` config when set. */
-  cloudCursor?: CursorRunner;
+  cloudCursor?: AgentRunner;
   /** Remote doc source; defaults to a fresh `FakeDocSource`. */
   docSource?: DocSource;
 }

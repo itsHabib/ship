@@ -6,7 +6,7 @@
  * exit status.
  */
 
-import type { CursorRunner } from "@ship/cursor-runner";
+import type { AgentRunner } from "@ship/cursor-runner";
 
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createLogger } from "@ship/logger";
@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   await program.parseAsync(process.argv);
 }
 
-function createFakeCursorRunner(): CursorRunner {
+function createFakeCursorRunner(): AgentRunner {
   return new FakeCursorRunner({
     defaultScript: {
       events: [],

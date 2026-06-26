@@ -4,7 +4,7 @@
  * + `GITHUB_TOKEN`.
  */
 
-import type { CursorRunResult } from "@ship/cursor-runner";
+import type { AgentRunResult } from "@ship/cursor-runner";
 import type { ShipOutput } from "@ship/mcp";
 
 import { Agent, type SDKAgentInfo } from "@cursor/sdk";
@@ -168,7 +168,7 @@ describe.skipIf(!HAS_KEY_AND_CLOUD)("L3 cloud e2e — cancel during CREATING", (
         try {
           const persisted = JSON.parse(
             readFileSync(shipOut.artifacts.resultPath, "utf-8"),
-          ) as CursorRunResult;
+          ) as AgentRunResult;
           branchForCleanup = persisted.branches[0]?.branch;
         } catch {
           /* result.json missing or partial — nothing to clean */

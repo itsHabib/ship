@@ -4,7 +4,14 @@
  * pipeline shape; see phase 04 design (`04-cursor-cloud-runner.md`).
  */
 
-import type { CloudAgentOptions, Run, RunResult, SDKAgent, SDKMessage } from "@cursor/sdk";
+import type {
+  AgentOptions,
+  CloudAgentOptions,
+  Run,
+  RunResult,
+  SDKAgent,
+  SDKMessage,
+} from "@cursor/sdk";
 import type { Logger } from "@ship/logger";
 import type { ArtifactRef } from "@ship/workflow";
 
@@ -14,17 +21,24 @@ import {
   IntegrationNotConnectedError,
   UnknownAgentError,
 } from "@cursor/sdk";
+import {
+  AgentRunFailedError,
+  agentRunFailedError,
+  buildSdkRunHandle,
+  createSdkRunHandleState,
+  MissingApiKeyError,
+} from "@ship/agent-runner";
 import { isAbsolute } from "node:path";
 import { inspect } from "node:util";
 
 import type { MapRunResultOptions } from "./_shared.js";
 import type {
+  AgentRunAttachInput,
+  AgentRunHandle,
+  AgentRunInput,
+  AgentRunner,
+  AgentRunResult,
   CloudRunSpec,
-  CursorRunAttachInput,
-  CursorRunHandle,
-  CursorRunInput,
-  CursorRunner,
-  CursorRunResult,
 } from "./runner.js";
 
 import {
@@ -38,9 +52,7 @@ import { cloudDebugLog } from "./debug.js";
 import {
   CursorAgentNotFoundError,
   CursorCloudIntegrationError,
-  CursorRunFailedError,
   InvalidCloudReposError,
-  MissingApiKeyError,
   MissingCloudSpecError,
   WrongRunnerError,
 } from "./errors.js";
@@ -66,7 +78,7 @@ function assertSingleCloudRepo(cloudSpec: CloudRunSpec | undefined): void {
 
 function mapAgentNotFoundError(
   err: unknown,
-  input: Pick<CursorRunAttachInput, "agentId" | "runId">,
+  input: Pick<AgentRunAttachInput, "agentId" | "runId">,
 ): CursorAgentNotFoundError | undefined {
   if (err instanceof UnknownAgentError) {
     return new CursorAgentNotFoundError({
@@ -119,9 +131,9 @@ function loggableCloudOptions(opts: CloudAgentOptions): unknown {
 
 function mapCloudRunResult(
   result: RunResult,
-  input: CursorRunInput,
+  input: AgentRunInput,
   options?: MapRunResultOptions,
-): CursorRunResult {
+): AgentRunResult {
   // Cloud-only debug telemetry. Local runs go through mapRunResult directly
   // and never reach this wrapper, preserving the SHIP_CLOUD_DEBUG-only intent.
   cloudDebugLog(input.log, "mapTerminalResult result.git", result.git);
@@ -130,11 +142,11 @@ function mapCloudRunResult(
 }
 
 /** Construct once, reuse across runs. The runner holds no per-run state. */
-export class CloudCursorRunner implements CursorRunner {
+export class CloudCursorRunner implements AgentRunner {
   async downloadArtifact(agentId: string, path: string): Promise<Buffer> {
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
-      throw new MissingApiKeyError();
+      throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
     }
     let agent: SDKAgent | undefined;
     try {
@@ -145,7 +157,7 @@ export class CloudCursorRunner implements CursorRunner {
       if (notFound !== undefined) {
         throw notFound;
       }
-      throw new CursorRunFailedError(`downloadArtifact failed for agentId=${agentId}`, {
+      throw new AgentRunFailedError(`downloadArtifact failed for agentId=${agentId}`, {
         cause: err,
       });
     } finally {
@@ -159,7 +171,7 @@ export class CloudCursorRunner implements CursorRunner {
     }
   }
 
-  async run(input: CursorRunInput): Promise<CursorRunHandle> {
+  async run(input: AgentRunInput): Promise<AgentRunHandle> {
     if (input.runtime !== "cloud") {
       throw new WrongRunnerError('CloudCursorRunner requires input.runtime === "cloud"');
     }
@@ -177,20 +189,20 @@ export class CloudCursorRunner implements CursorRunner {
     }
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
-      throw new MissingApiKeyError();
+      throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
     }
     const { agent, sdkRun } = await this.#startAgent(apiKey, input.cloud, input);
     return this.#buildHandle(agent, sdkRun, input);
   }
 
-  async attach(input: CursorRunAttachInput): Promise<CursorRunHandle> {
+  async attach(input: AgentRunAttachInput): Promise<AgentRunHandle> {
     if (input.cloud === undefined) {
       throw new MissingCloudSpecError();
     }
     assertSingleCloudRepo(input.cloud);
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
-      throw new MissingApiKeyError();
+      throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
     }
     const runInput = attachInputAsRunInput(input, "cloud");
     let agent: SDKAgent | undefined;
@@ -198,8 +210,12 @@ export class CloudCursorRunner implements CursorRunner {
       agent = await Agent.resume(input.agentId, {
         apiKey,
         model: modelArgFromInput(runInput),
-        ...(input.agents !== undefined && { agents: input.agents }),
-        ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
+        ...(input.agents !== undefined && {
+          agents: input.agents as NonNullable<AgentOptions["agents"]>,
+        }),
+        ...(input.mcpServers !== undefined && {
+          mcpServers: input.mcpServers as NonNullable<AgentOptions["mcpServers"]>,
+        }),
       });
       const sdkRun = await Agent.getRun(input.runId, {
         agentId: input.agentId,
@@ -224,14 +240,14 @@ export class CloudCursorRunner implements CursorRunner {
       if (notFound !== undefined) {
         throw notFound;
       }
-      throw new CursorRunFailedError("Agent.resume or Agent.getRun failed", { cause: err });
+      throw new AgentRunFailedError("Agent.resume or Agent.getRun failed", { cause: err });
     }
   }
 
   async #startAgent(
     apiKey: string,
     cloudSpec: CloudRunSpec,
-    input: CursorRunInput,
+    input: AgentRunInput,
   ): Promise<{ agent: SDKAgent; sdkRun: Run }> {
     let agent: SDKAgent | undefined;
     try {
@@ -245,8 +261,12 @@ export class CloudCursorRunner implements CursorRunner {
         apiKey,
         cloud: cloudOpts,
         model: modelArg,
-        ...(input.agents !== undefined && { agents: input.agents }),
-        ...(input.mcpServers !== undefined && { mcpServers: input.mcpServers }),
+        ...(input.agents !== undefined && {
+          agents: input.agents as NonNullable<AgentOptions["agents"]>,
+        }),
+        ...(input.mcpServers !== undefined && {
+          mcpServers: input.mcpServers as NonNullable<AgentOptions["mcpServers"]>,
+        }),
         ...(input.agentName !== undefined && { name: input.agentName }),
       });
       const sdkRun = await agent.send(input.prompt);
@@ -267,7 +287,7 @@ export class CloudCursorRunner implements CursorRunner {
       if (err instanceof IntegrationNotConnectedError) {
         throw new CursorCloudIntegrationError(err.provider, err.helpUrl, { cause: err });
       }
-      throw new CursorRunFailedError(
+      throw new AgentRunFailedError(
         agent === undefined ? "Agent.create failed" : "agent.send failed after Agent.create",
         { cause: err },
       );
@@ -277,83 +297,34 @@ export class CloudCursorRunner implements CursorRunner {
   #buildHandle(
     agent: SDKAgent,
     sdkRun: Run,
-    input: CursorRunInput,
+    input: AgentRunInput,
     opts?: {
       readonly shipResumed?: { readonly agentId: string; readonly runId: string };
     },
-  ): CursorRunHandle {
-    let terminated = false;
-    let cancelInitiated = false;
-    let resolveResult!: (value: CursorRunResult) => void;
-    let rejectResult!: (reason: unknown) => void;
-    const result = new Promise<CursorRunResult>((resolve, reject) => {
-      resolveResult = resolve;
-      rejectResult = reject;
+  ): AgentRunHandle {
+    const state = createSdkRunHandleState({
+      cancelRun: () => sdkRun.cancel(),
+      ...(input.signal !== undefined && { signal: input.signal }),
     });
 
-    let signalListener: (() => void) | undefined;
-    const detachSignalListener = (): void => {
-      if (signalListener !== undefined && input.signal !== undefined) {
-        input.signal.removeEventListener("abort", signalListener);
-      }
-      signalListener = undefined;
-    };
-
-    const cancelInternal = async (): Promise<void> => {
-      if (terminated || cancelInitiated) return;
-      cancelInitiated = true;
-      try {
-        await sdkRun.cancel();
-      } catch {
-        // Allow retries: a transient SDK-side failure shouldn't
-        // permanently disable cancel while the run is still live.
-        // Especially relevant for cloud where cancel() round-trips to the VM.
-        cancelInitiated = false;
-      }
-    };
-
-    if (input.signal !== undefined) {
-      if (input.signal.aborted) {
-        void cancelInternal();
-      } else {
-        signalListener = (): void => {
-          void cancelInternal();
-        };
-        input.signal.addEventListener("abort", signalListener, { once: true });
-      }
-    }
-
     void this.#runPipeline(agent, sdkRun, input, {
-      detachSignalListener,
-      finalizeError: (err) => {
-        if (terminated) return;
-        terminated = true;
-        detachSignalListener();
-        rejectResult(err);
-      },
-      finalizeOk: (terminal) => {
-        if (terminated) return;
-        terminated = true;
-        detachSignalListener();
-        resolveResult(terminal);
-      },
+      ...state.callbacks,
       ...(opts?.shipResumed !== undefined && { shipResumed: opts.shipResumed }),
     });
 
-    return {
+    return buildSdkRunHandle({
       agentId: agent.agentId,
-      cancel: cancelInternal,
-      result,
       runId: sdkRun.id,
-    };
+      state,
+    });
   }
 
   async #runPipeline(
     agent: SDKAgent,
     sdkRun: Run,
-    input: CursorRunInput,
+    input: AgentRunInput,
     callbacks: {
-      finalizeOk: (terminal: CursorRunResult) => void;
+      finalizeOk: (terminal: AgentRunResult) => void;
       finalizeError: (err: unknown) => void;
       detachSignalListener: () => void;
       shipResumed?: { readonly agentId: string; readonly runId: string };
@@ -407,9 +378,7 @@ export class CloudCursorRunner implements CursorRunner {
           return;
         }
         callbacks.finalizeError(
-          new CursorRunFailedError("stream errored without a terminal RunResult", {
-            cause: streamErr,
-          }),
+          agentRunFailedError("stream errored without a terminal RunResult", streamErr),
         );
         return;
       }
@@ -419,9 +388,7 @@ export class CloudCursorRunner implements CursorRunner {
         waitResult = await sdkRun.wait();
       } catch (waitErr) {
         callbacks.finalizeError(
-          new CursorRunFailedError("run.wait() rejected after a clean stream", {
-            cause: waitErr,
-          }),
+          agentRunFailedError("run.wait() rejected after a clean stream", waitErr),
         );
         return;
       }
@@ -451,9 +418,9 @@ export class CloudCursorRunner implements CursorRunner {
 
   async #finalizeOkWithArtifacts(
     agent: SDKAgent,
-    terminal: CursorRunResult,
-    input: CursorRunInput,
-    callbacks: { finalizeOk: (terminal: CursorRunResult) => void },
+    terminal: AgentRunResult,
+    input: AgentRunInput,
+    callbacks: { finalizeOk: (terminal: AgentRunResult) => void },
   ): Promise<void> {
     const artifacts = await captureCloudArtifacts(agent, input.log);
     callbacks.finalizeOk(artifacts !== undefined ? { ...terminal, artifacts } : terminal);

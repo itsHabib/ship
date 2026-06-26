@@ -1,0 +1,99 @@
+[
+  {
+    "name": "empty-unknown",
+    "classifyInput": { "events": [] },
+    "category": "unknown"
+  },
+  {
+    "name": "contention-beats-throw",
+    "classifyInput": { "events": [], "isStoreContention": true, "thrownError": true },
+    "category": "contention"
+  },
+  {
+    "name": "sdk-throw",
+    "classifyInput": { "events": [], "thrownError": true },
+    "category": "sdk-throw"
+  },
+  {
+    "name": "logic-failed-tool",
+    "classifyInput": {
+      "events": [{ "type": "tool_call", "status": "failed", "name": "grep" }]
+    },
+    "category": "logic",
+    "detailInput": {
+      "category": "logic",
+      "events": [{ "type": "tool_call", "status": "error", "result": "database is locked" }]
+    },
+    "detail": "database is locked"
+  },
+  {
+    "name": "agent-collapse-running-tool",
+    "classifyInput": {
+      "durationMs": 1500000,
+      "maxRunDurationMs": 1800000,
+      "events": [
+        {
+          "type": "tool_call",
+          "status": "running",
+          "name": "shell",
+          "ts": "2026-06-01T12:00:00.000Z"
+        },
+        { "type": "status", "status": "ERROR", "ts": "2026-06-01T12:25:00.000Z" }
+      ]
+    },
+    "category": "agent-collapse-on-running-tool"
+  },
+  {
+    "name": "expired-timeout",
+    "classifyInput": { "events": [], "sdkTerminalStatus": "EXPIRED" },
+    "category": "timeout-near-cap",
+    "detailInput": {
+      "category": "timeout-near-cap",
+      "durationMs": 1800000,
+      "events": [],
+      "maxRunDurationMs": 1800000,
+      "sdkTerminalStatus": "EXPIRED"
+    },
+    "detail": "SDK status expired; duration 30m (cap 30m)"
+  },
+  {
+    "name": "contention-sqlite-tool",
+    "classifyInput": {
+      "events": [{ "type": "tool_call", "status": "error", "result": "database is locked" }]
+    },
+    "category": "logic"
+  },
+  {
+    "name": "near-cap-duration",
+    "classifyInput": {
+      "durationMs": 1728000,
+      "maxRunDurationMs": 1800000,
+      "events": []
+    },
+    "category": "timeout-near-cap"
+  },
+  {
+    "name": "running-tool-completed-same-call-id",
+    "classifyInput": {
+      "durationMs": 1530000,
+      "maxRunDurationMs": 1800000,
+      "events": [
+        {
+          "type": "tool_call",
+          "status": "running",
+          "name": "shell",
+          "call_id": "c1",
+          "ts": "2026-06-01T12:00:00.000Z"
+        },
+        {
+          "type": "tool_call",
+          "status": "completed",
+          "name": "shell",
+          "call_id": "c1",
+          "ts": "2026-06-01T12:05:00.000Z"
+        }
+      ]
+    },
+    "category": "unknown"
+  }
+]

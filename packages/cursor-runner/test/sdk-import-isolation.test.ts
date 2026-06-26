@@ -134,7 +134,7 @@ describe("ED-2 — @cursor/sdk is imported in @ship/cursor-runner only", () => {
         if (name !== undefined && name.length > 0) names.push(name);
       }
     }
-    const allowed = new Set(["AgentDefinition", "McpServerConfig", "SDKMessage"]);
+    const allowed = new Set(["SDKMessage"]);
     expect(new Set(names)).toEqual(allowed);
   });
 
