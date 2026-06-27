@@ -8,7 +8,13 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { DriverStreamView } from "./types.js";
 
-import { isTickLive, resolveDocPath, resolveRepoRoot } from "./engine.js";
+import {
+  isTickLive,
+  resolveDocPath,
+  resolveRepoRoot,
+  resolveRunawayBackstopMs,
+  shouldGiveUpTick,
+} from "./engine.js";
 import { TickLiveError } from "./errors.js";
 import { type DispatchAmbiguity, recoverDispatchingStreams } from "./judgment.js";
 import { createDriverService } from "./service.js";
@@ -602,6 +608,232 @@ batches:
     store.close();
   });
 });
+
+describe("liveness-aware tick give-up", () => {
+  let tmpDir: string;
+  let repoRoot: string;
+  let manifestPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "driver-liveness-"));
+    repoRoot = join(tmpDir, "repo");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    mkdirSync(join(repoRoot, "docs", "tasks"), { recursive: true });
+    writeFileSync(join(repoRoot, "docs", "tasks", "a.md"), "# task a\n");
+    mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-a"), { recursive: true });
+    manifestPath = join(repoRoot, "liveness.driver.md");
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-06-26T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: liveness
+repo: ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: local
+        status: pending
+---
+`,
+    );
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { force: true, recursive: true });
+  });
+
+  test("shouldGiveUpTick uses monotonic inactivity, not wall clock", () => {
+    const opts = { maxWaitMs: 5000, runawayBackstopMs: 120_000 };
+    expect(shouldGiveUpTick(4000, { lastProgressMono: 0, tickStartedMono: 0 }, opts)).toBe(false);
+    expect(shouldGiveUpTick(5000, { lastProgressMono: 0, tickStartedMono: 0 }, opts)).toBe(true);
+    expect(shouldGiveUpTick(5999, { lastProgressMono: 5500, tickStartedMono: 0 }, opts)).toBe(
+      false,
+    );
+  });
+
+  test("shouldGiveUpTick hits runaway backstop even with recent progress", () => {
+    const opts = { maxWaitMs: 5000, runawayBackstopMs: 10_000 };
+    expect(shouldGiveUpTick(10_000, { lastProgressMono: 9999, tickStartedMono: 0 }, opts)).toBe(
+      true,
+    );
+  });
+
+  test("resolveRunawayBackstopMs defaults to at least two hours", () => {
+    expect(resolveRunawayBackstopMs(1000)).toBe(DEFAULT_TWO_HOUR_MS);
+    expect(resolveRunawayBackstopMs(30 * 60 * 1000)).toBe(30 * 60 * 1000 * 6);
+  });
+
+  test("survives wall-clock jump while workflow runs keep emitting", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    let wallMs = 0;
+    let monoMs = 0;
+    let sleepCalls = 0;
+
+    const fake = createFakeShipPort(
+      [{ docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_live" }],
+      () => wallMs,
+    );
+    const baseGetRun = fake.port.getRun.bind(fake.port);
+    fake.port.getRun = async (workflowRunId) => {
+      const run = await baseGetRun(workflowRunId);
+      if (run === null) return null;
+      monoMs += 100;
+      wallMs += 60 * 60 * 1000;
+      fake.runs.set(workflowRunId, {
+        ...run,
+        updatedAt: new Date(monoMs).toISOString(),
+      });
+      return fake.runs.get(workflowRunId) ?? null;
+    };
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({
+      clock: () => wallMs,
+      monotonicClock: () => monoMs,
+      rng: () => 0.5,
+      ship: fake.port,
+      sleep: (ms) => {
+        sleepCalls += 1;
+        monoMs += ms;
+        if (sleepCalls >= 4) {
+          const live = fake.runs.get("wf_live");
+          if (live !== undefined) {
+            fake.runs.set("wf_live", { ...live, status: "succeeded" });
+          }
+        }
+        return Promise.resolve();
+      },
+      store,
+    });
+    const imported = driver.importManifest(manifestPath);
+
+    const result = await driver.run(
+      { driverRunId: imported.run.id },
+      { batch: 1, maxWaitMs: 30_000, pollIntervalMs: 3000, runawayBackstopMs: 120_000 },
+    );
+
+    expect(sleepCalls).toBeGreaterThanOrEqual(4);
+    expect(result.status).toBe("blocked_on_merges");
+    store.close();
+  });
+
+  test("gives up after inactivity window with no workflow progress", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    let monoMs = 0;
+
+    const fake = createFakeShipPort(
+      [{ docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_stuck" }],
+      () => monoMs,
+    );
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({
+      monotonicClock: () => monoMs,
+      rng: () => 0.5,
+      ship: fake.port,
+      sleep: (ms) => {
+        monoMs += ms;
+        return Promise.resolve();
+      },
+      store,
+    });
+    const imported = driver.importManifest(manifestPath);
+
+    const result = await driver.run(
+      { driverRunId: imported.run.id },
+      {
+        batch: 1,
+        maxWaitMs: 5000,
+        pollIntervalMs: 1000,
+        runawayBackstopMs: 60_000,
+      },
+    );
+
+    expect(result.status).toBe("running");
+    expect(monoMs).toBeGreaterThanOrEqual(5000);
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.status).toBe("dispatched");
+    store.close();
+  });
+
+  test("gives up via runaway backstop when tick exceeds hard ceiling", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    let monoMs = 0;
+    let eventTick = 0;
+
+    const fake = createFakeShipPort(
+      [{ docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_trickle" }],
+      () => monoMs,
+    );
+    const baseGetRun = fake.port.getRun.bind(fake.port);
+    fake.port.getRun = async (workflowRunId) => {
+      const run = await baseGetRun(workflowRunId);
+      if (run === null) return null;
+      eventTick += 1;
+      fake.runs.set(workflowRunId, {
+        ...run,
+        updatedAt: new Date(eventTick).toISOString(),
+      });
+      return fake.runs.get(workflowRunId) ?? null;
+    };
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({
+      monotonicClock: () => monoMs,
+      rng: () => 0.5,
+      ship: fake.port,
+      sleep: (ms) => {
+        monoMs += ms;
+        return Promise.resolve();
+      },
+      store,
+    });
+    const imported = driver.importManifest(manifestPath);
+
+    const result = await driver.run(
+      { driverRunId: imported.run.id },
+      {
+        batch: 1,
+        maxWaitMs: 60_000,
+        pollIntervalMs: 1000,
+        runawayBackstopMs: 8000,
+      },
+    );
+
+    expect(result.status).toBe("running");
+    expect(monoMs).toBeGreaterThanOrEqual(8000);
+    expect(monoMs).toBeLessThan(60_000);
+    store.close();
+  });
+
+  test("maxWaitMs zero bounded tick regression — one pass then progress", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_once" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+
+    const result = await driver.run(
+      { driverRunId: imported.run.id },
+      { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+    );
+
+    expect(result.status).toBe("running");
+    expect(store.getDriverRun(imported.run.id)?.batches[0]?.streams[0]?.status).toBe("dispatched");
+    store.close();
+  });
+});
+
+const DEFAULT_TWO_HOUR_MS = 2 * 60 * 60 * 1000;
 
 function twoCloudStreamManifest(generatedAt: string): string {
   return `---
