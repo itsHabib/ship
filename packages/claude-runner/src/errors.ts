@@ -24,3 +24,27 @@ export class UnsupportedPlatformError extends AgentRunFailedError {
     );
   }
 }
+
+/** Cloud inputs passed to {@link CloudClaudeRunner} without `cloud` config. */
+export class MissingCloudSpecError extends AgentRunFailedError {
+  override readonly name: string = "MissingCloudSpecError";
+
+  constructor() {
+    super("runtime: 'cloud' was set but input.cloud is undefined");
+  }
+}
+
+export class InvalidCloudReposError extends AgentRunFailedError {
+  override readonly name: string = "InvalidCloudReposError";
+
+  constructor(receivedLength: number) {
+    super(
+      `cloud.repos must contain exactly one repo entry; received length ${String(receivedLength)}`,
+    );
+  }
+}
+
+/** Thrown when Managed Agents session setup fails (env/agent/session create). */
+export class CloudSessionError extends AgentRunFailedError {
+  override readonly name: string = "CloudSessionError";
+}

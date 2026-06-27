@@ -112,6 +112,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.3.183
         version: 0.3.183(@anthropic-ai/sdk@0.106.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)
+      '@anthropic-ai/sdk':
+        specifier: 0.106.0
+        version: 0.106.0(zod@4.4.3)
       '@ship/agent-runner':
         specifier: workspace:*
         version: link:../agent-runner

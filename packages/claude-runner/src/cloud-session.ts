@@ -1,0 +1,217 @@
+/**
+ * SDK seam for `@anthropic-ai/sdk` (Managed Agents beta).
+ * Only this file imports `@anthropic-ai/sdk` — the import-isolation test enforces it.
+ * Pure mechanism: no policy decisions, no per-run state.
+ */
+
+import type {
+  BetaManagedAgentsSessionErrorEvent,
+  BetaManagedAgentsSessionEvent,
+  BetaManagedAgentsStreamSessionEvents,
+} from "@anthropic-ai/sdk/resources/beta/sessions/events";
+
+import Anthropic from "@anthropic-ai/sdk";
+
+// Re-exported for use in cloud-runner.ts / cloud-terminal-map.ts without
+// those files needing a direct import from @anthropic-ai/sdk.
+export type CloudStreamEvent = BetaManagedAgentsStreamSessionEvents;
+export type CloudListedEvent = BetaManagedAgentsSessionEvent;
+export type CloudErrorEvent = BetaManagedAgentsSessionErrorEvent;
+export type CloudClient = Anthropic;
+
+const BETAS = ["managed-agents-2026-04-01"];
+const GH_TOKEN_ENVS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
+
+export function buildClient(apiKey: string, baseUrl?: string): CloudClient {
+  return new Anthropic({
+    apiKey,
+    ...(baseUrl !== undefined && { baseURL: baseUrl }),
+  });
+}
+
+export function readGitHubToken(): string | undefined {
+  for (const key of GH_TOKEN_ENVS) {
+    const val = process.env[key];
+    if (val !== undefined && val !== "") return val;
+  }
+  return undefined;
+}
+
+export interface EnsureResult {
+  readonly id: string;
+  readonly owned: boolean;
+}
+
+export async function ensureEnvironment(
+  client: CloudClient,
+  spec: { readonly runId: string; readonly environmentId?: string },
+): Promise<EnsureResult> {
+  if (spec.environmentId !== undefined) {
+    return { id: spec.environmentId, owned: false };
+  }
+  const env = await client.beta.environments.create({
+    name: `ship/${spec.runId}`,
+    config: { type: "cloud" },
+    betas: BETAS,
+  });
+  return { id: env.id, owned: true };
+}
+
+export async function ensureAgent(
+  client: CloudClient,
+  spec: {
+    readonly runId: string;
+    readonly agentId?: string;
+    readonly modelId: string;
+    readonly system?: string;
+  },
+): Promise<EnsureResult> {
+  if (spec.agentId !== undefined) {
+    return { id: spec.agentId, owned: false };
+  }
+  const agent = await client.beta.agents.create({
+    model: spec.modelId,
+    name: `ship/${spec.runId}`,
+    ...(spec.system !== undefined && { system: spec.system }),
+    tools: [
+      {
+        type: "agent_toolset_20260401",
+        default_config: {
+          enabled: true,
+          permission_policy: { type: "always_allow" },
+        },
+      },
+    ],
+    betas: BETAS,
+  });
+  return { id: agent.id, owned: true };
+}
+
+export async function createSession(
+  client: CloudClient,
+  spec: {
+    readonly agentId: string;
+    readonly environmentId: string;
+    readonly repoUrl: string;
+    readonly startingRef?: string;
+    readonly pat: string;
+  },
+): Promise<string> {
+  const session = await client.beta.sessions.create({
+    agent: spec.agentId,
+    environment_id: spec.environmentId,
+    resources: [
+      {
+        type: "github_repository",
+        url: spec.repoUrl,
+        authorization_token: spec.pat,
+        ...(spec.startingRef !== undefined && {
+          checkout: { type: "branch", name: spec.startingRef },
+        }),
+      },
+    ],
+    betas: BETAS,
+  });
+  return session.id;
+}
+
+export async function dispatch(
+  client: CloudClient,
+  sessionId: string,
+  prompt: string,
+): Promise<void> {
+  await client.beta.sessions.events.send(sessionId, {
+    events: [
+      {
+        type: "user.message",
+        content: [{ type: "text", text: prompt }],
+      },
+    ],
+    betas: BETAS,
+  });
+}
+
+export async function openStream(
+  client: CloudClient,
+  sessionId: string,
+): Promise<AsyncIterable<CloudStreamEvent>> {
+  return client.beta.sessions.events.stream(sessionId, { betas: BETAS });
+}
+
+export async function listEvents(
+  client: CloudClient,
+  sessionId: string,
+): Promise<CloudListedEvent[]> {
+  const events: CloudListedEvent[] = [];
+  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
+    events.push(ev);
+  }
+  return events;
+}
+
+export async function interruptSession(client: CloudClient, sessionId: string): Promise<void> {
+  try {
+    await client.beta.sessions.events.send(sessionId, {
+      events: [{ type: "user.interrupt" }],
+      betas: BETAS,
+    });
+  } catch {
+    /* swallow — best-effort interrupt */
+  }
+}
+
+export async function archiveSession(client: CloudClient, sessionId: string): Promise<void> {
+  try {
+    await client.beta.sessions.archive(sessionId, { betas: BETAS });
+  } catch {
+    /* swallow — best-effort archive */
+  }
+}
+
+export async function interruptAndArchive(client: CloudClient, sessionId: string): Promise<void> {
+  await interruptSession(client, sessionId);
+  await archiveSession(client, sessionId);
+}
+
+export async function archiveOwned(
+  client: CloudClient,
+  spec: {
+    readonly sessionId: string;
+    readonly agentId?: string;
+    readonly environmentId?: string;
+    readonly ownedAgent: boolean;
+    readonly ownedEnv: boolean;
+  },
+): Promise<void> {
+  await archiveSession(client, spec.sessionId);
+  if (spec.ownedAgent && spec.agentId !== undefined) {
+    try {
+      await client.beta.agents.archive(spec.agentId, { betas: BETAS });
+    } catch {
+      /* swallow */
+    }
+  }
+  if (spec.ownedEnv && spec.environmentId !== undefined) {
+    try {
+      await client.beta.environments.archive(spec.environmentId, { betas: BETAS });
+    } catch {
+      /* swallow */
+    }
+  }
+}
+
+// Redacts the authorization_token and other secrets from log-safe payload view.
+export function loggableSessionSpec(spec: {
+  readonly agentId: string;
+  readonly environmentId: string;
+  readonly repoUrl: string;
+  readonly startingRef?: string;
+}): unknown {
+  return {
+    agentId: spec.agentId,
+    environmentId: spec.environmentId,
+    repoUrl: spec.repoUrl,
+    ...(spec.startingRef !== undefined && { startingRef: spec.startingRef }),
+    authorization_token: "[redacted]",
+  };
+}
