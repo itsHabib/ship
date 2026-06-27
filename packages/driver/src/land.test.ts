@@ -657,6 +657,26 @@ describe("land", () => {
       expect(gh.mergeCalls[0]?.admin).toBe(true);
       expect(store.listMergeGrantSatisfactionsByStream(streamId)).toEqual([]);
     });
+
+    test("already-MERGED PR with grant does not record satisfaction on re-land", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/205",
+      });
+      store.registerMergeGrant({ repo: "org/ship" });
+      const gh = createFakeGhPort({
+        205: {
+          mergeCommit: { oid: "already-merged" },
+          mergedAt: "2026-06-12T08:00:00.000Z",
+          state: "MERGED",
+        },
+      });
+
+      await land(store, gh, runId, { prNumber: 205, verdict: authorizedVerdict() });
+
+      expect(gh.mergeCalls).toEqual([]);
+      expect(store.listMergeGrantSatisfactionsByStream(streamId)).toEqual([]);
+    });
   });
 });
 

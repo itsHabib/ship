@@ -52,11 +52,11 @@ export async function land(
     stream,
     opts,
   );
-  const prView = await fetchMergedPrView(gh, repo, opts.prNumber, admin);
+  const { mergedViaAdmin, prView } = await fetchMergedPrView(gh, repo, opts.prNumber, admin);
   const facts = buildLandFacts(prView, opts);
   const mergedRun = markMerged(store, driverRunId, streamId, facts);
 
-  if (grantId !== undefined && authorizingVerdict !== undefined) {
+  if (mergedViaAdmin && grantId !== undefined && authorizingVerdict !== undefined) {
     store.recordMergeGrantSatisfaction({
       driverRunId,
       driverStreamId: streamId,
@@ -160,14 +160,16 @@ async function fetchMergedPrView(
   prNumber: number,
   admin: boolean,
   sleep: SleepFn = defaultSleep,
-): Promise<GhPullRequestView> {
+): Promise<{ mergedViaAdmin: boolean; prView: GhPullRequestView }> {
   try {
     let prView = await gh.viewPullRequest(repo, prNumber);
+    let mergedViaAdmin = false;
     if (prView.state !== "MERGED") {
       // Always-on readiness guard: refuse to merge an unready PR. Runs even
       // under --admin (admin bypasses the *approval* gate, not this check).
       await assertReady(gh, repo, prNumber);
       await gh.mergePullRequest(repo, prNumber, { admin });
+      mergedViaAdmin = admin;
       prView = await readMergedViewWithRetry(gh, repo, prNumber, { sleep });
     }
 
@@ -180,7 +182,7 @@ async function fetchMergedPrView(
       throw new DecideError(`PR #${String(prNumber)} has no merge commit`);
     }
 
-    return prView;
+    return { mergedViaAdmin, prView };
   } catch (err) {
     if (err instanceof DecideError) throw err;
     const detail = err instanceof Error ? err.message : String(err);
