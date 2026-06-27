@@ -43,6 +43,14 @@ export type { UpdateDriverBatchInput } from "./driver-batches.js";
 export type { UpdateDriverStreamInput } from "./driver-streams.js";
 
 export { newDriverBatchId, newDriverRunId, newDriverStreamId } from "./driver-ids.js";
+export { newMergeGrantId, newMergeGrantSatisfactionId } from "./merge-grant-ids.js";
+
+export type {
+  MergeGrantSatisfaction,
+  RecordMergeGrantSatisfactionInput,
+  RepoMergeGrant,
+} from "./merge-grants.js";
+export { normalizeMergeGrantRepo } from "./merge-grants.js";
 
 export {
   CursorRunNotFoundError,

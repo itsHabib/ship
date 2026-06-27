@@ -59,7 +59,9 @@ export type {
 export {
   assembleMergeVerdict,
   CANONICAL_REVIEWERS,
+  ciStatePassing,
   REQUIRED_REVIEW_COORDINATOR_CYCLES,
+  reviewCoordinatorCyclesSatisfied,
 } from "./merge-verdict.js";
 
 export {

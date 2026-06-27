@@ -37,6 +37,8 @@ export interface LandOpts {
   cycles?: number;
   /** Pass `--admin` to the merge (bypass branch protection). Default false. */
   admin?: boolean;
+  /** Precomputed merge verdict; when omitted, land assembles one from gh when a grant exists. */
+  mergeVerdict?: MergeVerdict;
 }
 
 export interface DriverStreamView {

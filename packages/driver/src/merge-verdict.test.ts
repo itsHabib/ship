@@ -79,10 +79,39 @@ describe("assembleMergeVerdict", () => {
     expect(verdict.blockingReasons).toContain("adversarial gate not passed");
   });
 
-  test("insufficient review-coordinator cycles → not authorized", () => {
+  test("neutral CI → authorized when other gates pass", () => {
+    const verdict = assembleMergeVerdict(
+      authorizedInputs({
+        ciCheckState: "neutral",
+      }),
+    );
+
+    expect(verdict.outcome).toBe("merge_authorized");
+    expect(verdict.authorized).toBe(true);
+  });
+
+  test("unanimous approval with zero coordinator cycles → authorized", () => {
+    const verdict = assembleMergeVerdict(
+      authorizedInputs({
+        reviewCoordinatorCycles: 0,
+        reviewerBallots: allApprovedBallots(),
+      }),
+    );
+
+    expect(verdict.outcome).toBe("merge_authorized");
+    expect(verdict.authorized).toBe(true);
+    expect(verdict.blockingReasons).toEqual([]);
+  });
+
+  test("insufficient cycles without unanimous approval → not authorized", () => {
     const verdict = assembleMergeVerdict(
       authorizedInputs({
         reviewCoordinatorCycles: REQUIRED_REVIEW_COORDINATOR_CYCLES - 1,
+        reviewerBallots: [
+          { reviewer: "codex", verdict: "approved" },
+          { reviewer: "claude", verdict: "approved" },
+          { reviewer: "cursor", verdict: "pending" },
+        ],
       }),
     );
 

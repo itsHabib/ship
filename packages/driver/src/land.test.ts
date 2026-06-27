@@ -3,9 +3,12 @@
 import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import type { MergeVerdictInputs } from "./types.js";
+
 import { DecideError } from "./errors.js";
 import { toGhRepo } from "./gh-port.js";
 import { land } from "./land.js";
+import { assembleMergeVerdict, REQUIRED_REVIEW_COORDINATOR_CYCLES } from "./merge-verdict.js";
 import { createFakeGhPort } from "./test/fake-gh-port.js";
 
 describe("land", () => {
@@ -541,6 +544,102 @@ describe("land", () => {
       );
     });
   });
+
+  describe("repo-scoped merge grant", () => {
+    const canonicalReviews = [
+      { authorLogin: "chatgpt-codex-connector", state: "APPROVED" },
+      { authorLogin: "claude-bot", state: "APPROVED" },
+      { authorLogin: "copilot-pull-request-reviewer", state: "APPROVED" },
+    ];
+
+    test("grant + authorizing verdict merges with --admin and records audit", async () => {
+      store.registerRepoMergeGrant("org/ship");
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/200",
+      });
+      const gh = createFakeGhPort({
+        200: {
+          checks: [{ conclusion: "SUCCESS", name: "ci", status: "COMPLETED" }],
+          mergeCommit: null,
+          mergedAt: null,
+          reviews: canonicalReviews,
+          state: "OPEN",
+        },
+      });
+
+      await land(store, gh, runId, { prNumber: 200 });
+
+      expect(gh.mergeCalls).toHaveLength(1);
+      expect(gh.mergeCalls[0]?.admin).toBe(true);
+      const audit = store.getMergeGrantSatisfaction("org/ship", 200);
+      expect(audit).not.toBeNull();
+      expect(audit?.driverRunId).toBe(runId);
+      expect(audit?.driverStreamId).toBe(streamId);
+      expect(JSON.parse(audit?.verdictJson ?? "{}")).toMatchObject({
+        outcome: "merge_authorized",
+      });
+    });
+
+    test("grant present but non-authorizing verdict does not auto-admin merge", async () => {
+      store.registerRepoMergeGrant("org/ship");
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/201",
+      });
+      const gh = createFakeGhPort({
+        201: {
+          checks: [{ conclusion: "SUCCESS", name: "ci", status: "COMPLETED" }],
+          mergeCommit: null,
+          mergedAt: null,
+          reviews: [{ authorLogin: "codex", state: "APPROVED" }],
+          state: "OPEN",
+        },
+      });
+
+      await land(store, gh, runId, { prNumber: 201 });
+
+      expect(gh.mergeCalls[0]?.admin).toBe(false);
+      expect(store.getMergeGrantSatisfaction("org/ship", 201)).toBeNull();
+    });
+
+    test("grant + authorizing verdict still blocks draft PR via assertReady", async () => {
+      store.registerRepoMergeGrant("org/ship");
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/202",
+      });
+      const gh = createFakeGhPort({
+        202: {
+          isDraft: true,
+          mergeCommit: null,
+          mergedAt: null,
+          reviews: canonicalReviews,
+          state: "OPEN",
+        },
+      });
+
+      await expect(land(store, gh, runId, { prNumber: 202 })).rejects.toThrow(/not ready — draft/);
+      expect(gh.mergeCalls).toEqual([]);
+    });
+
+    test("explicit mergeVerdict override satisfies grant without gh reviews", async () => {
+      store.registerRepoMergeGrant("org/ship");
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/203",
+      });
+      const gh = createFakeGhPort({
+        203: { mergeCommit: null, mergedAt: null, state: "OPEN" },
+      });
+      const mergeVerdict = assembleMergeVerdict(authorizedVerdictInputs());
+
+      await land(store, gh, runId, { mergeVerdict, prNumber: 203 });
+
+      expect(gh.mergeCalls[0]?.admin).toBe(true);
+      expect(store.getMergeGrantSatisfaction("org/ship", 203)).not.toBeNull();
+    });
+  });
 });
 
 describe("toGhRepo", () => {
@@ -674,4 +773,18 @@ batches:
       - spec_path: a.md
 ---
 `;
+}
+
+function authorizedVerdictInputs(): MergeVerdictInputs {
+  return {
+    adversarialGatePassed: true,
+    ciCheckState: "success",
+    ciSha: "abc123",
+    reviewCoordinatorCycles: REQUIRED_REVIEW_COORDINATOR_CYCLES,
+    reviewerBallots: [
+      { reviewer: "codex", verdict: "approved" },
+      { reviewer: "claude", verdict: "approved" },
+      { reviewer: "cursor", verdict: "approved" },
+    ],
+  };
 }

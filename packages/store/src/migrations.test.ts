@@ -50,9 +50,11 @@ describe("runMigrations", () => {
     expect(tables).toContain("driver_runs");
     expect(tables).toContain("driver_batches");
     expect(tables).toContain("driver_streams");
+    expect(tables).toContain("repo_merge_grants");
+    expect(tables).toContain("merge_grant_satisfactions");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(7);
+    expect(applied).toHaveLength(8);
     expect(applied.map((r) => r.name)).toEqual([
       "0001_init.sql",
       "0002_cursor_runs_run_id.sql",
@@ -61,6 +63,7 @@ describe("runMigrations", () => {
       "0005_driver_runs.sql",
       "0006_driver_tick_lease.sql",
       "0007_cursor_runs_provider.sql",
+      "0008_merge_grants.sql",
     ]);
 
     const phaseColumns = db
@@ -84,7 +87,7 @@ describe("runMigrations", () => {
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(7);
+    expect(applied).toHaveLength(8);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {

@@ -16,6 +16,11 @@ import type { UpdateDriverBatchInput } from "./driver-batches.js";
 import type { ClaimTickInput, InsertDriverRunInput, ListDriverRunsFilter } from "./driver-runs.js";
 import type { DriverBatch, DriverRun, DriverRunStatus, DriverStream } from "./driver-schemas.js";
 import type { UpdateDriverStreamInput } from "./driver-streams.js";
+import type {
+  MergeGrantSatisfaction,
+  RecordMergeGrantSatisfactionInput,
+  RepoMergeGrant,
+} from "./merge-grants.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
 import type {
   CreateWorkflowRunInput,
@@ -26,6 +31,7 @@ import type {
 import { createCursorRunOps } from "./cursor-runs.js";
 import { openDatabase, withStoreContentionGuard } from "./db.js";
 import { createDriverRunOps } from "./driver-runs.js";
+import { createMergeGrantOps } from "./merge-grants.js";
 import { assertSchemaVersion, runMigrations } from "./migrations.js";
 import { createPhaseOps } from "./phases.js";
 import { createWorkflowRunOps } from "./workflow-runs.js";
@@ -145,6 +151,16 @@ export interface Store {
   updateDriverBatch: (id: string, patch: UpdateDriverBatchInput) => DriverBatch;
   /** Patch driver stream progress columns; bumps parent run `updated_at`. */
   updateDriverStream: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
+  /** Register (or replace) an active repo-scoped merge grant for `--admin` satisfaction. */
+  registerRepoMergeGrant: (repo: string) => RepoMergeGrant;
+  /** Active grant for `repo`, or `null` when none is registered. */
+  getActiveRepoMergeGrant: (repo: string) => RepoMergeGrant | null;
+  /** Record that a PR merge was satisfied via grant + authorizing verdict. */
+  recordMergeGrantSatisfaction: (
+    input: RecordMergeGrantSatisfactionInput,
+  ) => MergeGrantSatisfaction;
+  /** Per-PR audit row when grant-satisfied, or `null`. */
+  getMergeGrantSatisfaction: (repo: string, prNumber: number) => MergeGrantSatisfaction | null;
   /**
    * Run `PRAGMA wal_checkpoint(TRUNCATE)` (cleans up `-wal` / `-shm`
    * sidecars) and close the SQLite handle. Caller must not invoke other
@@ -184,6 +200,7 @@ export function createStore(opts: CreateStoreOptions): Store {
     const workflowRunOps = createWorkflowRunOps(db, clock, phaseOps);
     const cursorRunOps = createCursorRunOps(db, clock);
     const driverRunOps = createDriverRunOps(db, clock);
+    const mergeGrantOps = createMergeGrantOps(db, clock);
 
     return {
       appendPhase: (input) => withStoreContentionGuard(() => phaseOps.append(input)),
@@ -193,8 +210,16 @@ export function createStore(opts: CreateStoreOptions): Store {
           workflowRunOps.delete(id);
         });
       },
+      getActiveRepoMergeGrant: (repo) =>
+        withStoreContentionGuard(() => mergeGrantOps.getActiveRepoMergeGrant(repo)),
       getDriverRun: (id) => withStoreContentionGuard(() => driverRunOps.get(id)),
+      getMergeGrantSatisfaction: (repo, prNumber) =>
+        withStoreContentionGuard(() => mergeGrantOps.getMergeGrantSatisfaction(repo, prNumber)),
       insertDriverRun: (input) => withStoreContentionGuard(() => driverRunOps.insert(input)),
+      registerRepoMergeGrant: (repo) =>
+        withStoreContentionGuard(() => mergeGrantOps.registerRepoMergeGrant(repo)),
+      recordMergeGrantSatisfaction: (input) =>
+        withStoreContentionGuard(() => mergeGrantOps.recordMergeGrantSatisfaction(input)),
       listDriverRuns: (filter) => withStoreContentionGuard(() => driverRunOps.list(filter)),
       updateDriverBatch: (id, patch) =>
         withStoreContentionGuard(() => driverRunOps.updateBatch(id, patch)),

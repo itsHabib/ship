@@ -2,9 +2,11 @@
 
 import type {
   DriverGhPort,
+  GhMergeGateContext,
   GhMergeOpts,
   GhPrCheck,
   GhPrReadiness,
+  GhPrReview,
   GhPullRequestView,
 } from "../gh-port.js";
 
@@ -18,6 +20,9 @@ export interface FakeGhPrState {
   mergeable?: string;
   /** statusCheckRollup, normalized. Defaults to a single green check. */
   checks?: GhPrCheck[];
+  /** PR reviews for merge-gate ballot mapping. */
+  reviews?: GhPrReview[];
+  headSha?: string;
   /** After merge, return a stale OPEN view this many times before the merged state. */
   postMergeViewLagReads?: number;
 }
@@ -87,6 +92,19 @@ export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): F
         isDraft: current?.isDraft === true,
         mergeable: current?.mergeable ?? "MERGEABLE",
         state,
+      });
+    },
+    fetchPrMergeGateContext(_repo: string, prNumber: number): Promise<GhMergeGateContext> {
+      const current = prs.get(prNumber);
+      const greenCheck: GhPrCheck = {
+        conclusion: "SUCCESS",
+        name: "ci",
+        status: "COMPLETED",
+      };
+      return Promise.resolve({
+        checks: current?.checks ?? [greenCheck],
+        headSha: current?.headSha ?? "fake-head-sha",
+        reviews: current?.reviews ?? [],
       });
     },
   };

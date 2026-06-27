@@ -239,3 +239,23 @@ describe("createExecGhPort — fetchPrReadiness", () => {
     expect(readiness.mergeable).toBe("CONFLICTING");
   });
 });
+
+describe("createExecGhPort — fetchPrMergeGateContext", () => {
+  test("parses head sha, reviews, and statusCheckRollup", async () => {
+    const { calls, exec } = fakeExec(
+      JSON.stringify({
+        headRefOid: "deadbeef",
+        reviews: [{ author: { login: "codex" }, state: "APPROVED" }],
+        statusCheckRollup: [{ conclusion: "NEUTRAL", name: "advisory", status: "COMPLETED" }],
+      }),
+    );
+    const gh = createExecGhPort(exec);
+
+    const context = await gh.fetchPrMergeGateContext("org/repo", 5);
+
+    expect(calls[0]?.args).toContain("headRefOid,reviews,statusCheckRollup");
+    expect(context.headSha).toBe("deadbeef");
+    expect(context.reviews).toEqual([{ authorLogin: "codex", state: "APPROVED" }]);
+    expect(context.checks[0]?.conclusion).toBe("NEUTRAL");
+  });
+});

@@ -52,6 +52,10 @@ interface LandCommandOpts {
   admin?: boolean;
 }
 
+interface GrantMergeOpts {
+  repo: string;
+}
+
 interface RenderOpts {
   out?: string;
 }
@@ -146,6 +150,17 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
         const landOpts = buildLandOpts(rawOpts);
         const run = await factory().land(driverRunId, landOpts);
         process.stdout.write(`${formatDriverDecideOutput(run)}\n`);
+      });
+    });
+
+  driver
+    .command("grant-merge")
+    .description("register repo-scoped authorization for --admin merges when verdict authorizes")
+    .requiredOption("--repo <slug>", "owner/repo or full GitHub URL")
+    .action((rawOpts: GrantMergeOpts) => {
+      runDriverAction(() => {
+        const grant = factory().grantMerge(rawOpts.repo);
+        process.stdout.write(`${JSON.stringify(grant)}\n`);
       });
     });
 

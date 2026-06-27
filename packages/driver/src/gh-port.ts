@@ -50,10 +50,24 @@ export interface GhPrReadiness {
   checks: GhPrCheck[];
 }
 
+/** One PR review row normalized for merge-gate ballot mapping. */
+export interface GhPrReview {
+  authorLogin: string;
+  state: string;
+}
+
+/** PR facts needed to assemble a MergeVerdict at land time. */
+export interface GhMergeGateContext {
+  checks: GhPrCheck[];
+  headSha: string;
+  reviews: GhPrReview[];
+}
+
 export interface DriverGhPort {
   mergePullRequest(repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void>;
   viewPullRequest(repo: string, prNumber: number): Promise<GhPullRequestView>;
   fetchPrReadiness(repo: string, prNumber: number): Promise<GhPrReadiness>;
+  fetchPrMergeGateContext(repo: string, prNumber: number): Promise<GhMergeGateContext>;
 }
 
 interface GhPrViewJson {
@@ -74,6 +88,17 @@ interface GhPrReadinessJson {
   state: GhPullRequestView["state"];
   isDraft?: boolean | null;
   mergeable?: string | null;
+  statusCheckRollup?: GhPrRollupNode[] | null;
+}
+
+interface GhPrReviewJson {
+  author?: { login?: string | null } | null;
+  state?: string | null;
+}
+
+interface GhMergeGateJson {
+  headRefOid?: string | null;
+  reviews?: GhPrReviewJson[] | null;
   statusCheckRollup?: GhPrRollupNode[] | null;
 }
 
@@ -144,6 +169,24 @@ export function createExecGhPort(exec: GhExec = defaultGhExec): DriverGhPort {
         state: parsed.state,
       };
     },
+    async fetchPrMergeGateContext(repo: string, prNumber: number): Promise<GhMergeGateContext> {
+      const { stdout } = await exec("gh", [
+        "pr",
+        "view",
+        String(prNumber),
+        "--json",
+        "headRefOid,reviews,statusCheckRollup",
+        "-R",
+        toGhRepo(repo),
+      ]);
+      const parsed = JSON.parse(stdout) as GhMergeGateJson;
+      const headSha = parsed.headRefOid ?? "";
+      return {
+        checks: (parsed.statusCheckRollup ?? []).map(normalizeRollupNode),
+        headSha,
+        reviews: (parsed.reviews ?? []).map(normalizeReviewNode),
+      };
+    },
   };
 }
 
@@ -165,4 +208,11 @@ function normalizeRollupNode(node: GhPrRollupNode): GhPrCheck {
     return { conclusion: "", name, status: state };
   }
   return { conclusion: state, name, status: "COMPLETED" };
+}
+
+function normalizeReviewNode(node: GhPrReviewJson): GhPrReview {
+  return {
+    authorLogin: node.author?.login ?? "",
+    state: node.state ?? "",
+  };
 }

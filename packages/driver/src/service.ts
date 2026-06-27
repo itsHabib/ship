@@ -3,7 +3,7 @@
  */
 
 import type { Store } from "@ship/store";
-import type { DriverRun, DriverRunStatus, ListDriverRunsFilter } from "@ship/store";
+import type { DriverRun, DriverRunStatus, ListDriverRunsFilter, RepoMergeGrant } from "@ship/store";
 
 import type { DriverGhPort } from "./gh-port.js";
 import type { ImportManifestResult } from "./import.js";
@@ -30,6 +30,7 @@ export interface DriverService {
   decide(driverRunId: string, streamId: string, decision: Decision): DriverRun;
   markMerged(driverRunId: string, streamId: string, facts: MergeFacts): DriverRun;
   land(driverRunId: string, opts: LandOpts): Promise<DriverRun>;
+  grantMerge(repo: string): RepoMergeGrant;
   cancel(driverRunId: string): Promise<DriverRun>;
   render(driverRunId: string): string;
   getDriverRun(id: string): DriverRun | null;
@@ -59,6 +60,7 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
     cancel: (driverRunId) => cancelRun(store, ship, driverRunId, now()),
     decide: (driverRunId, streamId, decision) => decideFn(store, driverRunId, streamId, decision),
     getDriverRun: (id) => store.getDriverRun(id),
+    grantMerge: (repo) => store.registerRepoMergeGrant(repo),
     importManifest: (manifestPath) => importManifestFn(store, manifestPath),
     listDriverRuns: (filter) => store.listDriverRuns(filter ?? {}),
     land: async (driverRunId, landOpts) => {

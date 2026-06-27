@@ -6,6 +6,7 @@
 import {
   CANONICAL_REVIEWERS,
   type CanonicalReviewer,
+  type CiCheckState,
   type MergeVerdict,
   type MergeVerdictEvidence,
   type MergeVerdictInputs,
@@ -57,18 +58,36 @@ function collectBlockingReasons(evidence: MergeVerdictEvidence): string[] {
     if (ballot.verdict === "approved") continue;
     reasons.push(formatReviewerBlock(ballot.reviewer, ballot.verdict));
   }
-  if (evidence.reviewCoordinatorCycles < evidence.requiredReviewCoordinatorCycles) {
+  if (!reviewCoordinatorCyclesSatisfied(evidence)) {
     reasons.push(
       `review coordinator cycles ${String(evidence.reviewCoordinatorCycles)}/${String(evidence.requiredReviewCoordinatorCycles)} required`,
     );
   }
-  if (evidence.ciCheckState !== "success") {
+  if (!ciStatePassing(evidence.ciCheckState)) {
     reasons.push(`CI checks not green (state=${evidence.ciCheckState}, sha=${evidence.ciSha})`);
   }
   if (!evidence.adversarialGatePassed) {
     reasons.push("adversarial gate not passed");
   }
   return reasons;
+}
+
+/** CI states that match `land()` readiness (success + neutral). */
+export function ciStatePassing(state: CiCheckState): boolean {
+  return state === "success" || state === "neutral";
+}
+
+/** Unanimous canonical-reviewer approval satisfies the coordinator cycle gate. */
+export function reviewCoordinatorCyclesSatisfied(evidence: MergeVerdictEvidence): boolean {
+  if (evidence.reviewCoordinatorCycles >= evidence.requiredReviewCoordinatorCycles) {
+    return true;
+  }
+  return unanimousCanonicalApproval(evidence.reviewerBallots);
+}
+
+function unanimousCanonicalApproval(ballots: ReviewerBallot[]): boolean {
+  if (ballots.length !== CANONICAL_REVIEWERS.length) return false;
+  return ballots.every((ballot) => ballot.verdict === "approved");
 }
 
 function formatReviewerBlock(reviewer: CanonicalReviewer, verdict: ReviewerBallotVerdict): string {
