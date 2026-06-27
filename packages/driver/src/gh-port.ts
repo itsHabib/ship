@@ -50,10 +50,23 @@ export interface GhPrReadiness {
   checks: GhPrCheck[];
 }
 
+export interface GhReviewEntry {
+  authorLogin: string;
+  /** Latest review state, e.g. APPROVED, CHANGES_REQUESTED, COMMENTED. */
+  state: string;
+}
+
+export interface GhPrMergeGateFacts {
+  ciSha: string;
+  readiness: GhPrReadiness;
+  reviews: GhReviewEntry[];
+}
+
 export interface DriverGhPort {
   mergePullRequest(repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void>;
   viewPullRequest(repo: string, prNumber: number): Promise<GhPullRequestView>;
   fetchPrReadiness(repo: string, prNumber: number): Promise<GhPrReadiness>;
+  fetchPrMergeGateFacts(repo: string, prNumber: number): Promise<GhPrMergeGateFacts>;
 }
 
 interface GhPrViewJson {
@@ -70,11 +83,18 @@ interface GhPrRollupNode {
   conclusion?: string | null;
 }
 
-interface GhPrReadinessJson {
-  state: GhPullRequestView["state"];
+interface GhPrMergeGateJson {
+  commits?: { oid?: string | null }[] | null;
   isDraft?: boolean | null;
   mergeable?: string | null;
+  reviews?: GhReviewJson[] | null;
+  state: GhPullRequestView["state"];
   statusCheckRollup?: GhPrRollupNode[] | null;
+}
+
+interface GhReviewJson {
+  author?: { login?: string | null } | null;
+  state?: string | null;
 }
 
 /**
@@ -127,21 +147,29 @@ export function createExecGhPort(exec: GhExec = defaultGhExec): DriverGhPort {
       };
     },
     async fetchPrReadiness(repo: string, prNumber: number): Promise<GhPrReadiness> {
+      const facts = await this.fetchPrMergeGateFacts(repo, prNumber);
+      return facts.readiness;
+    },
+    async fetchPrMergeGateFacts(repo: string, prNumber: number): Promise<GhPrMergeGateFacts> {
       const { stdout } = await exec("gh", [
         "pr",
         "view",
         String(prNumber),
         "--json",
-        "state,isDraft,mergeable,statusCheckRollup",
+        "state,isDraft,mergeable,statusCheckRollup,reviews,commits",
         "-R",
         toGhRepo(repo),
       ]);
-      const parsed = JSON.parse(stdout) as GhPrReadinessJson;
+      const parsed = JSON.parse(stdout) as GhPrMergeGateJson;
       return {
-        checks: (parsed.statusCheckRollup ?? []).map(normalizeRollupNode),
-        isDraft: parsed.isDraft === true,
-        mergeable: parsed.mergeable ?? "UNKNOWN",
-        state: parsed.state,
+        ciSha: headCommitOid(parsed.commits),
+        readiness: {
+          checks: (parsed.statusCheckRollup ?? []).map(normalizeRollupNode),
+          isDraft: parsed.isDraft === true,
+          mergeable: parsed.mergeable ?? "UNKNOWN",
+          state: parsed.state,
+        },
+        reviews: (parsed.reviews ?? []).flatMap(normalizeReviewEntry),
       };
     },
   };
@@ -165,4 +193,18 @@ function normalizeRollupNode(node: GhPrRollupNode): GhPrCheck {
     return { conclusion: "", name, status: state };
   }
   return { conclusion: state, name, status: "COMPLETED" };
+}
+
+function headCommitOid(commits: GhPrMergeGateJson["commits"]): string {
+  const head = commits?.at(-1)?.oid;
+  if (head === undefined || head === null || head === "") return "unknown";
+  return head;
+}
+
+function normalizeReviewEntry(review: GhReviewJson): GhReviewEntry[] {
+  const login = review.author?.login;
+  const state = review.state;
+  if (login === undefined || login === null || login === "") return [];
+  if (state === undefined || state === null || state === "") return [];
+  return [{ authorLogin: login, state }];
 }

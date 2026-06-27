@@ -32,7 +32,14 @@ export {
   storeStatusToManifest,
 } from "./status-mapping.js";
 
-export type { DriverGhPort, GhMergeCommit, GhMergeOpts, GhPullRequestView } from "./gh-port.js";
+export type {
+  DriverGhPort,
+  GhMergeCommit,
+  GhMergeOpts,
+  GhPrMergeGateFacts,
+  GhPullRequestView,
+  GhReviewEntry,
+} from "./gh-port.js";
 export { createExecGhPort } from "./gh-port.js";
 
 export type { DriverShipPort } from "./ship-port.js";
@@ -61,6 +68,12 @@ export {
   CANONICAL_REVIEWERS,
   REQUIRED_REVIEW_COORDINATOR_CYCLES,
 } from "./merge-verdict.js";
+
+export {
+  assembleMergeVerdictFromGh,
+  ciCheckStateFromReadiness,
+  reviewerBallotsFromReviews,
+} from "./merge-verdict-from-gh.js";
 
 export {
   CancelError,

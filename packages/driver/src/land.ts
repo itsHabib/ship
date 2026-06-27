@@ -8,11 +8,12 @@ import type { DriverRun, DriverStream } from "@ship/store";
 import { prNumberFromUrl } from "@ship/receipt";
 
 import type { DriverGhPort, GhPrReadiness, GhPullRequestView } from "./gh-port.js";
-import type { LandOpts, MergeFacts } from "./types.js";
+import type { LandOpts, MergeFacts, MergeVerdict } from "./types.js";
 
 import { DecideError } from "./errors.js";
 import { toGhRepo } from "./gh-port.js";
 import { allStreams, extractRepoUrl, markMerged } from "./judgment.js";
+import { assembleMergeVerdictFromGh } from "./merge-verdict-from-gh.js";
 
 // Post-merge view poll — GitHub can lag briefly after mergePullRequest.
 const POST_MERGE_VIEW_ATTEMPTS = 3;
@@ -39,9 +40,90 @@ export async function land(
   const streamId = resolveLandStream(run, opts, repo);
   assertStreamLandable(run, streamId);
 
-  const prView = await fetchMergedPrView(gh, repo, opts.prNumber, opts.admin === true);
+  const stream = findStream(run, streamId);
+  if (stream === undefined) {
+    throw new DecideError(`stream not found: ${streamId}`);
+  }
+
+  const { admin, authorizingVerdict, grantId } = await resolveAdminMerge(
+    store,
+    gh,
+    repo,
+    stream,
+    opts,
+  );
+  const prView = await fetchMergedPrView(gh, repo, opts.prNumber, admin);
   const facts = buildLandFacts(prView, opts);
-  return markMerged(store, driverRunId, streamId, facts);
+  const mergedRun = markMerged(store, driverRunId, streamId, facts);
+
+  if (grantId !== undefined && authorizingVerdict !== undefined) {
+    store.recordMergeGrantSatisfaction({
+      driverRunId,
+      driverStreamId: streamId,
+      grantId,
+      mergeCommit: facts.mergeCommit,
+      prNumber: opts.prNumber,
+      verdictJson: JSON.stringify(authorizingVerdict),
+    });
+  }
+
+  return mergedRun;
+}
+
+interface ResolvedAdminMerge {
+  admin: boolean;
+  authorizingVerdict?: MergeVerdict;
+  grantId?: string;
+}
+
+async function resolveAdminMerge(
+  store: Store,
+  gh: DriverGhPort,
+  repo: string,
+  stream: DriverStream,
+  opts: LandOpts,
+): Promise<ResolvedAdminMerge> {
+  if (opts.admin === true) {
+    return { admin: true };
+  }
+
+  const grant = store.getActiveMergeGrant(repo);
+  if (grant === null) {
+    return { admin: false };
+  }
+
+  const verdict = await resolveMergeVerdict(gh, repo, stream, opts);
+  if (verdict.outcome !== "merge_authorized") {
+    return { admin: false };
+  }
+
+  return {
+    admin: true,
+    authorizingVerdict: verdict,
+    grantId: grant.id,
+  };
+}
+
+async function resolveMergeVerdict(
+  gh: DriverGhPort,
+  repo: string,
+  stream: DriverStream,
+  opts: LandOpts,
+): Promise<MergeVerdict> {
+  if (opts.verdict !== undefined) {
+    return opts.verdict;
+  }
+  const gateFacts = await gh.fetchPrMergeGateFacts(repo, opts.prNumber);
+  return assembleMergeVerdictFromGh({
+    ciSha: gateFacts.ciSha,
+    readiness: gateFacts.readiness,
+    reviewCoordinatorCycles: stream.cycles ?? opts.cycles ?? 0,
+    reviews: gateFacts.reviews,
+  });
+}
+
+function findStream(run: DriverRun, streamId: string): DriverStream | undefined {
+  return allStreams(run).find((candidate) => candidate.id === streamId);
 }
 
 function loadRun(store: Store, driverRunId: string): DriverRun {

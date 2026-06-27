@@ -16,6 +16,8 @@ import type { UpdateDriverBatchInput } from "./driver-batches.js";
 import type { ClaimTickInput, InsertDriverRunInput, ListDriverRunsFilter } from "./driver-runs.js";
 import type { DriverBatch, DriverRun, DriverRunStatus, DriverStream } from "./driver-schemas.js";
 import type { UpdateDriverStreamInput } from "./driver-streams.js";
+import type { MergeGrant, MergeGrantSatisfaction } from "./merge-grant-schemas.js";
+import type { RecordMergeGrantSatisfactionInput, RegisterMergeGrantInput } from "./merge-grants.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
 import type {
   CreateWorkflowRunInput,
@@ -26,6 +28,7 @@ import type {
 import { createCursorRunOps } from "./cursor-runs.js";
 import { openDatabase, withStoreContentionGuard } from "./db.js";
 import { createDriverRunOps } from "./driver-runs.js";
+import { createMergeGrantOps } from "./merge-grants.js";
 import { assertSchemaVersion, runMigrations } from "./migrations.js";
 import { createPhaseOps } from "./phases.js";
 import { createWorkflowRunOps } from "./workflow-runs.js";
@@ -145,6 +148,16 @@ export interface Store {
   updateDriverBatch: (id: string, patch: UpdateDriverBatchInput) => DriverBatch;
   /** Patch driver stream progress columns; bumps parent run `updated_at`. */
   updateDriverStream: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
+  /** Register (or refresh) a repo-scoped merge grant authorizing grant-satisfied --admin merges. */
+  registerMergeGrant: (input: RegisterMergeGrantInput) => MergeGrant;
+  /** Active merge grant for `repo`, or `null` when none / revoked. */
+  getActiveMergeGrant: (repo: string) => MergeGrant | null;
+  /** Record a per-PR merge-grant satisfaction audit row. */
+  recordMergeGrantSatisfaction: (
+    input: RecordMergeGrantSatisfactionInput,
+  ) => MergeGrantSatisfaction;
+  /** Satisfaction audit rows for a stream (newest first). */
+  listMergeGrantSatisfactionsByStream: (driverStreamId: string) => MergeGrantSatisfaction[];
   /**
    * Run `PRAGMA wal_checkpoint(TRUNCATE)` (cleans up `-wal` / `-shm`
    * sidecars) and close the SQLite handle. Caller must not invoke other
@@ -184,6 +197,7 @@ export function createStore(opts: CreateStoreOptions): Store {
     const workflowRunOps = createWorkflowRunOps(db, clock, phaseOps);
     const cursorRunOps = createCursorRunOps(db, clock);
     const driverRunOps = createDriverRunOps(db, clock);
+    const mergeGrantOps = createMergeGrantOps(db, clock);
 
     return {
       appendPhase: (input) => withStoreContentionGuard(() => phaseOps.append(input)),
@@ -208,6 +222,12 @@ export function createStore(opts: CreateStoreOptions): Store {
         withStoreContentionGuard(() => driverRunOps.claimTick(id, input)),
       updateDriverStream: (id, patch) =>
         withStoreContentionGuard(() => driverRunOps.updateStream(id, patch)),
+      registerMergeGrant: (input) => withStoreContentionGuard(() => mergeGrantOps.register(input)),
+      getActiveMergeGrant: (repo) => withStoreContentionGuard(() => mergeGrantOps.getActive(repo)),
+      recordMergeGrantSatisfaction: (input) =>
+        withStoreContentionGuard(() => mergeGrantOps.recordSatisfaction(input)),
+      listMergeGrantSatisfactionsByStream: (driverStreamId) =>
+        withStoreContentionGuard(() => mergeGrantOps.listSatisfactionsByStream(driverStreamId)),
       listWorkflowRunsForPrune: () => withStoreContentionGuard(() => workflowRunOps.listForPrune()),
       close: () => {
         // wal_checkpoint(TRUNCATE) can throw SQLITE_BUSY under contention;

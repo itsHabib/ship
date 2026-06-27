@@ -57,18 +57,35 @@ function collectBlockingReasons(evidence: MergeVerdictEvidence): string[] {
     if (ballot.verdict === "approved") continue;
     reasons.push(formatReviewerBlock(ballot.reviewer, ballot.verdict));
   }
-  if (evidence.reviewCoordinatorCycles < evidence.requiredReviewCoordinatorCycles) {
+  if (!reviewCyclesGateSatisfied(evidence)) {
     reasons.push(
       `review coordinator cycles ${String(evidence.reviewCoordinatorCycles)}/${String(evidence.requiredReviewCoordinatorCycles)} required`,
     );
   }
-  if (evidence.ciCheckState !== "success") {
+  if (!ciGateSatisfied(evidence.ciCheckState)) {
     reasons.push(`CI checks not green (state=${evidence.ciCheckState}, sha=${evidence.ciSha})`);
   }
   if (!evidence.adversarialGatePassed) {
     reasons.push("adversarial gate not passed");
   }
   return reasons;
+}
+
+/** Same passing CI states `land.ts` assertReady accepts — success and neutral. */
+function ciGateSatisfied(ciCheckState: MergeVerdictEvidence["ciCheckState"]): boolean {
+  return ciCheckState === "success" || ciCheckState === "neutral";
+}
+
+/**
+ * Clean unanimous canonical-reviewer approval skips the coordinator cycle gate
+ * (operator policy: a clean pass merges early without three coordinator rounds).
+ */
+function reviewCyclesGateSatisfied(evidence: MergeVerdictEvidence): boolean {
+  const unanimousCleanPass = evidence.reviewerBallots.every(
+    (ballot) => ballot.verdict === "approved",
+  );
+  if (unanimousCleanPass) return true;
+  return evidence.reviewCoordinatorCycles >= evidence.requiredReviewCoordinatorCycles;
 }
 
 function formatReviewerBlock(reviewer: CanonicalReviewer, verdict: ReviewerBallotVerdict): string {

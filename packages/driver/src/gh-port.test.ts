@@ -130,7 +130,7 @@ describe("createExecGhPort — fetchPrReadiness", () => {
         "view",
         "42",
         "--json",
-        "state,isDraft,mergeable,statusCheckRollup",
+        "state,isDraft,mergeable,statusCheckRollup,reviews,commits",
         "-R",
         "org/repo",
       ],
@@ -237,5 +237,35 @@ describe("createExecGhPort — fetchPrReadiness", () => {
 
     expect(readiness.isDraft).toBe(true);
     expect(readiness.mergeable).toBe("CONFLICTING");
+  });
+});
+
+describe("createExecGhPort — fetchPrMergeGateFacts", () => {
+  test("parses reviews and head commit oid for merge-gate assembly", async () => {
+    const { exec } = fakeExec(
+      JSON.stringify({
+        commits: [{ oid: "head123" }, { oid: "head456" }],
+        isDraft: false,
+        mergeable: "MERGEABLE",
+        reviews: [
+          { author: { login: "chatgpt-codex-connector[bot]" }, state: "APPROVED" },
+          { author: { login: "claude-bot" }, state: "APPROVED" },
+        ],
+        state: "OPEN",
+        statusCheckRollup: [{ conclusion: "NEUTRAL", name: "advisory", status: "COMPLETED" }],
+      }),
+    );
+    const gh = createExecGhPort(exec);
+
+    const facts = await gh.fetchPrMergeGateFacts("org/repo", 9);
+
+    expect(facts.ciSha).toBe("head456");
+    expect(facts.reviews).toEqual([
+      { authorLogin: "chatgpt-codex-connector[bot]", state: "APPROVED" },
+      { authorLogin: "claude-bot", state: "APPROVED" },
+    ]);
+    expect(facts.readiness.checks).toEqual([
+      { conclusion: "NEUTRAL", name: "advisory", status: "COMPLETED" },
+    ]);
   });
 });

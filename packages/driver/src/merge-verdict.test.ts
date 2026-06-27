@@ -83,6 +83,11 @@ describe("assembleMergeVerdict", () => {
     const verdict = assembleMergeVerdict(
       authorizedInputs({
         reviewCoordinatorCycles: REQUIRED_REVIEW_COORDINATOR_CYCLES - 1,
+        reviewerBallots: [
+          { reviewer: "codex", verdict: "approved" },
+          { reviewer: "claude", verdict: "pending" },
+          { reviewer: "cursor", verdict: "approved" },
+        ],
       }),
     );
 
@@ -90,6 +95,28 @@ describe("assembleMergeVerdict", () => {
     expect(verdict.blockingReasons).toContain(
       `review coordinator cycles ${String(REQUIRED_REVIEW_COORDINATOR_CYCLES - 1)}/${String(REQUIRED_REVIEW_COORDINATOR_CYCLES)} required`,
     );
+  });
+
+  test("unanimous clean pass authorizes without coordinator cycles", () => {
+    const verdict = assembleMergeVerdict(
+      authorizedInputs({
+        reviewCoordinatorCycles: 0,
+      }),
+    );
+
+    expect(verdict.outcome).toBe("merge_authorized");
+    expect(verdict.authorized).toBe(true);
+  });
+
+  test("neutral CI authorizes like success", () => {
+    const verdict = assembleMergeVerdict(
+      authorizedInputs({
+        ciCheckState: "neutral",
+      }),
+    );
+
+    expect(verdict.outcome).toBe("merge_authorized");
+    expect(verdict.authorized).toBe(true);
   });
 
   test("changes_requested reviewer → not authorized with verdict surfaced", () => {

@@ -135,6 +135,16 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     });
 
   driver
+    .command("grant-merge <repo>")
+    .description("register a repo-scoped merge grant for grant-satisfied --admin merges")
+    .action((repo: string) => {
+      runDriverAction(() => {
+        factory().registerMergeGrant(repo);
+        process.stdout.write(`merge grant registered for ${repo}\n`);
+      });
+    });
+
+  driver
     .command("land <driverRunId>")
     .description("merge PR (if needed), read sha/time from gh, and record merge facts")
     .requiredOption("--pr <n>", "PR number to merge and record")

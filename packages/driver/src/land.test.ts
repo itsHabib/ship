@@ -541,6 +541,123 @@ describe("land", () => {
       );
     });
   });
+
+  describe("merge grant", () => {
+    function authorizedVerdict() {
+      return {
+        authorized: true,
+        blockingReasons: [] as string[],
+        evidence: {
+          adversarialGatePassed: true,
+          ciCheckState: "success" as const,
+          ciSha: "abc",
+          requiredReviewCoordinatorCycles: 3,
+          reviewCoordinatorCycles: 0,
+          reviewerBallots: [
+            { reviewer: "codex" as const, verdict: "approved" as const },
+            { reviewer: "claude" as const, verdict: "approved" as const },
+            { reviewer: "cursor" as const, verdict: "approved" as const },
+          ],
+        },
+        outcome: "merge_authorized" as const,
+      };
+    }
+
+    test("grant + authorizing verdict merges with --admin and records satisfaction", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/200",
+      });
+      store.registerMergeGrant({ repo: "https://github.com/org/ship" });
+      const gh = createFakeGhPort({
+        200: { mergeCommit: null, mergedAt: null, state: "OPEN" },
+      });
+
+      await land(store, gh, runId, { prNumber: 200, verdict: authorizedVerdict() });
+
+      expect(gh.mergeCalls).toHaveLength(1);
+      expect(gh.mergeCalls[0]?.admin).toBe(true);
+      const rows = store.listMergeGrantSatisfactionsByStream(streamId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.prNumber).toBe(200);
+      expect(JSON.parse(rows[0]?.verdictJson ?? "{}")).toMatchObject({
+        outcome: "merge_authorized",
+      });
+    });
+
+    test("grant + non-authorizing verdict does not auto-merge with --admin", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/201",
+      });
+      store.registerMergeGrant({ repo: "org/ship" });
+      const gh = createFakeGhPort({
+        201: { mergeCommit: null, mergedAt: null, state: "OPEN" },
+      });
+
+      await land(store, gh, runId, {
+        prNumber: 201,
+        verdict: {
+          authorized: false,
+          blockingReasons: ["reviewer @codex: missing ballot"],
+          evidence: authorizedVerdict().evidence,
+          outcome: "merge_blocked",
+        },
+      });
+
+      expect(gh.mergeCalls).toHaveLength(1);
+      expect(gh.mergeCalls[0]?.admin).toBe(false);
+      expect(store.listMergeGrantSatisfactionsByStream(streamId)).toEqual([]);
+    });
+
+    test("grant + authorizing gh facts merges with --admin without explicit verdict", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/202",
+      });
+      store.registerMergeGrant({ repo: "org/ship" });
+      const gh = createFakeGhPort({
+        202: { mergeCommit: null, mergedAt: null, state: "OPEN" },
+      });
+
+      await land(store, gh, runId, { prNumber: 202 });
+
+      expect(gh.mergeCalls[0]?.admin).toBe(true);
+      expect(store.listMergeGrantSatisfactionsByStream(streamId)).toHaveLength(1);
+    });
+
+    test("grant does not bypass assertReady for draft PRs", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/203",
+      });
+      store.registerMergeGrant({ repo: "org/ship" });
+      const gh = createFakeGhPort({
+        203: { isDraft: true, mergeCommit: null, mergedAt: null, state: "OPEN" },
+      });
+
+      await expect(
+        land(store, gh, runId, { prNumber: 203, verdict: authorizedVerdict() }),
+      ).rejects.toThrow(/refusing to merge PR #203: not ready — draft/);
+      expect(gh.mergeCalls).toEqual([]);
+      expect(store.listMergeGrantSatisfactionsByStream(streamId)).toEqual([]);
+    });
+
+    test("explicit --admin still works without a grant", async () => {
+      const streamId = newDriverStreamId();
+      const runId = seedLandedRun(store, streamId, {
+        prUrl: "https://github.com/org/ship/pull/204",
+      });
+      const gh = createFakeGhPort({
+        204: { mergeCommit: null, mergedAt: null, state: "OPEN" },
+      });
+
+      await land(store, gh, runId, { admin: true, prNumber: 204 });
+
+      expect(gh.mergeCalls[0]?.admin).toBe(true);
+      expect(store.listMergeGrantSatisfactionsByStream(streamId)).toEqual([]);
+    });
+  });
 });
 
 describe("toGhRepo", () => {

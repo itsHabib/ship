@@ -31,6 +31,7 @@ export interface DriverService {
   markMerged(driverRunId: string, streamId: string, facts: MergeFacts): DriverRun;
   land(driverRunId: string, opts: LandOpts): Promise<DriverRun>;
   cancel(driverRunId: string): Promise<DriverRun>;
+  registerMergeGrant(repo: string): void;
   render(driverRunId: string): string;
   getDriverRun(id: string): DriverRun | null;
   listDriverRuns(filter?: {
@@ -68,6 +69,9 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
       return landFn(store, gh, driverRunId, landOpts);
     },
     markMerged: (driverRunId, streamId, facts) => markMergedFn(store, driverRunId, streamId, facts),
+    registerMergeGrant: (repo) => {
+      store.registerMergeGrant({ repo });
+    },
     render: (driverRunId) => renderDriverRun(store, driverRunId),
     run: async (ref, runOpts) => {
       // A tick is the one driver operation that polls in-flight work, so it
