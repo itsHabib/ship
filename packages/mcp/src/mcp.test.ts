@@ -17,6 +17,7 @@ import {
   getWorkflowRunOutputSchema,
   listWorkflowRunsInputSchema,
   listWorkflowRunsOutputSchema,
+  mergeVerdictSchema,
   shipArtifactsSchema,
   shipInputSchema,
   shipOutputSchema,
@@ -769,6 +770,45 @@ describe("driver MCP schemas", () => {
         driverRunId: DRV_ID,
         streamId: DS_ID,
         decision: { kind: "adopt", workflowRunId: WF_ID },
+      }).success,
+    ).toBe(true);
+  });
+
+  test("driverTickResultSchema accepts merge-confirmation with structured verdict", () => {
+    const verdict = {
+      outcome: "merge_authorized",
+      authorized: true,
+      blockingReasons: [],
+      evidence: {
+        reviewerBallots: [
+          { reviewer: "codex", verdict: "approved" },
+          { reviewer: "claude", verdict: "approved" },
+          { reviewer: "cursor", verdict: "approved" },
+        ],
+        reviewCoordinatorCycles: 3,
+        requiredReviewCoordinatorCycles: 3,
+        ciSha: "abc123",
+        ciCheckState: "success",
+        adversarialGatePassed: true,
+      },
+    };
+    expect(mergeVerdictSchema.safeParse(verdict).success).toBe(true);
+    expect(
+      driverTickResultSchema.safeParse({
+        driverRunId: DRV_ID,
+        status: "awaiting_judgment",
+        awaiting: [
+          {
+            kind: "merge-confirmation",
+            driverRunId: DRV_ID,
+            streamId: DS_ID,
+            prNumber: 42,
+            verdict,
+          },
+        ],
+        unmerged: [],
+        progress: { batchIndex: 1, dispatched: 0, landed: 1, failed: 0, remaining: 0 },
+        streams: [],
       }).success,
     ).toBe(true);
   });

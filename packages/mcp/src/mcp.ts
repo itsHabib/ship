@@ -504,9 +504,59 @@ const dispatchAmbiguityRequestSchema = z
   })
   .strict();
 
-const mergeConfirmationRequestSchema = z.object({ kind: z.literal("merge-confirmation") }).strict();
+const mergeVerdictOutcomeSchema = z.enum(["merge_authorized", "merge_blocked"]);
+
+const canonicalReviewerSchema = z.enum(["codex", "claude", "cursor"]);
+
+const reviewerBallotVerdictSchema = z.enum(["approved", "changes_requested", "pending", "absent"]);
+
+const reviewerBallotSchema = z
+  .object({
+    reviewer: canonicalReviewerSchema,
+    verdict: reviewerBallotVerdictSchema,
+  })
+  .strict();
+
+const ciCheckStateSchema = z.enum(["success", "failure", "pending", "neutral"]);
+
+export const mergeVerdictEvidenceSchema = z
+  .object({
+    reviewerBallots: z.array(reviewerBallotSchema),
+    reviewCoordinatorCycles: z.number().int().nonnegative(),
+    requiredReviewCoordinatorCycles: z.number().int().nonnegative(),
+    ciSha: z.string().min(1),
+    ciCheckState: ciCheckStateSchema,
+    adversarialGatePassed: z.boolean(),
+  })
+  .strict();
+
+export const mergeVerdictSchema = z
+  .object({
+    outcome: mergeVerdictOutcomeSchema,
+    authorized: z.boolean(),
+    blockingReasons: z.array(z.string()),
+    evidence: mergeVerdictEvidenceSchema,
+  })
+  .strict();
+export type MergeVerdictOutput = z.infer<typeof mergeVerdictSchema>;
+
+const mergeConfirmationRequestSchema = z
+  .object({
+    kind: z.literal("merge-confirmation"),
+    driverRunId: driverRunIdSchema,
+    streamId: driverStreamIdSchema,
+    prNumber: z.number().int().positive(),
+    verdict: mergeVerdictSchema,
+  })
+  .strict();
 const reviewAdjudicationRequestSchema = z
-  .object({ kind: z.literal("review-adjudication") })
+  .object({
+    kind: z.literal("review-adjudication"),
+    driverRunId: driverRunIdSchema,
+    streamId: driverStreamIdSchema,
+    prNumber: z.number().int().positive(),
+    verdict: mergeVerdictSchema,
+  })
   .strict();
 
 const judgmentRequestSchema = z.discriminatedUnion("kind", [

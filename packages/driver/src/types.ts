@@ -51,6 +51,50 @@ export interface DriverStreamView {
   prUrl?: string;
 }
 
+/** Canonical external reviewers polled before merge authorization. */
+export const CANONICAL_REVIEWERS = ["codex", "claude", "cursor"] as const;
+export type CanonicalReviewer = (typeof CANONICAL_REVIEWERS)[number];
+
+export type ReviewerBallotVerdict = "approved" | "changes_requested" | "pending" | "absent";
+
+export interface ReviewerBallot {
+  reviewer: CanonicalReviewer;
+  verdict: ReviewerBallotVerdict;
+}
+
+/** Terminal CI rollup state for the merge-gate sha under review. */
+export type CiCheckState = "success" | "failure" | "pending" | "neutral";
+
+/** Minimum `/review-coordinator` ballot count before merge authorization. */
+export const REQUIRED_REVIEW_COORDINATOR_CYCLES = 3;
+
+export interface MergeVerdictEvidence {
+  reviewerBallots: ReviewerBallot[];
+  reviewCoordinatorCycles: number;
+  requiredReviewCoordinatorCycles: number;
+  ciSha: string;
+  ciCheckState: CiCheckState;
+  adversarialGatePassed: boolean;
+}
+
+export type MergeVerdictOutcome = "merge_authorized" | "merge_blocked";
+
+/** Structured merge-gate authorization with attached evidence. */
+export interface MergeVerdict {
+  outcome: MergeVerdictOutcome;
+  authorized: boolean;
+  blockingReasons: string[];
+  evidence: MergeVerdictEvidence;
+}
+
+export interface MergeVerdictInputs {
+  reviewerBallots: ReviewerBallot[];
+  reviewCoordinatorCycles: number;
+  ciSha: string;
+  ciCheckState: CiCheckState;
+  adversarialGatePassed: boolean;
+}
+
 export type JudgmentRequest =
   | {
       kind: "failure-triage";
@@ -69,8 +113,20 @@ export type JudgmentRequest =
       streamId: string;
       candidates: { workflowRunId: string; createdAt: string; status: string }[];
     }
-  | { kind: "merge-confirmation" }
-  | { kind: "review-adjudication" };
+  | {
+      kind: "merge-confirmation";
+      driverRunId: string;
+      streamId: string;
+      prNumber: number;
+      verdict: MergeVerdict;
+    }
+  | {
+      kind: "review-adjudication";
+      driverRunId: string;
+      streamId: string;
+      prNumber: number;
+      verdict: MergeVerdict;
+    };
 
 export interface DriverTickResult {
   driverRunId: string;
