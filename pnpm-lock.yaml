@@ -211,6 +211,9 @@ importers:
       '@ship/claude-runner':
         specifier: workspace:*
         version: link:../claude-runner
+      '@ship/codex-runner':
+        specifier: workspace:*
+        version: link:../codex-runner
       '@ship/cursor-runner':
         specifier: workspace:*
         version: link:../cursor-runner
