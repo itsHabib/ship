@@ -37,19 +37,26 @@ export interface CliHarness {
   // Present when `createCliHarness({ cloudCursor })` wired a cloud runner.
   readonly cloudCursor?: AgentRunner;
   readonly claude?: AgentRunner;
+  readonly codex?: AgentRunner;
   readonly stdout: string[];
   readonly stderr: string[];
   readonly close: () => void;
 }
 
 export async function createCliHarness(
-  opts: { defaultModel?: ModelSelection; cloudCursor?: AgentRunner; claude?: AgentRunner } = {},
+  opts: {
+    defaultModel?: ModelSelection;
+    cloudCursor?: AgentRunner;
+    claude?: AgentRunner;
+    codex?: AgentRunner;
+  } = {},
 ): Promise<CliHarness> {
   const harness = createHarness();
   const bundle = createServiceFromHarness(harness, {
     ...(opts.defaultModel !== undefined ? { defaultModel: opts.defaultModel } : {}),
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
     ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
+    ...(opts.codex !== undefined ? { codex: opts.codex } : {}),
   });
   await bundle.fs.mkdir(WORKDIR, { recursive: true });
   await bundle.fs.writeFile(`${WORKDIR}/docs.md`, "# Task\n\nDo it.\n");
@@ -80,6 +87,7 @@ export async function createCliHarness(
     harness,
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
     ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
+    ...(opts.codex !== undefined ? { codex: opts.codex } : {}),
     stdout,
     stderr,
     close: () => {

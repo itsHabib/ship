@@ -114,6 +114,8 @@ export interface CreateServiceFromHarnessOptions {
   cloudCursor?: AgentRunner;
   /** Optional claude runner; forwarded into `ShipService` config when set. */
   claude?: AgentRunner;
+  /** Optional codex runner; forwarded into `ShipService` config when set. */
+  codex?: AgentRunner;
   /** Remote doc source; defaults to a fresh `FakeDocSource`. */
   docSource?: DocSource;
 }
@@ -124,6 +126,16 @@ export interface ServiceBundle {
   /** The in-memory FS the service is wired to; tests read it for artifact assertions. */
   readonly fs: MemoryShipFs;
   readonly config: ShipServiceConfig;
+}
+
+function optionalInjectedRunners(
+  opts: CreateServiceFromHarnessOptions,
+): Partial<Pick<ShipServiceConfig, "cloudCursor" | "claude" | "codex">> {
+  return {
+    ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
+    ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
+    ...(opts.codex !== undefined ? { codex: opts.codex } : {}),
+  };
 }
 
 /**
@@ -145,8 +157,7 @@ export function createServiceFromHarness(
     runsDir: opts.runsDir ?? DEFAULT_RUNS_DIR,
     defaultModel: defaultSelection,
     cursor: opts.cursor ?? h.cursor,
-    ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
-    ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
+    ...optionalInjectedRunners(opts),
   };
   const service = createShipService({
     store: h.store,

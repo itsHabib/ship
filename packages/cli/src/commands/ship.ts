@@ -17,7 +17,7 @@ import { formatShipOutput } from "../format.js";
 
 /** Wire shape for `ShipInput.cloud` — matches `cloudRunSpecSchema`; narrowed for `ShipService`. */
 type ShipCloud = NonNullable<ShipInput["cloud"]>;
-type CliProvider = "cursor" | "claude";
+type CliProvider = "cursor" | "claude" | "codex";
 type CliRuntime = "local" | "cloud";
 
 interface ShipOpts {
@@ -55,8 +55,11 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
       collectPair,
       [] as string[],
     )
-    .option("--runtime <mode>", "cursor runtime (local|cloud); omit to use service default")
-    .option("--provider <name>", "agent provider (cursor|claude); omit to use cursor")
+    .option(
+      "--runtime <mode>",
+      "agent runtime (local|cloud); cloud is cursor-only; omit to use service default",
+    )
+    .option("--provider <name>", "agent provider (cursor|claude|codex); omit to use cursor")
     .option(
       "--cloud <path>",
       "JSON file with full CloudRunSpec (via cloudRunSpecSchema); when set, ignores --cloud-repo and other --cloud-* field flags",
@@ -91,7 +94,7 @@ async function buildShipCliInput(opts: ShipOpts, docPath: string): Promise<ShipI
   const modelParams = buildModelParams(opts.modelParam);
   const provider = parseProvider(opts.provider);
   const runtime = parseRuntime(opts.runtime);
-  enforceClaudeLocalGuard(provider, runtime);
+  enforceLocalOnlyProviderGuard(provider, runtime);
   const cloud = await resolveCloudSpec(opts, runtime);
   return buildShipInputFromCli(opts, docPath, { modelParams, provider, runtime, cloud });
 }
@@ -175,18 +178,20 @@ function parseRuntime(raw: string | undefined): CliRuntime | undefined {
 /** Mirrors parseRuntime omission → undefined semantics for provider. */
 function parseProvider(raw: string | undefined): CliProvider | undefined {
   if (raw === undefined) return undefined;
-  if (raw === "cursor" || raw === "claude") return raw;
-  throw new InvalidArgumentError(`invalid --provider: ${raw} (expected: cursor | claude)`);
+  if (raw === "cursor" || raw === "claude" || raw === "codex") return raw;
+  throw new InvalidArgumentError(`invalid --provider: ${raw} (expected: cursor | claude | codex)`);
 }
 
-function enforceClaudeLocalGuard(
+const LOCAL_ONLY_PROVIDERS = new Set<CliProvider>(["claude", "codex"]);
+
+function enforceLocalOnlyProviderGuard(
   provider: CliProvider | undefined,
   runtime: CliRuntime | undefined,
 ): void {
-  if (provider !== "claude") return;
+  if (provider === undefined || !LOCAL_ONLY_PROVIDERS.has(provider)) return;
   const effectiveRuntime = runtime ?? "local";
   if (effectiveRuntime === "cloud") {
-    throw new InvalidArgumentError("claude provider supports only runtime 'local'");
+    throw new InvalidArgumentError(`${provider} provider supports only runtime 'local'`);
   }
 }
 

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { createDefaultShipService } from "./default-wiring.js";
+import { createDefaultShipService, DEFAULT_CODEX_MODEL } from "./default-wiring.js";
 
 describe("createDefaultShipService", () => {
   test("returns a memoizing factory: two calls yield the same service", () => {
@@ -161,6 +161,61 @@ describe("createDefaultShipService", () => {
       runtime: "local",
     });
     expect(claude.calls[0]?.input.model).toEqual({ id: "claude-opus-4-8" });
+  });
+
+  test("codex override is used when input.provider is codex", async () => {
+    const local = new FakeCursorRunner();
+    const codex = new FakeCursorRunner();
+    codex.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const tmpRoot = mkdtempSync(join(tmpdir(), "ship-codex-override-"));
+    const service = createDefaultShipService({
+      dbPath: ":memory:",
+      runsDir: join(tmpRoot, "runs"),
+      cursor: local,
+      codex,
+    })();
+    const workdir = mkdtempSync(join(tmpRoot, "workdir"));
+    writeFileSync(join(workdir, "docs.md"), "# Task\n\nDo it.\n");
+    await service.ship({
+      workdir,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "codex",
+      runtime: "local",
+    });
+    expect(codex.calls).toHaveLength(1);
+    expect(local.calls).toHaveLength(0);
+    expect(codex.calls[0]?.input.model).toEqual(DEFAULT_CODEX_MODEL);
+  });
+
+  test("opts.codexDefaultModel overrides DEFAULT_CODEX_MODEL", async () => {
+    const local = new FakeCursorRunner();
+    const codex = new FakeCursorRunner();
+    codex.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const tmpRoot = mkdtempSync(join(tmpdir(), "ship-codex-model-override-"));
+    const service = createDefaultShipService({
+      dbPath: ":memory:",
+      runsDir: join(tmpRoot, "runs"),
+      cursor: local,
+      codex,
+      codexDefaultModel: { id: "gpt-5.4-codex-high" },
+    })();
+    const workdir = mkdtempSync(join(tmpRoot, "workdir"));
+    writeFileSync(join(workdir, "docs.md"), "# Task\n\nDo it.\n");
+    await service.ship({
+      workdir,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "codex",
+      runtime: "local",
+    });
+    expect(codex.calls[0]?.input.model).toEqual({ id: "gpt-5.4-codex-high" });
   });
 
   test("cloudCursor override is used when input.runtime is cloud", async () => {

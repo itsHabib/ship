@@ -109,6 +109,15 @@ export interface ShipServiceConfig {
    * production wiring sets it; a config that omits it falls back to `defaultModel`.
    */
   readonly claudeDefaultModel?: ModelSelection;
+  /**
+   * Default model for `provider: "codex"` runs when `input.model` is omitted.
+   * A Cursor model id (e.g. `composer-2.5`) is not a valid Codex SDK model, so
+   * codex runs resolve against this instead of `defaultModel`. Optional — the
+   * production wiring always sets it (to `DEFAULT_CODEX_MODEL`); a raw config that
+   * omits it intentionally falls back to `defaultModel`, whose id must then be
+   * Codex-compatible.
+   */
+  readonly codexDefaultModel?: ModelSelection;
   /** Optional MCP servers passed through to every `cursor.run()` call. */
   readonly mcpServers?: Record<string, McpServerConfig>;
   /** Optional inline subagents re-passed on cloud resume per ED-5. */
@@ -612,6 +621,17 @@ function resolvePersistedRuntime(input: ShipInput): CursorRunRuntime {
   return "local";
 }
 
+function resolveBaseDefaultModel(
+  config: ShipServiceConfig,
+  provider: AgentProvider,
+): ModelSelection {
+  const providerDefaultOverrides: Partial<Record<AgentProvider, ModelSelection | undefined>> = {
+    claude: config.claudeDefaultModel,
+    codex: config.codexDefaultModel,
+  };
+  return providerDefaultOverrides[provider] ?? config.defaultModel;
+}
+
 function selectRunner(
   config: ShipServiceConfig,
   provider: AgentProvider,
@@ -1026,10 +1046,7 @@ async function runToTerminal(
       return finalizeAlreadyCancelled(ctx, prep);
     }
 
-    const baseDefaultModel =
-      ctx.provider === "claude"
-        ? (ctx.config.claudeDefaultModel ?? ctx.config.defaultModel)
-        : ctx.config.defaultModel;
+    const baseDefaultModel = resolveBaseDefaultModel(ctx.config, ctx.provider);
     const model: ModelSelection = resolveModelSelection(ctx.input, baseDefaultModel);
     ndjson = createNdjsonEventWriter(ctx.fs, prep.paths.events);
     const ndjsonRef = ndjson;

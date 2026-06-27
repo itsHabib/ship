@@ -623,6 +623,48 @@ describe("ship ship", () => {
     expect(h.harness.cursor.calls).toHaveLength(0);
   });
 
+  test("--provider codex --runtime local forwards to codex runner", async () => {
+    const codex = new FakeCursorRunner();
+    h.close();
+    h = await createCliHarness({ codex });
+    codex.enqueue(CLOUD_SCRIPT);
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--provider",
+      "codex",
+      "--runtime",
+      "local",
+    ]);
+    expect(code).toBe(0);
+    expect(codex.calls).toHaveLength(1);
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
+  test("--provider codex --runtime cloud fails fast at CLI boundary", async () => {
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--provider",
+      "codex",
+      "--runtime",
+      "cloud",
+      "--cloud-repo",
+      "https://github.com/o/r",
+    ]);
+    expect(code).toBe(1);
+    expect(h.stderr.join("")).toMatch(/codex provider supports only runtime 'local'/);
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
   test("invalid --provider → exit 1; stderr names the bad value", async () => {
     const { code } = await runArgv(h.program, [
       "ship",

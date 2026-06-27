@@ -16,6 +16,7 @@ import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
 
 import { LocalClaudeRunner } from "@ship/claude-runner";
+import { CodexRunner } from "@ship/codex-runner";
 import { CloudCursorRunner, LocalCursorRunner, RoomCursorRunner } from "@ship/cursor-runner";
 import { createLogger } from "@ship/logger";
 import { createStore } from "@ship/store";
@@ -49,6 +50,13 @@ export const DEFAULT_CLAUDE_MODEL: ModelSelection = {
   id: "claude-sonnet-4-6",
 };
 
+// Codex SDK default for `provider: "codex"` runs that omit `--model`.
+// A Cursor model id (composer-2.5) is invalid for the Codex SDK, so codex runs
+// need their own default. (Override/rotation guidance: the `codexDefaultModel` field.)
+export const DEFAULT_CODEX_MODEL: ModelSelection = {
+  id: "gpt-5.3-codex",
+};
+
 function resolveConfiguredDefaultModel(opts: DefaultShipServiceOpts): ModelSelection {
   if (opts.defaultModel !== undefined) return opts.defaultModel;
   return {
@@ -59,6 +67,10 @@ function resolveConfiguredDefaultModel(opts: DefaultShipServiceOpts): ModelSelec
 
 function resolveConfiguredClaudeDefaultModel(opts: DefaultShipServiceOpts): ModelSelection {
   return opts.claudeDefaultModel ?? DEFAULT_CLAUDE_MODEL;
+}
+
+function resolveConfiguredCodexDefaultModel(opts: DefaultShipServiceOpts): ModelSelection {
+  return opts.codexDefaultModel ?? DEFAULT_CODEX_MODEL;
 }
 
 /** Construction-time options for the production-wired `ShipService`. */
@@ -85,6 +97,11 @@ export interface DefaultShipServiceOpts {
    */
   readonly claudeDefaultModel?: ModelSelection;
   /**
+   * Full default `ModelSelection` for `provider: "codex"` runs. When omitted,
+   * uses `DEFAULT_CODEX_MODEL`. Independent of the cursor `defaultModel*` knobs.
+   */
+  readonly codexDefaultModel?: ModelSelection;
+  /**
    * Cursor runner override. Production omits this and gets the real
    * `LocalCursorRunner`; integration tests pass a `FakeCursorRunner`
    * so they can exercise real `node:fs` + real SQLite without an API
@@ -107,6 +124,11 @@ export interface DefaultShipServiceOpts {
    * `LocalClaudeRunner`. Tests inject a `FakeAgentRunner`.
    */
   readonly claude?: AgentRunner;
+  /**
+   * Codex runner override. Production omits this and gets
+   * `CodexRunner`. Tests inject a `FakeAgentRunner`.
+   */
+  readonly codex?: AgentRunner;
   /**
    * Structured diagnostics logger. Production entrypoints pass
    * `createLogger({ stream: process.stderr })` explicitly.
@@ -189,6 +211,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
     const roomCursor = opts.roomCursor ?? new RoomCursorRunner();
     const claude = opts.claude ?? new LocalClaudeRunner();
+    const codex = opts.codex ?? new CodexRunner();
     const fs = createNodeShipFs();
     cached = createShipService({
       store: infra.store,
@@ -202,10 +225,12 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
         runsDir: opts.runsDir,
         defaultModel: resolveConfiguredDefaultModel(opts),
         claudeDefaultModel: resolveConfiguredClaudeDefaultModel(opts),
+        codexDefaultModel: resolveConfiguredCodexDefaultModel(opts),
         cursor,
         cloudCursor,
         roomCursor,
         claude,
+        codex,
       },
     });
     return cached;
