@@ -91,6 +91,7 @@ interface Harness {
   cloudCursor: FakeCursorRunner;
   roomCursor: FakeCursorRunner;
   claude: FakeAgentRunner;
+  codex: FakeAgentRunner;
   config: ShipServiceConfig;
 }
 
@@ -98,10 +99,42 @@ interface HarnessOpts {
   defaultModelId?: string;
   defaultModelParams?: { id: string; value: string }[];
   claudeDefaultModelId?: string;
+  codexDefaultModelId?: string;
   omitCloudCursor?: boolean;
   omitRoomCursor?: boolean;
   omitClaude?: boolean;
+  omitCodex?: boolean;
   docSource?: DocSource;
+}
+
+function optionalProviderDefaultModels(
+  opts: HarnessOpts | undefined,
+): Partial<Pick<ShipServiceConfig, "claudeDefaultModel" | "codexDefaultModel">> {
+  return {
+    ...(opts?.claudeDefaultModelId !== undefined
+      ? { claudeDefaultModel: { id: opts.claudeDefaultModelId } }
+      : {}),
+    ...(opts?.codexDefaultModelId !== undefined
+      ? { codexDefaultModel: { id: opts.codexDefaultModelId } }
+      : {}),
+  };
+}
+
+function optionalHarnessRunners(
+  opts: HarnessOpts | undefined,
+  runners: {
+    cloudCursor: FakeCursorRunner;
+    roomCursor: FakeCursorRunner;
+    claude: FakeAgentRunner;
+    codex: FakeAgentRunner;
+  },
+): Partial<Pick<ShipServiceConfig, "cloudCursor" | "roomCursor" | "claude" | "codex">> {
+  return {
+    ...optionalHarnessRunner(opts?.omitCloudCursor, "cloudCursor", runners.cloudCursor),
+    ...optionalHarnessRunner(opts?.omitRoomCursor, "roomCursor", runners.roomCursor),
+    ...optionalHarnessRunner(opts?.omitClaude, "claude", runners.claude),
+    ...optionalHarnessRunner(opts?.omitCodex, "codex", runners.codex),
+  };
 }
 
 function makeHarnessConfig(
@@ -111,6 +144,7 @@ function makeHarnessConfig(
     cloudCursor: FakeCursorRunner;
     roomCursor: FakeCursorRunner;
     claude: FakeAgentRunner;
+    codex: FakeAgentRunner;
   },
 ): ShipServiceConfig {
   return {
@@ -119,19 +153,15 @@ function makeHarnessConfig(
       id: opts?.defaultModelId ?? "composer-2.5",
       params: opts?.defaultModelParams ?? [{ id: "fast", value: "true" }],
     },
-    ...(opts?.claudeDefaultModelId !== undefined
-      ? { claudeDefaultModel: { id: opts.claudeDefaultModelId } }
-      : {}),
+    ...optionalProviderDefaultModels(opts),
     cursor: runners.cursor,
-    ...optionalHarnessRunner(opts?.omitCloudCursor, "cloudCursor", runners.cloudCursor),
-    ...optionalHarnessRunner(opts?.omitRoomCursor, "roomCursor", runners.roomCursor),
-    ...optionalHarnessRunner(opts?.omitClaude, "claude", runners.claude),
+    ...optionalHarnessRunners(opts, runners),
   };
 }
 
 function optionalHarnessRunner(
   omit: boolean | undefined,
-  key: "cloudCursor" | "roomCursor" | "claude",
+  key: "cloudCursor" | "roomCursor" | "claude" | "codex",
   runner: AgentRunner,
 ): Partial<Pick<ShipServiceConfig, typeof key>> {
   if (omit === true) return {};
@@ -152,7 +182,8 @@ async function createHarness(opts?: HarnessOpts): Promise<Harness> {
   const cloudCursor = new FakeCursorRunner();
   const roomCursor = new FakeCursorRunner();
   const claude = new FakeAgentRunner();
-  const config = makeHarnessConfig(opts, { cursor, cloudCursor, roomCursor, claude });
+  const codex = new FakeAgentRunner();
+  const config = makeHarnessConfig(opts, { cursor, cloudCursor, roomCursor, claude, codex });
 
   const service = createShipService({
     store,
@@ -163,7 +194,7 @@ async function createHarness(opts?: HarnessOpts): Promise<Harness> {
     ...(opts?.docSource !== undefined ? { docSource: opts.docSource } : {}),
   });
 
-  return { service, fs, store, cursor, cloudCursor, roomCursor, claude, config };
+  return { service, fs, store, cursor, cloudCursor, roomCursor, claude, codex, config };
 }
 
 describe("createShipService — dep injection defaults", () => {
@@ -1414,6 +1445,108 @@ describe("ShipService.ship — provider routing (L2)", () => {
     });
     expect(out.status).toBe("failed");
     expect(out.cursorRun.provider).toBe("claude");
+    h.store.close();
+  });
+
+  test("provider: codex × local uses codex runner; cursor runners untouched", async () => {
+    const h = await createHarness();
+    h.codex.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "codex",
+      runtime: "local",
+    });
+    expect(h.codex.calls).toHaveLength(1);
+    expect(h.cursor.calls).toHaveLength(0);
+    expect(h.cloudCursor.calls).toHaveLength(0);
+    expect(out.cursorRun.runtime).toBe("local");
+    expect(h.store.getCursorRun(out.cursorRun.id)?.provider).toBe("codex");
+    h.store.close();
+  });
+
+  test("provider codex × local with no input.model uses the codex default model", async () => {
+    const h = await createHarness({ codexDefaultModelId: "gpt-5.3-codex" });
+    h.codex.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "codex",
+      runtime: "local",
+    });
+    expect(h.codex.calls[0]?.input.model).toEqual({ id: "gpt-5.3-codex" });
+    h.store.close();
+  });
+
+  test("provider codex falls back to defaultModel when codexDefaultModel is unset", async () => {
+    const h = await createHarness();
+    h.codex.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "codex",
+      runtime: "local",
+    });
+    expect(h.codex.calls[0]?.input.model.id).toBe("composer-2.5");
+    h.store.close();
+  });
+
+  test("provider codex without codex slot throws RunnerNotConfiguredError before persistence", async () => {
+    const h = await createHarness({ omitCodex: true });
+    expect(() => {
+      void h.service.ship({
+        workdir: WORKDIR,
+        repo: "ship",
+        docPath: "docs.md",
+        provider: "codex",
+        runtime: "local",
+      });
+    }).toThrow(RunnerNotConfiguredError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
+    h.store.close();
+  });
+
+  test("provider codex × cloud throws IllegalProviderRuntimeError before persistence", async () => {
+    const h = await createHarness();
+    expect(() => {
+      void h.service.ship({
+        workdir: WORKDIR,
+        repo: "ship",
+        docPath: "docs.md",
+        provider: "codex",
+        runtime: "cloud",
+        cloud: CLOUD_SPEC,
+      });
+    }).toThrow(IllegalProviderRuntimeError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
+    h.store.close();
+  });
+
+  test("provider codex × rooms throws IllegalProviderRuntimeError before persistence", async () => {
+    const h = await createHarness();
+    expect(() => {
+      void h.service.ship({
+        workdir: WORKDIR,
+        repo: "ship",
+        docPath: "docs.md",
+        provider: "codex",
+        runtime: "rooms",
+        room: ROOM_SPEC,
+      });
+    }).toThrow(IllegalProviderRuntimeError);
+    expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
     h.store.close();
   });
 });

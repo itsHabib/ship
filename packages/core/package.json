@@ -19,6 +19,7 @@
     "@octokit/rest": "^21.0.2",
     "@ship/agent-runner": "workspace:*",
     "@ship/claude-runner": "workspace:*",
+    "@ship/codex-runner": "workspace:*",
     "@ship/cursor-runner": "workspace:*",
     "@ship/logger": "workspace:*",
     "@ship/mcp": "workspace:*",

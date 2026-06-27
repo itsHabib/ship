@@ -100,6 +100,20 @@ describe("cursor runs (via createStore)", () => {
     expect(store.getCursorRun(id)?.provider).toBe("claude");
   });
 
+  test("recordCursorRun with provider codex round-trips non-default provider", () => {
+    const runId = seedRun();
+    const id = newCursorRunId();
+    store.recordCursorRun({
+      agentId: "agent_codex",
+      artifactsDir: "/runs/wf_codex",
+      id,
+      provider: "codex",
+      runtime: "local",
+      workflowRunId: runId,
+    });
+    expect(store.getCursorRun(id)?.provider).toBe("codex");
+  });
+
   test("getCursorRun: unknown id returns null (does not throw)", () => {
     expect(store.getCursorRun(newCursorRunId())).toBeNull();
   });
