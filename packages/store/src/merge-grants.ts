@@ -73,10 +73,13 @@ export interface MergeGrantOps {
   getMergeGrantSatisfaction: (repo: string, prNumber: number) => MergeGrantSatisfaction | null;
 }
 
-/** Normalize repo slug to owner/repo for grant lookup. */
+/** Normalize repo slug to lowercase owner/repo for grant lookup. */
 export function normalizeMergeGrantRepo(repo: string): string {
-  const match = /github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(repo.trim());
-  return match?.[1] ?? repo.trim();
+  const match = /github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(repo.trim());
+  if (match?.[1] !== undefined) {
+    return match[1].toLowerCase();
+  }
+  return repo.trim().toLowerCase();
 }
 
 export function createMergeGrantOps(db: Db, clock: () => string): MergeGrantOps {

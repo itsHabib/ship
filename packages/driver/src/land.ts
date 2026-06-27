@@ -27,10 +27,18 @@ interface GrantSatisfactionPlan {
   verdict: MergeVerdict;
 }
 
-interface PostMergeViewRetryOpts {
-  sleep: SleepFn;
-  attempts?: number;
-  delayMs?: number;
+interface GrantPlanContext {
+  gh: DriverGhPort;
+  initialView: GhPullRequestView;
+  normalizedRepo: string;
+  opts: LandOpts;
+  store: Store;
+  stream: DriverStream;
+}
+
+interface FetchMergedPrViewOpts {
+  initialView?: GhPullRequestView;
+  sleep?: SleepFn;
 }
 
 const defaultSleep: SleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -50,19 +58,31 @@ export async function land(
     throw new DecideError(`stream not found: ${streamId}`);
   }
 
-  const satisfactionPlan = await resolveGrantSatisfactionPlan(store, gh, repo, opts, stream);
+  const normalizedRepo = toGhRepo(repo);
+  const initialView = await gh.viewPullRequest(repo, opts.prNumber);
+  const satisfactionPlan = await resolveGrantSatisfactionPlan({
+    gh,
+    initialView,
+    normalizedRepo,
+    opts,
+    store,
+    stream,
+  });
   const useAdmin = resolveAdminFlag(opts, satisfactionPlan);
-  const prView = await fetchMergedPrView(gh, repo, opts.prNumber, useAdmin);
+  const prView = await fetchMergedPrView(gh, repo, opts.prNumber, useAdmin, { initialView });
   const facts = buildLandFacts(prView, opts);
   const mergedRun = markMerged(store, driverRunId, streamId, facts);
-  if (satisfactionPlan !== undefined) {
+  if (
+    satisfactionPlan !== undefined &&
+    store.getMergeGrantSatisfaction(normalizedRepo, opts.prNumber) === null
+  ) {
     store.recordMergeGrantSatisfaction({
       driverRunId,
       driverStreamId: streamId,
       grantId: satisfactionPlan.grant.id,
       mergeCommit: facts.mergeCommit,
       prNumber: opts.prNumber,
-      repo: toGhRepo(repo),
+      repo: normalizedRepo,
       verdictJson: JSON.stringify(satisfactionPlan.verdict),
     });
   }
@@ -81,18 +101,19 @@ function resolveAdminFlag(opts: LandOpts, plan: GrantSatisfactionPlan | undefine
 }
 
 async function resolveGrantSatisfactionPlan(
-  store: Store,
-  gh: DriverGhPort,
-  repo: string,
-  opts: LandOpts,
-  stream: DriverStream,
+  ctx: GrantPlanContext,
 ): Promise<GrantSatisfactionPlan | undefined> {
-  if (opts.admin === true || opts.admin === false) return undefined;
-  const grant = store.getActiveRepoMergeGrant(toGhRepo(repo));
+  if (ctx.opts.admin === true || ctx.opts.admin === false) return undefined;
+  if (ctx.initialView.state === "MERGED") return undefined;
+  if (ctx.store.getMergeGrantSatisfaction(ctx.normalizedRepo, ctx.opts.prNumber) !== null) {
+    return undefined;
+  }
+  const grant = ctx.store.getActiveRepoMergeGrant(ctx.normalizedRepo);
   if (grant === null) return undefined;
 
   const verdict =
-    opts.mergeVerdict ?? (await assembleVerdictFromGh(gh, repo, opts.prNumber, stream));
+    ctx.opts.mergeVerdict ??
+    (await assembleVerdictFromGh(ctx.gh, ctx.normalizedRepo, ctx.opts.prNumber, ctx.stream));
   if (verdict.outcome !== "merge_authorized") return undefined;
   return { grant, verdict };
 }
@@ -146,33 +167,40 @@ async function fetchMergedPrView(
   repo: string,
   prNumber: number,
   admin: boolean,
-  sleep: SleepFn = defaultSleep,
+  viewOpts: FetchMergedPrViewOpts = {},
 ): Promise<GhPullRequestView> {
+  const sleep = viewOpts.sleep ?? defaultSleep;
   try {
-    let prView = await gh.viewPullRequest(repo, prNumber);
+    let prView = viewOpts.initialView ?? (await gh.viewPullRequest(repo, prNumber));
     if (prView.state !== "MERGED") {
-      // Always-on readiness guard: refuse to merge an unready PR. Runs even
-      // under --admin (admin bypasses the *approval* gate, not this check).
       await assertReady(gh, repo, prNumber);
       await gh.mergePullRequest(repo, prNumber, { admin });
       prView = await readMergedViewWithRetry(gh, repo, prNumber, { sleep });
     }
 
-    if (prView.state !== "MERGED") {
-      throw new DecideError(`PR #${String(prNumber)} is not merged (state=${prView.state})`);
-    }
-
-    const mergeOid = prView.mergeCommit?.oid;
-    if (mergeOid === undefined || mergeOid === "") {
-      throw new DecideError(`PR #${String(prNumber)} has no merge commit`);
-    }
-
-    return prView;
+    return validateMergedPrView(prView, prNumber);
   } catch (err) {
     if (err instanceof DecideError) throw err;
     const detail = err instanceof Error ? err.message : String(err);
     throw new DecideError(`gh operation failed for PR #${String(prNumber)}: ${detail}`);
   }
+}
+
+function validateMergedPrView(prView: GhPullRequestView, prNumber: number): GhPullRequestView {
+  if (prView.state !== "MERGED") {
+    throw new DecideError(`PR #${String(prNumber)} is not merged (state=${prView.state})`);
+  }
+  const mergeOid = prView.mergeCommit?.oid;
+  if (mergeOid === undefined || mergeOid === "") {
+    throw new DecideError(`PR #${String(prNumber)} has no merge commit`);
+  }
+  return prView;
+}
+
+interface PostMergeViewRetryOpts {
+  sleep: SleepFn;
+  attempts?: number;
+  delayMs?: number;
 }
 
 async function readMergedViewWithRetry(

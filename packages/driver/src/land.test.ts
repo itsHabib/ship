@@ -639,6 +639,25 @@ describe("land", () => {
       expect(gh.mergeCalls[0]?.admin).toBe(true);
       expect(store.getMergeGrantSatisfaction("org/ship", 203)).not.toBeNull();
     });
+
+    test("idempotent re-land with grant does not duplicate satisfaction audit", async () => {
+      store.registerRepoMergeGrant("org/ship");
+      const streamId = newDriverStreamId();
+      const runId = seedDoneRun(store, streamId, "https://github.com/org/ship/pull/204");
+      const gh = createFakeGhPort({
+        204: {
+          mergeCommit: { oid: "sha204" },
+          mergedAt: "2026-06-12T08:00:00.000Z",
+          state: "MERGED",
+        },
+      });
+
+      await land(store, gh, runId, { prNumber: 204 });
+      await land(store, gh, runId, { prNumber: 204 });
+
+      expect(gh.mergeCalls).toEqual([]);
+      expect(gh.viewCalls.length).toBeGreaterThan(0);
+    });
   });
 });
 
