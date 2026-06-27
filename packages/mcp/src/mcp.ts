@@ -131,7 +131,7 @@ export const shipInputSchema = z
 export type ShipInput = z.input<typeof shipInputSchema>;
 
 type ShipInputRuntime = "local" | "cloud" | "rooms";
-type ShipInputProvider = "cursor" | "claude";
+type ShipInputProvider = "cursor" | "claude" | "codex";
 
 interface ShipInputCrossFieldData {
   readonly workdir?: string | undefined;
@@ -145,9 +145,24 @@ interface ShipInputCrossFieldData {
 function refineShipInputCrossFields(data: ShipInputCrossFieldData, ctx: z.RefinementCtx): void {
   const runtime = data.runtime ?? "local";
   refineClaudeProviderRuntime(data.provider, runtime, ctx);
+  refineCodexProviderRuntime(data.provider, runtime, ctx);
   refineRuntimeCloudSpec(runtime, data.cloud, ctx);
   refineRuntimeRoomsSpec(runtime, data.room, ctx);
   refineLocalWorkdirRepo(runtime, data.workdir, data.repo, ctx);
+}
+
+function refineCodexProviderRuntime(
+  provider: ShipInputProvider | undefined,
+  runtime: ShipInputRuntime,
+  ctx: z.RefinementCtx,
+): void {
+  if (provider !== "codex") return;
+  if (runtime === "local") return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["provider"],
+    message: "codex provider supports only runtime 'local'",
+  });
 }
 
 function refineClaudeProviderRuntime(

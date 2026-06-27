@@ -305,4 +305,32 @@ describe("buildFailureDetail", () => {
       "configured budget or turn cap exceeded",
     );
   });
+
+  test("sandbox-denial detail paths", () => {
+    expect(
+      buildFailureDetail({
+        category: "sandbox-denial",
+        events: [],
+        projection,
+        rawErrorMessage: "sandbox policy blocked rm",
+      }),
+    ).toBe("sandbox policy blocked rm");
+    expect(buildFailureDetail({ category: "sandbox-denial", events: [], projection })).toBe(
+      "command blocked by sandbox policy",
+    );
+  });
+
+  test("patch-apply-fail detail paths", () => {
+    expect(
+      buildFailureDetail({
+        category: "patch-apply-fail",
+        events: [],
+        projection,
+        rawErrorMessage: "patch conflict",
+      }),
+    ).toBe("patch conflict");
+    expect(buildFailureDetail({ category: "patch-apply-fail", events: [], projection })).toBe(
+      "file patch failed to apply",
+    );
+  });
 });

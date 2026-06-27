@@ -146,6 +146,22 @@ describe("renderImplementationPrompt", () => {
     expect(out).toContain("task-error: <verbatim error message>");
   });
 
+  test("codex provider uses self-review rule without task tool or subagent enum", () => {
+    const out = renderImplementationPrompt({
+      taskDoc: "minimal",
+      repo: "x",
+      worktreePath: "/w",
+      provider: "codex",
+    });
+    expect(out).toContain("self-review your work");
+    expect(out).toContain("run the repo's check commands");
+    expect(out).toContain("no inline subagent dispatch surface");
+    expect(out).not.toContain("Use `task` with subagent_type:");
+    expect(out).not.toContain("registered subagents (passed via the SDK `agents` option)");
+    expect(out).not.toContain("built-in subagents (`Explore`, `Bash`, `Browser`)");
+    expect(out).not.toContain("Co-authored-by: Cursor");
+  });
+
   test("missing branch + baseRef render as (unknown)", () => {
     const out = renderImplementationPrompt({
       taskDoc: "minimal",

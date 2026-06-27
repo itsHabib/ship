@@ -300,6 +300,31 @@ describe("shipInputSchema", () => {
       }
     }
   });
+
+  test("rejects provider codex with runtime cloud or rooms", () => {
+    for (const runtime of ["cloud", "rooms"] as const) {
+      const payload =
+        runtime === "cloud"
+          ? {
+              docPath: "x",
+              provider: "codex" as const,
+              runtime,
+              cloud: { repos: [{ url: "https://github.com/o/r" }] },
+            }
+          : {
+              docPath: "x",
+              provider: "codex" as const,
+              runtime,
+              room: { repos: [{ url: "https://github.com/o/r" }] },
+            };
+      const result = shipInputSchema.safeParse(payload);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const issue = result.error.issues.find((i) => i.path.join(".") === "provider");
+        expect(issue?.message).toMatch(/codex provider supports only runtime 'local'/);
+      }
+    }
+  });
 });
 
 describe("shipArtifactsSchema", () => {

@@ -121,6 +121,8 @@ export interface ShipServiceConfig {
   readonly roomCursor?: AgentRunner;
   /** Optional claude runner; required at dispatch time only for `provider: "claude"`. */
   readonly claude?: AgentRunner;
+  /** Optional codex runner; required at dispatch time only for `provider: "codex"`. */
+  readonly codex?: AgentRunner;
   /** Preflight cap for `downloadArtifact` (ED-5). Default: 100 MiB. */
   readonly artifactMaxBytes?: number;
 }
@@ -626,6 +628,9 @@ function selectRunner(
     },
     claude: {
       local: config.claude,
+    },
+    codex: {
+      local: config.codex,
     },
   };
 

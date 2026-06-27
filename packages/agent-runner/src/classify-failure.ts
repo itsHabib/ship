@@ -184,6 +184,20 @@ function detailForBudgetExceeded<E>(input: BuildFailureDetailInput<E>): string {
   return "configured budget or turn cap exceeded";
 }
 
+function detailForSandboxDenial<E>(input: BuildFailureDetailInput<E>): string {
+  if (input.rawErrorMessage !== undefined && input.rawErrorMessage.length > 0) {
+    return input.rawErrorMessage;
+  }
+  return "command blocked by sandbox policy";
+}
+
+function detailForPatchApplyFail<E>(input: BuildFailureDetailInput<E>): string {
+  if (input.rawErrorMessage !== undefined && input.rawErrorMessage.length > 0) {
+    return input.rawErrorMessage;
+  }
+  return "file patch failed to apply";
+}
+
 const DETAIL_BUILDERS: Record<FailureCategory, <E>(input: BuildFailureDetailInput<E>) => string> = {
   contention: detailForContention,
   "timeout-near-cap": detailForTimeoutNearCap,
@@ -191,6 +205,8 @@ const DETAIL_BUILDERS: Record<FailureCategory, <E>(input: BuildFailureDetailInpu
   "sdk-throw": detailForSdkThrow,
   "gateway-unreachable": detailForGatewayUnreachable,
   "budget-exceeded": detailForBudgetExceeded,
+  "sandbox-denial": detailForSandboxDenial,
+  "patch-apply-fail": detailForPatchApplyFail,
   logic: detailForLogic,
   unknown: detailForUnknown,
 };
