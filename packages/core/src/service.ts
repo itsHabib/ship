@@ -113,7 +113,9 @@ export interface ShipServiceConfig {
    * Default model for `provider: "codex"` runs when `input.model` is omitted.
    * A Cursor model id (e.g. `composer-2.5`) is not a valid Codex SDK model, so
    * codex runs resolve against this instead of `defaultModel`. Optional — the
-   * production wiring sets it; a config that omits it falls back to `defaultModel`.
+   * production wiring always sets it (to `DEFAULT_CODEX_MODEL`); a raw config that
+   * omits it intentionally falls back to `defaultModel`, whose id must then be
+   * Codex-compatible.
    */
   readonly codexDefaultModel?: ModelSelection;
   /** Optional MCP servers passed through to every `cursor.run()` call. */

@@ -52,9 +52,7 @@ export const DEFAULT_CLAUDE_MODEL: ModelSelection = {
 
 // Codex SDK default for `provider: "codex"` runs that omit `--model`.
 // A Cursor model id (composer-2.5) is invalid for the Codex SDK, so codex runs
-// need their own default. Override per-deployment via
-// `DefaultShipServiceOpts.codexDefaultModel` or per-run via `--model`; rotate
-// the id when the catalog changes, and ensure the gateway/key allows it.
+// need their own default. (Override/rotation guidance: the `codexDefaultModel` field.)
 export const DEFAULT_CODEX_MODEL: ModelSelection = {
   id: "gpt-5.3-codex",
 };

@@ -55,7 +55,10 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
       collectPair,
       [] as string[],
     )
-    .option("--runtime <mode>", "cursor runtime (local|cloud); omit to use service default")
+    .option(
+      "--runtime <mode>",
+      "agent runtime (local|cloud); cloud is cursor-only; omit to use service default",
+    )
     .option("--provider <name>", "agent provider (cursor|claude|codex); omit to use cursor")
     .option(
       "--cloud <path>",
