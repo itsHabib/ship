@@ -9,7 +9,10 @@ export type DriverRunRef = { driverRunId: string } | { manifestPath: string };
 
 export interface RunOpts {
   batch?: number;
+  /** Inactivity window (monotonic last-event-age) before the tick gives up. Default 20 min. */
   maxWaitMs?: number;
+  /** Absolute monotonic ceiling for a tick; overrides the derived default when set. */
+  runawayBackstopMs?: number;
   pollIntervalMs?: number;
   maxParallel?: { local?: number; cloud?: number };
   force?: boolean;
