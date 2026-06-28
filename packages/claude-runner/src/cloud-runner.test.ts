@@ -36,6 +36,7 @@ import {
   readGitHubToken,
 } from "./cloud-session.js";
 import {
+  CloudSessionError,
   InvalidCloudReposError,
   MissingApiKeyError,
   MissingCloudSpecError,
@@ -236,11 +237,11 @@ describe("CloudClaudeRunner.run — failure modes (L2)", () => {
 });
 
 describe("CloudClaudeRunner.run — pre-dispatch failures reject + clean up", () => {
-  test("missing GitHub token → run rejects and archives owned resources", async () => {
+  test("missing GitHub token → run rejects (CloudSessionError) and archives owned resources", async () => {
     vi.mocked(readGitHubToken).mockReturnValue(undefined);
-    await expect(new CloudClaudeRunner().run(makeInput())).rejects.toThrow(
-      /cloud session setup failed/,
-    );
+    const runP = new CloudClaudeRunner().run(makeInput());
+    await expect(runP).rejects.toBeInstanceOf(CloudSessionError);
+    await expect(runP).rejects.toThrow(/cloud session setup failed/);
     expect(vi.mocked(archiveOwned)).toHaveBeenCalledOnce();
   });
 
@@ -296,5 +297,20 @@ describe("CloudClaudeRunner.attach", () => {
     expect(types[0]).toBe("ship.resumed");
     expect(types).not.toContain("agent.message");
     expect(types).toContain("session.status_idle");
+  });
+
+  test("recovers a session that terminated offline (terminal in history)", async () => {
+    // History already carries the terminal; the live stream yields nothing new.
+    vi.mocked(listEvents).mockResolvedValue([AGENT_MSG, IDLE_END_TURN] as never);
+    vi.mocked(openStream).mockResolvedValue(streamOf([]));
+    const handle = await new CloudClaudeRunner().attach({
+      agentId: "ses-1",
+      runId: "ses-1",
+      model: { id: "claude-sonnet-4-6" },
+      onEvent: () => undefined,
+    });
+    const result = await handle.result;
+    expect(result.status).toBe("succeeded");
+    expect(result.summary).toBe("done");
   });
 });

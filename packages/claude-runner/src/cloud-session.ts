@@ -161,6 +161,9 @@ export async function interruptSession(client: CloudClient, sessionId: string): 
 }
 
 export async function archiveSession(client: CloudClient, sessionId: string): Promise<void> {
+  // Setup-failure cleanup may pass "" before a session was created — skip the
+  // guaranteed-to-fail archive call rather than relying on the catch.
+  if (sessionId === "") return;
   try {
     await client.beta.sessions.archive(sessionId, { betas: BETAS });
   } catch {

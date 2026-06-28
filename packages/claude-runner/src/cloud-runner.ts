@@ -7,7 +7,6 @@
 import type { SdkRunHandleCallbacks } from "@ship/agent-runner";
 
 import {
-  AgentRunFailedError,
   attachInputAsRunInput,
   buildSdkRunHandle,
   createSdkRunHandleState,
@@ -17,7 +16,13 @@ import {
 import { randomUUID } from "node:crypto";
 import { inspect } from "node:util";
 
-import type { CloudClient, CloudStreamEvent, EnsureResult } from "./cloud-session.js";
+import type {
+  CloudClient,
+  CloudListedEvent,
+  CloudStreamEvent,
+  EnsureResult,
+} from "./cloud-session.js";
+import type { CloudTerminalState } from "./cloud-terminal-map.js";
 import type {
   AgentRunAttachInput,
   AgentRunHandle,
@@ -44,7 +49,13 @@ import {
   mapCloudStreamThrow,
   newCloudTerminalState,
 } from "./cloud-terminal-map.js";
-import { InvalidCloudReposError, MissingCloudSpecError, WrongRunnerError } from "./errors.js";
+import {
+  AgentRunFailedError,
+  CloudSessionError,
+  InvalidCloudReposError,
+  MissingCloudSpecError,
+  WrongRunnerError,
+} from "./errors.js";
 
 const API_KEY_ENV = "ANTHROPIC_API_KEY";
 const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
@@ -60,7 +71,10 @@ interface SessionResources {
 }
 
 interface PipelineOpts {
-  readonly seenIds?: Set<string>;
+  // Prior session events (attach path). Replayed through the reducer to rebuild
+  // terminal state + recover a session that finished while Ship was offline,
+  // and to dedup the live stream by event id. Not re-emitted to `onEvent`.
+  readonly history?: readonly CloudListedEvent[];
   readonly shipResumed?: { readonly agentId: string; readonly runId: string };
 }
 
@@ -72,15 +86,43 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
   );
 }
 
-// Dedup replayed history on the attach path. Returns true (skip) when the event
-// id was already seen; records new ids. No-op (never skips) without `seenIds`.
-function isDuplicateEvent(ev: CloudStreamEvent, seenIds: Set<string> | undefined): boolean {
-  if (seenIds === undefined) return false;
-  const evId = (ev as { id?: string }).id;
-  if (evId === undefined) return false;
-  if (seenIds.has(evId)) return true;
-  seenIds.add(evId);
+function eventId(ev: unknown): string | undefined {
+  const id = (ev as { id?: string }).id;
+  return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+function recordEvent(capturedEvents: CloudStreamEvent[], ev: CloudStreamEvent): void {
+  capturedEvents.push(ev);
+  if (capturedEvents.length > MAX_CLASSIFICATION_EVENTS) capturedEvents.shift();
+}
+
+// Returns true (skip) when the event id was already seen; records new ids.
+function isDuplicate(seenIds: Set<string>, ev: unknown): boolean {
+  const id = eventId(ev);
+  if (id === undefined) return false;
+  if (seenIds.has(id)) return true;
+  seenIds.add(id);
   return false;
+}
+
+// Attach path: replay prior history through the reducer (rebuilding state + seeding
+// dedup; not re-emitted). Returns the terminal if the session already finished
+// offline, else undefined so the live stream continues from where it left off.
+function replayHistory(
+  history: readonly CloudListedEvent[],
+  terminalState: CloudTerminalState,
+  seenIds: Set<string>,
+  capturedEvents: CloudStreamEvent[],
+  startMs: number,
+): AgentRunResult | undefined {
+  for (const past of history) {
+    const id = eventId(past);
+    if (id !== undefined) seenIds.add(id);
+    recordEvent(capturedEvents, past);
+    const terminal = detectTerminal(terminalState, past, Date.now() - startMs, capturedEvents);
+    if (terminal !== undefined) return terminal;
+  }
+  return undefined;
 }
 
 // Stderr-dump the raw cause chain when session setup fails. Best-effort; never throws.
@@ -113,9 +155,11 @@ export class CloudClaudeRunner implements AgentRunner {
       throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
     }
 
-    const runId = randomUUID();
-    const resources = await this.#startSession(apiKey, input, runId);
-    return this.#buildHandle(resources, runId, input);
+    // The UUID is only a unique suffix for the agent/env resource names; the
+    // handle's runId is the session id (ED-5), set in #buildHandle.
+    const runName = randomUUID();
+    const resources = await this.#startSession(apiKey, input, runName);
+    return this.#buildHandle(resources, input);
   }
 
   async attach(input: AgentRunAttachInput): Promise<AgentRunHandle> {
@@ -128,10 +172,9 @@ export class CloudClaudeRunner implements AgentRunner {
     const sessionId = input.agentId;
     const client = buildClient(apiKey, process.env[BASE_URL_ENV]);
 
-    let seenIds: Set<string>;
+    let history: readonly CloudListedEvent[];
     try {
-      const history = await listEvents(client, sessionId);
-      seenIds = new Set(history.map((ev) => (ev as { id?: string }).id ?? ""));
+      history = await listEvents(client, sessionId);
     } catch (err) {
       throw new AgentRunFailedError(`attach: events.list failed for session ${sessionId}`, {
         cause: err,
@@ -145,17 +188,17 @@ export class CloudClaudeRunner implements AgentRunner {
     });
 
     void this.#runPipeline({ client, sessionId }, runInput, state.callbacks, {
-      seenIds,
+      history,
       shipResumed: { agentId: sessionId, runId: input.runId },
     });
 
-    return buildSdkRunHandle({ agentId: sessionId, runId: input.runId, state });
+    return buildSdkRunHandle({ agentId: sessionId, runId: sessionId, state });
   }
 
   async #startSession(
     apiKey: string,
     input: AgentRunInput,
-    runId: string,
+    runName: string,
   ): Promise<SessionResources> {
     const client = buildClient(apiKey, process.env[BASE_URL_ENV]);
     let envResult: EnsureResult | undefined;
@@ -163,8 +206,8 @@ export class CloudClaudeRunner implements AgentRunner {
     let sessionId: string | undefined;
 
     try {
-      envResult = await ensureEnvironment(client, { runId });
-      agentResult = await ensureAgent(client, { runId, modelId: input.model.id });
+      envResult = await ensureEnvironment(client, { runId: runName });
+      agentResult = await ensureAgent(client, { runId: runName, modelId: input.model.id });
 
       const pat = readGitHubToken();
       if (pat === undefined) {
@@ -187,13 +230,13 @@ export class CloudClaudeRunner implements AgentRunner {
     } catch (err) {
       logCloudStartFailure(input.log, err);
       await this.#cleanup({ client, sessionId: sessionId ?? "", agentResult, envResult });
-      throw new AgentRunFailedError("cloud session setup failed", { cause: err });
+      throw new CloudSessionError("cloud session setup failed", { cause: err });
     }
 
     return { client, sessionId, agentResult, envResult };
   }
 
-  #buildHandle(resources: SessionResources, runId: string, input: AgentRunInput): AgentRunHandle {
+  #buildHandle(resources: SessionResources, input: AgentRunInput): AgentRunHandle {
     const state = createSdkRunHandleState({
       cancelRun: () => interruptAndArchive(resources.client, resources.sessionId),
       ...(input.signal !== undefined && { signal: input.signal }),
@@ -201,7 +244,12 @@ export class CloudClaudeRunner implements AgentRunner {
 
     void this.#runPipeline(resources, input, state.callbacks);
 
-    return buildSdkRunHandle({ agentId: resources.sessionId, runId, state });
+    // ED-5: agentId and runId are both the session id.
+    return buildSdkRunHandle({
+      agentId: resources.sessionId,
+      runId: resources.sessionId,
+      state,
+    });
   }
 
   async #runPipeline(
@@ -229,7 +277,8 @@ export class CloudClaudeRunner implements AgentRunner {
   }
 
   // Consume the SSE stream to the first terminal session-status signal. Pass-through
-  // every event to `onEvent` opaquely; dedup replayed history on the attach path.
+  // every event to `onEvent` opaquely; on attach, replay history first to rebuild
+  // reducer state (recovering an offline-completed session) and dedup by event id.
   async #consumeStream(
     stream: AsyncIterable<CloudStreamEvent>,
     capturedEvents: CloudStreamEvent[],
@@ -238,10 +287,7 @@ export class CloudClaudeRunner implements AgentRunner {
     opts?: PipelineOpts,
   ): Promise<AgentRunResult> {
     const terminalState = newCloudTerminalState();
-    const recordEvent = (ev: CloudStreamEvent): void => {
-      capturedEvents.push(ev);
-      if (capturedEvents.length > MAX_CLASSIFICATION_EVENTS) capturedEvents.shift();
-    };
+    const seenIds = new Set<string>();
     const safelyEmit = (ev: CloudStreamEvent): void => {
       try {
         const maybePromise: unknown = input.onEvent(ev);
@@ -255,6 +301,17 @@ export class CloudClaudeRunner implements AgentRunner {
       }
     };
 
+    if (opts?.history !== undefined) {
+      const fromHistory = replayHistory(
+        opts.history,
+        terminalState,
+        seenIds,
+        capturedEvents,
+        startMs,
+      );
+      if (fromHistory !== undefined) return fromHistory;
+    }
+
     if (opts?.shipResumed !== undefined) {
       const resumed = {
         type: "ship.resumed",
@@ -262,14 +319,14 @@ export class CloudClaudeRunner implements AgentRunner {
         agentId: opts.shipResumed.agentId,
         runId: opts.shipResumed.runId,
       } as unknown as CloudStreamEvent;
-      recordEvent(resumed);
+      recordEvent(capturedEvents, resumed);
       safelyEmit(resumed);
     }
 
     try {
       for await (const ev of stream) {
-        if (isDuplicateEvent(ev, opts?.seenIds)) continue;
-        recordEvent(ev);
+        if (isDuplicate(seenIds, ev)) continue;
+        recordEvent(capturedEvents, ev);
         safelyEmit(ev);
         const terminal = detectTerminal(terminalState, ev, Date.now() - startMs, capturedEvents);
         if (terminal !== undefined) return terminal;

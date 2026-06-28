@@ -68,6 +68,19 @@ describe("detectTerminal — agent.message accumulation", () => {
     expect(state.agentMessageParts).toEqual(["first", "second"]);
   });
 
+  test("non-text content blocks are ignored in the summary", () => {
+    const state = newCloudTerminalState();
+    const evt = {
+      type: "agent.message",
+      content: [
+        { type: "text", text: "kept" },
+        { type: "tool_use", id: "t1" },
+      ],
+    } as unknown as CloudStreamEvent;
+    detectTerminal(state, evt, WALL, CAPS);
+    expect(state.agentMessageParts).toEqual(["kept"]);
+  });
+
   test("session.error stores lastError but is not terminal", () => {
     const state = newCloudTerminalState();
     const result = detectTerminal(
@@ -256,7 +269,7 @@ describe("mapCloudStreamEnded", () => {
     expect(result).toMatchObject({
       status: "failed",
       failureCategory: "sdk-throw",
-      sdkTerminalStatus: "stream-throw",
+      sdkTerminalStatus: "stream-ended-without-terminal",
     });
   });
 
@@ -313,6 +326,18 @@ describe("mapCloudStreamThrow", () => {
     const sdkErr = Object.assign(new Error("Bad Gateway"), { status: 502 });
     const result = mapCloudStreamThrow(sdkErr, WALL, CAPS);
     expect(result).toMatchObject({ failureCategory: "gateway-unreachable" });
+  });
+
+  test("HTTP 500 → gateway-unreachable (server error)", () => {
+    const sdkErr = Object.assign(new Error("Internal Server Error"), { status: 500 });
+    const result = mapCloudStreamThrow(sdkErr, WALL, CAPS);
+    expect(result).toMatchObject({ failureCategory: "gateway-unreachable" });
+  });
+
+  test("HTTP 400 → sdk-throw (client error, not a gateway failure)", () => {
+    const sdkErr = Object.assign(new Error("Bad Request"), { status: 400 });
+    const result = mapCloudStreamThrow(sdkErr, WALL, CAPS);
+    expect(result).toMatchObject({ failureCategory: "sdk-throw" });
   });
 
   test("HTTP 503 → gateway-unreachable", () => {

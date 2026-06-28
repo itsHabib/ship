@@ -13,13 +13,13 @@ import type { CloudErrorEvent, CloudStreamEvent } from "./cloud-session.js";
 
 // Network / gateway error heuristics mirroring the local runner's classify-failure.
 const GATEWAY_ERR_RE = /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i;
-const GATEWAY_STATUSES = new Set([502, 503, 504]);
-
-// Explicit gateway/proxy HTTP status on an SDK error object.
+// Server-side HTTP status on an SDK error object. 5xx (bad gateway / unavailable
+// / timeout / upstream) maps to gateway-unreachable; 4xx client errors (auth,
+// validation, not-found) are real failures and stay sdk-throw.
 function hasGatewayStatus(err: unknown): boolean {
   if (err === null || typeof err !== "object" || !("status" in err)) return false;
   const status: unknown = err.status;
-  return typeof status === "number" && GATEWAY_STATUSES.has(status);
+  return typeof status === "number" && status >= 500 && status < 600;
 }
 
 function isGatewayError(err: unknown): boolean {
@@ -83,7 +83,13 @@ export function detectTerminal(
     return undefined;
   }
   if (ev.type === "agent.message") {
-    state.addMessage(ev.content.map((b) => b.text).join(""));
+    // Defensive: cast to a loose block shape so the text-type guard is a real
+    // runtime check (the typed `content` is text-only, but the API may evolve).
+    const text = (ev.content as readonly { type?: string; text?: string }[])
+      .filter((b) => b.type === "text")
+      .map((b) => b.text ?? "")
+      .join("");
+    state.addMessage(text);
     return undefined;
   }
   if (ev.type === "session.status_idle") {
@@ -159,7 +165,7 @@ export function mapCloudStreamEnded(
   capturedEvents: readonly unknown[],
 ): AgentRunResult {
   return failResult(
-    "stream-throw",
+    "stream-ended-without-terminal",
     state.lastError !== undefined ? errorTypeToCategory(state.lastError.error.type) : "sdk-throw",
     "Stream ended without a terminal session status",
     wallMs,
