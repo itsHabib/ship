@@ -46,19 +46,13 @@ function cursorSubagentDispatchRules(followUpTrailerClause: string): string[] {
   ];
 }
 
-// Unlike `cursorSubagentDispatchRules`, this takes no `followUpTrailerClause`:
-// the Claude Agent SDK auto-emits its own `Co-Authored-By: Claude` trailer on
-// commit (so `commitCoAuthoredByTrailer("claude")` is undefined by design), so
-// there is no prompt-instructed trailer to thread into the follow-up commit rule.
+// Claude self-reviews like codex because this run does not wire the repo's
+// review subagents into Claude's SDK `agents` surface.
+// The Claude Agent SDK auto-emits `Co-Authored-By: Claude` on commit, so there
+// is still no prompt-instructed follow-up trailer to thread here.
 function claudeSubagentDispatchRules(): string[] {
   return [
-    "7. As you implement, dispatch to the repo's registered subagents (passed via the SDK `agents` option) at the natural points. If you ultimately produce no commits in this run (rule 6 skipped per its clean-tree clause), the diff-reviewing subagents (code-reviewer / validator) have no diff to review — skip those and note the gap in the structured summary's blockers section; security-auditor still fires if its trigger fired during implementation. Invoke them by name:",
-    '   - `code-reviewer` — always use before producing the structured summary. Pass the diff. Covers bugs, edge cases, and operator conventions, including the 5 naming rules (per its body\'s "Naming checklist" section) and the scope check against the task doc\'s Scope / Out-of-scope sections (per its body\'s "Scope checklist" section).',
-    "   - `validator` — always use before producing the structured summary. Runs the repo's check commands.",
-    "   - `security-auditor` — use proactively when the diff touches auth, payments, secrets, env vars, or third-party API calls.",
-    "",
-    "   If any subagent returned a P0 or P1 finding, address it in the code, then make a new second commit (not `--amend`) with an appropriate Conventional Commit prefix per rule 6 (e.g. `fix(...)`, `refactor(...)`, `test(...)`, `docs(...)`). Multiple commits per run are expected and fine — the follow-up commit should be separately reviewable. If you previously invoked `validator` on the pre-fix diff, re-invoke it on the post-fix diff before producing the structured summary. Skip if you didn't invoke validator earlier in this run. Surface P2/P3 findings in the structured summary's risks section instead.",
-    "   If a subagent invocation fails, write `subagent-error: <verbatim error message>` in the blockers section — do NOT fabricate subagent output.",
+    "7. Before producing the structured summary, self-review your work: re-read the diff for the operator's conventions and run the repo's check commands (`make check` or the equivalent detected from the repo). This run does not wire the repo's registered review subagents (code-reviewer / validator / security-auditor) into Claude's subagent surface — do not attempt to dispatch them or fabricate subagent output.",
   ];
 }
 
