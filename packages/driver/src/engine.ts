@@ -34,14 +34,17 @@ import {
 } from "./judgment.js";
 
 const DEFAULT_MAX_WAIT_MS = 20 * 60 * 1000;
+const DEFAULT_RUNAWAY_BACKSTOP_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_PARALLEL_LOCAL = 1;
 const DEFAULT_MAX_PARALLEL_CLOUD = 4;
+const RUNAWAY_BACKSTOP_MULTIPLIER = 6;
 
 export interface EngineDeps {
   store: Store;
   ship: DriverShipPort;
   clock?: () => number;
+  monotonicClock?: () => number;
   rng?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -49,6 +52,7 @@ export interface EngineDeps {
 export interface ResolvedRunOpts {
   batch?: number | undefined;
   maxWaitMs: number;
+  runawayBackstopMs: number;
   pollIntervalMs: number;
   maxParallelLocal: number;
   maxParallelCloud: number;
@@ -57,16 +61,37 @@ export interface ResolvedRunOpts {
 
 interface TickContext {
   clock: () => number;
+  monotonicClock: () => number;
   rng: () => number;
   sleep: (ms: number) => Promise<void>;
   ship: DriverShipPort;
   store: Store;
 }
 
+interface TickLiveness {
+  lastProgressMono: number;
+  lastSeenUpdatedAt: Map<string, string>;
+  tickStartedMono: number;
+  noteProgress(mono: number): void;
+}
+
+function createTickLiveness(tickStartedMono: number): TickLiveness {
+  const tracker: TickLiveness = {
+    lastProgressMono: tickStartedMono,
+    lastSeenUpdatedAt: new Map(),
+    tickStartedMono,
+    noteProgress(mono: number): void {
+      tracker.lastProgressMono = mono;
+    },
+  };
+  return tracker;
+}
+
 interface DispatchContext {
   clock: () => number;
   cloudInFlight: number;
   localInFlight: number;
+  onProgress: () => void;
   opts: ResolvedRunOpts;
   repoRoot: string;
   repoUrl: string | undefined;
@@ -77,14 +102,34 @@ interface DispatchContext {
 
 export function resolveRunOpts(opts?: RunOpts): ResolvedRunOpts {
   const parallel = defaultParallelLimits(opts);
+  const maxWaitMs = opts?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   return {
     batch: opts?.batch,
     force: opts?.force === true,
     maxParallelCloud: parallel.cloud,
     maxParallelLocal: parallel.local,
-    maxWaitMs: opts?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS,
+    maxWaitMs,
     pollIntervalMs: opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+    runawayBackstopMs: opts?.runawayBackstopMs ?? resolveRunawayBackstopMs(maxWaitMs),
   };
+}
+
+/** Absolute monotonic ceiling — catches trickle events that reset inactivity forever. */
+export function resolveRunawayBackstopMs(maxWaitMs: number): number {
+  return Math.max(maxWaitMs * RUNAWAY_BACKSTOP_MULTIPLIER, DEFAULT_RUNAWAY_BACKSTOP_MS);
+}
+
+/** True when the tick should stop polling and return progress (still `running`). */
+export function shouldGiveUpTick(
+  monoNow: number,
+  liveness: Pick<TickLiveness, "lastProgressMono" | "tickStartedMono">,
+  opts: Pick<ResolvedRunOpts, "maxWaitMs" | "runawayBackstopMs">,
+): boolean {
+  const inactivityMs = monoNow - liveness.lastProgressMono;
+  if (inactivityMs >= opts.maxWaitMs) return true;
+  const elapsedMonoMs = monoNow - liveness.tickStartedMono;
+  if (elapsedMonoMs >= opts.runawayBackstopMs) return true;
+  return false;
 }
 
 function defaultParallelLimits(opts?: RunOpts): { cloud: number; local: number } {
@@ -125,6 +170,7 @@ export async function runTick(
 function buildTickContext(deps: EngineDeps): TickContext {
   return {
     clock: deps.clock ?? Date.now,
+    monotonicClock: deps.monotonicClock ?? performance.now.bind(performance),
     rng: deps.rng ?? Math.random,
     ship: deps.ship,
     sleep: deps.sleep ?? defaultSleep,
@@ -147,25 +193,35 @@ async function executeTick(
   const recovered = await recoverDispatchingStreams(ctx.store, ctx.ship, running, ambiguities);
   validatePreFlight(recovered, opts);
 
-  const deadline = ctx.clock() + opts.maxWaitMs;
-  return runDispatchPollLoop({ ambiguities, ctx, deadline, driverRunId, opts, run: recovered });
+  const tickStartedMono = ctx.monotonicClock();
+  const liveness = createTickLiveness(tickStartedMono);
+  return runDispatchPollLoop({ ambiguities, ctx, driverRunId, liveness, opts, run: recovered });
 }
 
 interface PollLoopState {
   ambiguities: DispatchAmbiguity[];
   ctx: TickContext;
-  deadline: number;
   driverRunId: string;
+  liveness: TickLiveness;
   opts: ResolvedRunOpts;
   run: DriverRun;
 }
 
 async function runDispatchPollLoop(state: PollLoopState): Promise<DriverTickResult> {
   let current = state.run;
+  const noteProgress = (): void => {
+    state.liveness.noteProgress(state.ctx.monotonicClock());
+  };
   for (;;) {
-    await dispatchEligible(buildDispatchContext(current, state.opts, state.ctx));
+    await dispatchEligible(buildDispatchContext(current, state.opts, state.ctx, noteProgress));
     current = loadRun(state.ctx.store, state.driverRunId);
-    current = await pollDispatched(state.ctx.store, state.ctx.ship, current);
+    current = await pollDispatched(
+      state.ctx,
+      state.liveness,
+      state.ctx.store,
+      state.ctx.ship,
+      current,
+    );
 
     const exit = evaluateExit(current, state.ambiguities);
     if (exit !== undefined) {
@@ -177,7 +233,7 @@ async function runDispatchPollLoop(state: PollLoopState): Promise<DriverTickResu
         state.ctx.store,
       );
     }
-    if (state.ctx.clock() >= state.deadline) {
+    if (shouldGiveUpTick(state.ctx.monotonicClock(), state.liveness, state.opts)) {
       return buildResult(current, state.ambiguities, "running");
     }
 
@@ -327,11 +383,13 @@ function buildDispatchContext(
   run: DriverRun,
   opts: ResolvedRunOpts,
   ctx: TickContext,
+  onProgress: () => void,
 ): DispatchContext {
   return {
     clock: ctx.clock,
     cloudInFlight: countInFlight(run, "cloud"),
     localInFlight: countInFlight(run, "local"),
+    onProgress,
     opts,
     repoRoot: resolveRepoRoot(run.manifestPath),
     repoUrl: extractRepoUrl(run),
@@ -370,6 +428,7 @@ async function dispatchBatchStreams(
     const dispatched = await dispatchStream(ctx, stream);
     // A failed dispatch holds no slot — only live work counts against the caps.
     if (!dispatched) continue;
+    ctx.onProgress();
     if (stream.runtime === "local") local += 1;
     if (stream.runtime === "cloud") cloud += 1;
   }
@@ -507,17 +566,21 @@ function markLatestAttemptFailed(
 }
 
 async function pollDispatched(
+  ctx: TickContext,
+  liveness: TickLiveness,
   store: Store,
   ship: DriverShipPort,
   run: DriverRun,
 ): Promise<DriverRun> {
   for (const stream of allStreams(run)) {
-    await pollOneStream(store, ship, stream);
+    await pollOneStream(ctx, liveness, store, ship, stream);
   }
   return loadRun(store, run.id);
 }
 
 async function pollOneStream(
+  ctx: TickContext,
+  liveness: TickLiveness,
   store: Store,
   ship: DriverShipPort,
   stream: DriverStream,
@@ -528,6 +591,7 @@ async function pollOneStream(
 
   const wfRun = await ship.getRun(wfId);
   if (wfRun === null) return;
+  noteWorkflowRunProgress(ctx, liveness, wfId, wfRun.updatedAt);
   if (!isTerminal(wfRun.status)) return;
 
   if (wfRun.status === "succeeded") {
@@ -593,6 +657,19 @@ function buildResult(
     streams: buildStreamViews(run),
     unmerged,
   };
+}
+
+function noteWorkflowRunProgress(
+  ctx: TickContext,
+  liveness: TickLiveness,
+  workflowRunId: string,
+  updatedAt: string,
+): void {
+  const previous = liveness.lastSeenUpdatedAt.get(workflowRunId);
+  liveness.lastSeenUpdatedAt.set(workflowRunId, updatedAt);
+  if (previous === undefined) return;
+  if (previous === updatedAt) return;
+  liveness.noteProgress(ctx.monotonicClock());
 }
 
 function jitteredPollInterval(baseMs: number, rng: () => number): number {

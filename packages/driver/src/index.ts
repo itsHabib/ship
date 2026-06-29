@@ -38,6 +38,8 @@ export { createExecGhPort } from "./gh-port.js";
 export type { DriverShipPort } from "./ship-port.js";
 
 export type {
+  CanonicalReviewer,
+  CiCheckState,
   Decision,
   DriverRunRef,
   DriverStreamView,
@@ -45,8 +47,20 @@ export type {
   JudgmentRequest,
   LandOpts,
   MergeFacts,
+  MergeVerdict,
+  MergeVerdictEvidence,
+  MergeVerdictInputs,
+  MergeVerdictOutcome,
+  ReviewerBallot,
+  ReviewerBallotVerdict,
   RunOpts,
 } from "./types.js";
+
+export {
+  assembleMergeVerdict,
+  CANONICAL_REVIEWERS,
+  REQUIRED_REVIEW_COORDINATOR_CYCLES,
+} from "./merge-verdict.js";
 
 export {
   CancelError,

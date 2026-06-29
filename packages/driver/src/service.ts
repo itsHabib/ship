@@ -45,12 +45,13 @@ export interface CreateDriverServiceOpts {
   ship: DriverShipPort;
   gh?: DriverGhPort;
   clock?: () => number;
+  monotonicClock?: () => number;
   rng?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
 
 export function createDriverService(opts: CreateDriverServiceOpts): DriverService {
-  const { store, ship, gh, clock, rng, sleep } = opts;
+  const { store, ship, gh, clock, monotonicClock, rng, sleep } = opts;
 
   const now = (): string => new Date((clock ?? Date.now)()).toISOString();
 
@@ -80,6 +81,7 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
       const { driverRunId, warnings } = resolveRunRef(store, ref);
       const deps: Parameters<typeof runTick>[2] = { ship, store };
       if (clock !== undefined) deps.clock = clock;
+      if (monotonicClock !== undefined) deps.monotonicClock = monotonicClock;
       if (rng !== undefined) deps.rng = rng;
       if (sleep !== undefined) deps.sleep = sleep;
       const tick = await runTick(driverRunId, resolved, deps);
