@@ -362,39 +362,32 @@ describe("CodexRunner — cancellation", () => {
 });
 
 describe("CodexRunner — sandbox mode by platform", () => {
-  function captureStartThread(): ReturnType<typeof vi.fn> {
+  async function sandboxModeFor(platform: string, optIn: boolean): Promise<unknown> {
+    const original = process.platform;
+    Object.defineProperty(process, "platform", { value: platform });
+    vi.stubEnv("SHIP_CODEX_WIN32_FULL_ACCESS", optIn ? "1" : "");
     const thread = makeMockThread({ events: [agentMessageDone, turnCompleted] });
     const startThread = vi.fn((_opts?: unknown) => thread);
     vi.mocked(Codex).mockImplementation(() => ({ startThread }) as unknown as Codex);
-    return startThread;
+    try {
+      await new CodexRunner().run(baseInput());
+      const opts = startThread.mock.calls[0]?.[0] as { sandboxMode?: unknown } | undefined;
+      return opts?.sandboxMode;
+    } finally {
+      Object.defineProperty(process, "platform", { value: original });
+    }
   }
 
-  test("win32 uses danger-full-access (workspace-write can't spawn subprocesses there)", async () => {
-    const original = process.platform;
-    Object.defineProperty(process, "platform", { value: "win32" });
-    try {
-      const startThread = captureStartThread();
-      await new CodexRunner().run(baseInput());
-      expect(startThread).toHaveBeenCalledWith(
-        expect.objectContaining({ sandboxMode: "danger-full-access" }),
-      );
-    } finally {
-      Object.defineProperty(process, "platform", { value: original });
-    }
+  test("win32 with SHIP_CODEX_WIN32_FULL_ACCESS=1 opt-in uses danger-full-access", async () => {
+    expect(await sandboxModeFor("win32", true)).toBe("danger-full-access");
   });
 
-  test("posix keeps the tighter workspace-write sandbox", async () => {
-    const original = process.platform;
-    Object.defineProperty(process, "platform", { value: "linux" });
-    try {
-      const startThread = captureStartThread();
-      await new CodexRunner().run(baseInput());
-      expect(startThread).toHaveBeenCalledWith(
-        expect.objectContaining({ sandboxMode: "workspace-write" }),
-      );
-    } finally {
-      Object.defineProperty(process, "platform", { value: original });
-    }
+  test("win32 without opt-in keeps workspace-write (sandbox not silently dropped)", async () => {
+    expect(await sandboxModeFor("win32", false)).toBe("workspace-write");
+  });
+
+  test("posix uses workspace-write regardless of opt-in", async () => {
+    expect(await sandboxModeFor("linux", true)).toBe("workspace-write");
   });
 });
 

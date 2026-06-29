@@ -44,6 +44,7 @@ const BASE_URL_ENV_FALLBACK = "OPENAI_BASE_URL";
 const MODEL_PROVIDER_ENV = "CODEX_MODEL_PROVIDER";
 const MODEL_PROVIDER_BASE_URL_ENV = "CODEX_MODEL_PROVIDER_BASE_URL";
 const MODEL_PROVIDER_ENV_KEY_ENV = "CODEX_MODEL_PROVIDER_ENV_KEY";
+const WIN32_FULL_ACCESS_ENV = "SHIP_CODEX_WIN32_FULL_ACCESS";
 
 const SUPPORTED_PLATFORM_KEYS = new Set([
   "darwin-arm64",
@@ -136,19 +137,27 @@ function buildCodexOptions(apiKey: string): CodexOptions {
   return options;
 }
 
+// codex's `workspace-write` sandbox cannot spawn subprocesses on Windows
+// (`CreateProcessAsUserW failed: 1312` — the restricted-token logon session it
+// creates is invalid on the host), so every in-agent command (`make check`,
+// `git`, ...) fails there. `danger-full-access` is the only working mode, but it
+// removes the sandbox entirely (network + filesystem, not just the worktree):
+// defense-in-depth, not the primary isolation boundary, but real. Ship does not
+// guarantee the workdir is isolated (the CLI `--workdir` defaults to `.`), so
+// dropping the sandbox is opt-in via `SHIP_CODEX_WIN32_FULL_ACCESS=1`; otherwise
+// keep the tighter `workspace-write` (codex-local stays edit-only on Windows).
+function resolveSandboxMode(): "workspace-write" | "danger-full-access" {
+  if (process.platform !== "win32") return "workspace-write";
+  if (process.env[WIN32_FULL_ACCESS_ENV] === "1") return "danger-full-access";
+  return "workspace-write";
+}
+
 function buildThreadOptions(
   input: AgentRunInput,
 ): NonNullable<Parameters<Codex["startThread"]>[0]> {
-  // codex's `workspace-write` sandbox cannot spawn subprocesses on Windows
-  // (`CreateProcessAsUserW failed: 1312` — the restricted-token logon session it
-  // creates is invalid on the host), so every in-agent command (`make check`,
-  // `git`, ...) fails. Ship runs codex unattended (`approvalPolicy: "never"`)
-  // against an isolated worktree, so the sandbox adds little here — use
-  // `danger-full-access` on win32 so checks can run; keep `workspace-write` on POSIX.
-  const sandboxMode = process.platform === "win32" ? "danger-full-access" : "workspace-write";
   return {
     approvalPolicy: "never",
-    sandboxMode,
+    sandboxMode: resolveSandboxMode(),
     skipGitRepoCheck: false,
     workingDirectory: input.cwd,
     ...(input.model.id.length > 0 && { model: input.model.id }),
