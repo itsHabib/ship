@@ -50,6 +50,11 @@ async function* streamOf(events: readonly CloudStreamEvent[]): AsyncGenerator<Cl
   for (const item of events) yield item;
 }
 
+// Let the detached `#runPipeline` finally-block (cleanup/archive) settle so that
+// assertions on archive calls observe completed teardown, not a pending microtask.
+const flushPipeline = (): Promise<void> =>
+  new Promise<void>((resolve) => void setTimeout(resolve, 0));
+
 function ev(obj: Record<string, unknown>): CloudStreamEvent {
   return obj as unknown as CloudStreamEvent;
 }
@@ -303,6 +308,44 @@ describe("CloudClaudeRunner.attach", () => {
     // History already carries the terminal; the live stream yields nothing new.
     vi.mocked(listEvents).mockResolvedValue([AGENT_MSG, IDLE_END_TURN] as never);
     vi.mocked(openStream).mockResolvedValue(streamOf([]));
+    const seen: CloudStreamEvent[] = [];
+    const handle = await new CloudClaudeRunner().attach({
+      agentId: "ses-1",
+      runId: "ses-1",
+      model: { id: "claude-sonnet-4-6" },
+      onEvent: (e) => void seen.push(e as CloudStreamEvent),
+    });
+    const result = await handle.result;
+    expect(result.status).toBe("succeeded");
+    expect(result.summary).toBe("done");
+    // resume signal still reaches consumers even though the session finished offline
+    expect((seen[0] as { type?: string } | undefined)?.type).toBe("ship.resumed");
+  });
+
+  test("recovers an offline-completed session even when openStream fails", async () => {
+    // Stream-open fails, but the already-fetched history carries the terminal — the
+    // reducer must still replay it and resolve the attach as success.
+    vi.mocked(listEvents).mockResolvedValue([AGENT_MSG, IDLE_END_TURN] as never);
+    vi.mocked(openStream).mockRejectedValue(new Error("fetch failed: ECONNREFUSED"));
+    const seen: CloudStreamEvent[] = [];
+    const handle = await new CloudClaudeRunner().attach({
+      agentId: "ses-1",
+      runId: "ses-1",
+      model: { id: "claude-sonnet-4-6" },
+      onEvent: (e) => void seen.push(e as CloudStreamEvent),
+    });
+    const result = await handle.result;
+    expect(result.status).toBe("succeeded");
+    expect(result.summary).toBe("done");
+    expect((seen[0] as { type?: string } | undefined)?.type).toBe("ship.resumed");
+    await flushPipeline();
+    // the adopted session is never archived by the attach handle
+    expect(vi.mocked(archiveOwned)).not.toHaveBeenCalled();
+  });
+
+  test("a failed attach (open fails, no terminal history) does not archive the adopted session", async () => {
+    vi.mocked(listEvents).mockResolvedValue([]);
+    vi.mocked(openStream).mockRejectedValue(new Error("fetch failed: ECONNREFUSED"));
     const handle = await new CloudClaudeRunner().attach({
       agentId: "ses-1",
       runId: "ses-1",
@@ -310,7 +353,9 @@ describe("CloudClaudeRunner.attach", () => {
       onEvent: () => undefined,
     });
     const result = await handle.result;
-    expect(result.status).toBe("succeeded");
-    expect(result.summary).toBe("done");
+    expect(result.status).toBe("failed");
+    await flushPipeline();
+    // this handle did not create the session, so cleanup must not archive it
+    expect(vi.mocked(archiveOwned)).not.toHaveBeenCalled();
   });
 });

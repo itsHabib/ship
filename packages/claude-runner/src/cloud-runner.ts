@@ -68,7 +68,17 @@ interface SessionResources {
   readonly sessionId: string;
   readonly agentResult?: EnsureResult | undefined;
   readonly envResult?: EnsureResult | undefined;
+  // True only when this handle created the session via `run()`. Attach adopts an
+  // existing session it must NOT archive on teardown — it may still be resumable.
+  readonly ownsSession: boolean;
 }
+
+// Outcome of opening the live event stream. On attach a failed open is not fatal:
+// the already-fetched history may carry a terminal (offline completion), so the
+// open error rides along into `#consumeStream` rather than short-circuiting replay.
+type StreamOpenResult =
+  | { readonly stream: AsyncIterable<CloudStreamEvent> }
+  | { readonly openError: unknown };
 
 interface PipelineOpts {
   // Prior session events (attach path). Replayed through the reducer to rebuild
@@ -187,7 +197,7 @@ export class CloudClaudeRunner implements AgentRunner {
       ...(runInput.signal !== undefined && { signal: runInput.signal }),
     });
 
-    void this.#runPipeline({ client, sessionId }, runInput, state.callbacks, {
+    void this.#runPipeline({ client, sessionId, ownsSession: false }, runInput, state.callbacks, {
       history,
       shipResumed: { agentId: sessionId, runId: input.runId },
     });
@@ -229,11 +239,19 @@ export class CloudClaudeRunner implements AgentRunner {
       await dispatch(client, sessionId, input.prompt);
     } catch (err) {
       logCloudStartFailure(input.log, err);
-      await this.#cleanup({ client, sessionId: sessionId ?? "", agentResult, envResult });
+      // run() owns what it created; archive it on setup failure (archiveSession
+      // skips the empty-sessionId case where the session was never created).
+      await this.#cleanup({
+        client,
+        sessionId: sessionId ?? "",
+        agentResult,
+        envResult,
+        ownsSession: true,
+      });
       throw new CloudSessionError("cloud session setup failed", { cause: err });
     }
 
-    return { client, sessionId, agentResult, envResult };
+    return { client, sessionId, agentResult, envResult, ownsSession: true };
   }
 
   #buildHandle(resources: SessionResources, input: AgentRunInput): AgentRunHandle {
@@ -261,14 +279,17 @@ export class CloudClaudeRunner implements AgentRunner {
     const startMs = Date.now();
     const capturedEvents: CloudStreamEvent[] = [];
     try {
-      let stream: AsyncIterable<CloudStreamEvent>;
+      // Capture the open outcome rather than bailing here: on attach the session
+      // may have finished while Ship was offline, so `#consumeStream` must still
+      // replay history (a terminal there resolves the attach as success) even when
+      // the live stream failed to open.
+      let open: StreamOpenResult;
       try {
-        stream = await openStream(resources.client, resources.sessionId);
+        open = { stream: await openStream(resources.client, resources.sessionId) };
       } catch (err) {
-        callbacks.finalizeOk(mapCloudStreamThrow(err, Date.now() - startMs, capturedEvents));
-        return;
+        open = { openError: err };
       }
-      const terminal = await this.#consumeStream(stream, capturedEvents, input, startMs, opts);
+      const terminal = await this.#consumeStream(open, capturedEvents, input, startMs, opts);
       callbacks.finalizeOk(terminal);
     } finally {
       await this.#cleanup(resources);
@@ -276,11 +297,12 @@ export class CloudClaudeRunner implements AgentRunner {
     }
   }
 
-  // Consume the SSE stream to the first terminal session-status signal. Pass-through
-  // every event to `onEvent` opaquely; on attach, replay history first to rebuild
-  // reducer state (recovering an offline-completed session) and dedup by event id.
+  // Drive the run to its first terminal signal. On attach: emit the synthetic
+  // `ship.resumed`, then replay prior history through the reducer — a terminal there
+  // recovers a session that finished offline, even if the live stream never opened.
+  // Otherwise pass every live event through to `onEvent` opaquely, deduped by id.
   async #consumeStream(
-    stream: AsyncIterable<CloudStreamEvent>,
+    open: StreamOpenResult,
     capturedEvents: CloudStreamEvent[],
     input: AgentRunInput,
     startMs: number,
@@ -300,31 +322,35 @@ export class CloudClaudeRunner implements AgentRunner {
         /* swallow */
       }
     };
+    // Destructure once (instead of `opts?.` at each use) to keep this method's
+    // branch budget; an absent `opts` (the run path) yields all-undefined fields.
+    const { history, shipResumed }: PipelineOpts = opts ?? {};
 
-    if (opts?.history !== undefined) {
-      const fromHistory = replayHistory(
-        opts.history,
-        terminalState,
-        seenIds,
-        capturedEvents,
-        startMs,
-      );
-      if (fromHistory !== undefined) return fromHistory;
-    }
-
-    if (opts?.shipResumed !== undefined) {
+    // Emit the resume signal before replaying history so downstream consumers see
+    // it even on the offline-completed path (the history-terminal return is below).
+    if (shipResumed !== undefined) {
       const resumed = {
         type: "ship.resumed",
         ts: new Date().toISOString(),
-        agentId: opts.shipResumed.agentId,
-        runId: opts.shipResumed.runId,
+        agentId: shipResumed.agentId,
+        runId: shipResumed.runId,
       } as unknown as CloudStreamEvent;
       recordEvent(capturedEvents, resumed);
       safelyEmit(resumed);
     }
 
+    if (history !== undefined) {
+      const fromHistory = replayHistory(history, terminalState, seenIds, capturedEvents, startMs);
+      if (fromHistory !== undefined) return fromHistory;
+    }
+
+    // History held no terminal; if the live stream never opened, surface that error.
+    if (!("stream" in open)) {
+      return mapCloudStreamThrow(open.openError, Date.now() - startMs, capturedEvents);
+    }
+
     try {
-      for await (const ev of stream) {
+      for await (const ev of open.stream) {
         if (isDuplicate(seenIds, ev)) continue;
         recordEvent(capturedEvents, ev);
         safelyEmit(ev);
@@ -338,7 +364,10 @@ export class CloudClaudeRunner implements AgentRunner {
   }
 
   // Best-effort teardown: archive the session + any agent/env this run created.
+  // Attach adopts a session it doesn't own (and creates no agent/env), so it skips
+  // archival entirely — a failed attach must not destroy a still-resumable session.
   async #cleanup(resources: SessionResources): Promise<void> {
+    if (!resources.ownsSession) return;
     await archiveOwned(resources.client, {
       sessionId: resources.sessionId,
       ...(resources.agentResult !== undefined && { agentId: resources.agentResult.id }),

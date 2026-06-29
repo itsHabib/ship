@@ -403,6 +403,12 @@ describe("archiveSession", () => {
     });
     await expect(archiveSession(client, "ses-001")).resolves.toBeUndefined();
   });
+
+  test("skips the SDK call when sessionId is empty (setup-failure cleanup)", async () => {
+    const { client, spies } = makeMockClient();
+    await archiveSession(client, "");
+    expect(spies.sessionArchive).not.toHaveBeenCalled();
+  });
 });
 
 describe("interruptAndArchive", () => {
@@ -425,6 +431,20 @@ describe("archiveOwned", () => {
     expect(spies.sessionArchive).toHaveBeenCalledOnce();
     expect(spies.agentArchive).not.toHaveBeenCalled();
     expect(spies.envArchive).not.toHaveBeenCalled();
+  });
+
+  test("skips the session archive when sessionId is empty but still archives owned agent/env", async () => {
+    const { client, spies } = makeMockClient();
+    await archiveOwned(client, {
+      sessionId: "",
+      agentId: "agt-001",
+      environmentId: "env-001",
+      ownedAgent: true,
+      ownedEnv: true,
+    });
+    expect(spies.sessionArchive).not.toHaveBeenCalled();
+    expect(spies.agentArchive).toHaveBeenCalledOnce();
+    expect(spies.envArchive).toHaveBeenCalledOnce();
   });
 
   test("archives owned agent when ownedAgent is true and agentId provided", async () => {
