@@ -239,7 +239,6 @@ describe("CodexRunner — SDK options", () => {
       expect.objectContaining({
         approvalPolicy: "never",
         model: "gpt-5.3-codex",
-        sandboxMode: "workspace-write",
         skipGitRepoCheck: false,
         workingDirectory: "/abs/work",
       }),
@@ -359,6 +358,43 @@ describe("CodexRunner — cancellation", () => {
     const handle = await runner.run(baseInput({ signal: controller.signal }));
     const result = await handle.result;
     expect(result.status).toBe("cancelled");
+  });
+});
+
+describe("CodexRunner — sandbox mode by platform", () => {
+  function captureStartThread(): ReturnType<typeof vi.fn> {
+    const thread = makeMockThread({ events: [agentMessageDone, turnCompleted] });
+    const startThread = vi.fn((_opts?: unknown) => thread);
+    vi.mocked(Codex).mockImplementation(() => ({ startThread }) as unknown as Codex);
+    return startThread;
+  }
+
+  test("win32 uses danger-full-access (workspace-write can't spawn subprocesses there)", async () => {
+    const original = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      const startThread = captureStartThread();
+      await new CodexRunner().run(baseInput());
+      expect(startThread).toHaveBeenCalledWith(
+        expect.objectContaining({ sandboxMode: "danger-full-access" }),
+      );
+    } finally {
+      Object.defineProperty(process, "platform", { value: original });
+    }
+  });
+
+  test("posix keeps the tighter workspace-write sandbox", async () => {
+    const original = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      const startThread = captureStartThread();
+      await new CodexRunner().run(baseInput());
+      expect(startThread).toHaveBeenCalledWith(
+        expect.objectContaining({ sandboxMode: "workspace-write" }),
+      );
+    } finally {
+      Object.defineProperty(process, "platform", { value: original });
+    }
   });
 });
 

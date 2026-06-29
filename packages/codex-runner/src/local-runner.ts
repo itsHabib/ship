@@ -139,9 +139,16 @@ function buildCodexOptions(apiKey: string): CodexOptions {
 function buildThreadOptions(
   input: AgentRunInput,
 ): NonNullable<Parameters<Codex["startThread"]>[0]> {
+  // codex's `workspace-write` sandbox cannot spawn subprocesses on Windows
+  // (`CreateProcessAsUserW failed: 1312` — the restricted-token logon session it
+  // creates is invalid on the host), so every in-agent command (`make check`,
+  // `git`, ...) fails. Ship runs codex unattended (`approvalPolicy: "never"`)
+  // against an isolated worktree, so the sandbox adds little here — use
+  // `danger-full-access` on win32 so checks can run; keep `workspace-write` on POSIX.
+  const sandboxMode = process.platform === "win32" ? "danger-full-access" : "workspace-write";
   return {
     approvalPolicy: "never",
-    sandboxMode: "workspace-write",
+    sandboxMode,
     skipGitRepoCheck: false,
     workingDirectory: input.cwd,
     ...(input.model.id.length > 0 && { model: input.model.id }),
