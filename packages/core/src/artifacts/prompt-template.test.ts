@@ -116,22 +116,25 @@ describe("renderImplementationPrompt", () => {
     expect(out).not.toMatch(/`Co-authored-by:.*`\. Multiple commits per run/);
   });
 
-  test("claude provider uses SDK agents dispatch contract without Cursor task tool", () => {
+  test("claude provider uses self-review rule without phantom subagent dispatch", () => {
     const out = renderImplementationPrompt({
       taskDoc: "minimal",
       repo: "x",
       worktreePath: "/w",
       provider: "claude",
     });
-    expect(out).toContain("registered subagents (passed via the SDK `agents` option)");
-    expect(out).toContain("Invoke them by name:");
-    expect(out).toContain("- `code-reviewer`");
-    expect(out).toContain("- `validator`");
-    expect(out).toContain("- `security-auditor`");
+    expect(out).toContain("self-review your work");
+    expect(out).toContain("run the repo's check commands");
+    expect(out).toContain("do not attempt to dispatch them or fabricate subagent output");
+    // The phantom-subagent contract (subagents promised but never wired) is gone —
+    // these are the exact strings the buggy claude rule emitted.
+    expect(out).not.toContain("registered subagents (passed via the SDK `agents` option)");
+    expect(out).not.toContain("Invoke them by name:");
+    expect(out).not.toContain("subagent-error: <verbatim error message>");
+    // And it never adopts cursor's task-tool protocol.
     expect(out).not.toContain("Use `task` with subagent_type:");
     expect(out).not.toContain("built-in subagents (`Explore`, `Bash`, `Browser`)");
-    expect(out).not.toContain("generalPurpose | cursor-guide | best-of-n-runner");
-    expect(out).toContain("subagent-error: <verbatim error message>");
+    expect(out).not.toContain("Co-authored-by: Cursor");
   });
 
   test("cursor provider retains task-tool dispatch contract", () => {

@@ -239,7 +239,6 @@ describe("CodexRunner — SDK options", () => {
       expect.objectContaining({
         approvalPolicy: "never",
         model: "gpt-5.3-codex",
-        sandboxMode: "workspace-write",
         skipGitRepoCheck: false,
         workingDirectory: "/abs/work",
       }),
@@ -359,6 +358,36 @@ describe("CodexRunner — cancellation", () => {
     const handle = await runner.run(baseInput({ signal: controller.signal }));
     const result = await handle.result;
     expect(result.status).toBe("cancelled");
+  });
+});
+
+describe("CodexRunner — sandbox mode by platform", () => {
+  async function sandboxModeFor(platform: string, optIn: boolean): Promise<unknown> {
+    const original = process.platform;
+    Object.defineProperty(process, "platform", { value: platform });
+    vi.stubEnv("SHIP_CODEX_WIN32_FULL_ACCESS", optIn ? "1" : "");
+    const thread = makeMockThread({ events: [agentMessageDone, turnCompleted] });
+    const startThread = vi.fn((_opts?: unknown) => thread);
+    vi.mocked(Codex).mockImplementation(() => ({ startThread }) as unknown as Codex);
+    try {
+      await new CodexRunner().run(baseInput());
+      const opts = startThread.mock.calls[0]?.[0] as { sandboxMode?: unknown } | undefined;
+      return opts?.sandboxMode;
+    } finally {
+      Object.defineProperty(process, "platform", { value: original });
+    }
+  }
+
+  test("win32 with SHIP_CODEX_WIN32_FULL_ACCESS=1 opt-in uses danger-full-access", async () => {
+    expect(await sandboxModeFor("win32", true)).toBe("danger-full-access");
+  });
+
+  test("win32 without opt-in keeps workspace-write (sandbox not silently dropped)", async () => {
+    expect(await sandboxModeFor("win32", false)).toBe("workspace-write");
+  });
+
+  test("posix uses workspace-write regardless of opt-in", async () => {
+    expect(await sandboxModeFor("linux", true)).toBe("workspace-write");
   });
 });
 
