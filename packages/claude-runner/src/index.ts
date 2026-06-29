@@ -24,11 +24,15 @@ export type {
 
 export type { AgentDefinition, McpServerConfig } from "@ship/agent-runner";
 
+export { CloudClaudeRunner } from "./cloud-runner.js";
 export { LocalClaudeRunner } from "./local-runner.js";
 
 export {
   AgentRunFailedError,
+  CloudSessionError,
+  InvalidCloudReposError,
   MissingApiKeyError,
+  MissingCloudSpecError,
   OperationNotSupportedError,
   UnsupportedPlatformError,
   WrongRunnerError,
