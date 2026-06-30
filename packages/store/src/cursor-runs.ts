@@ -49,6 +49,8 @@ export interface ResumableCloudCursorRun {
   readonly id: string;
   readonly workflowRunId: string;
   readonly agentId: string;
+  /** Persisted provider — routes the resume to the matching cloud runner (FR7). */
+  readonly provider: AgentProvider;
   readonly runId: string;
   readonly model?: ModelSelection;
   readonly artifactsDir: string;
@@ -211,6 +213,7 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
           artifactsDir: row.artifacts_dir,
           id: row.id,
           ...(model !== undefined && { model }),
+          provider: row.provider as AgentProvider,
           runId: row.run_id,
           workflowRunId: row.workflow_run_id,
         },

@@ -13,6 +13,7 @@ import type { CloudStreamEvent } from "./cloud-session.js";
 vi.mock("./cloud-session.js", () => ({
   buildClient: vi.fn(() => ({})),
   readGitHubToken: vi.fn(() => "ghp_test_token"),
+  readGitHubMcpUrl: vi.fn(() => undefined),
   ensureEnvironment: vi.fn(),
   ensureAgent: vi.fn(),
   createSession: vi.fn(),
@@ -22,6 +23,8 @@ vi.mock("./cloud-session.js", () => ({
   interruptAndArchive: vi.fn(),
   archiveOwned: vi.fn(),
 }));
+
+import type { GhResult, GhRunner } from "./cloud-branch-reconstruct.js";
 
 import { CloudClaudeRunner } from "./cloud-runner.js";
 import {
@@ -33,8 +36,39 @@ import {
   interruptAndArchive,
   listEvents,
   openStream,
+  readGitHubMcpUrl,
   readGitHubToken,
 } from "./cloud-session.js";
+
+// A `gh` runner fake so reconstruction's fallback never shells the host binary.
+// Defaults: no PR found (`[]`), branch absent (exit 1) — i.e. branch-not-found.
+function fakeGh(opts: { prList?: GhResult; branch?: GhResult } = {}): GhRunner {
+  return (args) => {
+    if (args[0] === "pr" && args[1] === "list") {
+      return Promise.resolve(opts.prList ?? { stdout: "[]", exitCode: 0 });
+    }
+    if (args[0] === "api") {
+      return Promise.resolve(opts.branch ?? { stdout: "", exitCode: 1 });
+    }
+    return Promise.resolve({ stdout: "", exitCode: 1 });
+  };
+}
+
+const PR_TOOL_USE = ev({
+  id: "e-pru",
+  type: "agent.mcp_tool_use",
+  mcp_server_name: "github",
+  name: "create_pull_request",
+  input: {},
+});
+function prToolResult(body: Record<string, unknown>): CloudStreamEvent {
+  return ev({
+    id: "e-prr",
+    type: "agent.mcp_tool_result",
+    mcp_tool_use_id: "e-pru",
+    content: [{ type: "text", text: JSON.stringify(body) }],
+  });
+}
 import {
   CloudSessionError,
   InvalidCloudReposError,
@@ -100,6 +134,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv(API_KEY_ENV, "sk-ant-test");
   vi.mocked(readGitHubToken).mockReturnValue("ghp_test_token");
+  vi.mocked(readGitHubMcpUrl).mockReturnValue(undefined);
   vi.mocked(ensureEnvironment).mockResolvedValue({ id: "env-1", owned: true });
   vi.mocked(ensureAgent).mockResolvedValue({ id: "agt-1", owned: true });
   vi.mocked(createSession).mockResolvedValue("ses-1");
@@ -147,10 +182,18 @@ describe("CloudClaudeRunner.run — input guards", () => {
 });
 
 describe("CloudClaudeRunner.run — happy path (L3)", () => {
-  test("agent.message + status_idle{end_turn} → succeeded with summary, branches []", async () => {
-    vi.mocked(openStream).mockResolvedValue(streamOf([AGENT_MSG, IDLE_END_TURN]));
+  test("end_turn + create_pull_request stream result → succeeded, branches[0] from primary parse", async () => {
+    vi.mocked(openStream).mockResolvedValue(
+      streamOf([
+        AGENT_MSG,
+        PR_TOOL_USE,
+        prToolResult({ html_url: "https://github.com/acme/test/pull/7", headRefName: "ship/x" }),
+        IDLE_END_TURN,
+      ]),
+    );
     const seen: CloudStreamEvent[] = [];
-    const runner = new CloudClaudeRunner();
+    // gh that would fail the fallback — proves the branch came from the stream (primary).
+    const runner = new CloudClaudeRunner(fakeGh());
     const handle = await runner.run(
       makeInput({ onEvent: (e) => void seen.push(e as CloudStreamEvent) }),
     );
@@ -158,9 +201,15 @@ describe("CloudClaudeRunner.run — happy path (L3)", () => {
 
     expect(result.status).toBe("succeeded");
     expect(result.summary).toBe("done");
-    expect(result.branches).toEqual([]);
-    // events passed through to onEvent
-    expect(seen).toHaveLength(2);
+    expect(result.branches).toEqual([
+      {
+        repoUrl: "https://github.com/acme/test",
+        branch: "ship/x",
+        prUrl: "https://github.com/acme/test/pull/7",
+      },
+    ]);
+    // all four events passed through to onEvent
+    expect(seen).toHaveLength(4);
     // owned env + agent archived in the pipeline finally (runs just after result resolves)
     await vi.waitFor(() => {
       expect(vi.mocked(archiveOwned)).toHaveBeenCalledOnce();
@@ -169,9 +218,18 @@ describe("CloudClaudeRunner.run — happy path (L3)", () => {
     expect(archiveArg).toMatchObject({ ownedAgent: true, ownedEnv: true, sessionId: "ses-1" });
   });
 
-  test("ensure/createSession/dispatch wired with the model + repo", async () => {
+  test("ensure/createSession/dispatch wired with the model + repo; dispatch prompt prescribes the branch", async () => {
     vi.mocked(openStream).mockResolvedValue(streamOf([IDLE_END_TURN]));
-    const runner = new CloudClaudeRunner();
+    const runner = new CloudClaudeRunner(
+      fakeGh({
+        prList: {
+          stdout: JSON.stringify([
+            { url: "https://github.com/acme/test/pull/9", headRefName: "ship/x" },
+          ]),
+          exitCode: 0,
+        },
+      }),
+    );
     await (
       await runner.run(makeInput())
     ).result;
@@ -183,6 +241,91 @@ describe("CloudClaudeRunner.run — happy path (L3)", () => {
       pat: "ghp_test_token",
     });
     expect(vi.mocked(dispatch)).toHaveBeenCalledOnce();
+    // The prescribed-branch delivery instruction is appended to the prompt.
+    const dispatchedPrompt = vi.mocked(dispatch).mock.calls[0]?.[2];
+    expect(dispatchedPrompt).toContain("ship/x");
+    expect(dispatchedPrompt).toContain("push");
+  });
+});
+
+describe("CloudClaudeRunner.run — branch reconstruction (3b)", () => {
+  test("no PR in stream → gh fallback finds the PR → branches[0]", async () => {
+    vi.mocked(openStream).mockResolvedValue(streamOf([AGENT_MSG, IDLE_END_TURN]));
+    const runner = new CloudClaudeRunner(
+      fakeGh({
+        prList: {
+          stdout: JSON.stringify([
+            { url: "https://github.com/acme/test/pull/12", headRefName: "ship/x" },
+          ]),
+          exitCode: 0,
+        },
+      }),
+    );
+    const result = await (await runner.run(makeInput())).result;
+    expect(result.status).toBe("succeeded");
+    expect(result.branches).toEqual([
+      {
+        repoUrl: "https://github.com/acme/test",
+        branch: "ship/x",
+        prUrl: "https://github.com/acme/test/pull/12",
+      },
+    ]);
+  });
+
+  test("no PR + gh finds a branch but no PR → branches[0] without prUrl", async () => {
+    vi.mocked(openStream).mockResolvedValue(streamOf([IDLE_END_TURN]));
+    const runner = new CloudClaudeRunner(
+      fakeGh({ prList: { stdout: "[]", exitCode: 0 }, branch: { stdout: "{}", exitCode: 0 } }),
+    );
+    const result = await (await runner.run(makeInput())).result;
+    expect(result.status).toBe("succeeded");
+    expect(result.branches).toEqual([
+      { repoUrl: "https://github.com/acme/test", branch: "ship/x" },
+    ]);
+  });
+
+  test("end_turn but no branch anywhere → failed branch-not-found (FR5)", async () => {
+    vi.mocked(openStream).mockResolvedValue(streamOf([IDLE_END_TURN]));
+    const runner = new CloudClaudeRunner(fakeGh());
+    const result = await (await runner.run(makeInput())).result;
+    expect(result.status).toBe("failed");
+    expect(result.failureCategory).toBe("logic");
+    expect(result.sdkTerminalStatus).toBe("branch-not-found");
+    expect(result.errorMessage).toContain("ship/x");
+  });
+
+  test("no prBranch (3a / cursor-shaped spec) → no reconstruction, branches []", async () => {
+    vi.mocked(openStream).mockResolvedValue(streamOf([IDLE_END_TURN]));
+    const input = makeInput();
+    (input as unknown as { cloud: { repos: { url: string }[] } }).cloud.repos = [
+      { url: "https://github.com/acme/test" },
+    ];
+    // gh must NOT be consulted when there's no prescribed branch.
+    const runner = new CloudClaudeRunner(() =>
+      Promise.reject(new Error("gh must not run without prBranch")),
+    );
+    const result = await (await runner.run(input)).result;
+    expect(result.status).toBe("succeeded");
+    expect(result.branches).toEqual([]);
+  });
+
+  test("GITHUB_MCP_URL set → ensureAgent gets githubMcpUrl + prompt names the MCP tool", async () => {
+    vi.mocked(readGitHubMcpUrl).mockReturnValue("https://mcp.example/github");
+    vi.mocked(openStream).mockResolvedValue(
+      streamOf([
+        PR_TOOL_USE,
+        prToolResult({ html_url: "https://github.com/acme/test/pull/3", headRefName: "ship/x" }),
+        IDLE_END_TURN,
+      ]),
+    );
+    const runner = new CloudClaudeRunner(fakeGh());
+    await (
+      await runner.run(makeInput())
+    ).result;
+    expect(vi.mocked(ensureAgent).mock.calls[0]?.[1]).toMatchObject({
+      githubMcpUrl: "https://mcp.example/github",
+    });
+    expect(vi.mocked(dispatch).mock.calls[0]?.[2]).toContain("create_pull_request");
   });
 });
 

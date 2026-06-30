@@ -277,29 +277,54 @@ describe("shipInputSchema", () => {
     expect(omitted.provider).toBe("cursor");
   });
 
-  test("rejects provider claude with runtime cloud or rooms", () => {
-    for (const runtime of ["cloud", "rooms"] as const) {
-      const payload =
-        runtime === "cloud"
-          ? {
-              docPath: "x",
-              provider: "claude" as const,
-              runtime,
-              cloud: { repos: [{ url: "https://github.com/o/r" }] },
-            }
-          : {
-              docPath: "x",
-              provider: "claude" as const,
-              runtime,
-              room: { repos: [{ url: "https://github.com/o/r" }] },
-            };
-      const result = shipInputSchema.safeParse(payload);
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        const issue = result.error.issues.find((i) => i.path.join(".") === "provider");
-        expect(issue?.message).toMatch(/claude provider supports only runtime 'local'/);
-      }
+  test("accepts provider claude with runtime cloud when cloud.repos[].prBranch is set", () => {
+    const parsed = shipInputSchema.parse({
+      docPath: "x",
+      provider: "claude",
+      runtime: "cloud",
+      cloud: { repos: [{ url: "https://github.com/o/r", prBranch: "ship/x" }] },
+    });
+    expect(parsed.provider).toBe("claude");
+    expect(parsed.runtime).toBe("cloud");
+    expect(parsed.cloud?.repos[0]?.prBranch).toBe("ship/x");
+  });
+
+  test("rejects provider claude × cloud without cloud.repos[].prBranch", () => {
+    const result = shipInputSchema.safeParse({
+      docPath: "x",
+      provider: "claude",
+      runtime: "cloud",
+      cloud: { repos: [{ url: "https://github.com/o/r" }] },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find((i) => i.path.join(".") === "cloud.repos.0.prBranch");
+      expect(issue?.message).toMatch(/claude × cloud requires cloud\.repos\[\]\.prBranch/);
     }
+  });
+
+  test("rejects provider claude with runtime rooms", () => {
+    const result = shipInputSchema.safeParse({
+      docPath: "x",
+      provider: "claude" as const,
+      runtime: "rooms",
+      room: { repos: [{ url: "https://github.com/o/r" }] },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find((i) => i.path.join(".") === "provider");
+      expect(issue?.message).toMatch(/claude provider supports only runtime 'local' or 'cloud'/);
+    }
+  });
+
+  test("cursor × cloud does not require prBranch (claude-only requirement)", () => {
+    const parsed = shipInputSchema.parse({
+      docPath: "x",
+      provider: "cursor",
+      runtime: "cloud",
+      cloud: { repos: [{ url: "https://github.com/o/r" }] },
+    });
+    expect(parsed.cloud?.repos[0]?.prBranch).toBeUndefined();
   });
 
   test("rejects provider codex with runtime cloud or rooms", () => {

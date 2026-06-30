@@ -261,9 +261,28 @@ describe("cursor runs (via createStore)", () => {
         artifactsDir: "/runs/wf_x",
         id: cursorRunId,
         model,
+        provider: "cursor",
         runId: "run-test-001",
         workflowRunId: wfId,
       });
+    });
+
+    test("claude-cloud row surfaces provider: 'claude' for resume routing (FR7)", () => {
+      const wfId = seedRun();
+      const cursorRunId = newCursorRunId();
+      store.recordCursorRun({
+        agentId: "ses-claude-001",
+        artifactsDir: "/runs/wf_claude",
+        id: cursorRunId,
+        provider: "claude",
+        runId: "ses-claude-001",
+        runtime: "cloud",
+        workflowRunId: wfId,
+      });
+
+      const resumable = store.listResumableCloudCursorRuns();
+      expect(resumable).toHaveLength(1);
+      expect(resumable[0]?.provider).toBe("claude");
     });
 
     test("cloud row WITHOUT run_id is skipped (pre-migration legacy)", () => {

@@ -7,7 +7,7 @@
 import type { AgentRunner } from "@ship/agent-runner";
 import type { ShipInput } from "@ship/mcp";
 import type { Store } from "@ship/store";
-import type { WorkflowRun } from "@ship/workflow";
+import type { AgentProvider, WorkflowRun } from "@ship/workflow";
 
 import { FakeAgentRunner } from "@ship/agent-runner/test/fake";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
@@ -91,6 +91,7 @@ interface Harness {
   cloudCursor: FakeCursorRunner;
   roomCursor: FakeCursorRunner;
   claude: FakeAgentRunner;
+  cloudClaude: FakeAgentRunner;
   codex: FakeAgentRunner;
   config: ShipServiceConfig;
 }
@@ -103,6 +104,7 @@ interface HarnessOpts {
   omitCloudCursor?: boolean;
   omitRoomCursor?: boolean;
   omitClaude?: boolean;
+  omitCloudClaude?: boolean;
   omitCodex?: boolean;
   docSource?: DocSource;
 }
@@ -126,13 +128,17 @@ function optionalHarnessRunners(
     cloudCursor: FakeCursorRunner;
     roomCursor: FakeCursorRunner;
     claude: FakeAgentRunner;
+    cloudClaude: FakeAgentRunner;
     codex: FakeAgentRunner;
   },
-): Partial<Pick<ShipServiceConfig, "cloudCursor" | "roomCursor" | "claude" | "codex">> {
+): Partial<
+  Pick<ShipServiceConfig, "cloudCursor" | "roomCursor" | "claude" | "cloudClaude" | "codex">
+> {
   return {
     ...optionalHarnessRunner(opts?.omitCloudCursor, "cloudCursor", runners.cloudCursor),
     ...optionalHarnessRunner(opts?.omitRoomCursor, "roomCursor", runners.roomCursor),
     ...optionalHarnessRunner(opts?.omitClaude, "claude", runners.claude),
+    ...optionalHarnessRunner(opts?.omitCloudClaude, "cloudClaude", runners.cloudClaude),
     ...optionalHarnessRunner(opts?.omitCodex, "codex", runners.codex),
   };
 }
@@ -144,6 +150,7 @@ function makeHarnessConfig(
     cloudCursor: FakeCursorRunner;
     roomCursor: FakeCursorRunner;
     claude: FakeAgentRunner;
+    cloudClaude: FakeAgentRunner;
     codex: FakeAgentRunner;
   },
 ): ShipServiceConfig {
@@ -161,7 +168,7 @@ function makeHarnessConfig(
 
 function optionalHarnessRunner(
   omit: boolean | undefined,
-  key: "cloudCursor" | "roomCursor" | "claude" | "codex",
+  key: "cloudCursor" | "roomCursor" | "claude" | "cloudClaude" | "codex",
   runner: AgentRunner,
 ): Partial<Pick<ShipServiceConfig, typeof key>> {
   if (omit === true) return {};
@@ -182,8 +189,16 @@ async function createHarness(opts?: HarnessOpts): Promise<Harness> {
   const cloudCursor = new FakeCursorRunner();
   const roomCursor = new FakeCursorRunner();
   const claude = new FakeAgentRunner();
+  const cloudClaude = new FakeAgentRunner();
   const codex = new FakeAgentRunner();
-  const config = makeHarnessConfig(opts, { cursor, cloudCursor, roomCursor, claude, codex });
+  const config = makeHarnessConfig(opts, {
+    cursor,
+    cloudCursor,
+    roomCursor,
+    claude,
+    cloudClaude,
+    codex,
+  });
 
   const service = createShipService({
     store,
@@ -194,7 +209,18 @@ async function createHarness(opts?: HarnessOpts): Promise<Harness> {
     ...(opts?.docSource !== undefined ? { docSource: opts.docSource } : {}),
   });
 
-  return { service, fs, store, cursor, cloudCursor, roomCursor, claude, codex, config };
+  return {
+    service,
+    fs,
+    store,
+    cursor,
+    cloudCursor,
+    roomCursor,
+    claude,
+    cloudClaude,
+    codex,
+    config,
+  };
 }
 
 describe("createShipService — dep injection defaults", () => {
@@ -1402,8 +1428,30 @@ describe("ShipService.ship — provider routing (L2)", () => {
     h.store.close();
   });
 
-  test("provider claude × cloud throws IllegalProviderRuntimeError before persistence", async () => {
+  test("provider: claude × cloud uses cloudClaude.run; cursor + local claude untouched", async () => {
     const h = await createHarness();
+    h.cloudClaude.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+      provider: "claude",
+      runtime: "cloud",
+      cloud: { ...CLOUD_SPEC, repos: [{ ...CLOUD_SPEC.repos[0], prBranch: "ship/x" }] },
+    });
+    expect(h.cloudClaude.calls).toHaveLength(1);
+    expect(h.claude.calls).toHaveLength(0);
+    expect(h.cloudCursor.calls).toHaveLength(0);
+    expect(out.cursorRun.runtime).toBe("cloud");
+    expect(h.store.getCursorRun(out.cursorRun.id)?.provider).toBe("claude");
+    h.store.close();
+  });
+
+  test("provider claude × cloud without cloudClaude throws CloudRunnerNotConfiguredError", async () => {
+    const h = await createHarness({ omitCloudClaude: true });
     expect(() => {
       void h.service.ship({
         workdir: WORKDIR,
@@ -1411,9 +1459,9 @@ describe("ShipService.ship — provider routing (L2)", () => {
         docPath: "docs.md",
         provider: "claude",
         runtime: "cloud",
-        cloud: CLOUD_SPEC,
+        cloud: { ...CLOUD_SPEC, repos: [{ ...CLOUD_SPEC.repos[0], prBranch: "ship/x" }] },
       });
-    }).toThrow(IllegalProviderRuntimeError);
+    }).toThrow(CloudRunnerNotConfiguredError);
     expect(h.store.listRuns({ limit: 10 })).toHaveLength(0);
     h.store.close();
   });
@@ -1994,6 +2042,7 @@ async function seedOrphanedCloudRun(
     cursorRunId: string;
     agentId?: string;
     runId?: string;
+    provider?: AgentProvider;
   },
 ): Promise<void> {
   h.store.createWorkflowRun({
@@ -2023,6 +2072,7 @@ async function seedOrphanedCloudRun(
     artifactsDir: `${RUNS_DIR}/${opts.workflowRunId}`,
     id: opts.cursorRunId,
     model: { id: "composer-2.5" },
+    ...(opts.provider !== undefined && { provider: opts.provider }),
     runId: opts.runId ?? "run-resume-0001",
     runtime: "cloud",
     workflowRunId: opts.workflowRunId,
@@ -2079,6 +2129,55 @@ describe("ShipService.resumeOrphanedRuns", () => {
 
     await service.resumeOrphanedRuns();
     expect(cloudCursor.attachCalls).toHaveLength(1);
+    store.close();
+  });
+
+  test("claude-cloud orphan routes to cloudClaude.attach, not cloudCursor (FR7)", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    const cloudCursor = new FakeCursorRunner();
+    const cloudClaude = new FakeCursorRunner();
+    cloudClaude.enqueueAttach({
+      events: [],
+      result: { status: "succeeded", durationMs: 100, branches: [], summary: "resumed ok" },
+    });
+
+    await seedOrphanedCloudRun(
+      { fs, store },
+      {
+        cursorRunId: "cr_00000000000000000000000091",
+        phaseId: "ph_00000000000000000000000091",
+        provider: "claude",
+        workflowRunId: "wf_00000000000000000000000091",
+      },
+    );
+
+    const service = createShipService({
+      clock: deterministicClock("2026-05-09T00:06:00.000Z", 1000),
+      config: {
+        cloudClaude,
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    const row = await waitForRunTerminal(service, "wf_00000000000000000000000091");
+    expect(row.status).toBe("succeeded");
+    // The persisted provider:"claude" row attaches via cloudClaude — never cloudCursor.
+    expect(cloudClaude.attachCalls).toHaveLength(1);
+    expect(cloudCursor.attachCalls).toHaveLength(0);
     store.close();
   });
 

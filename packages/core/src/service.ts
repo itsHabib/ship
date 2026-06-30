@@ -128,8 +128,10 @@ export interface ShipServiceConfig {
   readonly cloudCursor?: AgentRunner;
   /** Optional rooms runner; required at dispatch time only for `runtime: "rooms"`. */
   readonly roomCursor?: AgentRunner;
-  /** Optional claude runner; required at dispatch time only for `provider: "claude"`. */
+  /** Optional claude runner; required at dispatch time only for `provider: "claude"` + `runtime: "local"`. */
   readonly claude?: AgentRunner;
+  /** Optional cloud claude runner; required at dispatch time only for `provider: "claude"` + `runtime: "cloud"`. */
+  readonly cloudClaude?: AgentRunner;
   /** Optional codex runner; required at dispatch time only for `provider: "codex"`. */
   readonly codex?: AgentRunner;
   /** Preflight cap for `downloadArtifact` (ED-5). Default: 100 MiB. */
@@ -648,6 +650,7 @@ function selectRunner(
     },
     claude: {
       local: config.claude,
+      cloud: config.cloudClaude,
     },
     codex: {
       local: config.codex,
@@ -2052,8 +2055,20 @@ function synthesizeFailedCursorRun(input: SynthesizeFailedCursorRunInput): Curso
   };
 }
 
+// The cloud runner a resumed row routes to, by the row's persisted provider.
+// Undefined when that provider has no cloud runner wired — the caller then skips
+// the resume rather than attaching with the wrong SDK (FR7). codex has no cloud.
+function resumeCloudRunner(
+  config: ShipServiceConfig,
+  provider: AgentProvider,
+): AgentRunner | undefined {
+  if (provider === "claude") return config.cloudClaude;
+  if (provider === "cursor") return config.cloudCursor;
+  return undefined;
+}
+
 async function resumeOrphanedRuns(ctx: ResumeContext): Promise<void> {
-  if (ctx.config.cloudCursor === undefined) return;
+  if (ctx.config.cloudCursor === undefined && ctx.config.cloudClaude === undefined) return;
   const rows = ctx.store.listResumableCloudCursorRuns();
   if (rows.length === 0) return;
 
@@ -2153,7 +2168,7 @@ function buildResumeAttachContext(args: {
     paths,
     phaseId,
     row,
-    shipCtx: resumeCtxAsShipContext(ctx, row.workflowRunId),
+    shipCtx: resumeCtxAsShipContext(ctx, row.workflowRunId, row.provider),
     worktree,
   };
 }
@@ -2228,8 +2243,11 @@ async function runResumeAttach(
   target: ResumeAttachContext,
   onPumpStarted: (pump: EventPumpHandle) => void,
 ): Promise<void> {
-  const cloudCursor = ctx.config.cloudCursor;
-  if (cloudCursor === undefined) return;
+  // Route to the runner matching the persisted row's provider — a claude-cloud
+  // orphan must attach via cloudClaude, not cloudCursor (FR7). An unconfigured
+  // runner for the row's provider skips the resume (no wrong-SDK attach).
+  const runner = resumeCloudRunner(ctx.config, target.row.provider);
+  if (runner === undefined) return;
 
   let eventPump: EventPumpHandle | undefined;
   const onEvent: AgentRunAttachInput["onEvent"] = (ev) => {
@@ -2256,7 +2274,7 @@ async function runResumeAttach(
         ctx.activeRuns.set(target.row.workflowRunId, { controller: target.controller, handle });
       },
       start: () =>
-        cloudCursor.attach({
+        runner.attach({
           agentId: target.row.agentId,
           cloud: target.cloudSpec,
           log: resumeLog,
@@ -2329,7 +2347,11 @@ async function handleResumeAttachError(
   );
 }
 
-function resumeCtxAsShipContext(ctx: ResumeContext, workflowRunId: string): ShipContext {
+function resumeCtxAsShipContext(
+  ctx: ResumeContext,
+  workflowRunId: string,
+  provider: AgentProvider,
+): ShipContext {
   return {
     activeRuns: ctx.activeRuns,
     clock: ctx.clock,
@@ -2342,11 +2364,11 @@ function resumeCtxAsShipContext(ctx: ResumeContext, workflowRunId: string): Ship
     },
     input: { docPath: "", runtime: "cloud" },
     logger: ctx.logger,
-    // resume is cloud + cursor only today (claude has no cloud/resume in Phase 2);
-    // Phase 3 (cloud claude) must read provider from the persisted run row here.
-    provider: "cursor",
+    // Provider + runner come from the persisted run row (FR7): a claude-cloud
+    // resume must carry provider:"claude" + the cloudClaude runner, not cursor.
+    provider,
     resolvedCursorRuntime: "cloud",
-    runner: ctx.config.cloudCursor ?? ctx.config.cursor,
+    runner: resumeCloudRunner(ctx.config, provider) ?? ctx.config.cursor,
     store: ctx.store,
   };
 }
@@ -2404,7 +2426,7 @@ async function finalizeResumeFailure(
 ): Promise<void> {
   const paths = resolveRunArtifactPaths(ctx.config.runsDir, row.workflowRunId);
   await finalizeFailure({
-    ctx: resumeCtxAsShipContext(ctx, row.workflowRunId),
+    ctx: resumeCtxAsShipContext(ctx, row.workflowRunId, row.provider),
     cursorRunId: row.id,
     err: new Error(args.message),
     paths,

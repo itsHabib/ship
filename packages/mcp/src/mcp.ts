@@ -48,6 +48,11 @@ export const cloudRunSpecSchema = z
           url: z.string().min(1),
           startingRef: z.string().min(1).optional(),
           prUrl: z.string().min(1).optional(),
+          // The branch the agent pushes + opens a PR from. Required-by-refinement
+          // for claude × cloud (below); optional in the type (cursor shares this
+          // schema and ignores it). Non-secret — the GH PAT + MCP endpoint are
+          // runner/wiring-sourced, never the per-task input.
+          prBranch: z.string().min(1).optional(),
         })
         .strict(),
     ]),
@@ -149,6 +154,26 @@ function refineShipInputCrossFields(data: ShipInputCrossFieldData, ctx: z.Refine
   refineRuntimeCloudSpec(runtime, data.cloud, ctx);
   refineRuntimeRoomsSpec(runtime, data.room, ctx);
   refineLocalWorkdirRepo(runtime, data.workdir, data.repo, ctx);
+  refineClaudeCloudPrBranch(data.provider, runtime, data.cloud, ctx);
+}
+
+// claude × cloud requires a prescribed push branch: Managed Agents names no
+// branch, so the runner needs `cloud.repos[].prBranch` to prescribe + reconstruct.
+// A schema error (clear, pre-persistence) beats a runtime branch-not-found.
+function refineClaudeCloudPrBranch(
+  provider: ShipInputProvider | undefined,
+  runtime: ShipInputRuntime,
+  cloud: z.input<typeof cloudRunSpecSchema> | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  if (provider !== "claude" || runtime !== "cloud") return;
+  const prBranch = cloud?.repos[0]?.prBranch;
+  if (prBranch !== undefined && prBranch.length > 0) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["cloud", "repos", 0, "prBranch"],
+    message: "claude × cloud requires cloud.repos[].prBranch (the branch the agent pushes)",
+  });
 }
 
 function refineCodexProviderRuntime(
@@ -171,11 +196,12 @@ function refineClaudeProviderRuntime(
   ctx: z.RefinementCtx,
 ): void {
   if (provider !== "claude") return;
-  if (runtime === "local") return;
+  // claude supports local (Bifrost) + cloud (Managed Agents). rooms is Phase 4.
+  if (runtime === "local" || runtime === "cloud") return;
   ctx.addIssue({
     code: z.ZodIssueCode.custom,
     path: ["provider"],
-    message: "claude provider supports only runtime 'local'",
+    message: "claude provider supports only runtime 'local' or 'cloud'",
   });
 }
 

@@ -16,6 +16,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { inspect } from "node:util";
 
+import type { BranchReconstructState, GhRunner } from "./cloud-branch-reconstruct.js";
 import type {
   CloudClient,
   CloudListedEvent,
@@ -32,6 +33,13 @@ import type {
 } from "./runner.js";
 
 import {
+  branchNotFoundResult,
+  buildDispatchPrompt,
+  defaultGhRunner,
+  newBranchReconstructState,
+  reconstructBranches,
+} from "./cloud-branch-reconstruct.js";
+import {
   archiveOwned,
   buildClient,
   createSession,
@@ -41,6 +49,7 @@ import {
   interruptAndArchive,
   listEvents,
   openStream,
+  readGitHubMcpUrl,
   readGitHubToken,
 } from "./cloud-session.js";
 import {
@@ -124,11 +133,13 @@ function replayHistory(
   seenIds: Set<string>,
   capturedEvents: CloudStreamEvent[],
   startMs: number,
+  branchState: BranchReconstructState,
 ): AgentRunResult | undefined {
   for (const past of history) {
     const id = eventId(past);
     if (id !== undefined) seenIds.add(id);
     recordEvent(capturedEvents, past);
+    branchState.observe(past as unknown as CloudStreamEvent);
     const terminal = detectTerminal(terminalState, past, Date.now() - startMs, capturedEvents);
     if (terminal !== undefined) return terminal;
   }
@@ -148,6 +159,14 @@ function logCloudStartFailure(log: AgentRunInput["log"], err: unknown): void {
 
 /** Construct once, reuse across runs. The runner holds no per-run state. */
 export class CloudClaudeRunner implements AgentRunner {
+  readonly #gh: GhRunner;
+
+  // `gh` is injectable so tests drive the fallback without shelling the host
+  // binary; production omits it and gets `defaultGhRunner`.
+  constructor(gh: GhRunner = defaultGhRunner) {
+    this.#gh = gh;
+  }
+
   async run(input: AgentRunInput): Promise<AgentRunHandle> {
     if (input.runtime !== "cloud") {
       throw new WrongRunnerError('CloudClaudeRunner requires input.runtime === "cloud"');
@@ -216,8 +235,13 @@ export class CloudClaudeRunner implements AgentRunner {
     let sessionId: string | undefined;
 
     try {
+      const githubMcpUrl = readGitHubMcpUrl();
       envResult = await ensureEnvironment(client, { runId: runName });
-      agentResult = await ensureAgent(client, { runId: runName, modelId: input.model.id });
+      agentResult = await ensureAgent(client, {
+        runId: runName,
+        modelId: input.model.id,
+        ...(githubMcpUrl !== undefined && { githubMcpUrl }),
+      });
 
       const pat = readGitHubToken();
       if (pat === undefined) {
@@ -236,7 +260,12 @@ export class CloudClaudeRunner implements AgentRunner {
         pat,
       });
 
-      await dispatch(client, sessionId, input.prompt);
+      const prompt = buildDispatchPrompt(input.prompt, {
+        ...(repo.prBranch !== undefined && { prBranch: repo.prBranch }),
+        ...(repo.startingRef !== undefined && { baseRef: repo.startingRef }),
+        githubMcpAvailable: githubMcpUrl !== undefined,
+      });
+      await dispatch(client, sessionId, prompt);
     } catch (err) {
       logCloudStartFailure(input.log, err);
       // run() owns what it created; archive it on setup failure (archiveSession
@@ -278,6 +307,7 @@ export class CloudClaudeRunner implements AgentRunner {
   ): Promise<void> {
     const startMs = Date.now();
     const capturedEvents: CloudStreamEvent[] = [];
+    const branchState = newBranchReconstructState();
     try {
       // Capture the open outcome rather than bailing here: on attach the session
       // may have finished while Ship was offline, so `#consumeStream` must still
@@ -289,12 +319,48 @@ export class CloudClaudeRunner implements AgentRunner {
       } catch (err) {
         open = { openError: err };
       }
-      const terminal = await this.#consumeStream(open, capturedEvents, input, startMs, opts);
-      callbacks.finalizeOk(terminal);
+      const terminal = await this.#consumeStream(
+        open,
+        capturedEvents,
+        input,
+        startMs,
+        branchState,
+        opts,
+      );
+      const finalResult = await this.#reconstruct(terminal, input, branchState, capturedEvents);
+      callbacks.finalizeOk(finalResult);
     } finally {
       await this.#cleanup(resources);
       callbacks.detachSignalListener();
     }
+  }
+
+  // Post-terminal branch/PR reconstruction. Only an `end_turn` success with a
+  // prescribed `prBranch` reconstructs `branches[]` (PRIMARY stream parse, else
+  // `gh` FALLBACK); a missing branch flips the success to branch-not-found
+  // FAILED. Non-success terminals and runs with no `prBranch` (the 3a / cursor
+  // cloud shape) pass through unchanged.
+  async #reconstruct(
+    terminal: AgentRunResult,
+    input: AgentRunInput,
+    branchState: BranchReconstructState,
+    capturedEvents: CloudStreamEvent[],
+  ): Promise<AgentRunResult> {
+    if (terminal.status !== "succeeded") return terminal;
+    const repo = input.cloud?.repos[0];
+    const prBranch = repo?.prBranch;
+    if (repo === undefined || prBranch === undefined) return terminal;
+
+    const reconstructed = await reconstructBranches({
+      parsed: branchState.result(),
+      repoUrl: repo.url,
+      prBranch,
+      gh: this.#gh,
+    });
+    if (reconstructed === undefined) {
+      return branchNotFoundResult(prBranch, terminal.durationMs, capturedEvents);
+    }
+    return { ...terminal, branches: [reconstructed] };
   }
 
   // Drive the run to its first terminal signal. On attach: emit the synthetic
@@ -306,6 +372,7 @@ export class CloudClaudeRunner implements AgentRunner {
     capturedEvents: CloudStreamEvent[],
     input: AgentRunInput,
     startMs: number,
+    branchState: BranchReconstructState,
     opts?: PipelineOpts,
   ): Promise<AgentRunResult> {
     const terminalState = newCloudTerminalState();
@@ -340,7 +407,14 @@ export class CloudClaudeRunner implements AgentRunner {
     }
 
     if (history !== undefined) {
-      const fromHistory = replayHistory(history, terminalState, seenIds, capturedEvents, startMs);
+      const fromHistory = replayHistory(
+        history,
+        terminalState,
+        seenIds,
+        capturedEvents,
+        startMs,
+        branchState,
+      );
       if (fromHistory !== undefined) return fromHistory;
     }
 
@@ -353,6 +427,7 @@ export class CloudClaudeRunner implements AgentRunner {
       for await (const ev of open.stream) {
         if (isDuplicate(seenIds, ev)) continue;
         recordEvent(capturedEvents, ev);
+        branchState.observe(ev);
         safelyEmit(ev);
         const terminal = detectTerminal(terminalState, ev, Date.now() - startMs, capturedEvents);
         if (terminal !== undefined) return terminal;

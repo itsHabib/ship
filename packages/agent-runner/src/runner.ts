@@ -70,7 +70,18 @@ export interface AgentRunAttachInput {
 
 export interface CloudRunSpec {
   readonly repos: readonly [
-    { readonly url: string; readonly startingRef?: string; readonly prUrl?: string },
+    {
+      readonly url: string;
+      readonly startingRef?: string;
+      readonly prUrl?: string;
+      /**
+       * Branch the agent must push + open a PR from. Required (schema-enforced)
+       * for `claude × cloud` — Managed Agents names no branch, so Ship prescribes
+       * one and reconstructs the PR from it. Cursor cloud ignores it (its backend
+       * names the branch).
+       */
+      readonly prBranch?: string;
+    },
   ];
   readonly workOnCurrentBranch?: boolean;
   readonly autoCreatePR?: boolean;
