@@ -5,11 +5,10 @@
 
 import { describe, expect, test } from "vitest";
 
-import type { GhResult, GhRunner } from "./cloud-branch-reconstruct.js";
+import type { BranchReconstructState, GhResult, GhRunner } from "./cloud-branch-reconstruct.js";
 import type { CloudStreamEvent } from "./cloud-session.js";
 
 import {
-  BranchReconstructState,
   branchNotFoundResult,
   buildDispatchPrompt,
   newBranchReconstructState,

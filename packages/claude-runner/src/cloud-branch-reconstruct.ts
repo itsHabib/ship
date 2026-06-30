@@ -86,10 +86,13 @@ export class BranchReconstructState {
   observe(ev: CloudStreamEvent): void {
     const e = ev as { type?: string };
     if (e.type === "agent.mcp_tool_use") {
-      this.#observeToolUse(ev as unknown as ToolUseEvent);
+      this.#observeToolUse(ev);
       return;
     }
     if (e.type === "agent.mcp_tool_result") {
+      // Cast needed: ToolResultEvent's fields are all optional, so the
+      // CloudStreamEvent union trips TS's weak-type check (no common props with
+      // some members). The `type` guard above already proves the shape at runtime.
       this.#observeToolResult(ev as unknown as ToolResultEvent);
     }
   }

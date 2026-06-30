@@ -124,6 +124,15 @@ function isDuplicate(seenIds: Set<string>, ev: unknown): boolean {
   return false;
 }
 
+// Per-run accumulators threaded through the pipeline as one bag, so the consume
+// helpers stay within the parameter budget. Both are fed every event (live +
+// replayed history): `capturedEvents` is the bounded classification window;
+// `branchState` captures the PR-create tool result for reconstruction.
+interface RunAccumulators {
+  readonly capturedEvents: CloudStreamEvent[];
+  readonly branchState: BranchReconstructState;
+}
+
 // Attach path: replay prior history through the reducer (rebuilding state + seeding
 // dedup; not re-emitted). Returns the terminal if the session already finished
 // offline, else undefined so the live stream continues from where it left off.
@@ -131,16 +140,15 @@ function replayHistory(
   history: readonly CloudListedEvent[],
   terminalState: CloudTerminalState,
   seenIds: Set<string>,
-  capturedEvents: CloudStreamEvent[],
+  acc: RunAccumulators,
   startMs: number,
-  branchState: BranchReconstructState,
 ): AgentRunResult | undefined {
   for (const past of history) {
     const id = eventId(past);
     if (id !== undefined) seenIds.add(id);
-    recordEvent(capturedEvents, past);
-    branchState.observe(past as unknown as CloudStreamEvent);
-    const terminal = detectTerminal(terminalState, past, Date.now() - startMs, capturedEvents);
+    recordEvent(acc.capturedEvents, past);
+    acc.branchState.observe(past);
+    const terminal = detectTerminal(terminalState, past, Date.now() - startMs, acc.capturedEvents);
     if (terminal !== undefined) return terminal;
   }
   return undefined;
@@ -306,8 +314,7 @@ export class CloudClaudeRunner implements AgentRunner {
     opts?: PipelineOpts,
   ): Promise<void> {
     const startMs = Date.now();
-    const capturedEvents: CloudStreamEvent[] = [];
-    const branchState = newBranchReconstructState();
+    const acc: RunAccumulators = { capturedEvents: [], branchState: newBranchReconstructState() };
     try {
       // Capture the open outcome rather than bailing here: on attach the session
       // may have finished while Ship was offline, so `#consumeStream` must still
@@ -319,15 +326,8 @@ export class CloudClaudeRunner implements AgentRunner {
       } catch (err) {
         open = { openError: err };
       }
-      const terminal = await this.#consumeStream(
-        open,
-        capturedEvents,
-        input,
-        startMs,
-        branchState,
-        opts,
-      );
-      const finalResult = await this.#reconstruct(terminal, input, branchState, capturedEvents);
+      const terminal = await this.#consumeStream(open, acc, input, startMs, opts);
+      const finalResult = await this.#reconstruct(terminal, input, acc);
       callbacks.finalizeOk(finalResult);
     } finally {
       await this.#cleanup(resources);
@@ -343,8 +343,7 @@ export class CloudClaudeRunner implements AgentRunner {
   async #reconstruct(
     terminal: AgentRunResult,
     input: AgentRunInput,
-    branchState: BranchReconstructState,
-    capturedEvents: CloudStreamEvent[],
+    acc: RunAccumulators,
   ): Promise<AgentRunResult> {
     if (terminal.status !== "succeeded") return terminal;
     const repo = input.cloud?.repos[0];
@@ -352,13 +351,13 @@ export class CloudClaudeRunner implements AgentRunner {
     if (repo === undefined || prBranch === undefined) return terminal;
 
     const reconstructed = await reconstructBranches({
-      parsed: branchState.result(),
+      parsed: acc.branchState.result(),
       repoUrl: repo.url,
       prBranch,
       gh: this.#gh,
     });
     if (reconstructed === undefined) {
-      return branchNotFoundResult(prBranch, terminal.durationMs, capturedEvents);
+      return branchNotFoundResult(prBranch, terminal.durationMs, acc.capturedEvents);
     }
     return { ...terminal, branches: [reconstructed] };
   }
@@ -369,12 +368,12 @@ export class CloudClaudeRunner implements AgentRunner {
   // Otherwise pass every live event through to `onEvent` opaquely, deduped by id.
   async #consumeStream(
     open: StreamOpenResult,
-    capturedEvents: CloudStreamEvent[],
+    acc: RunAccumulators,
     input: AgentRunInput,
     startMs: number,
-    branchState: BranchReconstructState,
     opts?: PipelineOpts,
   ): Promise<AgentRunResult> {
+    const { capturedEvents, branchState } = acc;
     const terminalState = newCloudTerminalState();
     const seenIds = new Set<string>();
     const safelyEmit = (ev: CloudStreamEvent): void => {
@@ -407,14 +406,7 @@ export class CloudClaudeRunner implements AgentRunner {
     }
 
     if (history !== undefined) {
-      const fromHistory = replayHistory(
-        history,
-        terminalState,
-        seenIds,
-        capturedEvents,
-        startMs,
-        branchState,
-      );
+      const fromHistory = replayHistory(history, terminalState, seenIds, acc, startMs);
       if (fromHistory !== undefined) return fromHistory;
     }
 
