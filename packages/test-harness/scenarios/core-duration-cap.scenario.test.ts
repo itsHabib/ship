@@ -58,7 +58,13 @@ async function flushUntil(probe: () => boolean, label: string): Promise<void> {
 beforeEach(() => {
   // setImmediate / setInterval / Date stay real: the flush helper and the
   // event pump must keep working while only the cap window is virtual.
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  // `performance` is faked alongside the cap timer so the cap's monotonic
+  // clock (`performance.now`) advances in step with `setTimeout` virtual time.
+  // Without it, every fake-timer fire looks like a host-suspend / clock-jump
+  // misfire to the cap's monotonic re-validation guard, which re-arms for the
+  // remaining window instead of expiring — the run never fails and the test
+  // times out.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 });
 
 afterEach(() => {
