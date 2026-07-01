@@ -6,7 +6,7 @@ The sole package that imports `@anthropic-ai/claude-agent-sdk` directly — **SD
 
 ## Public surface
 
-- **`LocalClaudeRunner`** — drives `query({ prompt, options })` with Bifrost env injection; rejects non-local runtime; `attach` throws `OperationNotSupportedError`.
+- **`LocalClaudeRunner`** — drives `query({ prompt, options })` with gateway env injection; rejects non-local runtime; `attach` throws `OperationNotSupportedError`.
 - **`classifyFailure` / `buildFailureDetail`** — Claude-bound failure classification over the bounded event window.
 - **`claudeEventProjection`** — normalizes Claude SDK messages to the neutral `EventProjection` vocabulary.
 - **SDK re-export** — `SDKMessage` type-only for consumers without a direct SDK dep.
