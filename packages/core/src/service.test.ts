@@ -2181,6 +2181,52 @@ describe("ShipService.resumeOrphanedRuns", () => {
     store.close();
   });
 
+  test("claude-cloud orphan with cloudClaude unwired finalizes as failed, no cloudCursor attach (FR7)", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir(RUNS_DIR, { recursive: true });
+    const store = createStore({
+      clock: deterministicClock("2026-05-09T00:00:00.000Z"),
+      dbPath: ":memory:",
+    });
+    // cloudCursor present so the resume sweep runs; cloudClaude deliberately
+    // unwired (e.g. a rollback dropped it) so the claude row has no runner.
+    const cloudCursor = new FakeCursorRunner();
+
+    await seedOrphanedCloudRun(
+      { fs, store },
+      {
+        cursorRunId: "cr_00000000000000000000000092",
+        phaseId: "ph_00000000000000000000000092",
+        provider: "claude",
+        workflowRunId: "wf_00000000000000000000000092",
+      },
+    );
+
+    const service = createShipService({
+      clock: deterministicClock("2026-05-09T00:06:00.000Z", 1000),
+      config: {
+        cloudCursor,
+        cursor: new FakeCursorRunner(),
+        defaultModel: { id: "composer-2.5" },
+        runsDir: RUNS_DIR,
+      },
+      fs,
+      resumeOrphans: true,
+      store,
+      ids: deterministicIds(),
+    });
+
+    await service.drainBackground();
+    await service.resumeReady();
+    const row = await waitForRunTerminal(service, "wf_00000000000000000000000092");
+    // No runner for provider:"claude" → finalized as a failure, not left running
+    // to be retried on every boot.
+    expect(row.status).toBe("failed");
+    // Never attach with the wrong SDK.
+    expect(cloudCursor.attachCalls).toHaveLength(0);
+    store.close();
+  });
+
   test("agent-gone on a stale row terminalizes the run", async () => {
     // A not-found agent can never produce a result; leaving the row
     // running would strand it until a manual cancelRun. The staleness

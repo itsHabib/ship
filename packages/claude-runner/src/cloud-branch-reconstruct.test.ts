@@ -180,6 +180,26 @@ describe("reconstructBranches", () => {
     expect(result).toEqual({ repoUrl, branch: "ship/x" });
   });
 
+  test("FALLBACK: branch-exists probe encodes the branch as one path segment", async () => {
+    const calls: (readonly string[])[] = [];
+    const recordingGh: GhRunner = (args) => {
+      calls.push(args);
+      if (args[0] === "pr" && args[1] === "list")
+        return Promise.resolve({ stdout: "[]", exitCode: 0 });
+      return Promise.resolve({ stdout: "{}", exitCode: 0 });
+    };
+    // `#` is legal in a git branch name but would start a URL fragment unencoded,
+    // truncating the request path to the wrong branch.
+    await reconstructBranches({
+      parsed: undefined,
+      repoUrl,
+      prBranch: "feature#bug",
+      gh: recordingGh,
+    });
+    const apiCall = calls.find((c) => c[0] === "api");
+    expect(apiCall).toEqual(["api", "repos/acme/test/branches/feature%23bug"]);
+  });
+
   test("NONE: no PR + no branch → undefined (→ branch-not-found)", async () => {
     const result = await reconstructBranches({ parsed: undefined, repoUrl, prBranch, gh: gh() });
     expect(result).toBeUndefined();

@@ -206,7 +206,10 @@ function firstGhPr(stdout: string): GhPr | undefined {
 }
 
 async function ghBranchExists(gh: GhRunner, slug: string, prBranch: string): Promise<boolean> {
-  const res = await gh(["api", `repos/${slug}/branches/${prBranch}`]);
+  // Encode the branch as one path segment. GitHub's get-a-branch route greedily
+  // matches slashes so `ship/x` resolves unencoded, but names may carry `#`, `%`,
+  // or other bytes that would otherwise truncate or misroute the request path.
+  const res = await gh(["api", `repos/${slug}/branches/${encodeURIComponent(prBranch)}`]);
   return res.exitCode === 0;
 }
 
