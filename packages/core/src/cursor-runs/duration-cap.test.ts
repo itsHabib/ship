@@ -10,12 +10,23 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { CursorRunStartTimedOutError } from "../errors.js";
 import {
+  type DurationCapRunArgs,
+  MAX_CAP_REARMS,
   MAX_TIMER_DELAY_MS,
   MIN_RESUMED_CAP_WINDOW_MS,
   runWithDurationCap,
 } from "./duration-cap.js";
 
 const CAP_MS = 30 * 60 * 1000;
+
+// vitest fake timers advance `Date` but not `performance.now`, so tests drive
+// the cap's monotonic clock off `Date.now()` — it moves in step with
+// `advanceTimersByTimeAsync`, exactly as the production monotonic clock would
+// on a machine whose clock isn't jumping. Individual tests override
+// `monotonicClock` to simulate a suspend / jump (timer fires, monotonic doesn't).
+function runCap(args: DurationCapRunArgs): Promise<AgentRunResult> {
+  return runWithDurationCap({ monotonicClock: () => Date.now(), ...args });
+}
 
 const succeededResult: AgentRunResult = {
   branches: [],
@@ -50,7 +61,7 @@ describe("runWithDurationCap", () => {
   test("passes the runner result through when it settles before the cap", async () => {
     const { cancel, handle } = fakeHandle(Promise.resolve(succeededResult));
     const onHandle = vi.fn();
-    const out = await runWithDurationCap({
+    const out = await runCap({
       maxRunDurationMs: CAP_MS,
       onHandle,
       start: () => Promise.resolve(handle),
@@ -67,7 +78,7 @@ describe("runWithDurationCap", () => {
     const boom = new Error("runner exploded");
     const { cancel, handle } = fakeHandle(Promise.reject(boom));
     await expect(
-      runWithDurationCap({
+      runCap({
         maxRunDurationMs: CAP_MS,
         onHandle: () => undefined,
         start: () => Promise.resolve(handle),
@@ -81,7 +92,7 @@ describe("runWithDurationCap", () => {
     const boom = new Error("Agent.create failed");
     const onHandle = vi.fn();
     await expect(
-      runWithDurationCap({
+      runCap({
         maxRunDurationMs: CAP_MS,
         onHandle,
         start: () => Promise.reject(boom),
@@ -93,7 +104,7 @@ describe("runWithDurationCap", () => {
 
   test("cap expiry after the handle exists cancels the run and synthesizes a failed terminal", async () => {
     const { cancel, handle } = fakeHandle(pendingForever());
-    const pending = runWithDurationCap({
+    const pending = runCap({
       maxRunDurationMs: CAP_MS,
       onHandle: () => undefined,
       start: () => Promise.resolve(handle),
@@ -120,7 +131,7 @@ describe("runWithDurationCap", () => {
     const start = new Promise<AgentRunHandle>((resolve) => {
       resolveStart = resolve;
     });
-    const pending = runWithDurationCap({
+    const pending = runCap({
       maxRunDurationMs: CAP_MS,
       onHandle,
       start: () => start,
@@ -149,7 +160,7 @@ describe("runWithDurationCap", () => {
       result: pendingForever(),
       runId: "run-x",
     };
-    const pending = runWithDurationCap({
+    const pending = runCap({
       maxRunDurationMs: CAP_MS,
       onHandle: () => undefined,
       start: () => Promise.resolve(handle),
@@ -163,7 +174,7 @@ describe("runWithDurationCap", () => {
   test("resume elapsed shrinks the window to the remaining budget", async () => {
     const elapsedMs = 20 * 60 * 1000;
     const { handle } = fakeHandle(pendingForever());
-    const pending = runWithDurationCap({
+    const pending = runCap({
       elapsedMs,
       maxRunDurationMs: CAP_MS,
       onHandle: () => undefined,
@@ -179,7 +190,7 @@ describe("runWithDurationCap", () => {
   test("resume with the budget already spent still gets the grace window", async () => {
     const elapsedMs = 2 * CAP_MS;
     const { cancel, handle } = fakeHandle(pendingForever());
-    const pending = runWithDurationCap({
+    const pending = runCap({
       elapsedMs,
       maxRunDurationMs: CAP_MS,
       onHandle: () => undefined,
@@ -196,7 +207,7 @@ describe("runWithDurationCap", () => {
   test("the grace window never exceeds the configured cap", async () => {
     const capMs = 10_000; // smaller than the 60s grace floor
     const { handle } = fakeHandle(pendingForever());
-    const pending = runWithDurationCap({
+    const pending = runCap({
       elapsedMs: 9_000,
       maxRunDurationMs: capMs,
       onHandle: () => undefined,
@@ -217,7 +228,7 @@ describe("runWithDurationCap", () => {
       rejectResult = reject;
     });
     const { cancel, handle } = fakeHandle(result);
-    const pending = runWithDurationCap({
+    const pending = runCap({
       maxRunDurationMs: CAP_MS,
       onHandle: () => undefined,
       start: () => Promise.resolve(handle),
@@ -238,7 +249,7 @@ describe("runWithDurationCap", () => {
     const start = new Promise<AgentRunHandle>((_resolve, reject) => {
       rejectStart = reject;
     });
-    const pending = runWithDurationCap({
+    const pending = runCap({
       maxRunDurationMs: CAP_MS,
       onHandle,
       start: () => start,
@@ -257,7 +268,7 @@ describe("runWithDurationCap", () => {
     const boom = new Error("runner.run threw synchronously");
     const onHandle = vi.fn();
     await expect(
-      runWithDurationCap({
+      runCap({
         maxRunDurationMs: CAP_MS,
         onHandle,
         start: () => {
@@ -270,10 +281,10 @@ describe("runWithDurationCap", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  test("a cap above Node's timer max fires at the limit, not clamped to 1ms", async () => {
+  test("a cap above Node's timer max re-arms past the clamp instead of firing early", async () => {
     const hugeCap = MAX_TIMER_DELAY_MS + 5_000_000; // beyond the 32-bit setTimeout ceiling
     const { handle } = fakeHandle(pendingForever());
-    const pending = runWithDurationCap({
+    const pending = runCap({
       maxRunDurationMs: hugeCap,
       onHandle: () => undefined,
       start: () => Promise.resolve(handle),
@@ -282,9 +293,13 @@ describe("runWithDurationCap", () => {
     // fired here — assert it did NOT.
     await vi.advanceTimersByTimeAsync(10_000);
     expect(vi.getTimerCount()).toBe(1);
-    // Firing at the clamped ceiling resolves the synthetic terminal, whose
-    // duration still reflects the configured cap, not the clamp.
+    // The clamped ceiling fires, but real (monotonic) elapsed hasn't reached the
+    // cap, so it re-arms for the remainder rather than expiring early.
     await vi.advanceTimersByTimeAsync(MAX_TIMER_DELAY_MS);
+    expect(vi.getTimerCount()).toBe(1);
+    // Advancing the remainder reaches the real cap → synthetic terminal, whose
+    // duration reflects the configured cap, not the clamp.
+    await vi.advanceTimersByTimeAsync(hugeCap - MAX_TIMER_DELAY_MS - 10_000);
     const out = await pending;
     expect(out.status).toBe("failed");
     expect(out.durationMs).toBe(hugeCap);
@@ -296,7 +311,7 @@ describe("runWithDurationCap", () => {
       resolveRunner = resolve;
     });
     const { cancel, handle } = fakeHandle(runner);
-    const pending = runWithDurationCap({
+    const pending = runCap({
       elapsedMs: 2 * CAP_MS,
       maxRunDurationMs: CAP_MS,
       onHandle: () => undefined,
@@ -308,5 +323,52 @@ describe("runWithDurationCap", () => {
     expect(out).toBe(succeededResult);
     expect(cancel).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  // The keystone: a timer that fires after a host suspend / wall-clock jump —
+  // when no real (monotonic) run time elapsed — must NOT synthesize a
+  // timeout-near-cap. It re-arms for the remaining window instead.
+  test("a timer misfire (suspend / clock jump) re-arms instead of failing", async () => {
+    let mono = 0;
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runCap({
+      maxRunDurationMs: CAP_MS,
+      // Monotonic clock stays at 0 across the first fire — the event-loop timer
+      // fired (wall time jumped) but no real run time passed.
+      monotonicClock: () => mono,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(CAP_MS);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1); // re-armed, not resolved
+    // Now let real (monotonic) time reach the window; the re-armed timer expires.
+    mono = CAP_MS;
+    await vi.advanceTimersByTimeAsync(CAP_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(out.durationMs).toBe(CAP_MS);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("re-arming is bounded by MAX_CAP_REARMS (runaway backstop)", async () => {
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => 0, // frozen: every fire looks like a misfire
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    // A frozen monotonic clock would re-arm forever; the backstop forces expiry.
+    // Each of the first MAX_CAP_REARMS fires re-arms (another full window)...
+    for (let i = 0; i < MAX_CAP_REARMS; i += 1) {
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+      expect(cancel).not.toHaveBeenCalled();
+    }
+    // ...the next fire hits the backstop and expires despite the frozen clock.
+    await vi.advanceTimersByTimeAsync(CAP_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
