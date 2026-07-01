@@ -34,7 +34,7 @@ Three rules carry the design:
 
 | Signal | Pair | Clock | Notes / blind spot |
 |---|---|---|---|
-| `monoAge` | trusted mono segments since arm (see fire classifier) | local monotonic | pauses across suspend; a *step-suspect* segment contributes **zero** (over-count-unsafe) |
+| `monoAge` | trusted mono segments since arm (see fire classifier) | local monotonic | pauses across suspend; on remote-signal runs a *step-suspect* segment contributes **zero** (over-count-unsafe; local runs have no adjudicator and treat it as served) |
 | `streamAge` | latest provider event ts − earliest known server anchor | provider server | folded **per event** (zero I/O); dies with the local connection; on attach the stream-only anchor undercounts pre-attach age unless the persisted server `createdAtMs` re-anchors it — the probe is load-bearing on resume |
 | `probeAge` | provider record `updatedAt − createdAt` | provider server | freezes on a hung run; needs a bounded network round-trip |
 | `wallAge` | local wall now − persisted `startedAt` (fallback: the run row's creation wall time when `startedAt` is missing/insane) | local wall ×2 | jumps with the wall clock — admitted **only** in the rule-5 fail-closed conjunction, never into the floor |
@@ -44,7 +44,7 @@ Three rules carry the design:
 ## Decision points
 
 - **Timer fire — classified two-sided** against its armed delay (slack ~60s), because a fire's timing is evidence about the clocks themselves:
-  - *Served* (`monoΔ ≈ armedDelay`): a mono-corroborated segment. Fold it into `monoAge`; floor ≥ cap → expire. This is #165's normal expiry re-expressed as a floor crossing; local runs always take this path unchanged.
+  - *Served* (`monoΔ ≈ armedDelay`): a mono-corroborated segment. Fold it into `monoAge` (plus any fresh sync signals); floor ≥ cap → expire. Floor still < cap — which a served fire only reaches when the armed delay was clamped below `cap − floorAtArm` (the `MAX_TIMER_DELAY_MS` segmentation of a multi-week cap) — re-arm for `min(remaining, cap − floor)`: the healthy clamped-segment continuation from #165, spending no re-arm budget and firing no probe. This is #165's normal expiry re-expressed as a floor crossing; local runs always take this path unchanged.
   - *Early* (`monoΔ < armedDelay`): the #165 misfire (divergent-clock flavor). Fold the (trusted) mono delta and `streamAge`; floor ≥ cap → expire; else re-arm per rule 3, fire **one bounded probe** (`PROBE_TIMEOUT_MS`, ~10s), spend the re-arm budget.
   - *Late* (`monoΔ > armedDelay + slack`): a **step-suspect** fire — the monotonic clock itself jumped forward (or the event loop stalled). The suspect segment's mono delta is over-count-unsafe and contributes zero to the floor. For a remote-signal run: fold `streamAge`; floor ≥ cap → expire; else re-arm + probe — the remote signals adjudicate, so a forward mono step cannot false-cancel a young cloud run unprobed. For a **local** run there is no adjudicator: treat as served and expire (status quo; documented residual — a genuine event-loop stall and a mono step are locally indistinguishable, and mono is the only truth available).
 - **Wake / discontinuity detector** (remote-signal runs only): paired `(wall, mono)` readings sampled on a coarse local cadence (the event-pump interval). When `wallΔ − monoΔ` across one interval exceeds a threshold (~60s), the local clocks paused together — the paused-clock suspend flavor, which produces **no** early fire. Run the early-fire steps: fold sync signals, expire if floor ≥ cap, else re-arm + one bounded probe. The detector compares two same-clock *deltas* and yields a **trigger, never an age term** — the never-cross-clocks rule is untouched. Zero remote I/O when nothing discontinuous happened.
@@ -99,7 +99,7 @@ The synthetic terminal reports the **greater of the consumed cap budget and the 
 
 `make check` green. Fake timers + injected monotonic clock + scripted fake-runner signals (fakes expose scriptable liveness/probe and a manual detector tick):
 
-- Paused-clock suspend: no early fire; detector hit folds probe/stream age ≥ cap → expiry + cancel. Same scenario with the stream reconnecting first → the event fold alone expires it.
+- Paused-clock suspend: no early fire; detector hit folds probe/stream age ≥ cap → expiry + cancel. Same scenario with the stream reconnecting first → the event fold alone expires it. Detector false positive: a hit on a young run → probe confirms young → window shrinks per rule 3, run survives.
 - Divergent-clock suspend (early fire): sync floor ≥ cap → immediate expiry; sync floor < cap with probe ≥ cap → expiry on probe resolution, re-armed timer cleared.
 - Step-suspect (late) fire on a cloud run: suspect mono folds zero; young probe → survives; over-cap stream age → expires. Same late fire on a local run → expires (status quo).
 - Aged floor: a probe answer folded at T keeps counting through trusted segments; a second suspend pauses it; the next fold re-covers. Floor never decreases (property).
@@ -131,5 +131,5 @@ The synthetic terminal reports the **greater of the consumed cap budget and the 
 3. `cursor-runner` cloud: stream-fed liveness snapshot (provider-origin events only) + REST/SDK probe.
 4. `claude-runner` cloud: sessions-API probe, or `undefined` degrade with a doc note.
 5. `duration-cap.ts`: live floor (aged samples), two-sided fire classifier, discontinuity detector hook, per-event fold entry point, probe machinery (shared counter, budget reset, retry schedule on broken-seed attach), rule-3 re-derivation, `kind` arg, `wallAgeMs` + `rowCreatedAtWallMs` suppliers on `DurationCapRunArgs` (service injects from the persisted row vs `ctx.clock()`).
-6. `service.ts`: thread signals, `kind`, seeds, and the detector cadence through `runToTerminal` and `runResumeAttach`; wire the per-event fold into the existing `onEvent` taps.
+6. `service.ts`: thread signals, `kind`, seeds, and the detector cadence through `runToTerminal` and `runResumeAttach`; wire the per-event fold into the existing `onEvent` taps — the provider-origin-only filter is enforced at this wire-up point (ship-synthesized events never reach the fold), not inside `duration-cap.ts`.
 7. Tests per plan. (The deferred-alternative pointer in `freeze-duration-cap-suspend.md` ships with this spec's own PR.)
