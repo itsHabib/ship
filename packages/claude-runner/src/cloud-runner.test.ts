@@ -400,6 +400,34 @@ describe("CloudClaudeRunner.run — pre-dispatch failures reject + clean up", ()
     );
     expect(vi.mocked(archiveOwned)).toHaveBeenCalledOnce();
   });
+
+  test("a token-bearing GITHUB_MCP_URL is redacted from the setup-failure dump", async () => {
+    const secretUrl = "https://ghp_SUPERSECRET@mcp.example.com/gh";
+    vi.mocked(readGitHubMcpUrl).mockReturnValue(secretUrl);
+    // The SDK error echoes the request (incl. the mcp_servers url) — simulate it.
+    vi.mocked(ensureAgent).mockRejectedValue(
+      new Error(`agents.create failed for mcp url ${secretUrl}`),
+    );
+    const logError = vi.fn();
+    const log = {
+      error: logError,
+      warn: vi.fn(),
+      info: vi.fn(),
+      debug: vi.fn(),
+      child: vi.fn(),
+    } as unknown as NonNullable<AgentRunInput["log"]>;
+
+    await expect(new CloudClaudeRunner().run(makeInput({ log }))).rejects.toThrow(
+      /cloud session setup failed/,
+    );
+
+    const setupFailure = logError.mock.calls.find((c) => c[1] === "cloud session setup failed");
+    expect(setupFailure).toBeDefined();
+    const dump = (setupFailure?.[0] as { err?: string }).err ?? "";
+    expect(dump).not.toContain("ghp_SUPERSECRET");
+    expect(dump).not.toContain(secretUrl);
+    expect(dump).toContain("<GITHUB_MCP_URL redacted>");
+  });
 });
 
 describe("CloudClaudeRunner.cancel", () => {

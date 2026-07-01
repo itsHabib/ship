@@ -71,11 +71,13 @@ function buildAgentTools(githubMcpUrl: string | undefined): AgentTool[] {
 
 // SECURITY (resolved at L4): `URLMCPServerParams` carries no auth-header field,
 // so any credential must ride in the URL itself — and this `url` is sent in the
-// `agents.create` request body, where a token-bearing URL would surface in
-// Anthropic API logs / error payloads in plaintext. L4 must pick a non-leaking
-// delivery (server-side session vault, short-lived scoped token, or a proxy that
-// injects auth) before the token-bearing path ships. Until then, prefer a
-// GITHUB_MCP_URL whose auth is managed by the MCP endpoint operator, not embedded.
+// `agents.create` request body. Our own setup-failure dump redacts it (see
+// `logCloudStartFailure`), but the request body still reaches Anthropic's
+// servers, where a token-bearing URL would land in their API logs in plaintext.
+// L4 must pick a non-leaking delivery (server-side session vault, short-lived
+// scoped token, or a proxy that injects auth) before the token-bearing path
+// ships. Until then, prefer a GITHUB_MCP_URL whose auth is managed by the MCP
+// endpoint operator, not embedded.
 function buildMcpServers(
   githubMcpUrl: string | undefined,
 ): BetaManagedAgentsURLMCPServerParams[] | undefined {

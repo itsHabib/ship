@@ -155,10 +155,22 @@ function replayHistory(
 }
 
 // Stderr-dump the raw cause chain when session setup fails. Best-effort; never throws.
-function logCloudStartFailure(log: AgentRunInput["log"], err: unknown): void {
+const GH_MCP_URL_REDACTION = "<GITHUB_MCP_URL redacted>";
+
+function logCloudStartFailure(
+  log: AgentRunInput["log"],
+  err: unknown,
+  githubMcpUrl: string | undefined,
+): void {
   try {
     if (log === undefined) return;
-    const dump = inspect(err, { depth: 10, showHidden: true, breakLength: 100 });
+    const raw = inspect(err, { depth: 10, showHidden: true, breakLength: 100 });
+    // A token-bearing GITHUB_MCP_URL rides in the agents.create body, so it can
+    // surface in the SDK error object; scrub it before the dump reaches the logs.
+    const dump =
+      githubMcpUrl !== undefined && githubMcpUrl !== ""
+        ? raw.split(githubMcpUrl).join(GH_MCP_URL_REDACTION)
+        : raw;
     log.error({ failureCategory: "sdk-throw", err: dump }, "cloud session setup failed");
   } catch {
     // swallow — diagnostic logging must never affect control flow
@@ -238,12 +250,15 @@ export class CloudClaudeRunner implements AgentRunner {
     runName: string,
   ): Promise<SessionResources> {
     const client = buildClient(apiKey, process.env[BASE_URL_ENV]);
+    // Hoisted above the try so the failure path can redact it: a token-bearing
+    // GITHUB_MCP_URL rides in the agents.create body, so it can surface in the
+    // SDK error object that logCloudStartFailure dumps.
+    const githubMcpUrl = readGitHubMcpUrl();
     let envResult: EnsureResult | undefined;
     let agentResult: EnsureResult | undefined;
     let sessionId: string | undefined;
 
     try {
-      const githubMcpUrl = readGitHubMcpUrl();
       envResult = await ensureEnvironment(client, { runId: runName });
       agentResult = await ensureAgent(client, {
         runId: runName,
@@ -275,7 +290,7 @@ export class CloudClaudeRunner implements AgentRunner {
       });
       await dispatch(client, sessionId, prompt);
     } catch (err) {
-      logCloudStartFailure(input.log, err);
+      logCloudStartFailure(input.log, err, githubMcpUrl);
       // run() owns what it created; archive it on setup failure (archiveSession
       // skips the empty-sessionId case where the session was never created).
       await this.#cleanup({

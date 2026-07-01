@@ -282,12 +282,18 @@ export function branchNotFoundResult(
   durationMs: number,
   capturedEvents: readonly unknown[],
 ): AgentRunResult {
+  const detail = `expected branch \`${prBranch}\` not found after end_turn (agent did not push, or used a different branch)`;
   return {
     branches: [],
     classificationEvents: capturedEvents.slice(-MAX_CLASSIFICATION_EVENTS),
     durationMs,
-    errorMessage: `expected branch \`${prBranch}\` not found after end_turn (agent did not push, or used a different branch)`,
+    errorMessage: detail,
+    // Also set failureDetail: core's classifyFailedRun takes the pre-classified
+    // path when failureCategory is set and rebuilds the persisted errorMessage
+    // from (category, failureDetail). Without this, the prescribed branch name
+    // (FR5) is dropped in favor of a bare "logic; " message.
     failureCategory: "logic",
+    failureDetail: detail,
     sdkTerminalStatus: "branch-not-found",
     status: "failed",
   };

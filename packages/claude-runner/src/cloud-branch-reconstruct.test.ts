@@ -270,4 +270,13 @@ describe("branchNotFoundResult", () => {
     expect(result.errorMessage).toContain("ship/x");
     expect(result.branches).toEqual([]);
   });
+
+  test("sets failureDetail so core finalization keeps the branch name (FR5)", () => {
+    // core's classifyFailedRun takes the pre-classified path when failureCategory
+    // is set and rebuilds the persisted errorMessage as `${category}; ${detail}`.
+    // Without failureDetail the branch name is dropped to a bare "logic; ".
+    const result = branchNotFoundResult("ship/x", 1234, []);
+    expect(result.failureDetail).toContain("ship/x");
+    expect(result.failureDetail).toBe(result.errorMessage);
+  });
 });
