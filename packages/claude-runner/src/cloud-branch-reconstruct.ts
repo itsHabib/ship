@@ -298,6 +298,10 @@ export function branchNotFoundResult(
  * message. Returns the base prompt unchanged when no `prBranch` is set (the 3a
  * behavior — cursor-shaped cloud spec with no branch prescription). Kept minimal
  * + deterministic so the branch name is predictable for the `gh` fallback (ED-4).
+ *
+ * `baseRef` is expected to be a branch name (a PR base must be a branch); a bare
+ * commit SHA would read oddly in the instruction and `gh pr create` can't target
+ * it. Callers pass the run's `startingRef`, which is a branch ref in this path.
  */
 export function buildDispatchPrompt(
   basePrompt: string,

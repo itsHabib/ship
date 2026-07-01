@@ -2380,8 +2380,13 @@ function resumeCtxAsShipContext(
     },
     input: { docPath: "", runtime: "cloud" },
     logger: ctx.logger,
-    // Provider + runner come from the persisted run row (FR7): a claude-cloud
-    // resume must carry provider:"claude" + the cloudClaude runner, not cursor.
+    // Provider comes from the persisted run row (FR7): a claude-cloud resume must
+    // carry provider:"claude". On the attach path the resolved runner is always
+    // the provider's cloud runner — resumeOneOrphanedCloudRun finalizes as a
+    // failure before building the attach context when none is wired, so control
+    // never reaches here with a mismatched provider. The `?? cursor` fallback is
+    // a placeholder for the finalize-failure path only (ShipContext.runner is
+    // required), which never invokes runner.run().
     provider,
     resolvedCursorRuntime: "cloud",
     runner: resumeCloudRunner(ctx.config, provider) ?? ctx.config.cursor,

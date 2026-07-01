@@ -115,7 +115,10 @@ function enforceClaudeCloudPrBranchGuard(
   cloud: ShipCloud | undefined,
 ): void {
   if (provider !== "claude" || runtime !== "cloud") return;
-  const prBranch = cloud?.repos[0].prBranch;
+  // Optional-chain repos[0]: this guard runs before schema validation, so a
+  // malformed cloud spec missing repos[0] must surface the clean argument error
+  // below, not a TypeError.
+  const prBranch = cloud?.repos[0]?.prBranch;
   if (prBranch !== undefined && prBranch.length > 0) return;
   throw new InvalidArgumentError(
     "claude --runtime cloud requires --cloud-pr-branch (the branch the agent pushes)",
