@@ -114,6 +114,8 @@ export interface CreateServiceFromHarnessOptions {
   cloudCursor?: AgentRunner;
   /** Optional claude runner; forwarded into `ShipService` config when set. */
   claude?: AgentRunner;
+  /** Optional cloud claude runner; forwarded into `ShipService` config when set. */
+  cloudClaude?: AgentRunner;
   /** Optional codex runner; forwarded into `ShipService` config when set. */
   codex?: AgentRunner;
   /** Remote doc source; defaults to a fresh `FakeDocSource`. */
@@ -130,10 +132,11 @@ export interface ServiceBundle {
 
 function optionalInjectedRunners(
   opts: CreateServiceFromHarnessOptions,
-): Partial<Pick<ShipServiceConfig, "cloudCursor" | "claude" | "codex">> {
+): Partial<Pick<ShipServiceConfig, "cloudCursor" | "claude" | "cloudClaude" | "codex">> {
   return {
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
     ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
+    ...(opts.cloudClaude !== undefined ? { cloudClaude: opts.cloudClaude } : {}),
     ...(opts.codex !== undefined ? { codex: opts.codex } : {}),
   };
 }

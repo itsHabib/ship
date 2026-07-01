@@ -34,6 +34,7 @@ interface ShipOpts {
   /** `--cloud` JSON file path; when set, other `--cloud-*` field flags are ignored. */
   cloud?: string;
   cloudRepo?: string;
+  cloudPrBranch?: string;
   cloudAutoCreatePr?: boolean;
   cloudSkipReviewerRequest?: boolean;
   cloudEnvVar?: string[];
@@ -57,7 +58,7 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
     )
     .option(
       "--runtime <mode>",
-      "agent runtime (local|cloud); cloud is cursor-only; omit to use service default",
+      "agent runtime (local|cloud); cloud supports cursor + claude; omit to use service default",
     )
     .option("--provider <name>", "agent provider (cursor|claude|codex); omit to use cursor")
     .option(
@@ -65,6 +66,10 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
       "JSON file with full CloudRunSpec (via cloudRunSpecSchema); when set, ignores --cloud-repo and other --cloud-* field flags",
     )
     .option("--cloud-repo <url>", "cloud: single repo URL (maps to cloud.repos[0].url)")
+    .option(
+      "--cloud-pr-branch <name>",
+      "cloud: branch the agent pushes + opens a PR from (required for --provider claude --runtime cloud; ignored for cursor)",
+    )
     .option("--cloud-auto-create-pr", "cloud: set autoCreatePR true (field-flag mode only)")
     .option(
       "--cloud-skip-reviewer-request",
@@ -96,7 +101,28 @@ async function buildShipCliInput(opts: ShipOpts, docPath: string): Promise<ShipI
   const runtime = parseRuntime(opts.runtime);
   enforceLocalOnlyProviderGuard(provider, runtime);
   const cloud = await resolveCloudSpec(opts, runtime);
+  enforceClaudeCloudPrBranchGuard(provider, runtime, cloud);
   return buildShipInputFromCli(opts, docPath, { modelParams, provider, runtime, cloud });
+}
+
+// The CLI is the validation boundary for direct service callers (it bypasses the
+// mcp-server's shipInputSchema.superRefine). Mirror the claude × cloud prBranch
+// requirement here so omitting it surfaces a clean argument error, not a runner
+// no-op that yields an empty branches[].
+function enforceClaudeCloudPrBranchGuard(
+  provider: CliProvider | undefined,
+  runtime: CliRuntime | undefined,
+  cloud: ShipCloud | undefined,
+): void {
+  if (provider !== "claude" || runtime !== "cloud") return;
+  // Optional-chain repos[0]: this guard runs before schema validation, so a
+  // malformed cloud spec missing repos[0] must surface the clean argument error
+  // below, not a TypeError.
+  const prBranch = cloud?.repos[0]?.prBranch;
+  if (prBranch !== undefined && prBranch.length > 0) return;
+  throw new InvalidArgumentError(
+    "claude --runtime cloud requires --cloud-pr-branch (the branch the agent pushes)",
+  );
 }
 
 function buildModelParams(
@@ -182,7 +208,8 @@ function parseProvider(raw: string | undefined): CliProvider | undefined {
   throw new InvalidArgumentError(`invalid --provider: ${raw} (expected: cursor | claude | codex)`);
 }
 
-const LOCAL_ONLY_PROVIDERS = new Set<CliProvider>(["claude", "codex"]);
+// claude supports local + cloud; codex is local-only (no public cloud API).
+const LOCAL_ONLY_PROVIDERS = new Set<CliProvider>(["codex"]);
 
 function enforceLocalOnlyProviderGuard(
   provider: CliProvider | undefined,
@@ -216,7 +243,12 @@ function parseCloudEnvPair(raw: string): [string, string] {
 function buildCloudRunSpecFromFlags(opts: ShipOpts): ShipCloud {
   const draft: Record<string, unknown> = {};
   if (opts.cloudRepo !== undefined) {
-    draft["repos"] = [{ url: opts.cloudRepo }];
+    draft["repos"] = [
+      {
+        url: opts.cloudRepo,
+        ...(opts.cloudPrBranch !== undefined && { prBranch: opts.cloudPrBranch }),
+      },
+    ];
   }
   if (opts.cloudAutoCreatePr === true) {
     draft["autoCreatePR"] = true;

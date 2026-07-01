@@ -25,6 +25,7 @@ import {
   listEvents,
   loggableSessionSpec,
   openStream,
+  readGitHubMcpUrl,
   readGitHubToken,
 } from "./cloud-session.js";
 
@@ -248,6 +249,54 @@ describe("ensureAgent", () => {
     };
     expect(callArg.tools?.[0]?.type).toBe("agent_toolset_20260401");
     expect(callArg.tools?.[0]?.default_config?.permission_policy?.type).toBe("always_allow");
+  });
+
+  test("without githubMcpUrl: no mcp_servers, no mcp_toolset (3a shape)", async () => {
+    const { client, spies } = makeMockClient();
+    await ensureAgent(client, { runId: "run-001", modelId: "claude-opus-4-5" });
+    const callArg = vi.mocked(spies.agentCreate).mock.calls[0]?.[0] as {
+      mcp_servers?: unknown;
+      tools?: { type?: string }[];
+    };
+    expect(callArg.mcp_servers).toBeUndefined();
+    expect(callArg.tools?.some((t) => t.type === "mcp_toolset")).toBe(false);
+  });
+
+  test("with githubMcpUrl: wires the url MCP server + a referencing mcp_toolset", async () => {
+    const { client, spies } = makeMockClient();
+    await ensureAgent(client, {
+      runId: "run-001",
+      modelId: "claude-opus-4-5",
+      githubMcpUrl: "https://mcp.example/github",
+    });
+    const callArg = vi.mocked(spies.agentCreate).mock.calls[0]?.[0] as {
+      mcp_servers?: { name?: string; type?: string; url?: string }[];
+      tools?: { type?: string; mcp_server_name?: string }[];
+    };
+    expect(callArg.mcp_servers?.[0]).toEqual({
+      name: "github",
+      type: "url",
+      url: "https://mcp.example/github",
+    });
+    const toolset = callArg.tools?.find((t) => t.type === "mcp_toolset");
+    // The server MUST be referenced by an mcp_toolset, else create is rejected.
+    expect(toolset?.mcp_server_name).toBe("github");
+  });
+});
+
+describe("readGitHubMcpUrl", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test("returns GITHUB_MCP_URL when set", () => {
+    vi.stubEnv("GITHUB_MCP_URL", "https://mcp.example/github");
+    expect(readGitHubMcpUrl()).toBe("https://mcp.example/github");
+  });
+
+  test("returns undefined when unset or empty", () => {
+    vi.stubEnv("GITHUB_MCP_URL", "");
+    expect(readGitHubMcpUrl()).toBeUndefined();
   });
 });
 

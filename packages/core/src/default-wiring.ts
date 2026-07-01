@@ -15,7 +15,7 @@ import type { Logger } from "@ship/logger";
 import type { Store } from "@ship/store";
 import type { ModelSelection } from "@ship/workflow";
 
-import { LocalClaudeRunner } from "@ship/claude-runner";
+import { CloudClaudeRunner, LocalClaudeRunner } from "@ship/claude-runner";
 import { CodexRunner } from "@ship/codex-runner";
 import { CloudCursorRunner, LocalCursorRunner, RoomCursorRunner } from "@ship/cursor-runner";
 import { createLogger } from "@ship/logger";
@@ -125,6 +125,11 @@ export interface DefaultShipServiceOpts {
    */
   readonly claude?: AgentRunner;
   /**
+   * Cloud claude runner override. Production omits this and gets
+   * `CloudClaudeRunner`. Tests inject a `FakeAgentRunner`.
+   */
+  readonly cloudClaude?: AgentRunner;
+  /**
    * Codex runner override. Production omits this and gets
    * `CodexRunner`. Tests inject a `FakeAgentRunner`.
    */
@@ -211,6 +216,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
     const roomCursor = opts.roomCursor ?? new RoomCursorRunner();
     const claude = opts.claude ?? new LocalClaudeRunner();
+    const cloudClaude = opts.cloudClaude ?? new CloudClaudeRunner();
     const codex = opts.codex ?? new CodexRunner();
     const fs = createNodeShipFs();
     cached = createShipService({
@@ -230,6 +236,7 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
         cloudCursor,
         roomCursor,
         claude,
+        cloudClaude,
         codex,
       },
     });

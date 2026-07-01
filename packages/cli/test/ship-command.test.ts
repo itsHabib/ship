@@ -603,7 +603,34 @@ describe("ship ship", () => {
     expect(h.harness.cursor.calls).toHaveLength(0);
   });
 
-  test("--provider claude --runtime cloud fails fast at CLI boundary", async () => {
+  test("--provider claude --runtime cloud --cloud-pr-branch forwards to cloudClaude runner", async () => {
+    const cloudClaude = new FakeCursorRunner();
+    h.close();
+    h = await createCliHarness({ cloudClaude });
+    cloudClaude.enqueue(CLOUD_SCRIPT);
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--provider",
+      "claude",
+      "--runtime",
+      "cloud",
+      "--cloud-repo",
+      "https://github.com/o/r",
+      "--cloud-pr-branch",
+      "ship/x",
+    ]);
+    expect(code).toBe(0);
+    expect(cloudClaude.calls).toHaveLength(1);
+    expect(cloudClaude.calls[0]?.input.cloud?.repos[0]?.prBranch).toBe("ship/x");
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
+  test("--provider claude --runtime cloud without --cloud-pr-branch fails fast at CLI boundary", async () => {
     const { code } = await runArgv(h.program, [
       "ship",
       "docs.md",
@@ -619,7 +646,7 @@ describe("ship ship", () => {
       "https://github.com/o/r",
     ]);
     expect(code).toBe(1);
-    expect(h.stderr.join("")).toMatch(/claude provider supports only runtime 'local'/);
+    expect(h.stderr.join("")).toMatch(/claude --runtime cloud requires --cloud-pr-branch/);
     expect(h.harness.cursor.calls).toHaveLength(0);
   });
 

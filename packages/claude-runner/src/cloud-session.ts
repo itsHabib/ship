@@ -5,6 +5,11 @@
  */
 
 import type {
+  BetaManagedAgentsAgentToolset20260401Params,
+  BetaManagedAgentsMCPToolsetParams,
+  BetaManagedAgentsURLMCPServerParams,
+} from "@anthropic-ai/sdk/resources/beta/agents/agents";
+import type {
   BetaManagedAgentsSessionErrorEvent,
   BetaManagedAgentsSessionEvent,
   BetaManagedAgentsStreamSessionEvents,
@@ -21,6 +26,64 @@ export type CloudClient = Anthropic;
 
 const BETAS = ["managed-agents-2026-04-01"];
 const GH_TOKEN_ENVS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
+const GH_MCP_URL_ENV = "GITHUB_MCP_URL";
+
+/**
+ * MCP-server name for the injected GitHub remote MCP. Referenced by the
+ * `mcp_toolset` on the agent's `tools` (Managed Agents rejects an unreferenced
+ * `mcp_servers` entry at create) and matched against `agent.mcp_tool_use`
+ * events during branch reconstruction.
+ */
+export const GITHUB_MCP_SERVER_NAME = "github";
+
+/**
+ * The GitHub remote-MCP endpoint URL, from `GITHUB_MCP_URL` (wiring, not the
+ * per-task input — it may carry an auth token). Undefined when unset: the agent
+ * then pushes the branch via the mounted repo's PAT and the `gh` fallback
+ * reconstructs the PR. `URLMCPServerParams` has no auth-header field, so the GH
+ * PAT must ride in the URL or a session vault (resolved at L4).
+ */
+export function readGitHubMcpUrl(): string | undefined {
+  const val = process.env[GH_MCP_URL_ENV];
+  return val !== undefined && val !== "" ? val : undefined;
+}
+
+type AgentTool = BetaManagedAgentsAgentToolset20260401Params | BetaManagedAgentsMCPToolsetParams;
+
+// The always-on base toolset (file edit / bash / etc.), plus — when a GitHub MCP
+// URL is wired — the remote GitHub MCP server and the `mcp_toolset` that
+// references it (required, else create rejects the unreferenced server).
+function buildAgentTools(githubMcpUrl: string | undefined): AgentTool[] {
+  const tools: AgentTool[] = [
+    {
+      type: "agent_toolset_20260401",
+      default_config: { enabled: true, permission_policy: { type: "always_allow" } },
+    },
+  ];
+  if (githubMcpUrl === undefined) return tools;
+  tools.push({
+    type: "mcp_toolset",
+    mcp_server_name: GITHUB_MCP_SERVER_NAME,
+    default_config: { enabled: true, permission_policy: { type: "always_allow" } },
+  });
+  return tools;
+}
+
+// SECURITY (resolved at L4): `URLMCPServerParams` carries no auth-header field,
+// so any credential must ride in the URL itself — and this `url` is sent in the
+// `agents.create` request body. Our own setup-failure dump redacts it (see
+// `logCloudStartFailure`), but the request body still reaches Anthropic's
+// servers, where a token-bearing URL would land in their API logs in plaintext.
+// L4 must pick a non-leaking delivery (server-side session vault, short-lived
+// scoped token, or a proxy that injects auth) before the token-bearing path
+// ships. Until then, prefer a GITHUB_MCP_URL whose auth is managed by the MCP
+// endpoint operator, not embedded.
+function buildMcpServers(
+  githubMcpUrl: string | undefined,
+): BetaManagedAgentsURLMCPServerParams[] | undefined {
+  if (githubMcpUrl === undefined) return undefined;
+  return [{ name: GITHUB_MCP_SERVER_NAME, type: "url", url: githubMcpUrl }];
+}
 
 export function buildClient(apiKey: string, baseUrl?: string): CloudClient {
   return new Anthropic({
@@ -64,24 +127,20 @@ export async function ensureAgent(
     readonly agentId?: string;
     readonly modelId: string;
     readonly system?: string;
+    /** GitHub remote-MCP endpoint; when set, wires the server + its `mcp_toolset`. */
+    readonly githubMcpUrl?: string;
   },
 ): Promise<EnsureResult> {
   if (spec.agentId !== undefined) {
     return { id: spec.agentId, owned: false };
   }
+  const mcpServers = buildMcpServers(spec.githubMcpUrl);
   const agent = await client.beta.agents.create({
     model: spec.modelId,
     name: `ship/${spec.runId}`,
     ...(spec.system !== undefined && { system: spec.system }),
-    tools: [
-      {
-        type: "agent_toolset_20260401",
-        default_config: {
-          enabled: true,
-          permission_policy: { type: "always_allow" },
-        },
-      },
-    ],
+    ...(mcpServers !== undefined && { mcp_servers: mcpServers }),
+    tools: buildAgentTools(spec.githubMcpUrl),
     betas: BETAS,
   });
   return { id: agent.id, owned: true };

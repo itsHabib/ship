@@ -48,6 +48,7 @@ export async function createCliHarness(
     defaultModel?: ModelSelection;
     cloudCursor?: AgentRunner;
     claude?: AgentRunner;
+    cloudClaude?: AgentRunner;
     codex?: AgentRunner;
   } = {},
 ): Promise<CliHarness> {
@@ -56,6 +57,7 @@ export async function createCliHarness(
     ...(opts.defaultModel !== undefined ? { defaultModel: opts.defaultModel } : {}),
     ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
     ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
+    ...(opts.cloudClaude !== undefined ? { cloudClaude: opts.cloudClaude } : {}),
     ...(opts.codex !== undefined ? { codex: opts.codex } : {}),
   });
   await bundle.fs.mkdir(WORKDIR, { recursive: true });
