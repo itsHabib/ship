@@ -35,7 +35,7 @@ Subagents live in `.cursor/agents/`. See [docs/features/ship-v2/phases/03-subage
 <!-- BEGIN dev-workbench (managed by /dev-workbench skill — re-run to refresh; hand-edits inside this block will be overwritten) -->
 ## Dev workbench
 
-Several MCP servers + skills are available in any Claude session on this machine — the dev-workflow infrastructure built across the portfolio. **This is ship — the workflow-execution plane itself** — so the ship verbs are the most directly relevant when working in this repo, alongside dossier (project memory), huddle (multi-seat coordination), and the `/worktree-*` skill family for git worktrees. When the signal matches, **just call the verb**. Don't ask permission.
+Several MCP servers + skills are available in any Claude session on this machine — the dev-workflow infrastructure built across the portfolio. **This is ship — the workflow-execution plane itself** — so the ship verbs are the most directly relevant when working in this repo, alongside dossier (project memory), huddle (multi-seat coordination), and the `/worktree-*` skill family for git worktrees. When the signal matches, **just call the verb**. Don't ask permission. Stuck on a *knowledge* question about another portfolio repo — how it behaves, its conventions, what's in flight there — `/consult` its steward instead of asking the operator; only *authority* questions (direction, spend, irreversible calls) go to the operator.
 
 Dogfood reality: ship runs cursor against ship's own task docs when iterating on ship-the-codebase — every PR shipped here passes through a ship run (now driven by the `ship driver` engine) at least once.
 
@@ -145,6 +145,8 @@ Four sections, hard 1-3 sentence cap each: `## What happened` (concrete outcomes
 
 **Pair with:** `/shipped` for the post-run version. `/status` is the mid-flight ping; `/shipped` is the retrospective.
 
+- **/consult** — summon a sibling repo's steward for a same-turn answer; knowledge questions go to a peer, authority questions to the operator.
+
 ### `/worktree-*` — manage secondary git worktrees
 
 Thin skill family over plain `git worktree`. Use these instead of reaching for an MCP — they cover the verbs that mattered (add, list, remove, transfer, where) without an external state store. Default convention: branch name is user-chosen (no forced prefix); path is `<repo>/.claude/worktrees/<branch>/`.
@@ -190,7 +192,7 @@ Steps 3-7 of this loop are exactly what `/work-driver` automates when you fan mu
 
 ### Why this shape
 
-Each layer is independently swappable. Dossier could be Linear or GitHub Projects — it owns "what needs doing." The `/worktree-*` skills could be hand-rolled `git worktree` calls or a Codespace driver — they own "where work happens." Ship could be a different agent runner (Claude Code SDK, a local cursor subprocess, etc.) — it owns "drive an agent against a workdir + persist what happened." Huddle owns multi-seat coordination channels; playwright owns browser. Substituting any one doesn't ripple into the others.
+Each layer is independently swappable. Dossier could be Linear or GitHub Projects — it owns "what needs doing." The `/worktree-*` skills could be hand-rolled `git worktree` calls or a Codespace driver — they own "where work happens." Ship could be a different agent runner (Claude Code SDK, a local cursor subprocess, etc.) — it owns "drive an agent against a workdir + persist what happened." Huddle owns multi-seat coordination channels; playwright owns browser; `/consult` owns the stuck path — peer knowledge before operator attention. Substituting any one doesn't ripple into the others.
 
 Not every flow uses every tool. A one-off CLI fix can skip dossier; an existing-checkout edit can skip the worktree skills; a non-agent change skips ship. The workbench is a menu, not a checklist — but when the signals above match, default to calling the verb without checking in first.
 <!-- END dev-workbench -->
