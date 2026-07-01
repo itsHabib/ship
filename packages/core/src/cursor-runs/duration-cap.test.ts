@@ -305,6 +305,35 @@ describe("runWithDurationCap", () => {
     expect(out.durationMs).toBe(hugeCap);
   });
 
+  // A cap beyond Node's timer ceiling is served as clamped segments. On a
+  // healthy clock each segment boundary is NOT a suspend misfire, so it must
+  // re-arm silently — no "host suspend / clock jump" warning, no misfire budget
+  // spent. Regression for the segment-vs-misfire conflation.
+  test("a clamped segment of a huge cap re-arms without a suspend-misfire warning", async () => {
+    const warn = vi.fn();
+    const log = { warn } as unknown as NonNullable<DurationCapRunArgs["log"]>;
+    const hugeCap = 3 * MAX_TIMER_DELAY_MS; // three clamped segments on a healthy clock
+    const { handle } = fakeHandle(pendingForever());
+    const pending = runCap({
+      log,
+      maxRunDurationMs: hugeCap,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    // Cross two full clamped segments; the clock is healthy at each boundary.
+    await vi.advanceTimersByTimeAsync(2 * MAX_TIMER_DELAY_MS);
+    const suspendWarnings = warn.mock.calls.filter(
+      ([, msg]) => typeof msg === "string" && msg.includes("host suspend"),
+    );
+    expect(suspendWarnings).toEqual([]);
+    expect(vi.getTimerCount()).toBe(1); // still armed for the third segment
+    // The final segment reaches the real window → synthetic timeout terminal.
+    await vi.advanceTimersByTimeAsync(MAX_TIMER_DELAY_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(out.durationMs).toBe(hugeCap);
+  });
+
   test("a result landing inside the grace window beats the synthetic terminal", async () => {
     let resolveRunner!: (r: AgentRunResult) => void;
     const runner = new Promise<AgentRunResult>((resolve) => {

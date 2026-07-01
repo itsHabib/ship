@@ -35,21 +35,25 @@ import { CursorRunStartTimedOutError } from "../errors.js";
 export const MIN_RESUMED_CAP_WINDOW_MS = 60_000;
 
 /**
- * Node clamps a `setTimeout` delay above the 32-bit signed max to 1ms,
- * which would misfire a multi-week cap instantly. We clamp the timer delay
- * here instead: a cap beyond ~24.9 days fires at the limit rather than at
- * 1ms. The synthetic terminal still reports the configured cap as the
- * duration — the clamp only bounds the physical wait.
+ * Node clamps a `setTimeout` delay above the 32-bit signed max to 1ms, which
+ * would misfire a multi-week cap instantly. We clamp each physical wait to this
+ * ceiling instead: a cap beyond ~24.9 days is served as a sequence of clamped
+ * segments, re-arming for the next segment until the full window elapses. That
+ * healthy segmentation is distinct from a suspend misfire — it neither warns
+ * nor counts against `MAX_CAP_REARMS`. The synthetic terminal still reports the
+ * configured cap as the duration; the clamp only bounds each physical wait.
  */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /**
- * Absolute backstop on cap-timer re-arming. Each genuine misfire (a suspend /
- * clock jump firing the timer before `windowMs` of real time elapsed) re-arms
- * once; a healthy clock re-arms ~never. This bounds re-arming against a
- * pathological / frozen monotonic clock that would otherwise never reach the
- * window — once the count is exceeded, the cap fires regardless. Sized far
- * above any realistic suspend count for a single run.
+ * Absolute backstop on *misfire* re-arming. Each genuine misfire (a suspend /
+ * clock jump firing the timer before its armed delay elapsed in real time)
+ * re-arms once and counts against this budget; a healthy clock produces no
+ * misfires. (A clamped segment of a cap beyond `MAX_TIMER_DELAY_MS` also
+ * re-arms, but on a healthy clock — it is not a misfire and does not count
+ * here.) This bounds re-arming against a pathological / frozen monotonic clock
+ * that would otherwise never reach the window: once the count is exceeded, the
+ * cap fires regardless. Sized far above any realistic suspend count.
  */
 export const MAX_CAP_REARMS = 64;
 
@@ -104,6 +108,12 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
   let expired = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let rearms = 0;
+  // Monotonic time the current timer was armed, and the delay it was armed for.
+  // Comparing real elapsed-since-arm against the armed delay separates a healthy
+  // clamped-segment continuation (full delay elapsed) from a suspend misfire
+  // (fired early because the monotonic clock barely advanced).
+  let armedAtMono = 0;
+  let armedDelayMs = 0;
 
   // Everything that arms the timer or calls `start()` lives inside the try,
   // so a synchronous throw from an injected runner still hits the finally
@@ -111,22 +121,36 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
   try {
     const capExpiry = new Promise<AgentRunResult>((resolve, reject) => {
       const onCapTimer = (): void => {
-        // Re-check real (monotonic) elapsed before giving up: a host suspend or
-        // wall-clock jump can fire this event-loop timer long before `windowMs`
-        // of real time actually passed. A misfire re-arms for the remaining
-        // window; the re-arm count is the absolute backstop against a clock
-        // that never advances to the window.
-        const realElapsed = monotonicNow() - startedMono;
-        if (realElapsed < windowMs && rearms < MAX_CAP_REARMS) {
-          rearms += 1;
-          const remainingMs = Math.min(windowMs - realElapsed, MAX_TIMER_DELAY_MS);
-          args.log?.warn(
-            { realElapsed, rearms, remainingMs, windowMs },
-            "cap timer fired before real elapsed reached the window (host suspend / clock jump); re-arming",
-          );
-          timer = setTimeout(onCapTimer, remainingMs);
+        const nowMono = monotonicNow();
+        const realElapsed = nowMono - startedMono;
+        const windowRemainingMs = windowMs - realElapsed;
+
+        // The full armed delay elapsed in real (monotonic) time but the window
+        // hasn't: a clamped segment of a cap beyond MAX_TIMER_DELAY_MS finishing
+        // on a healthy clock. Continue with the next segment — not a misfire, so
+        // it neither warns nor spends the misfire backstop.
+        if (windowRemainingMs > 0 && nowMono - armedAtMono >= armedDelayMs) {
+          armedAtMono = nowMono;
+          armedDelayMs = Math.min(windowRemainingMs, MAX_TIMER_DELAY_MS);
+          timer = setTimeout(onCapTimer, armedDelayMs);
           return;
         }
+
+        // Fired before its armed delay elapsed in real time — a host suspend /
+        // wall-clock jump. Re-arm for the remaining window, bounded by the
+        // backstop against a frozen clock that never advances to the window.
+        if (windowRemainingMs > 0 && rearms < MAX_CAP_REARMS) {
+          rearms += 1;
+          armedAtMono = nowMono;
+          armedDelayMs = Math.min(windowRemainingMs, MAX_TIMER_DELAY_MS);
+          args.log?.warn(
+            { realElapsed, rearms, windowMs, windowRemainingMs },
+            "cap timer fired before real elapsed reached the window (host suspend / clock jump); re-arming",
+          );
+          timer = setTimeout(onCapTimer, armedDelayMs);
+          return;
+        }
+
         expired = true;
         args.log?.warn(
           {
@@ -149,7 +173,9 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
         resolve(capExceededResult(elapsedMs + windowMs));
         cancelBestEffort(handle);
       };
-      timer = setTimeout(onCapTimer, Math.min(windowMs, MAX_TIMER_DELAY_MS));
+      armedAtMono = monotonicNow();
+      armedDelayMs = Math.min(windowMs, MAX_TIMER_DELAY_MS);
+      timer = setTimeout(onCapTimer, armedDelayMs);
     });
     // The loser of the race can still settle later — e.g. the cap rejects
     // pre-handle and `start()` (a hung `Agent.create`/`Agent.resume`) rejects
