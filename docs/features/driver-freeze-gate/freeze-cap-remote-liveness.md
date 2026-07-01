@@ -1,7 +1,7 @@
 **Status**: draft
 **Owner**: @michael
 **Date**: 2026-07-01
-**Related**: dossier task `cap-liveness-across-cloud-suspend` (id: `tsk_01KWF8YVA20WNYT4R608TKXBK0`), phase `driver-freeze-gate`. Promotes the "Considered alternative — deferred" from [freeze-duration-cap-suspend.md](freeze-duration-cap-suspend.md) (#165); Codex's P2 on #165 is the promotion trigger the deferral named.
+**Related**: dossier task `cap-liveness-across-cloud-suspend` (id: `tsk_01KWF8YVA20WNYT4R608TKXBK0`), phase `driver-freeze-gate`. Promotes the "Considered alternative — deferred" from [freeze-duration-cap-suspend.md](freeze-duration-cap-suspend.md) (#165); Codex's P2 on #165 is the promotion trigger the deferral named. Revised after a review-panel cycle plus a 6-lens adversarial pass (23 attacks, 14 confirmed) — the confirmed breaks reshaped the decision model below.
 
 # Duration cap: remote-liveness bound for already-started cloud runs — design spec
 
@@ -9,111 +9,127 @@
 
 | Bucket | Files | Est. LOC | Weighted |
 |---|---|---|---|
-| Production source | `packages/core/src/cursor-runs/duration-cap.ts` (~90), `packages/core/src/service.ts` (~50), `packages/agent-runner/src/runner.ts` + fakes (~30), `packages/cursor-runner/src/cloud-runner.ts` (~35), `packages/claude-runner/src/cloud-runner.ts` (~25) | ~230 | 230 |
-| Tests | `duration-cap.test.ts`, runner unit tests, one L2 scenario | ~300 | 150 |
-| **Total** | | | **~380** |
+| Production source | `packages/core/src/cursor-runs/duration-cap.ts` (~140), `packages/core/src/service.ts` (~60), `packages/store` (persist server `createdAtMs`, ~10), `packages/agent-runner/src/runner.ts` + fakes (~30), `packages/cursor-runner/src/cloud-runner.ts` (~40), `packages/claude-runner/src/cloud-runner.ts` (~25) | ~305 | 305 |
+| Tests | `duration-cap.test.ts`, runner unit tests, one L2 scenario | ~380 | 190 |
+| **Total** | | | **~495** |
 
 Band: **amazing** per the repo's PR sizing convention. Single PR — the decision procedure is one coupled state machine; splitting the signal plumbing from the decision would ship a fail-open intermediate state.
 
 ## Problem
 
-#165 made the cap re-validate real elapsed against a **local monotonic clock** when the timer fires, re-arming on a misfire. Correct for the machine-clock-jump scenario it targeted — but for a **cloud run whose local driver process suspends**, the monotonic clock is the wrong ruler: on the platforms where suspend matters most, `CLOCK_MONOTONIC` pauses across the suspend, so on resume the misfire re-check sees almost no elapsed time and **re-grants the remaining window to a remote run that kept burning the whole time**. Repeated suspends repeat the re-grant (bounded only by `MAX_CAP_REARMS × window`).
+#165 made the cap re-validate real elapsed against a **local monotonic clock** when the timer fires, re-arming on a misfire. Correct for the environment it targeted (a sandbox whose timers fire early against the monotonic clock) — but for a **cloud run whose local driver suspends**, local clocks are the wrong ruler entirely, and the failure has two flavors:
 
-Net: for a suspended driver, `maxRunDurationMs` degrades from "upper bound on the run's wall-clock duration" to "active-local-process-time budget" (Codex P2 on #165). The remote run's true age is a server-side fact; every local clock is only an estimate of it. For an already-started cloud run, the cap must be able to consult the run's **own** age.
+- **Divergent-clock suspend** (VM pause/restore, the observed F57 sandbox): the timer fires *early* relative to the monotonic clock on resume. #165's misfire re-check catches the fire but then **re-grants the remaining window** to a remote run that kept burning the whole time.
+- **Paused-clock suspend** (plain laptop/Linux suspend — the primary unattended-run target): Node's timer clock and `performance.now` share the same monotonic base, and both *pause together* across the suspend. The timer simply stretches — it fires late, having served its full armed delay in monotonic terms, so **no misfire ever occurs** and nothing local even notices the suspend happened.
 
-## Fix — an age floor of same-clock signals; windows only ever shrink
+In both flavors, `maxRunDurationMs` degrades from "upper bound on the run's wall-clock duration" to "active-local-process-time budget" (Codex P2 on #165). The remote run's true age is a server-side fact; every local clock is only an estimate of it. For an already-started cloud run, the cap must consult the run's **own** age — and must have a trigger that fires in *both* suspend flavors.
 
-Two rules carry the whole design:
+## Fix — a live age floor; the floor, not the timer, expires the run
 
-1. **Age floor.** The cap tracks the best provable *lower bound* on the run's total age as a single run-scoped **high-water mark**: every signal reading folds into it (`floor = max(floor, signal)`) and it never decreases. Each signal is a same-clock pair, so each is a true lower bound under its stated assumptions; the ratchet means evidence once learned (e.g. a probe result) is never forgotten by a later decision point. Floor ≥ cap ⇒ expire (`timeout-near-cap`).
-2. **Shrink-only windows.** New evidence can expire a granted window or re-arm a *smaller* one (`cap − floor`); nothing can ever extend a window past what was granted. The gate can degrade toward enforcement, never toward re-granting.
+Three rules carry the design:
 
-| Signal | Pair | Clock | Blind spot |
+1. **Live age floor.** The cap tracks a run-scoped lower bound on the run's total age that **ages between observations**: every signal sample folds in with its fold-time monotonic anchor, and `floor(now) = max over samples of (sampleAgeMs + trustedMonoSince(fold))`. Each term sums two same-clock durations (a server-pair age at sample time, plus a trusted local-monotonic duration since), so each term — and the max — is a true lower bound. The floor is a ratchet: it never decreases, and evidence once learned keeps counting (it pauses across a further suspend exactly as the mono clock does, staying a valid lower bound until the next fold re-covers the gap).
+2. **One expiry condition.** The run expires exactly when `floor(now) ≥ cap`, evaluated at every decision point (timer fire, stream-event fold, probe resolution, discontinuity hit). The timer never expires the run by itself — it is a *scheduling hint* for when the floor will cross the cap absent contrary evidence. For a local run the floor is the trusted-mono term alone, so this reproduces #165's behavior exactly.
+3. **Windows only shrink — by construction.** At every fold the pending delay is re-derived: `armedDelay := min(remainingOfCurrentArm, max(0, cap − floor(now)))`; a result ≤ 0 expires immediately. No signal can extend a pending window, and the re-derivation can never exceed the current remainder (the earlier `cap − floor` phrasing could; the `min` is normative).
+
+| Signal | Pair | Clock | Notes / blind spot |
 |---|---|---|---|
-| `monoAge` | seed `elapsedMs` + (mono now − mono at arm) | local monotonic | pauses across suspend (#165 status quo) |
-| `streamAge` | latest event ts − earliest known run ts | provider server | stream dies with the local connection; hung run emits nothing; on attach the stream-only anchor is the first *post-attach* event, so `streamAge` undercounts the pre-attach portion — conservative, but it makes the probe (whose `createdAt` is the true anchor) load-bearing on resume |
-| `probeAge` | provider run record `updatedAt − createdAt` | provider server | `updatedAt` freezes on a hung run; needs a network round-trip |
-| `wallAge` | local wall now − persisted `startedAt` | local wall ×2 | jumps with the wall clock — admitted **only** under the fail-closed rule below |
+| `monoAge` | trusted mono segments since arm (see fire classifier) | local monotonic | pauses across suspend; a *step-suspect* segment contributes **zero** (over-count-unsafe) |
+| `streamAge` | latest provider event ts − earliest known server anchor | provider server | folded **per event** (zero I/O); dies with the local connection; on attach the stream-only anchor undercounts pre-attach age unless the persisted server `createdAtMs` re-anchors it — the probe is load-bearing on resume |
+| `probeAge` | provider record `updatedAt − createdAt` | provider server | freezes on a hung run; needs a bounded network round-trip |
+| `wallAge` | local wall now − persisted `startedAt` (fallback: the run row's creation wall time when `startedAt` is missing/insane) | local wall ×2 | jumps with the wall clock — admitted **only** in the rule-5 fail-closed conjunction, never into the floor |
 
-**Never cross clocks.** Every term is a same-source pair; a `server-createdAt vs local-now` delta is exactly the skew hazard this design exists to avoid, and appears nowhere. Also explicitly *not* a signal: `workflow_runs.updated_at` — the event pump bumps it from a local `setInterval`, so it measures local process liveness, not remote progress.
+**Never cross clocks.** No age term ever subtracts instants read from two different clocks; sums of same-clock *durations* are permitted (that is what aging a sample is). The resume **seed never enters the floor** — its only role is sizing the initial window (existing `capWindowMs` semantics); on resume the floor starts at 0 and grows only from server-anchored folds and trusted mono. Also explicitly *not* a signal: `workflow_runs.updated_at` — the event pump bumps it from a local `setInterval`, so it measures local process liveness, not remote progress.
 
-## Decision procedure
+## Decision points
 
-- **Arm and normal expiry: unchanged.** A timer whose full armed delay elapsed in real (monotonic) time, with the window consumed, expires exactly as today. No probe — `monoAge` is a true lower bound, so a mono-elapsed window means the run genuinely consumed its budget.
-- **Misfire** (timer fired before its armed delay elapsed in real time — the suspend/clock-jump detector from #165):
-  1. Fold max(`monoAge`, `streamAge`) into the sticky floor. If the floor (which already carries any earlier probe evidence) ≥ cap → expire now. No I/O on this path.
-  2. Else re-arm for `cap − floor` (≤ the previous remaining — shrink-only), and fire **one bounded async probe** (`PROBE_TIMEOUT_MS`, ~10s):
-     - Probe resolves with an age: fold into the floor; if now ≥ cap → expire immediately (clear the re-armed timer, resolve the synthetic, best-effort cancel). Reset the unreachable counter.
-     - Probe unreachable (rejects / times out): increment a consecutive-failure counter. **Fail closed** when `unreachableCount ≥ CAP_PROBE_FAIL_CLOSED_AFTER` (3) **and** `wallAge ≥ cap`: expire. Rationale below.
-     - A probe settling after the cap has already settled (expiry or a real result winning the race) is a no-op — the settled race wins; the late resolution folds nowhere.
-- **Cloud attach** (resume): the call site passes `kind: "attach"`, and the probe is **id-addressed** (`agentId`/`runId` from the persisted row), so it does not wait for a handle: the cap fires the initial probe concurrently with `start()`. A probe age ≥ cap shrinks the remaining window — pre- or post-handle — to the existing grace floor (`MIN_RESUMED_CAP_WINDOW_MS`): an already-terminal run can still deliver its real result inside the grace; a still-running one gets the synthetic `timeout-near-cap` at its end; a still-stalled `start()` rejects `CursorRunStartTimedOutError` at the grace boundary exactly as the pre/post-handle split already prescribes. This closes the `startedAt`-missing / negative-delta hole where `resumeElapsedMs` returns 0 and today's code silently grants a full fresh window — including against a stalled `Agent.resume`/`Agent.getRun`, which previously would have held the full pre-handle window. The `kind` flag is required because the cap cannot distinguish "fresh dispatch" from "resume with a broken seed" by `elapsedMs === 0` alone.
-- **One counter per run**: attach-time and misfire-time probes share the same consecutive-unreachable counter (it measures the provider's reachability for this run, not any one decision point); a success anywhere resets it. An unreachable attach probe alone never shrinks the window — the run keeps its seeded window and enforcement rides the normal expiry/misfire paths, with the accumulated counter feeding the fail-closed rule there.
-- **No remote signals wired** (local runs, providers without support): the cap behaves exactly as #165 shipped it. Fresh-dispatch/local behavior must not regress.
-- **`MAX_CAP_REARMS` backstop: unchanged.** Last line of defense against a pathological clock, sitting behind all of the above.
+- **Timer fire — classified two-sided** against its armed delay (slack ~60s), because a fire's timing is evidence about the clocks themselves:
+  - *Served* (`monoΔ ≈ armedDelay`): a mono-corroborated segment. Fold it into `monoAge`; floor ≥ cap → expire. This is #165's normal expiry re-expressed as a floor crossing; local runs always take this path unchanged.
+  - *Early* (`monoΔ < armedDelay`): the #165 misfire (divergent-clock flavor). Fold the (trusted) mono delta and `streamAge`; floor ≥ cap → expire; else re-arm per rule 3, fire **one bounded probe** (`PROBE_TIMEOUT_MS`, ~10s), spend the re-arm budget.
+  - *Late* (`monoΔ > armedDelay + slack`): a **step-suspect** fire — the monotonic clock itself jumped forward (or the event loop stalled). The suspect segment's mono delta is over-count-unsafe and contributes zero to the floor. For a remote-signal run: fold `streamAge`; floor ≥ cap → expire; else re-arm + probe — the remote signals adjudicate, so a forward mono step cannot false-cancel a young cloud run unprobed. For a **local** run there is no adjudicator: treat as served and expire (status quo; documented residual — a genuine event-loop stall and a mono step are locally indistinguishable, and mono is the only truth available).
+- **Wake / discontinuity detector** (remote-signal runs only): paired `(wall, mono)` readings sampled on a coarse local cadence (the event-pump interval). When `wallΔ − monoΔ` across one interval exceeds a threshold (~60s), the local clocks paused together — the paused-clock suspend flavor, which produces **no** early fire. Run the early-fire steps: fold sync signals, expire if floor ≥ cap, else re-arm + one bounded probe. The detector compares two same-clock *deltas* and yields a **trigger, never an age term** — the never-cross-clocks rule is untouched. Zero remote I/O when nothing discontinuous happened.
+- **Stream-event fold** (remote-signal runs): every provider-stamped event folds `streamAge` and re-derives the window per rule 3 — no I/O. After a paused-clock suspend, the reconnected stream's first event alone can expire an over-cap run before any detector hit or probe.
+- **Probe resolution** (attach, misfire, or detector-triggered — one shared machinery):
+  - Resolves with an age: fold; re-derive the window per rule 3 (expire / shrink / no-op). A server-anchored age **< cap additionally (a)** resets the consecutive-unreachable counter and **(b)** resets the misfire re-arm budget — the backstop's meaning becomes "consecutive re-arms since the last server-anchored proof of youth", so a long-cap run spanning many suspends is not force-expired while every probe confirms it young.
+  - Resolves without usable fields (provider degrade): neither counter moves; the window stands.
+  - Unreachable (rejects / times out): shared per-run counter++. **Fail closed** at `unreachableCount ≥ CAP_PROBE_FAIL_CLOSED_AFTER` (3) **and** `wallAge ≥ cap` — at that point every local estimate says over-cap and the authoritative source has been silent for three consecutive checks. `wallAge` falls back to the run row's creation wall time when `startedAt` is broken, so a broken seed cannot structurally disarm the rule.
+  - A probe settling after the cap has settled (expiry or a real result winning) is a no-op — the settled race wins.
+- **Cloud attach** (`kind: "attach"`; the id-addressed probe — `probeRun({ agentId, runId })` — fires concurrently with `start()`, no handle needed):
+  - *Sane positive seed*: window = `max(cap − seed, grace)` — existing semantics, unchanged. An unreachable probe here never shrinks the window (the seed already encodes real elapsed; transient blips must not kill healthy resumes).
+  - *Broken seed* (`startedAt` missing / non-positive delta — elapsed is **unknown**, not 0): the window arms at the **grace floor**, not the full cap — fail-toward-grace is the accepted failure direction, and it caps the blast radius of every downstream signal failure. The attach probe **retries** on a bounded schedule (~every 30–60s, up to the fail-closed budget, sharing the unreachable counter). The first age-bearing answer folds and re-derives per rule 3 — from a grace window that is a no-op (no upward correction; a young run with a destroyed seed dies at grace: documented residual, same shape as today's wall-jump-inflated seed). A probe-less provider (degrade) with a broken seed gets the same grace-bounded window — bounded per attach, never a full fresh window, never unbounded across restart loops.
+  - *Server-anchored seeds*: dispatch persists the provider's server-stamped `createdAtMs` on the run row when the dispatch/liveness surface exposes it; later attaches derive the seed and the `streamAge` anchor from it (a server×server pair), making broken local seeds rare rather than load-bearing.
+- **`MAX_CAP_REARMS` backstop**: consecutive-since-proof semantics per above; still the mechanical last line (with rule 5) against a pathological clock that never lets the floor reach the window.
 
-The synthetic terminal reports the **greater of the consumed cap budget and the age floor** — never less than the configured cap — so `classifyFailure` still lands on `timeout-near-cap` deterministically. (The floor alone is not enough: the `MAX_CAP_REARMS` forced-expiry path can fire while the floor is still below cap.)
+The synthetic terminal reports the **greater of the consumed cap budget and the age floor** — never less than the configured cap — so `classifyFailure` still lands on `timeout-near-cap` deterministically (including the backstop path, where the floor may still be below cap). Pre-handle expiry keeps rejecting `CursorRunStartTimedOutError` per the existing pre/post-handle split (a stalled attach with a broken seed now hits it at the grace boundary instead of holding a full window).
 
 ## Failure semantics — the gate contract
 
 | # | Scenario | Outcome |
 |---|---|---|
-| 1 | Suspend; remote run healthy and over cap on resume | Misfire → `streamAge`/probe ≥ cap → expire + cancel. The re-grant hole, closed. |
-| 2 | Suspend; remote run hung (no events, `updatedAt` frozen) | Floor frozen below cap → re-arm per #165. Enforcement degrades to the status quo: cap fires within ≤ one window of *cumulative active* local time. Bounded residual, strictly no worse than today; the driver's #157 inactivity give-up also covers this run from above. Note the division of labor: a run that heartbeats without progressing evades #157 (looks alive) but **not** this cap — its server timestamps keep advancing, so the age floor grows to the cap regardless of progress. Only the fully silent hung run lands in this residual. |
-| 3 | Timer misfire + wall jump forward, remote young (the F57 sandbox: both at once) | Sync floor small → re-arm; probe reachable and young → **no false cancel**. The wall estimate cannot fire here because the probe answered — this is the #165-regression guard. |
-| 4 | Probe unreachable transiently | Counter increments; a later success resets it. No enforcement effect while the floor is below cap. |
-| 5 | Probe unreachable ×3 consecutively **and** `wallAge ≥ cap` | **Fail closed** — expire. At this point every reachable estimate says over-cap and the authoritative source has been silent for three consecutive checks; holding the window open is the fail-open this gate exists to prevent. Accepted false-positive mode (API outage + forward wall jump + young run): the cancel is best-effort anyway and the stream re-triages as `timeout-near-cap` under the driver's normal retry policy. |
-| 6 | Remote clock skewed vs local | No effect — no cross-clock term exists to skew. |
-| 7 | Provider stamps garbage timestamps | Under-stamping under-counts → floor → residual #2 bound. Over-stamping (`updatedAt − createdAt` exceeding true age) could expire early — accepted: the pair comes from one provider record and is treated as authoritative for that provider's own run. |
+| 1a | Paused-clock suspend (laptop/Linux); remote healthy and over cap | No early fire exists — the **detector** (or the first reconnected stream event, whichever lands first) folds server-anchored age ≥ cap → expire + cancel. The re-grant hole, closed for the flavor the primary platforms actually produce. |
+| 1b | Divergent-clock suspend (VM restore, F57 sandbox); remote over cap | Early fire → misfire path → `streamAge`/probe ≥ cap → expire + cancel. |
+| 2 | Suspend; remote run hung (no events, `updatedAt` frozen), probe reachable-but-frozen | Floor frozen below cap → shrink-only re-arms; enforcement rests **solely on the cap's trusted-active-time accounting**: it fires within ≤ one window of cumulative awake time. Honest note: the driver's #157 give-up does *not* bound this run — its liveness signal is the pump-bumped local `updated_at`, so while the local process lives every run looks live to it, and its give-up ends the tick without cancelling. (Fixing that adjacent gap is its own task.) A run that heartbeats without progressing, by contrast, *is* caught here: its server timestamps advance, so the floor reaches the cap regardless of progress. |
+| 3a | Early fire + forward wall jump, remote young, probe reachable (F57 shape) | Sync floor small → re-arm; probe answers young → **no false cancel**. The wall estimate cannot fire — rule 5 needs the probe dark. |
+| 3b | **Forward monotonic step** (late fire), remote young | Step-suspect fire: the suspect mono segment folds zero; `streamAge`/probe adjudicate → young run survives. Local runs: no adjudicator — expires (documented residual). |
+| 4 | Probe unreachable transiently | Counter increments; any later success resets it. No enforcement effect while the floor is below cap. |
+| 5 | Probe unreachable ×3 consecutively **and** `wallAge ≥ cap` | **Fail closed** — expire. Accepted false-positive mode (API outage + forward wall jump + young run): cancel is best-effort and the stream re-triages as `timeout-near-cap` under the driver's normal retry policy. |
+| 6 | Remote clock skewed vs local | No effect — no age term subtracts instants across clocks; the detector's wallΔ−monoΔ comparison is delta-vs-delta, not an age. |
+| 7 | Provider stamps garbage timestamps | Under-stamping under-counts → floor → residual row-2 bound. Over-stamping could expire early — accepted: the pair comes from one provider record, treated as authoritative for that provider's own run. |
+| 8 | Broken seed **and** probe dark/absent at attach | Grace-bounded window per attach attempt (fail-toward-grace) — bounded, never a full fresh window, never compounding across restart loops. Recovery of a young run's real result rides the probe retries inside the grace, then the driver's retry policy. |
 
 ## Layering
 
-- **Runners are mechanism** — they expose raw signals, no decisions. Two optional members: a sync, I/O-free liveness snapshot on the handle, fed by the runner's own event stream (`{ createdAtMs?, lastEventAtMs? }` — server-stamped), and a bounded async **id-addressed** probe on the runner (`probeRun({ agentId, runId })`) returning the provider record's server-stamped `{ status?, createdAtMs?, updatedAtMs? }` — id-addressed so the attach path can consult it before a handle exists. Cursor cloud implements the probe from the agents REST surface (`V1Run.createdAt/updatedAt`; the SDK `Run` object exposes `createdAt` and live `status` — implementation may use whichever SDK/REST path yields the server pair). Claude cloud implements it over the sessions API if it exposes server timestamps cheaply, else returns `undefined` — a documented degrade, not an error. Local and rooms runners expose neither member.
-- **Provider-origin events only.** The liveness snapshot is fed exclusively from provider-stamped events, upstream of any ship-synthesized event (e.g. the resume marker the cursor attach path injects carries a *local* timestamp). Letting a ship-synthesized timestamp into the snapshot would smuggle the cross-clock arithmetic back in through the side door.
-- **The cap is policy** — floor composition, shrink-only invariant, the fail-closed counter, and the attach-time probe all live in `duration-cap.ts`. Exact member placement (on the handle vs injected via `DurationCapRunArgs`) is implementation latitude; the contract is: the sync signal does no I/O, the probe is bounded, and *no decision logic leaks into a runner*.
-- **Both call sites threaded**: fresh dispatch (`runToTerminal`) wires the signals for cloud/rooms runtimes; resume (`runResumeAttach`) additionally passes `kind: "attach"`. Composition with #157 is by role, not by code: the driver tick's last-event-age owns *inactivity* give-up at the driver layer; the cap owns the *total-age* bound in core. Both read the same family of server-anchored signals and neither depends on the other's state.
+- **Runners are mechanism** — raw signals, no decisions. Two optional members: a sync, I/O-free liveness snapshot on the handle fed by the runner's own event stream (`{ createdAtMs?, lastEventAtMs? }`, server-stamped), and a bounded async **id-addressed** `probeRun({ agentId, runId })` on the runner returning the provider record's server-stamped `{ status?, createdAtMs?, updatedAtMs? }` — id-addressed so attach consults it before any handle exists. Cursor cloud: agents REST surface (`V1Run.createdAt/updatedAt`; the SDK `Run` exposes `createdAt` + live `status` — any SDK/REST path yielding the server pair is fine). Claude cloud: sessions API if it exposes server timestamps cheaply, else `undefined` — a documented degrade. Local and rooms runners expose neither member.
+- **Provider-origin events only.** The liveness snapshot and the per-event fold consume only provider-stamped events, upstream of ship-synthesized events (the cursor attach path's resume marker carries a *local* timestamp) — otherwise the cross-clock arithmetic returns through the side door.
+- **The cap is policy** — the floor, fire classifier, detector, fail-closed counter, seed rules, and re-derivation all live in `duration-cap.ts`. The detector's cadence hook and the `wallAgeMs`/`createdAtMs` suppliers are injected by `service.ts`; member placement is implementation latitude, but the sync members do no I/O, the probe is bounded, and no decision logic leaks into a runner.
+- **Composition with #157 is by role**: the cap owns run-age enforcement from server-anchored signals; the driver tick owns tick-time inactivity give-up — which today reads the pump-bumped local `updated_at`, i.e. local process liveness, *not* a server signal. They share no state. (The pump blinding #157's staleness signal for live processes is a pre-existing adjacent gap, tracked separately.)
+- **Both call sites threaded**: fresh dispatch (`runToTerminal`) wires the signals for cloud/rooms; resume (`runResumeAttach`) additionally passes `kind: "attach"` and the persisted seed/`createdAtMs`.
 
 ## Acceptance
 
-- For an already-started cloud run, a misfire re-arm consults the remote run's own age; age ≥ cap cancels instead of re-granting the window.
-- Local-monotonic re-validation is preserved verbatim for fresh-dispatch/local runs (no #165 regression).
-- A resume after the window has elapsed remotely gets at most the grace window, then cancels (`timeout-near-cap`) — including when the persisted seed is missing or insane, and including a stalled attach call that never produces a handle (the id-addressed probe bounds the pre-handle window too). It is never handed a fresh full window.
-- `getRun`-style probe unreachable: no effect while transient; fail-closed per rule 5 once sustained with local evidence at/over cap.
-- No cross-clock age term exists anywhere in the decision path.
-- Both cap call sites threaded; `MAX_CAP_REARMS`, the grace floor, pre/post-handle expiry semantics, and `MAX_TIMER_DELAY_MS` segmentation all preserved.
+- For an already-started cloud run, **both suspend flavors** (paused-clock and divergent-clock) lead to a server-anchored age consultation; age ≥ cap cancels instead of re-granting. Neither flavor's enforcement depends on a timer misfiring.
+- The floor is live (samples age via trusted mono), monotone, and never contains a cross-clock instant subtraction or the resume seed.
+- Every fold re-derives the pending window as `min(remaining, max(0, cap − floor))`; no code path extends a pending window.
+- Local-run behavior is bit-for-bit #165: served fires expire at window maturity; no probes, no detector, no stream folds.
+- A resume never receives a full fresh window without evidence: sane seed → `max(cap − seed, grace)`; broken seed → grace + probe retries. Both bounded; `CursorRunStartTimedOutError` semantics preserved pre-handle.
+- Probe unreachability: transient → counted, no effect; sustained + `wallAge ≥ cap` (with row-creation fallback) → fail closed.
+- `MAX_CAP_REARMS` (consecutive-since-proof), the grace floor, `MAX_TIMER_DELAY_MS` segmentation, and synthetic-terminal `timeout-near-cap` determinism all preserved.
 
 ## Test plan
 
-`make check` green. Fake timers + injected monotonic clock (per #165's pattern) + scripted fake-runner signals:
+`make check` green. Fake timers + injected monotonic clock + scripted fake-runner signals (fakes expose scriptable liveness/probe and a manual detector tick):
 
-- Misfire with `streamAge` ≥ cap → immediate expiry, no re-grant, cancel fired.
-- Misfire with sync floor < cap and probe resolving ≥ cap → re-arm happens, then probe resolution expires early and clears the re-armed timer.
-- F57-sandbox shape (misfire, wall jumped forward, probe reachable and young) → no false cancel; a later real result wins the race.
-- Probe unreachable ×2 then success → counter resets, no expiry. Unreachable ×3 with `wallAge` ≥ cap → fail-closed expiry. Unreachable ×3 with `wallAge` < cap → no expiry.
-- Sticky floor across misfires: a probe-raised floor survives to the next misfire's decision (no re-widening re-arm from recomputing only the sync signals).
-- Attach with probe age ≥ cap → window shrinks to grace; a real terminal result inside the grace beats the synthetic; absent that, `timeout-near-cap`. Same shrink with the handle still absent (stalled attach) → `CursorRunStartTimedOutError` at the grace boundary.
-- Attach probe unreachable → seeded window unchanged, counter incremented; a later misfire with `wallAge` ≥ cap completes the fail-closed rule.
-- `MAX_CAP_REARMS` forced expiry with the floor still below cap → synthetic still reports ≥ the configured cap (`timeout-near-cap` preserved).
-- Suspend + hung remote (all remote signals frozen) → active-time enforcement still fires within the #165 bound.
+- Paused-clock suspend: no early fire; detector hit folds probe/stream age ≥ cap → expiry + cancel. Same scenario with the stream reconnecting first → the event fold alone expires it.
+- Divergent-clock suspend (early fire): sync floor ≥ cap → immediate expiry; sync floor < cap with probe ≥ cap → expiry on probe resolution, re-armed timer cleared.
+- Step-suspect (late) fire on a cloud run: suspect mono folds zero; young probe → survives; over-cap stream age → expires. Same late fire on a local run → expires (status quo).
+- Aged floor: a probe answer folded at T keeps counting through trusted segments; a second suspend pauses it; the next fold re-covers. Floor never decreases (property).
+- Re-derivation: any fold that raises the floor shrinks the pending delay to `min(remaining, cap − floor)`; armed delay never exceeds the previous remainder across arbitrary fold/fire interleavings (property).
+- Rearm budget: probe-confirmed-young resets it; a probe-dark suspend series exhausts it → forced expiry with the synthetic reporting ≥ cap.
+- Unreachable counter: ×2 then success resets; ×3 + `wallAge ≥ cap` → fail-closed; ×3 + `wallAge < cap` → no expiry; broken `startedAt` → row-creation fallback feeds rule 5.
+- Attach: sane seed unchanged (grace floor arithmetic per existing tests); broken seed arms at grace + probe retry schedule; first age-bearing answer folds; probe-less provider + broken seed → grace-bounded, `CursorRunStartTimedOutError` on a stalled start at the grace boundary.
+- F57 sandbox shape (early fire + wall jump + reachable young probe) → no false cancel; a later real result wins the race.
 - No-signals runs: the entire existing duration-cap suite passes unchanged.
-- Shrink-only property: across arbitrary misfire/probe interleavings, each armed delay ≤ the previous remaining window.
 
 ## Risks
 
-- **Network I/O inside cap decisions.** Bounded per-call (`PROBE_TIMEOUT_MS`), fired only on misfire re-arms and attach — worst case `MAX_CAP_REARMS + 1` probes over a run's lifetime, zero on healthy clocks.
-- **Hung remote + suspended local residual** (contract row 2): enforcement can lag by up to one window of active time. Documented; strictly better than today, and covered from above by #157.
-- **Provider timestamp trust** (contract row 7): accepted for a provider's own run record.
+- **Probe/network budget**: bounded per call (`PROBE_TIMEOUT_MS`), fired only on early/step-suspect fires, detector hits, and the attach schedule — worst case `MAX_CAP_REARMS + attach retries + detector hits`, zero on healthy clocks with sane seeds.
+- **Detector threshold tuning**: too tight → spurious folds+probes on NTP slews (cheap, shrink-only — safe); too loose → short suspends undetected (covered by the stream fold and the next fire). Not a correctness cliff in either direction.
+- **False-cancel residuals, enumerated**: local-run forward mono step (3b); young run with a destroyed seed dying at grace (8); rule-5's accepted conjunction (5). Each bounded and recoverable by the driver's retry policy.
+- **Hung remote + probe-dark residual** (row 2): enforcement lags up to one window of awake time — the bound rests on the cap alone.
 
 ## Non-goals
 
-- Upward window correction from an over-estimated resume seed (rescuing a healthy young run grace-capped after a wall-jump restart). Deliberately excluded: it would break the shrink-only invariant that makes the gate reasoned-about; revisit only with a fail-open-proof design.
-- Periodic (non-misfire) probing or a general remote-run poller — the driver tick already owns steady-state liveness.
-- Driver-tick (#157) changes; `policy.maxRunDurationMs` semantics changes.
+- **No upward correction, ever**: no signal, including an authoritative young probe, extends a pending window (broken-seed grace included). The shrink-only invariant is what makes the gate reasoned-about; rescuing seeds is done by *persisting better anchors* (server `createdAtMs`), not by widening windows.
+- **No steady-state remote polling**: probes fire only on discontinuity evidence (early/step-suspect fires, detector hits) and the attach schedule. The detector itself is two local clock reads on an existing cadence, not remote I/O.
+- Driver-tick (#157) changes — including fixing the event pump blinding its staleness signal (adjacent pre-existing gap; tracked as its own task).
+- `policy.maxRunDurationMs` semantics changes.
 
 ## Implementation plan
 
-1. `agent-runner`: optional handle-level liveness snapshot + runner-level id-addressed `probeRun` + `AgentRunLiveness`/`AgentRunSnapshot` types; extend fakes with scriptable signals.
-2. `cursor-runner` cloud: stream-fed liveness snapshot (provider-origin events only) + REST/SDK probe.
-3. `claude-runner` cloud: sessions-API probe, or `undefined` degrade with a doc note.
-4. `duration-cap.ts`: sticky floor, misfire decision, fail-closed counter, attach-time initial probe, `kind` arg, and a `wallAgeMs` supplier on `DurationCapRunArgs` (new input — the service injects it from the persisted `cursor_runs.startedAt`, which is stamped on the local wall clock at dispatch, vs `ctx.clock()` now).
-5. `service.ts`: thread signals, `kind`, and the `wallAgeMs` supplier through `runToTerminal` and `runResumeAttach`.
-6. Tests per plan. (The deferred-alternative pointer in `freeze-duration-cap-suspend.md` ships with this spec's own PR.)
+1. `agent-runner`: optional handle-level liveness snapshot + runner-level id-addressed `probeRun` + `AgentRunLiveness`/`AgentRunSnapshot` types; fakes gain scriptable signals and a manual detector tick.
+2. `store`: persist server `createdAtMs` on the cursor-run row when the dispatch surface exposes it.
+3. `cursor-runner` cloud: stream-fed liveness snapshot (provider-origin events only) + REST/SDK probe.
+4. `claude-runner` cloud: sessions-API probe, or `undefined` degrade with a doc note.
+5. `duration-cap.ts`: live floor (aged samples), two-sided fire classifier, discontinuity detector hook, per-event fold entry point, probe machinery (shared counter, budget reset, retry schedule on broken-seed attach), rule-3 re-derivation, `kind` arg, `wallAgeMs` + `rowCreatedAtWallMs` suppliers on `DurationCapRunArgs` (service injects from the persisted row vs `ctx.clock()`).
+6. `service.ts`: thread signals, `kind`, seeds, and the detector cadence through `runToTerminal` and `runResumeAttach`; wire the per-event fold into the existing `onEvent` taps.
+7. Tests per plan. (The deferred-alternative pointer in `freeze-duration-cap-suspend.md` ships with this spec's own PR.)
