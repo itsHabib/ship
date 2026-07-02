@@ -52,9 +52,7 @@ export const driverStreamSchema = z
   .object({
     attempts: z.array(streamAttemptSchema),
     branch: z.string().optional(),
-    /** Cloud checkout ref when continuing an existing branch (optional store column). */
-    startingRef: z.string().optional(),
-    /** When true, cloud dispatch continues on `startingRef` / `branch` instead of default branch. */
+    /** When true, cloud dispatch continues on `branch` instead of the default ref. */
     workOnCurrentBranch: z.boolean().optional(),
     createdAt: z.string().datetime({ offset: true }),
     cycles: z.number().int().optional(),

@@ -58,6 +58,7 @@ const FLIP_CLOUD_RESET_PATCH = {
   status: "pending" as const,
   tierDegradeReason: null,
   runtime: "cloud" as const,
+  workOnCurrentBranch: true,
 };
 
 export interface EngineDeps {
@@ -615,16 +616,10 @@ function resolveCloudContinuation(
     return { startingRef: override.startingRef, workOnCurrentBranch: true };
   }
   if (stream.workOnCurrentBranch === true) {
-    const ref = stream.startingRef ?? stream.branch;
+    const ref = stream.branch;
     if (ref !== undefined) {
       return { startingRef: ref, workOnCurrentBranch: true };
     }
-  }
-  if (stream.startingRef !== undefined) {
-    return {
-      startingRef: stream.startingRef,
-      workOnCurrentBranch: stream.workOnCurrentBranch === true,
-    };
   }
   return { workOnCurrentBranch: false };
 }
@@ -677,7 +672,10 @@ export async function flipStreamToCloud(
     startingRef: branch,
     workOnCurrentBranch: true,
   };
-  await dispatchStream(ctx, flipped, continuation);
+  const dispatched = await dispatchStream(ctx, flipped, continuation);
+  if (!dispatched) {
+    throw new PreconditionError(`cloud dispatch failed for stream ${streamId} after flip`);
+  }
   const finalRun = store.getDriverRun(driverRunId);
   if (finalRun === null) {
     throw new DriverRunNotFoundEngineError(driverRunId);

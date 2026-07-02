@@ -1056,6 +1056,9 @@ describe("buildShipInputForTest", () => {
 
     const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
     expect(stream).toBeDefined();
+    store.updateDriverStream(streamId, { workOnCurrentBranch: true });
+    const persisted = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(persisted?.workOnCurrentBranch).toBe(true);
     const input = buildShipInputForTest(
       {
         clock: () => 0,
@@ -1069,11 +1072,7 @@ describe("buildShipInputForTest", () => {
         ship: createFakeShipPort([]).port,
         store,
       },
-      {
-        ...stream!,
-        startingRef: "feat-continue",
-        workOnCurrentBranch: true,
-      },
+      persisted!,
       "docs/a.md",
     );
     expect(input).toMatchObject({
@@ -1214,6 +1213,73 @@ batches:
     const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
     expect(stream?.runtime).toBe("cloud");
     expect(stream?.status).toBe("dispatched");
+    expect(stream?.workOnCurrentBranch).toBe(true);
+  });
+
+  test("retry re-dispatch after flip keeps branch continuation on the stream row", async () => {
+    const manifestPath = join(repoRoot, "driver.md");
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-06-26T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: flip-retry
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/a.md
+        branch_name: feat-a
+        runtime: local
+        status: pending
+---
+`,
+    );
+    const docPath = join(repoRoot, "docs", "a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath,
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_flip_fail",
+      },
+    ]);
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+    const streamId = imported.run.batches[0]?.streams[0]?.id;
+    expect(streamId).toBeDefined();
+
+    await flipStreamToCloud(store, fake.port, imported.run.id, streamId!, () => 0);
+    store.updateDriverStream(streamId!, { status: "failed" });
+    store.updateDriverRunStatus(imported.run.id, "awaiting_judgment");
+    driver.decide(imported.run.id, streamId!, { kind: "retry" });
+
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.workOnCurrentBranch).toBe(true);
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId: imported.run.id,
+        ship: fake.port,
+        store,
+      },
+      stream!,
+      docPath,
+    );
+    expect(input.cloud?.repos[0]?.startingRef).toBe("feat-a");
+    expect(input.cloud?.workOnCurrentBranch).toBe(true);
   });
 });
 
