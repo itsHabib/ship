@@ -20,6 +20,7 @@ import {
 import { TickLiveError } from "./errors.js";
 import { type DispatchAmbiguity, recoverDispatchingStreams } from "./judgment.js";
 import { createDriverService } from "./service.js";
+import { createFakeGhPort } from "./test/fake-gh-port.js";
 import { createFakeShipPort } from "./test/fake-ship-port.js";
 
 const noopProgress = (): void => undefined;
@@ -600,7 +601,8 @@ batches:
       },
     ]);
     const store = createStore({ dbPath: ":memory:" });
-    const driver = createDriverService({ ship: fake.port, store });
+    const gh = createFakeGhPort({ 9: { isDraft: true, state: "OPEN" } });
+    const driver = createDriverService({ gh, ship: fake.port, store });
     const imported = driver.importManifest(manifest);
 
     const result = await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
@@ -609,6 +611,166 @@ batches:
     expect(stream?.status).toBe("landed");
     expect(stream?.branch).toBe("cursor/auto-1a2b");
     expect(stream?.prUrl).toBe("https://github.com/example/ship/pull/9");
+    expect(gh.markReadyCalls).toEqual([{ prNumber: 9, repo: "https://github.com/example/ship" }]);
+    store.close();
+  });
+
+  test("cloud succeeded stream with draft PR calls markReady once", async () => {
+    const manifest = join(repoRoot, "cloud-draft-flip.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-02T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: cloud-draft-flip
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: docA,
+        prUrl: "https://github.com/example/ship/pull/42",
+        repo: "ship",
+        workflowRunId: "wf_draft",
+      },
+    ]);
+    const gh = createFakeGhPort({ 42: { isDraft: true, state: "OPEN" } });
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ gh, ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    expect(gh.markReadyCalls).toEqual([{ prNumber: 42, repo: "https://github.com/example/ship" }]);
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.status).toBe("landed");
+    store.close();
+  });
+
+  test("cloud markReady is idempotent when PR is already ready", async () => {
+    const manifest = join(repoRoot, "cloud-ready-noop.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-02T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: cloud-ready-noop
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: docA,
+        prUrl: "https://github.com/example/ship/pull/55",
+        repo: "ship",
+        workflowRunId: "wf_ready",
+      },
+    ]);
+    const gh = createFakeGhPort({ 55: { isDraft: false, state: "OPEN" } });
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ gh, ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    expect(gh.markReadyCalls).toEqual([{ prNumber: 55, repo: "https://github.com/example/ship" }]);
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.status).toBe("landed");
+    store.close();
+  });
+
+  test("cloud markReady failure parks the stream with a legible error", async () => {
+    const manifest = join(repoRoot, "cloud-flip-fail.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-02T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: cloud-flip-fail
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: docA,
+        prUrl: "https://github.com/example/ship/pull/77",
+        repo: "ship",
+        workflowRunId: "wf_flip_fail",
+      },
+    ]);
+    const gh = createFakeGhPort({
+      77: { isDraft: true, markReadyError: "gh pr ready denied", state: "OPEN" },
+    });
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ gh, ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    const result = await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.status).toBe("failed");
+    expect(stream?.errorMessage).toBe("draft→ready flip failed: gh pr ready denied");
+    expect(result.status).toBe("awaiting_judgment");
+    store.close();
+  });
+
+  test("local succeeded stream does not call markReady", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: docA,
+        prUrl: "https://github.com/example/ship/pull/99",
+        repo: "ship",
+        workflowRunId: "wf_local_pr",
+      },
+    ]);
+    const gh = createFakeGhPort({ 99: { isDraft: true, state: "OPEN" } });
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ gh, ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    expect(gh.markReadyCalls).toEqual([]);
     store.close();
   });
 

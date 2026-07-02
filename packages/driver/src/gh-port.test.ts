@@ -239,3 +239,71 @@ describe("createExecGhPort — fetchPrReadiness", () => {
     expect(readiness.mergeable).toBe("CONFLICTING");
   });
 });
+
+describe("createExecGhPort — markReady", () => {
+  test("flips a draft PR via gh pr ready and verifies the write", async () => {
+    let viewCalls = 0;
+    const readyCalls: string[][] = [];
+    const exec: GhExec = (file, args) => {
+      if (args[1] === "view") {
+        viewCalls += 1;
+        const isDraft = viewCalls === 1;
+        return Promise.resolve({
+          stdout: JSON.stringify({
+            isDraft,
+            mergeable: "MERGEABLE",
+            state: "OPEN",
+            statusCheckRollup: [],
+          }),
+        });
+      }
+      readyCalls.push([...args]);
+      return Promise.resolve({ stdout: "" });
+    };
+    const gh = createExecGhPort(exec);
+
+    await gh.markReady("org/repo", 42);
+
+    expect(viewCalls).toBe(2);
+    expect(readyCalls).toEqual([["pr", "ready", "42", "-R", "org/repo"]]);
+  });
+
+  test("is a no-op when the PR is already ready", async () => {
+    const { calls, exec } = fakeExec(
+      JSON.stringify({
+        isDraft: false,
+        mergeable: "MERGEABLE",
+        state: "OPEN",
+        statusCheckRollup: [],
+      }),
+    );
+    const gh = createExecGhPort(exec);
+
+    await gh.markReady("org/repo", 7);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[1]).toBe("view");
+  });
+
+  test("throws when the flip is not confirmed by a follow-up read", async () => {
+    let viewCalls = 0;
+    const exec: GhExec = (_file, args) => {
+      if (args[1] !== "view") {
+        return Promise.resolve({ stdout: "" });
+      }
+      viewCalls += 1;
+      return Promise.resolve({
+        stdout: JSON.stringify({
+          isDraft: true,
+          mergeable: "MERGEABLE",
+          state: "OPEN",
+          statusCheckRollup: [],
+        }),
+      });
+    };
+    const gh = createExecGhPort(exec);
+
+    await expect(gh.markReady("org/repo", 3)).rejects.toThrow("still draft after gh pr ready");
+    expect(viewCalls).toBe(2);
+  });
+});

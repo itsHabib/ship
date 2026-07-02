@@ -54,6 +54,8 @@ export interface DriverGhPort {
   mergePullRequest(repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void>;
   viewPullRequest(repo: string, prNumber: number): Promise<GhPullRequestView>;
   fetchPrReadiness(repo: string, prNumber: number): Promise<GhPrReadiness>;
+  /** Flip a draft PR to ready; idempotent when already ready. Verified write. */
+  markReady(repo: string, prNumber: number): Promise<void>;
 }
 
 interface GhPrViewJson {
@@ -143,6 +145,19 @@ export function createExecGhPort(exec: GhExec = defaultGhExec): DriverGhPort {
         mergeable: parsed.mergeable ?? "UNKNOWN",
         state: parsed.state,
       };
+    },
+    async markReady(repo: string, prNumber: number): Promise<void> {
+      const before = await this.fetchPrReadiness(repo, prNumber);
+      if (!before.isDraft) {
+        return;
+      }
+      await exec("gh", ["pr", "ready", String(prNumber), "-R", toGhRepo(repo)]);
+      const after = await this.fetchPrReadiness(repo, prNumber);
+      if (after.isDraft) {
+        throw new Error(
+          `PR #${String(prNumber)} is still draft after gh pr ready — flip unconfirmed`,
+        );
+      }
     },
   };
 }

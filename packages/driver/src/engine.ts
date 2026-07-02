@@ -7,10 +7,12 @@ import type { Store } from "@ship/store";
 import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/store";
 import type { AgentProvider, FailureCategory } from "@ship/workflow";
 
+import { prNumberFromUrl } from "@ship/receipt";
 import { isTerminal } from "@ship/workflow";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import type { DriverGhPort } from "./gh-port.js";
 import type { DispatchAmbiguity } from "./judgment.js";
 import type { DriverShipPort } from "./ship-port.js";
 import type { DriverTickResult, RunOpts, TierDispatchResult } from "./types.js";
@@ -45,6 +47,7 @@ const RUNAWAY_BACKSTOP_MULTIPLIER = 6;
 export interface EngineDeps {
   store: Store;
   ship: DriverShipPort;
+  gh?: DriverGhPort;
   clock?: () => number;
   monotonicClock?: () => number;
   rng?: () => number;
@@ -67,6 +70,7 @@ interface TickContext {
   rng: () => number;
   sleep: (ms: number) => Promise<void>;
   ship: DriverShipPort;
+  gh?: DriverGhPort;
   store: Store;
 }
 
@@ -170,7 +174,7 @@ export async function runTick(
 }
 
 function buildTickContext(deps: EngineDeps): TickContext {
-  return {
+  const ctx: TickContext = {
     clock: deps.clock ?? Date.now,
     monotonicClock: deps.monotonicClock ?? performance.now.bind(performance),
     rng: deps.rng ?? Math.random,
@@ -178,6 +182,10 @@ function buildTickContext(deps: EngineDeps): TickContext {
     sleep: deps.sleep ?? defaultSleep,
     store: deps.store,
   };
+  if (deps.gh !== undefined) {
+    ctx.gh = deps.gh;
+  }
+  return ctx;
 }
 
 async function executeTick(
@@ -639,18 +647,22 @@ async function pollDispatched(
   run: DriverRun,
 ): Promise<DriverRun> {
   for (const stream of allStreams(run)) {
-    await pollOneStream(ctx, liveness, store, ship, stream);
+    await pollOneStream({ ctx, liveness, run, ship, store, stream });
   }
   return loadRun(store, run.id);
 }
 
-async function pollOneStream(
-  ctx: TickContext,
-  liveness: TickLiveness,
-  store: Store,
-  ship: DriverShipPort,
-  stream: DriverStream,
-): Promise<void> {
+interface PollOneStreamParams {
+  ctx: TickContext;
+  liveness: TickLiveness;
+  run: DriverRun;
+  ship: DriverShipPort;
+  store: Store;
+  stream: DriverStream;
+}
+
+async function pollOneStream(params: PollOneStreamParams): Promise<void> {
+  const { ctx, liveness, run, ship, store, stream } = params;
   if (stream.status !== "dispatched") return;
   const wfId = stream.workflowRunId;
   if (wfId === undefined) return;
@@ -661,7 +673,7 @@ async function pollOneStream(
   if (!isTerminal(wfRun.status)) return;
 
   if (wfRun.status === "succeeded") {
-    store.updateDriverStream(stream.id, buildLandedPatch(stream, wfRun));
+    await handleSucceededPoll(ctx, run, store, stream, wfRun);
     return;
   }
 
@@ -670,6 +682,52 @@ async function pollOneStream(
     errorMessage: wfRun.failureCategory ?? wfRun.status,
     status: "failed",
   });
+}
+
+async function handleSucceededPoll(
+  ctx: TickContext,
+  run: DriverRun,
+  store: Store,
+  stream: DriverStream,
+  wfRun: GetWorkflowRunOutput,
+): Promise<void> {
+  const prUrl = wfRun.branches?.[0]?.prUrl;
+  if (stream.runtime === "cloud" && prUrl !== undefined) {
+    const flipError = await flipCloudDraftReady(ctx.gh, run, prUrl);
+    if (flipError !== undefined) {
+      store.updateDriverStream(stream.id, {
+        errorMessage: flipError,
+        status: "failed",
+      });
+      return;
+    }
+  }
+  store.updateDriverStream(stream.id, buildLandedPatch(stream, wfRun));
+}
+
+async function flipCloudDraftReady(
+  gh: DriverGhPort | undefined,
+  run: DriverRun,
+  prUrl: string,
+): Promise<string | undefined> {
+  if (gh === undefined) {
+    return "draft→ready flip failed: GitHub port not configured";
+  }
+  const repo = extractRepoUrl(run);
+  if (repo === undefined) {
+    return "draft→ready flip failed: manifest missing repo_url";
+  }
+  const prNumber = prNumberFromUrl(prUrl);
+  if (prNumber === undefined) {
+    return `draft→ready flip failed: cannot parse PR number from prUrl ${prUrl}`;
+  }
+  try {
+    await gh.markReady(repo, prNumber);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `draft→ready flip failed: ${message}`;
+  }
+  return undefined;
 }
 
 function buildLandedPatch(
