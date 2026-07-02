@@ -265,6 +265,9 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
   let probeInFlight = false;
   let attachRetryTimer: ReturnType<typeof setTimeout> | undefined;
   const floorSamples: FloorSample[] = [];
+  // Trusted-mono floor term — accumulated corroborated segments; never ages
+  // (the in-flight segment stays uncounted until its fire classifies it).
+  let trustedMonoAgeMs = 0;
   let lastWallSample = wallNow();
   let lastMonoSample = startedMono;
   let latestEventAtMs: number | undefined;
@@ -329,10 +332,10 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
       settleExpired(handle === undefined);
       return true;
     }
-    if (nowMono >= windowDeadlineMono) {
-      settleExpired(handle === undefined);
-      return true;
-    }
+    // Budget exhaustion expires only via a served timer fire (rule 2's
+    // second condition) — never at a fold. A fold-time deadline check runs
+    // on microtask boundaries and could beat a result that is already
+    // resolving, turning a settled race into a synthetic failure.
     if (unreachableCount >= CAP_PROBE_FAIL_CLOSED_AFTER && wallAgeMs(args, wallNow()) >= cap) {
       settleExpired(handle === undefined);
       return true;
@@ -471,7 +474,7 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
 
   const chargeStepSuspectAsServed = (): void => {
     if (pendingStepSuspectMs <= 0) return;
-    foldSample(floorNow(monotonicNow()) + pendingStepSuspectMs, monotonicNow());
+    foldMonoDelta(pendingStepSuspectMs);
     pendingStepSuspectMs = 0;
     evaluateDecisionPoint();
     maybeRearm();
@@ -482,10 +485,11 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
     foldMonoDelta(Math.max(0, monotonicNow() - armedAtMono));
     foldStreamSignals();
     if (evaluateDecisionPoint()) return;
-    if (probeTargets() !== undefined) {
-      rearms += 1;
-      fireProbe(reason, false);
-    }
+    // Every early re-arm spends the backstop budget, probe or no probe —
+    // otherwise a frozen monotonic clock during a hung start re-arms forever
+    // and the workflow never reaches CursorRunStartTimedOutError.
+    rearms += 1;
+    if (probeTargets() !== undefined) fireProbe(reason, false);
     rederiveAndRearm();
   };
 
@@ -529,10 +533,15 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
     pendingStepSuspectMs = armedDelayMs;
     foldStreamSignals();
     if (evaluateDecisionPoint()) return;
-    if (probeTargets() !== undefined) {
-      rearms += 1;
-      fireProbe("late-fire", true);
+    rearms += 1;
+    if (probeTargets() === undefined) {
+      // No adjudicator at all: charge the suspect segment as served so
+      // repeated stalls cannot defer the cap indefinitely. The charge
+      // re-evaluates and re-arms internally.
+      chargeStepSuspectAsServed();
+      return;
     }
+    fireProbe("late-fire", true);
     rederiveAndRearm();
   };
 
@@ -541,14 +550,17 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
     floorSamples.push({ ageMs, foldedAtMono: atMono });
   }
 
+  // Trusted-mono time is its own non-aging floor term. Server-anchored
+  // samples already age by mono-since-fold in `floorNow`; compounding the
+  // mono delta into a new sample on top of `floorNow()` would double-count
+  // the same interval and over-cancel young runs.
   function foldMonoDelta(deltaMs: number): void {
     if (deltaMs <= 0) return;
-    const nowMono = monotonicNow();
-    foldSample(floorNow(nowMono) + deltaMs, nowMono);
+    trustedMonoAgeMs += deltaMs;
   }
 
   function floorNow(nowMono: number): number {
-    let maxAge = 0;
+    let maxAge = trustedMonoAgeMs;
     for (const sample of floorSamples) {
       const aged = sample.ageMs + Math.max(0, nowMono - sample.foldedAtMono);
       if (aged > maxAge) maxAge = aged;
@@ -593,6 +605,10 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
 
     return await Promise.race([terminal, capExpiry]);
   } finally {
+    // A settled race retires the cap entirely: late-arriving hooks
+    // (discontinuity samples, stream folds, in-flight probe resolutions,
+    // attach retries) must not re-arm timers or cancel a completed run.
+    settled = true;
     if (timer !== undefined) clearTimeout(timer);
     if (attachRetryTimer !== undefined) clearTimeout(attachRetryTimer);
   }
