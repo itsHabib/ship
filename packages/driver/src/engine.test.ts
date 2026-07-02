@@ -148,6 +148,103 @@ batches:
     store.close();
   });
 
+  test("awaiting_judgment writes stream-parked escalation before notify", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const notifyCalls: string[] = [];
+    const exec = async (_cmd: string, payload: string) => {
+      notifyCalls.push(payload);
+      await Promise.resolve();
+    };
+    const { port } = createFakeShipPort([
+      {
+        docPath: docA,
+        failureCategory: "timeout-near-cap",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_fail",
+      },
+    ]);
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({
+      notifyExec: exec,
+      ship: port,
+      store,
+    });
+    const imported = driver.importManifest(manifestPath);
+
+    const first = await driver.run(
+      { driverRunId: imported.run.id },
+      {
+        batch: 1,
+        escalation: { tiers: { "stream-parked": "page" } },
+        maxWaitMs: 0,
+        notify: { command: "test-notify" },
+      },
+    );
+    expect(first.status).toBe("awaiting_judgment");
+
+    const rows = store.listEscalations({
+      class: "stream-parked",
+      driverRunId: imported.run.id,
+      unresolvedOnly: true,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.notifiedAt).toBeDefined();
+    expect(notifyCalls.length).toBeGreaterThanOrEqual(1);
+    const payload = JSON.parse(notifyCalls[0]!) as { class: string; v: number };
+    expect(payload.class).toBe("stream-parked");
+    expect(payload.v).toBe(1);
+
+    const triage = first.awaiting[0];
+    if (triage?.kind !== "failure-triage") throw new Error("expected failure-triage");
+    driver.decide(imported.run.id, triage.streamId, { kind: "skip", reason: "won't fix" });
+
+    const resolved = store.listEscalations({
+      class: "stream-parked",
+      driverRunId: imported.run.id,
+      unresolvedOnly: true,
+    });
+    expect(resolved).toHaveLength(0);
+    store.close();
+  });
+
+  test("queue-tier stream-parked never spawns notify", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    let notifyCalls = 0;
+    const exec = async () => {
+      notifyCalls += 1;
+      await Promise.resolve();
+    };
+    const { port } = createFakeShipPort([
+      {
+        docPath: docA,
+        failureCategory: "timeout-near-cap",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_fail",
+      },
+    ]);
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({
+      notifyExec: exec,
+      ship: port,
+      store,
+    });
+    const imported = driver.importManifest(manifestPath);
+
+    await driver.run(
+      { driverRunId: imported.run.id },
+      { batch: 1, maxWaitMs: 0, notify: { command: "test-notify" } },
+    );
+    expect(notifyCalls).toBe(0);
+    const rows = store.listEscalations({ class: "stream-parked", driverRunId: imported.run.id });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.notifiedAt).toBeUndefined();
+    store.close();
+  });
+
   test("two-run plan determinism", async () => {
     const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const scripts = [{ docPath: docA, repo: "ship", workflowRunId: "wf_det" }];

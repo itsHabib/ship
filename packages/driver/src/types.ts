@@ -32,6 +32,51 @@ export interface RunOpts {
   pollIntervalMs?: number;
   maxParallel?: { local?: number; cloud?: number };
   force?: boolean;
+  /** Optional notify command for page-tier escalation delivery (TDD §6). */
+  notify?: NotifyConfig;
+  /** Per-class tier overrides for escalation delivery (TDD §5). */
+  escalation?: EscalationConfig;
+}
+
+/** Notify hook configuration — engine knows a command, not a channel. */
+export interface NotifyConfig {
+  command: string;
+  timeoutMs?: number;
+}
+
+/** Escalation tier and class overrides in driver config. */
+export interface EscalationConfig {
+  tiers?: Partial<Record<EscalationClass, EscalationTier>>;
+}
+
+export type EscalationTier = "page" | "queue";
+
+export type EscalationClass =
+  | "triage-uncertain"
+  | "auth-rejection"
+  | "cycle-exhausted"
+  | "product-direction"
+  | "sensitive-path"
+  | "spend-ceiling"
+  | "pathological-batch"
+  | "ci-infra"
+  | "grant-mutated"
+  | "stream-parked"
+  | "merge-blocked-no-verdict"
+  | "merge-ready-awaiting-authority";
+
+/** Versioned escalation payload written to rows and notify stdin (TDD §6). */
+export interface EscalationPayload {
+  v: 1;
+  class: EscalationClass;
+  driverRunId?: string;
+  streamId?: string;
+  repo?: string;
+  pr?: number;
+  question: string;
+  suggestion?: string;
+  evidence?: { links?: string[]; verdict?: object; traceRef?: string };
+  createdAt: string;
 }
 
 export type Decision =

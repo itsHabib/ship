@@ -56,7 +56,12 @@ export function createCliDriverService(
       dbPath: opts.dbPath,
       ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
     });
-    cached = createDriverService({ gh: ghPort ?? createExecGhPort(), ship, store });
+    cached = createDriverService({
+      gh: ghPort ?? createExecGhPort(),
+      ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
+      ship,
+      store,
+    });
     return cached;
   };
 }

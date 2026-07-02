@@ -44,6 +44,28 @@ export class DriverBatchNotFoundError extends Error {
   }
 }
 
+/** Thrown by `insertEscalation` when an open row already exists for the dedup key. */
+export class EscalationOpenRowExistsError extends Error {
+  override readonly name = "EscalationOpenRowExistsError";
+  readonly escalationId: string;
+
+  constructor(escalationId: string, options?: { cause?: unknown }) {
+    super(`open escalation already exists: ${escalationId}`, options);
+    this.escalationId = escalationId;
+  }
+}
+
+/** Thrown when an escalation referenced by id does not exist. */
+export class EscalationNotFoundError extends Error {
+  override readonly name = "EscalationNotFoundError";
+  readonly escalationId: string;
+
+  constructor(escalationId: string) {
+    super(`escalation not found: ${escalationId}`);
+    this.escalationId = escalationId;
+  }
+}
+
 /** Thrown by `updateDriverStream` when the stream id does not resolve. */
 export class DriverStreamNotFoundError extends Error {
   override readonly name = "DriverStreamNotFoundError";

@@ -18,3 +18,8 @@ export function newDriverBatchId(): string {
 export function newDriverStreamId(): string {
   return `ds_${ulid()}`;
 }
+
+/** Returns a new escalation ID, e.g. `esc_01ARZ3NDEKTSV4RRFFQ69G5FAV`. */
+export function newEscalationId(): string {
+  return `esc_${ulid()}`;
+}
