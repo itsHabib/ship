@@ -2,7 +2,13 @@
 
 import type { WorkflowRun } from "@ship/workflow";
 
-import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
+import {
+  createStore,
+  newDriverBatchId,
+  newDriverRunId,
+  newDriverStreamId,
+  newEscalationId,
+} from "@ship/store";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { CancelError, DecideError } from "./errors.js";
@@ -438,6 +444,59 @@ describe("judgment", () => {
     const cancelled = await cancelRun(store, port, runId, "2026-06-12T00:00:05.000Z");
     expect(cancelled.status).toBe("cancelled");
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("failed");
+  });
+
+  test("cancelRun resolves open escalation rows for the run", async () => {
+    const streamId = newDriverStreamId();
+    const runId = store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: newDriverBatchId(),
+          status: "running",
+          streams: [
+            {
+              attempts: [],
+              id: streamId,
+              runtime: "local",
+              specPath: "a.md",
+              status: "dispatched",
+              streamIndex: 0,
+              touches: [],
+              workflowRunId: "wf_cancel_esc",
+            },
+          ],
+        },
+      ],
+      id: newDriverRunId(),
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: minimalSource(),
+      status: "awaiting_judgment",
+    }).id;
+
+    const escId = newEscalationId();
+    store.insertEscalation({
+      class: "stream-parked",
+      driverRunId: runId,
+      id: escId,
+      payloadJson: JSON.stringify({
+        class: "stream-parked",
+        createdAt: "2026-06-12T00:00:00.000Z",
+        question: "parked",
+        v: 1,
+      }),
+      streamId,
+    });
+
+    const { port } = createFakeShipPort([
+      { docPath: "a.md", repo: "ship", terminalStatus: "running", workflowRunId: "wf_cancel_esc" },
+    ]);
+    await cancelRun(store, port, runId, "2026-06-12T00:00:05.000Z");
+
+    expect(store.getEscalation(escId)?.resolvedAt).toBeDefined();
+    expect(store.listEscalations({ driverRunId: runId, unresolvedOnly: true })).toHaveLength(0);
   });
 
   test("decide adopt on non-dispatching stream throws", () => {

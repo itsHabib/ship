@@ -1,4 +1,4 @@
--- 0013_escalations.sql — durable escalation rows for push-on-block (TDD §5).
+-- 0013_escalations.sql — durable escalation rows for push-on-block.
 --
 -- Open-row-only dedup via partial unique index with COALESCE sentinels so
 -- nullable driver_run_id / stream_id columns participate in uniqueness.

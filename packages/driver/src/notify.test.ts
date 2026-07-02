@@ -152,6 +152,41 @@ describe("notify hook", () => {
     }
   });
 
+  test("command that exits before reading stdin fails delivery without crashing", async () => {
+    const store = createStore({ clock: () => FAKE_NOW, dbPath: ":memory:" });
+    // Real spawn (no injected exec) so the stdin pipe is exercised. A large
+    // payload written to a command that exits immediately breaks the pipe
+    // (EPIPE) — the driver must survive and leave the row un-notified for retry.
+    const port = createNotifyPort({ command: "exit 1", timeoutMs: 5_000 })!;
+    try {
+      const runId = newDriverRunId();
+      store.insertDriverRun({
+        batches: [],
+        id: runId,
+        manifestPath: "/tmp/x.driver.md",
+        repo: "ship",
+        sourceJson: "{}",
+        status: "running",
+      });
+      const id = newEscalationId();
+      store.insertEscalation({
+        class: "cycle-exhausted",
+        driverRunId: runId,
+        id,
+        payloadJson: JSON.stringify({
+          class: "cycle-exhausted",
+          createdAt: FAKE_NOW,
+          question: "x".repeat(2_000_000),
+          v: 1,
+        }),
+      });
+      await expect(deliverPageTierEscalation({ notify: port, store }, id)).resolves.toBeUndefined();
+      expect(store.getEscalation(id)?.notifiedAt).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
   test("resolveEscalationTier honors config override", () => {
     expect(resolveEscalationTier("stream-parked")).toBe("queue");
     expect(resolveEscalationTier("stream-parked", { tiers: { "stream-parked": "page" } })).toBe(

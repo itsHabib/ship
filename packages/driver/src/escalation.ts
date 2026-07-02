@@ -1,5 +1,5 @@
 /**
- * Escalation row writes, tier registry, and notify delivery (TDD §5–§6).
+ * Escalation row writes, tier registry, and notify delivery.
  */
 
 import type { Logger } from "@ship/logger";
@@ -24,7 +24,7 @@ import type {
 
 import { buildDispatchAmbiguityRequests, buildFailureTriageRequests } from "./judgment.js";
 
-/** Default tier per escalation class (TDD §5). */
+/** Default tier per escalation class. */
 export const DEFAULT_ESCALATION_TIERS: Record<EscalationClass, EscalationTier> = {
   "auth-rejection": "page",
   "ci-infra": "page",
@@ -168,7 +168,7 @@ export function writeStreamParkedEscalations(
   return ids;
 }
 
-/** Page-tier cycle exhaustion row (writer for review loop — TDD Flow B). */
+/** Page-tier cycle exhaustion row (writer for review loop). */
 export function writeCycleExhaustedEscalation(
   deps: EscalationDeps,
   run: DriverRun,
@@ -197,7 +197,7 @@ export function writeCycleExhaustedEscalation(
   });
 }
 
-/** Run-scoped page-tier row for terminal anomaly / pathological batch (TDD §5). */
+/** Run-scoped page-tier row for terminal anomaly / pathological batch. */
 export function writePathologicalBatchEscalation(
   deps: EscalationDeps,
   run: DriverRun,
@@ -254,6 +254,18 @@ export function resolveAllStreamParkedEscalations(
   }
 }
 
+/** Resolve every open escalation row for a run regardless of class (e.g. cancel). */
+export function resolveAllRunEscalations(
+  store: Store,
+  driverRunId: string,
+  resolution: string,
+): void {
+  const rows = store.listEscalations({ driverRunId, unresolvedOnly: true });
+  for (const row of rows) {
+    store.resolveEscalation(row.id, resolution);
+  }
+}
+
 /** Attempt notify for one escalation row; failures are logged, never thrown. */
 export async function deliverPageTierEscalation(
   deps: EscalationDeps,
@@ -279,7 +291,7 @@ export async function deliverPageTierEscalation(
   }
 }
 
-/** Retry delivery for page-tier rows with null notified_at (TDD §8). */
+/** Retry delivery for page-tier rows with null notified_at. */
 export async function retryPendingEscalationNotifications(deps: EscalationDeps): Promise<void> {
   const pending = deps.store.listEscalations({ pendingNotifyOnly: true });
   for (const row of pending) {

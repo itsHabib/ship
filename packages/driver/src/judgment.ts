@@ -19,7 +19,11 @@ import type {
 } from "./types.js";
 
 import { CancelError, DecideError } from "./errors.js";
-import { resolveAllStreamParkedEscalations, resolveStreamParkedEscalation } from "./escalation.js";
+import {
+  resolveAllRunEscalations,
+  resolveAllStreamParkedEscalations,
+  resolveStreamParkedEscalation,
+} from "./escalation.js";
 import { parseManifest } from "./manifest.js";
 
 const LIST_RUNS_LIMIT = 200;
@@ -478,6 +482,9 @@ export async function cancelRun(
     });
   }
 
+  // A cancelled run's open escalation rows would otherwise keep showing as
+  // unresolved and stay eligible for notify retry; close them all out.
+  resolveAllRunEscalations(store, driverRunId, "driver:cancelled");
   return store.updateDriverRunStatus(driverRunId, "cancelled");
 }
 

@@ -1,5 +1,5 @@
 /**
- * Notify command spawn — bounded stdin delivery for page-tier escalations (TDD §6).
+ * Notify command spawn — bounded stdin delivery for page-tier escalations.
  */
 
 import { spawn } from "node:child_process";
@@ -20,7 +20,7 @@ export interface NotifyPort {
 
 function defaultNotifyExec(command: string, payloadJson: string, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Operator-configured shell command (TDD §6); stdin carries the payload JSON.
+    // Operator-configured shell command; stdin carries the payload JSON.
     // eslint-disable-next-line sonarjs/os-command -- intentional notify-hook seam
     const child = spawn(command, [], {
       shell: true,
@@ -49,6 +49,13 @@ function defaultNotifyExec(command: string, payloadJson: string, timeoutMs: numb
         return;
       }
       reject(new Error(`notify command exited ${String(code)}: ${stderr}`));
+    });
+
+    // A command that exits or closes stdin before reading the payload breaks the
+    // pipe (EPIPE); treat it as a delivery failure rather than crashing the driver.
+    child.stdin.on("error", (err) => {
+      clearTimeout(timer);
+      reject(new Error(`notify command stdin error: ${err.message}`));
     });
 
     child.stdin.write(payloadJson);

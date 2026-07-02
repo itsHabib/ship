@@ -32,9 +32,9 @@ export interface RunOpts {
   pollIntervalMs?: number;
   maxParallel?: { local?: number; cloud?: number };
   force?: boolean;
-  /** Optional notify command for page-tier escalation delivery (TDD §6). */
+  /** Optional notify command for page-tier escalation delivery. */
   notify?: NotifyConfig;
-  /** Per-class tier overrides for escalation delivery (TDD §5). */
+  /** Per-class tier overrides for escalation delivery. */
   escalation?: EscalationConfig;
 }
 
@@ -65,7 +65,7 @@ export type EscalationClass =
   | "merge-blocked-no-verdict"
   | "merge-ready-awaiting-authority";
 
-/** Versioned escalation payload written to rows and notify stdin (TDD §6). */
+/** Versioned escalation payload written to rows and notify stdin. */
 export interface EscalationPayload {
   v: 1;
   class: EscalationClass;
