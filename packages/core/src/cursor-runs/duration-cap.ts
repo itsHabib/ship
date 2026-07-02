@@ -13,14 +13,18 @@
  * instead — the SDK start call is what hung, not the agent run — which the
  * finalize path classifies `sdk-throw`.
  *
- * The cap is measured with a monotonic clock, and the timer re-validates real
- * elapsed on fire: a host suspend / wall-clock jump can fire the event-loop
- * timer before `windowMs` of real time actually passed, so a misfire re-arms
- * for the remaining window instead of synthesizing a false `timeout-near-cap`.
- * A re-arm-count backstop bounds this against a pathological clock.
+ * Local runs measure elapsed with a monotonic clock and re-validate on fire
+ * (#165). Cloud / rooms runs additionally track a live server-anchored age
+ * floor and consult bounded probes on suspend evidence.
  */
 
-import type { AgentRunHandle, AgentRunResult } from "@ship/cursor-runner";
+import type {
+  AgentRunHandle,
+  AgentRunLiveness,
+  AgentRunProbeArgs,
+  AgentRunProbeResult,
+  AgentRunResult,
+} from "@ship/agent-runner";
 import type { Logger } from "@ship/logger";
 
 import { CursorRunStartTimedOutError } from "../errors.js";
@@ -57,8 +61,33 @@ export const MAX_TIMER_DELAY_MS = 2_147_483_647;
  */
 export const MAX_CAP_REARMS = 64;
 
-/** Monotonic wall time (immune to system-clock jumps) for the cap measurement. */
-const defaultMonotonicClock = (): number => performance.now();
+/** Bounded network round-trip for a run-age probe. */
+export const PROBE_TIMEOUT_MS = 10_000;
+
+/** Consecutive unreachable probes before rule-5 fail-closed can fire. */
+export const CAP_PROBE_FAIL_CLOSED_AFTER = 3;
+
+/** Slack when classifying a timer fire as late (step-suspect). */
+export const FIRE_CLASSIFIER_SLACK_MS = 60_000;
+
+/** Wall-minus-mono delta across one pump interval that signals paused-clock suspend. */
+export const DISCONTINUITY_THRESHOLD_MS = 60_000;
+
+/** Attach retry cadence for broken-seed probe schedule (midpoint of 30–60s). */
+export const ATTACH_PROBE_RETRY_MS = 45_000;
+
+export type DurationCapKind = "fresh" | "attach";
+
+export interface DurationCapSignals {
+  readonly probeRun?: (args: AgentRunProbeArgs) => Promise<AgentRunProbeResult | undefined>;
+  readonly getLiveness?: () => AgentRunLiveness | undefined;
+}
+
+/** Hooks the service wires into event taps and the event-pump cadence. */
+export interface DurationCapHandle {
+  readonly onProviderStreamEvent: (eventAtMs: number) => void;
+  readonly onDiscontinuitySample: (wallMs: number, monoMs: number) => void;
+}
 
 export interface DurationCapRunArgs {
   /** Starts the run (fresh dispatch) or attach (resume); invoked once, immediately. */
@@ -78,28 +107,54 @@ export interface DurationCapRunArgs {
    * full cap to a run that already spent most of it.
    */
   readonly elapsedMs?: number;
+  readonly kind?: DurationCapKind;
   /**
    * Monotonic clock for the cap measurement; defaults to `performance.now`.
    * Injectable so tests can drive elapsed independently of `setTimeout` firing.
-   * Must be monotonic (immune to wall-clock jumps) — that is what lets a timer
-   * misfire after a suspend / clock jump re-arm instead of falsely expiring.
    */
   readonly monotonicClock?: () => number;
+  /** Wall clock for rule-5 and the discontinuity detector; defaults to `Date.now`. */
+  readonly wallClock?: () => number;
+  /** Row creation wall time (epoch ms) for broken-seed anchor fallback. */
+  readonly rowCreatedAtWallMs?: number;
+  /** Persisted provider server-stamped run creation (epoch ms). */
+  readonly serverCreatedAtMs?: number;
+  readonly signals?: DurationCapSignals;
+  /** Id-addressed probe targets on attach before a handle exists. */
+  readonly probeAgentId?: string;
+  readonly probeRunId?: string;
+  /** Called synchronously once remote-cap hooks are ready. */
+  readonly onCapReady?: (handle: DurationCapHandle) => void;
   readonly log?: Logger;
 }
+
+const defaultMonotonicClock = (): number => performance.now();
+const defaultWallClock = (): number => Date.now();
+
+interface FloorSample {
+  readonly ageMs: number;
+  readonly foldedAtMono: number;
+}
+
+type TimerFireKind = "served" | "early" | "late";
 
 /**
  * Resolves with the runner's terminal result, or — once the remaining cap
  * window of real (monotonic) time expires — cancels the run (best-effort, not
- * awaited) and resolves with a synthetic `failed` terminal instead. Rejects
- * when `start` rejects, when the registration hook throws, or when the window
- * expires before `start` produced a handle (`CursorRunStartTimedOutError`).
- *
- * The timer re-validates against the monotonic clock on fire: a suspend /
- * wall-clock jump that fires it before `windowMs` of real time elapsed re-arms
- * for the remaining window rather than giving up (bounded by `MAX_CAP_REARMS`).
+ * awaited) and resolves with a synthetic `failed` terminal instead.
  */
 export async function runWithDurationCap(args: DurationCapRunArgs): Promise<AgentRunResult> {
+  if (!hasRemoteSignals(args)) {
+    return runLocalDurationCap(args);
+  }
+  return runRemoteDurationCap(args);
+}
+
+function hasRemoteSignals(args: DurationCapRunArgs): boolean {
+  return args.signals?.probeRun !== undefined || args.signals?.getLiveness !== undefined;
+}
+
+async function runLocalDurationCap(args: DurationCapRunArgs): Promise<AgentRunResult> {
   const elapsedMs = args.elapsedMs ?? 0;
   const windowMs = capWindowMs(args.maxRunDurationMs, elapsedMs);
   const monotonicNow = args.monotonicClock ?? defaultMonotonicClock;
@@ -108,16 +163,9 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
   let expired = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let rearms = 0;
-  // Monotonic time the current timer was armed, and the delay it was armed for.
-  // Comparing real elapsed-since-arm against the armed delay separates a healthy
-  // clamped-segment continuation (full delay elapsed) from a suspend misfire
-  // (fired early because the monotonic clock barely advanced).
   let armedAtMono = 0;
   let armedDelayMs = 0;
 
-  // Everything that arms the timer or calls `start()` lives inside the try,
-  // so a synchronous throw from an injected runner still hits the finally
-  // and clears the cap timer rather than leaking it.
   try {
     const capExpiry = new Promise<AgentRunResult>((resolve, reject) => {
       const onCapTimer = (): void => {
@@ -125,10 +173,6 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
         const realElapsed = nowMono - startedMono;
         const windowRemainingMs = windowMs - realElapsed;
 
-        // The full armed delay elapsed in real (monotonic) time but the window
-        // hasn't: a clamped segment of a cap beyond MAX_TIMER_DELAY_MS finishing
-        // on a healthy clock. Continue with the next segment — not a misfire, so
-        // it neither warns nor spends the misfire backstop.
         if (windowRemainingMs > 0 && nowMono - armedAtMono >= armedDelayMs) {
           armedAtMono = nowMono;
           armedDelayMs = Math.min(windowRemainingMs, MAX_TIMER_DELAY_MS);
@@ -136,9 +180,6 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
           return;
         }
 
-        // Fired before its armed delay elapsed in real time — a host suspend /
-        // wall-clock jump. Re-arm for the remaining window, bounded by the
-        // backstop against a frozen clock that never advances to the window.
         if (windowRemainingMs > 0 && rearms < MAX_CAP_REARMS) {
           rearms += 1;
           armedAtMono = nowMono;
@@ -167,9 +208,6 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
           reject(new CursorRunStartTimedOutError(windowMs));
           return;
         }
-        // Resolve the synthetic terminal BEFORE firing cancel: a runner whose
-        // cancel settles `result` synchronously (as "cancelled") must not win
-        // the race — the cap verdict is `failed`, not `cancelled`.
         resolve(capExceededResult(elapsedMs + windowMs));
         cancelBestEffort(handle);
       };
@@ -177,21 +215,11 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
       armedDelayMs = Math.min(windowMs, MAX_TIMER_DELAY_MS);
       timer = setTimeout(onCapTimer, armedDelayMs);
     });
-    // The loser of the race can still settle later — e.g. the cap rejects
-    // pre-handle and `start()` (a hung `Agent.create`/`Agent.resume`) rejects
-    // minutes afterward, or the cap resolves synthetic and the live
-    // `handle.result` rejects post-cancel. `Promise.race` retains a reaction
-    // on each input, so a late rejection is already observed, but these
-    // sibling swallowers make that guarantee explicit and independent of the
-    // host's race implementation. They never suppress the winner: the race
-    // keeps its own reaction and still propagates the winning settlement.
     void capExpiry.catch(() => {
       /* swallow late loser rejection */
     });
 
     const terminal = args.start().then((h) => {
-      // Past expiry the race has already settled; the late handle is only
-      // cancelled, never registered. The returned value is discarded.
       if (expired) {
         cancelBestEffort(h);
         return capExceededResult(elapsedMs + windowMs);
@@ -210,24 +238,445 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
   }
 }
 
+async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunResult> {
+  const cap = args.maxRunDurationMs;
+  const seedMs = resolveSeedMs(args);
+  const windowMs = resolveWindowMs(args, seedMs);
+  const monotonicNow = args.monotonicClock ?? defaultMonotonicClock;
+  const wallNow = args.wallClock ?? defaultWallClock;
+  const startedMono = monotonicNow();
+  const windowDeadlineMono = startedMono + windowMs;
+  const streamAnchorMs = args.serverCreatedAtMs;
+
+  let handle: AgentRunHandle | undefined;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let armedAtMono = startedMono;
+  let armedDelayMs = Math.min(windowMs, MAX_TIMER_DELAY_MS);
+  let rearms = 0;
+  let unreachableCount = 0;
+  let attachProbeRetries = 0;
+  let pendingStepSuspectMs = 0;
+  let probeInFlight = false;
+  let attachRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  const floorSamples: FloorSample[] = [];
+  let lastWallSample = wallNow();
+  let lastMonoSample = startedMono;
+  let latestEventAtMs: number | undefined;
+
+  const capHooks: DurationCapHandle = {
+    onDiscontinuitySample: (wallMs, monoMs) => {
+      if (settled) return;
+      const wallDelta = wallMs - lastWallSample;
+      const monoDelta = monoMs - lastMonoSample;
+      lastWallSample = wallMs;
+      lastMonoSample = monoMs;
+      if (wallDelta - monoDelta <= DISCONTINUITY_THRESHOLD_MS) return;
+      handleEarlyEvidence("discontinuity");
+    },
+    onProviderStreamEvent: (eventAtMs) => {
+      if (settled) return;
+      latestEventAtMs = eventAtMs;
+      foldStreamSignals();
+      evaluateDecisionPoint();
+    },
+  };
+  args.onCapReady?.(capHooks);
+
+  let resolveCap!: (result: AgentRunResult) => void;
+  let rejectCap!: (err: unknown) => void;
+  const capExpiry = new Promise<AgentRunResult>((resolve, reject) => {
+    resolveCap = resolve;
+    rejectCap = reject;
+  });
+
+  const settleExpired = (preHandle: boolean): void => {
+    if (settled) return;
+    settled = true;
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    const floor = floorNow(monotonicNow());
+    const reportedMs = Math.max(cap, Math.max(seedMs + windowMs, floor));
+    args.log?.warn(
+      {
+        floor,
+        maxRunDurationMs: cap,
+        preHandle,
+        seedMs,
+        windowMs,
+      },
+      "policy.maxRunDurationMs exceeded; cancelling run",
+    );
+    if (preHandle) {
+      rejectCap(new CursorRunStartTimedOutError(windowMs));
+      return;
+    }
+    resolveCap(capExceededResult(reportedMs, cap));
+    if (handle !== undefined) cancelBestEffort(handle);
+  };
+
+  const evaluateDecisionPoint = (): boolean => {
+    if (settled) return true;
+    const nowMono = monotonicNow();
+    if (floorNow(nowMono) >= cap) {
+      settleExpired(handle === undefined);
+      return true;
+    }
+    if (nowMono >= windowDeadlineMono) {
+      settleExpired(handle === undefined);
+      return true;
+    }
+    if (unreachableCount >= CAP_PROBE_FAIL_CLOSED_AFTER && wallAgeMs(args, wallNow()) >= cap) {
+      settleExpired(handle === undefined);
+      return true;
+    }
+    if (rearms >= MAX_CAP_REARMS) {
+      settleExpired(handle === undefined);
+      return true;
+    }
+    return settled;
+  };
+
+  const rederiveAndRearm = (): void => {
+    if (settled) return;
+    const nowMono = monotonicNow();
+    const floor = floorNow(nowMono);
+    const windowRemainingMs = windowDeadlineMono - nowMono;
+    const capRemainderMs = Math.max(0, cap - floor);
+    const nextDelay = Math.min(windowRemainingMs, capRemainderMs);
+    if (nextDelay <= 0) {
+      settleExpired(handle === undefined);
+      return;
+    }
+    armedAtMono = nowMono;
+    armedDelayMs = Math.min(nextDelay, MAX_TIMER_DELAY_MS);
+    if (timer !== undefined) clearTimeout(timer);
+    timer = setTimeout(onCapTimer, armedDelayMs);
+  };
+
+  const foldStreamSignals = (): void => {
+    foldRemoteStreamAge({
+      floorSamples,
+      getLiveness: () => args.signals?.getLiveness?.() ?? readHandleLiveness(handle),
+      monotonicNow,
+      ...(streamAnchorMs !== undefined && { anchorMs: streamAnchorMs }),
+      ...(latestEventAtMs !== undefined && { latestEventAtMs }),
+    });
+  };
+
+  const foldProbeResult = (probe: AgentRunProbeResult): void => {
+    const created = probe.createdAtMs;
+    const updated = probe.updatedAtMs;
+    if (created === undefined || updated === undefined || updated < created) return;
+    const ageMs = updated - created;
+    foldSample(ageMs, monotonicNow());
+    if (ageMs < cap) {
+      rearms = 0;
+      unreachableCount = 0;
+    }
+  };
+
+  const maybeRearm = (): void => {
+    if (settled) return;
+    rederiveAndRearm();
+  };
+
+  const noteProbeMiss = (
+    shouldAdjudicate: boolean,
+    suspectMs: number,
+    attachProbe: boolean,
+  ): void => {
+    if (!attachProbe) unreachableCount += 1;
+    if (shouldAdjudicate && suspectMs > 0) chargeStepSuspectAsServed();
+    evaluateDecisionPoint();
+  };
+
+  const resolveProbeAnswer = (
+    probe: AgentRunProbeResult | undefined,
+    shouldAdjudicate: boolean,
+    suspectMs: number,
+    attachProbe: boolean,
+  ): void => {
+    if (settled) return;
+    probeInFlight = false;
+    if (probe === undefined) {
+      noteProbeMiss(shouldAdjudicate, suspectMs, attachProbe);
+      return;
+    }
+    const created = probe.createdAtMs;
+    const updated = probe.updatedAtMs;
+    if (created === undefined || updated === undefined) {
+      noteProbeMiss(shouldAdjudicate, suspectMs, attachProbe);
+      return;
+    }
+    pendingStepSuspectMs = 0;
+    foldProbeResult(probe);
+    if (evaluateDecisionPoint()) return;
+    maybeRearm();
+  };
+
+  const probeTargets = ():
+    | { agentId: string; runId: string; probeFn: NonNullable<DurationCapSignals["probeRun"]> }
+    | undefined => {
+    const probeFn = args.signals?.probeRun;
+    const agentId = handle?.agentId ?? args.probeAgentId;
+    const runId = handle?.runId ?? args.probeRunId;
+    if (probeFn === undefined || agentId === undefined || runId === undefined) return undefined;
+    return { agentId, probeFn, runId };
+  };
+
+  const dispatchProbe = (
+    shouldAdjudicate: boolean,
+    suspectMs: number,
+    attachProbe: boolean,
+  ): void => {
+    const targets = probeTargets();
+    if (targets === undefined) return;
+    probeInFlight = true;
+    void probeWithTimeout(targets.probeFn, {
+      agentId: targets.agentId,
+      runId: targets.runId,
+    }).then(
+      (probe) => {
+        resolveProbeAnswer(probe, shouldAdjudicate, suspectMs, attachProbe);
+      },
+      () => {
+        resolveProbeAnswer(undefined, shouldAdjudicate, suspectMs, attachProbe);
+      },
+    );
+  };
+
+  const fireProbe = (reason: string, adjudicateStepSuspect: boolean): void => {
+    if (settled || probeInFlight) return;
+    const suspectMs = pendingStepSuspectMs;
+    const attachProbe = reason === "attach" || reason === "attach-retry";
+    if (probeTargets() === undefined) {
+      if (adjudicateStepSuspect && suspectMs > 0) chargeStepSuspectAsServed();
+      return;
+    }
+    dispatchProbe(adjudicateStepSuspect, suspectMs, attachProbe);
+  };
+
+  const chargeStepSuspectAsServed = (): void => {
+    if (pendingStepSuspectMs <= 0) return;
+    foldSample(floorNow(monotonicNow()) + pendingStepSuspectMs, monotonicNow());
+    pendingStepSuspectMs = 0;
+    evaluateDecisionPoint();
+    maybeRearm();
+  };
+
+  const handleEarlyEvidence = (reason: string): void => {
+    if (settled) return;
+    foldMonoDelta(Math.max(0, monotonicNow() - armedAtMono));
+    foldStreamSignals();
+    if (evaluateDecisionPoint()) return;
+    rearms += 1;
+    fireProbe(reason, false);
+    rederiveAndRearm();
+  };
+
+  const onCapTimer = (): void => {
+    if (settled) return;
+    const nowMono = monotonicNow();
+    const monoDelta = nowMono - armedAtMono;
+    const windowRemainingMs = windowDeadlineMono - nowMono;
+    const fireKind = classifyTimerFire(monoDelta, armedDelayMs);
+
+    if (fireKind === "served") {
+      foldMonoDelta(monoDelta);
+      foldStreamSignals();
+      if (evaluateDecisionPoint()) return;
+      if (windowRemainingMs <= 0) {
+        settleExpired(handle === undefined);
+        return;
+      }
+      const floor = floorNow(nowMono);
+      if (floor >= cap) {
+        settleExpired(handle === undefined);
+        return;
+      }
+      armedAtMono = nowMono;
+      armedDelayMs = Math.min(windowRemainingMs, Math.max(0, cap - floor), MAX_TIMER_DELAY_MS);
+      timer = setTimeout(onCapTimer, armedDelayMs);
+      return;
+    }
+
+    if (fireKind === "early") {
+      handleEarlyEvidence("early-fire");
+      return;
+    }
+
+    // Late / step-suspect
+    pendingStepSuspectMs = armedDelayMs;
+    foldStreamSignals();
+    if (evaluateDecisionPoint()) return;
+    rearms += 1;
+    fireProbe("late-fire", true);
+    rederiveAndRearm();
+  };
+
+  function foldSample(ageMs: number, atMono: number): void {
+    if (ageMs < 0) return;
+    floorSamples.push({ ageMs, foldedAtMono: atMono });
+  }
+
+  function foldMonoDelta(deltaMs: number): void {
+    if (deltaMs <= 0) return;
+    const nowMono = monotonicNow();
+    foldSample(floorNow(nowMono) + deltaMs, nowMono);
+  }
+
+  function floorNow(nowMono: number): number {
+    let maxAge = 0;
+    for (const sample of floorSamples) {
+      const aged = sample.ageMs + Math.max(0, nowMono - sample.foldedAtMono);
+      if (aged > maxAge) maxAge = aged;
+    }
+    return maxAge;
+  }
+
+  const scheduleAttachProbeRetry = (): void => {
+    if (settled || args.kind !== "attach") return;
+    if (seedMs > 0 || args.rowCreatedAtWallMs !== undefined) return;
+    if (attachProbeRetries >= CAP_PROBE_FAIL_CLOSED_AFTER) return;
+    attachProbeRetries += 1;
+    attachRetryTimer = setTimeout(() => {
+      fireProbe("attach-retry", false);
+      if (!settled) scheduleAttachProbeRetry();
+    }, ATTACH_PROBE_RETRY_MS);
+  };
+
+  try {
+    void capExpiry.catch(() => {
+      /* swallow late loser rejection */
+    });
+    timer = setTimeout(onCapTimer, armedDelayMs);
+
+    if (args.kind === "attach") {
+      fireProbe("attach", false);
+      scheduleAttachProbeRetry();
+    }
+
+    const terminal = args.start().then((h) => {
+      if (settled) {
+        cancelBestEffort(h);
+        return capExceededResult(Math.max(cap, seedMs + windowMs), cap);
+      }
+      handle = h;
+      args.onHandle(h);
+      return h.result;
+    });
+    void terminal.catch(() => {
+      /* swallow late loser rejection */
+    });
+
+    return await Promise.race([terminal, capExpiry]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (attachRetryTimer !== undefined) clearTimeout(attachRetryTimer);
+  }
+}
+
+function foldRemoteStreamAge(args: {
+  readonly anchorMs?: number;
+  readonly latestEventAtMs?: number;
+  readonly getLiveness: () => AgentRunLiveness | undefined;
+  readonly monotonicNow: () => number;
+  readonly floorSamples: FloorSample[];
+}): void {
+  const liveness = args.getLiveness();
+  const anchor = args.anchorMs ?? liveness?.createdAtMs ?? args.latestEventAtMs;
+  const lastEvent = liveness?.lastEventAtMs ?? args.latestEventAtMs;
+  if (anchor === undefined || lastEvent === undefined) return;
+  if (lastEvent < anchor) return;
+  args.floorSamples.push({ ageMs: lastEvent - anchor, foldedAtMono: args.monotonicNow() });
+}
+
+function classifyTimerFire(monoDelta: number, armedDelayMs: number): TimerFireKind {
+  if (monoDelta + FIRE_CLASSIFIER_SLACK_MS < armedDelayMs) return "early";
+  if (monoDelta > armedDelayMs + FIRE_CLASSIFIER_SLACK_MS) return "late";
+  return "served";
+}
+
+function resolveSeedMs(args: DurationCapRunArgs): number {
+  const elapsed = args.elapsedMs ?? 0;
+  if (elapsed > 0) return elapsed;
+  if (args.rowCreatedAtWallMs !== undefined) {
+    const wall = args.wallClock ?? defaultWallClock;
+    const derived = wall() - args.rowCreatedAtWallMs;
+    if (Number.isFinite(derived) && derived > 0) return derived;
+  }
+  return 0;
+}
+
+function resolveWindowMs(args: DurationCapRunArgs, seedMs: number): number {
+  const cap = args.maxRunDurationMs;
+  const graceMs = Math.min(MIN_RESUMED_CAP_WINDOW_MS, cap);
+  if (args.kind !== "attach") return cap;
+  if (seedMs > 0) return Math.max(cap - seedMs, graceMs);
+  if (args.rowCreatedAtWallMs !== undefined) {
+    const wall = args.wallClock ?? defaultWallClock;
+    const derived = wall() - args.rowCreatedAtWallMs;
+    if (Number.isFinite(derived) && derived > 0) {
+      return Math.max(cap - derived, graceMs);
+    }
+  }
+  return graceMs;
+}
+
 function capWindowMs(maxRunDurationMs: number, elapsedMs: number): number {
   if (elapsedMs <= 0) return maxRunDurationMs;
   const graceMs = Math.min(MIN_RESUMED_CAP_WINDOW_MS, maxRunDurationMs);
   return Math.max(maxRunDurationMs - elapsedMs, graceMs);
 }
 
-// Best-effort: the cap verdict stands whether or not the SDK-side cancel
-// lands (a hung agent may not acknowledge it).
+function wallAgeMs(args: DurationCapRunArgs, wallMs: number): number {
+  const startedWall = parseStartedWallMs(args);
+  if (startedWall === undefined) return 0;
+  return Math.max(0, wallMs - startedWall);
+}
+
+function parseStartedWallMs(args: DurationCapRunArgs): number | undefined {
+  const elapsed = args.elapsedMs ?? 0;
+  if (elapsed > 0) {
+    const wall = args.wallClock ?? defaultWallClock;
+    return wall() - elapsed;
+  }
+  return args.rowCreatedAtWallMs;
+}
+
+function readHandleLiveness(handle: AgentRunHandle | undefined): AgentRunLiveness | undefined {
+  if (handle?.liveness === undefined) return undefined;
+  return handle.liveness();
+}
+
+async function probeWithTimeout(
+  probeRun: (args: AgentRunProbeArgs) => Promise<AgentRunProbeResult | undefined>,
+  args: AgentRunProbeArgs,
+): Promise<AgentRunProbeResult | undefined> {
+  return await Promise.race([
+    probeRun(args),
+    new Promise<undefined>((resolve) => {
+      setTimeout(() => {
+        resolve(undefined);
+      }, PROBE_TIMEOUT_MS);
+    }),
+  ]);
+}
+
 function cancelBestEffort(handle: AgentRunHandle): void {
   handle.cancel().catch(() => {
     /* swallow */
   });
 }
 
-function capExceededResult(durationMs: number): AgentRunResult {
+function capExceededResult(durationMs: number, floorCapMs?: number): AgentRunResult {
+  const reported = floorCapMs !== undefined ? Math.max(durationMs, floorCapMs) : durationMs;
   return {
     branches: [],
-    durationMs,
+    durationMs: reported,
     errorMessage:
       "run exceeded policy.maxRunDurationMs; ship requested an SDK-run cancel (best-effort)",
     status: "failed",

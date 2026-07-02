@@ -57,7 +57,7 @@ test("kill-mid-run restart: resumeOrphanedRuns attaches and completes the same w
     baseRef: "main",
     docPath: "docs/task.md",
     id: WORKFLOW_RUN_ID,
-    policy: { agentTimeoutMs: 1, baseRef: "main", maxRunDurationMs: 1 },
+    policy: { agentTimeoutMs: 1, baseRef: "main", maxRunDurationMs: 60_000 },
     repo: "ship",
     worktree: {
       baseRef: "main",

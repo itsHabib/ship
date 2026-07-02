@@ -11,7 +11,10 @@ import type {
   AgentRunAttachInput,
   AgentRunHandle,
   AgentRunInput,
+  AgentRunLiveness,
   AgentRunner,
+  AgentRunProbeArgs,
+  AgentRunProbeResult,
   AgentRunResult,
 } from "./runner.js";
 
@@ -28,6 +31,10 @@ export interface FakeAgentScript {
   readonly cancelBehavior?: "complete" | "ignore" | "throw";
   readonly delayMsBetweenEvents?: number;
   readonly artifactBytes?: Readonly<Record<string, Buffer>>;
+  /** Server-stamped liveness returned by `probeRun` and seeded on the handle. */
+  readonly liveness?: AgentRunLiveness;
+  /** Scripted probe answers keyed by `${agentId}:${runId}`. */
+  readonly probeResults?: Readonly<Record<string, AgentRunProbeResult | undefined>>;
 }
 
 export type FakeAgentAttachScript =
@@ -57,6 +64,8 @@ const CANCEL_THROWN_MESSAGE = "FakeAgentRunner: scripted cancel error";
 export interface FakeAgentRunnerOptions {
   readonly defaultScript?: FakeAgentScript;
   readonly defaultAttachScript?: FakeAgentAttachScript;
+  /** Global probe script when a per-script entry is absent. */
+  readonly defaultProbeResult?: AgentRunProbeResult | undefined;
 }
 
 export class FakeAgentRunner implements AgentRunner {
@@ -66,12 +75,16 @@ export class FakeAgentRunner implements AgentRunner {
   readonly #attachCalls: FakeAgentAttachCall[] = [];
   readonly #defaultScript: FakeAgentScript | undefined;
   readonly #defaultAttachScript: FakeAgentAttachScript | undefined;
+  readonly #defaultProbeResult: AgentRunProbeResult | undefined;
   readonly #artifactBytesByAgent = new Map<string, Map<string, Buffer>>();
+  readonly #activeLiveness = new Map<string, AgentRunLiveness>();
+  readonly #probeScripts = new Map<string, AgentRunProbeResult | undefined>();
   #runCounter = 0;
 
   constructor(opts: FakeAgentRunnerOptions = {}) {
     this.#defaultScript = opts.defaultScript;
     this.#defaultAttachScript = opts.defaultAttachScript;
+    this.#defaultProbeResult = opts.defaultProbeResult;
   }
 
   enqueue(script: FakeAgentScript): void {
@@ -92,6 +105,25 @@ export class FakeAgentRunner implements AgentRunner {
 
   get pendingScriptCount(): number {
     return this.#scripts.length;
+  }
+
+  /** Test hook: set a probe answer for a specific agent/run pair. */
+  setProbeResult(args: AgentRunProbeArgs, result: AgentRunProbeResult | undefined): void {
+    this.#probeScripts.set(probeKey(args), result);
+  }
+
+  probeRun(args: AgentRunProbeArgs): Promise<AgentRunProbeResult | undefined> {
+    const key = probeKey(args);
+    if (this.#probeScripts.has(key)) return Promise.resolve(this.#probeScripts.get(key));
+    const active = this.#activeLiveness.get(key);
+    if (active?.createdAtMs !== undefined && active.lastEventAtMs !== undefined) {
+      return Promise.resolve({
+        createdAtMs: active.createdAtMs,
+        status: "RUNNING",
+        updatedAtMs: active.lastEventAtMs,
+      });
+    }
+    return Promise.resolve(this.#defaultProbeResult);
   }
 
   run(input: AgentRunInput): Promise<AgentRunHandle> {
@@ -162,6 +194,15 @@ export class FakeAgentRunner implements AgentRunner {
     script: FakeAgentScript;
   }): AgentRunHandle {
     const { agentId, input, runId, script } = args;
+    const livenessState: { createdAtMs?: number; lastEventAtMs?: number } = {
+      ...(script.liveness ?? {}),
+    };
+    this.#activeLiveness.set(probeKey({ agentId, runId }), livenessState);
+    if (script.probeResults !== undefined) {
+      for (const [key, value] of Object.entries(script.probeResults)) {
+        this.#probeScripts.set(key, value);
+      }
+    }
     let terminated = false;
     let cancelAttempted = false;
     let resolveResult!: (value: AgentRunResult) => void;
@@ -214,18 +255,38 @@ export class FakeAgentRunner implements AgentRunner {
     const setActiveSleep = (s: { cancel: () => void } | null): void => {
       activeSleep = s;
     };
-    void this.#emit(script, input, () => terminated, finalize, setActiveSleep);
+    void this.#emit({
+      finalize,
+      input,
+      isTerminated: () => terminated,
+      onProviderEvent: (ev) => {
+        const ts = eventTimestampMs(ev);
+        if (ts === undefined) return;
+        livenessState.lastEventAtMs = ts;
+        livenessState.createdAtMs ??= ts;
+      },
+      script,
+      setActiveSleep,
+    });
 
-    return { agentId, cancel: cancelInternal, result, runId };
+    return {
+      agentId,
+      cancel: cancelInternal,
+      liveness: () => ({ ...livenessState }),
+      result,
+      runId,
+    };
   }
 
-  async #emit(
-    script: FakeAgentScript,
-    input: AgentRunInput,
-    isTerminated: () => boolean,
-    finalize: (terminal: AgentRunResult) => void,
-    setActiveSleep: (s: { cancel: () => void } | null) => void,
-  ): Promise<void> {
+  async #emit(args: {
+    script: FakeAgentScript;
+    input: AgentRunInput;
+    isTerminated: () => boolean;
+    finalize: (terminal: AgentRunResult) => void;
+    setActiveSleep: (s: { cancel: () => void } | null) => void;
+    onProviderEvent?: (ev: AgentEvent) => void;
+  }): Promise<void> {
+    const { script, input, isTerminated, finalize, setActiveSleep, onProviderEvent } = args;
     const delay = script.delayMsBetweenEvents ?? 0;
     for (const ev of script.events) {
       if (delay > 0) {
@@ -235,27 +296,56 @@ export class FakeAgentRunner implements AgentRunner {
         setActiveSleep(null);
       }
       if (isTerminated()) return;
-      try {
-        const maybePromise: unknown = input.onEvent(ev);
-        if (isPromiseLike(maybePromise)) {
-          maybePromise.then(undefined, () => {
-            /* swallow */
-          });
-        }
-      } catch {
-        /* swallow */
-      }
+      deliverProviderEvent(input, ev, onProviderEvent);
     }
     if (!isTerminated()) {
-      if (script.listArtifacts !== undefined) {
-        const artifacts = await captureListedArtifacts(script.listArtifacts, input.log);
-        const terminal = artifacts.length > 0 ? { ...script.result, artifacts } : script.result;
-        finalize(finalizeFakeResult(script, terminal));
-        return;
-      }
-      finalize(finalizeFakeResult(script, script.result));
+      await finalizeScriptedRun(script, input, finalize);
     }
   }
+}
+
+function deliverProviderEvent(
+  input: AgentRunInput,
+  ev: AgentEvent,
+  onProviderEvent?: (ev: AgentEvent) => void,
+): void {
+  onProviderEvent?.(ev);
+  try {
+    const maybePromise: unknown = input.onEvent(ev);
+    if (isPromiseLike(maybePromise)) {
+      maybePromise.then(undefined, () => {
+        /* swallow */
+      });
+    }
+  } catch {
+    /* swallow */
+  }
+}
+
+async function finalizeScriptedRun(
+  script: FakeAgentScript,
+  input: AgentRunInput,
+  finalize: (terminal: AgentRunResult) => void,
+): Promise<void> {
+  if (script.listArtifacts !== undefined) {
+    const artifacts = await captureListedArtifacts(script.listArtifacts, input.log);
+    const terminal = artifacts.length > 0 ? { ...script.result, artifacts } : script.result;
+    finalize(finalizeFakeResult(script, terminal));
+    return;
+  }
+  finalize(finalizeFakeResult(script, script.result));
+}
+
+function probeKey(args: AgentRunProbeArgs): string {
+  return `${args.agentId}:${args.runId}`;
+}
+
+function eventTimestampMs(ev: AgentEvent): number | undefined {
+  const raw = ev as { ts?: unknown; startedAt?: unknown };
+  const ts = raw.ts ?? raw.startedAt;
+  if (typeof ts !== "string" || ts.length === 0) return undefined;
+  const ms = Date.parse(ts);
+  return Number.isFinite(ms) ? ms : undefined;
 }
 
 function finalizeFakeResult(script: FakeAgentScript, terminal: AgentRunResult): AgentRunResult {

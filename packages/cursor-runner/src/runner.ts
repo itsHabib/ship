@@ -11,6 +11,9 @@ export type {
   AgentRunResult,
   CloudRunSpec,
   RoomRunSpec,
+  AgentRunLiveness,
+  AgentRunProbeArgs,
+  AgentRunProbeResult,
 } from "@ship/agent-runner";
 
 export type { AgentDefinition, McpServerConfig } from "@ship/agent-runner";

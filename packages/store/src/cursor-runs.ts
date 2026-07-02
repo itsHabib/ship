@@ -33,6 +33,8 @@ export interface RecordCursorRunInput {
   runtime: CursorRunRuntime;
   model?: ModelSelection;
   artifactsDir: string;
+  /** Provider server-stamped run creation time (epoch ms), when exposed at dispatch. */
+  createdAtMs?: number;
 }
 
 /** Patch shape for `updateCursorRunStatus`; every field optional. */
@@ -85,10 +87,11 @@ interface CursorRunRow {
   duration_ms: number | null;
   artifacts_dir: string;
   artifacts_json: string | null;
+  created_at_ms: number | null;
 }
 
 const CURSOR_RUN_COLUMNS =
-  "id, workflow_run_id, agent_id, provider, run_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir, artifacts_json";
+  "id, workflow_run_id, agent_id, provider, run_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir, artifacts_json, created_at_ms";
 
 /**
  * Constructs the `cursor_runs` ops. Caches static prepared statements
@@ -96,8 +99,8 @@ const CURSOR_RUN_COLUMNS =
  */
 export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
   const insertStmt = db.prepare(
-    `INSERT INTO cursor_runs (id, workflow_run_id, agent_id, provider, run_id, runtime, model_json, status, started_at, artifacts_dir)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO cursor_runs (id, workflow_run_id, agent_id, provider, run_id, runtime, model_json, status, started_at, artifacts_dir, created_at_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], CursorRunRow>(
     `SELECT ${CURSOR_RUN_COLUMNS} FROM cursor_runs WHERE id = ?`,
@@ -124,6 +127,7 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
           "running",
           clock(),
           input.artifactsDir,
+          input.createdAtMs ?? null,
         );
       } catch (err: unknown) {
         if (isForeignKeyViolation(err)) {
@@ -296,6 +300,9 @@ function parseCursorRun(row: CursorRunRow): CursorRunRef {
   const artifacts = parseArtifactsJsonColumn(row);
   if (artifacts !== undefined) {
     (candidate as { artifacts?: ArtifactRef[] }).artifacts = artifacts;
+  }
+  if (row.created_at_ms !== null) {
+    (candidate as { createdAtMs?: number }).createdAtMs = row.created_at_ms;
   }
 
   const result = cursorRunRefSchema.safeParse(candidate);

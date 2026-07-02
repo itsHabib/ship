@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { CursorRunStartTimedOutError } from "../errors.js";
 import {
+  type DurationCapHandle,
   type DurationCapRunArgs,
   MAX_CAP_REARMS,
   MAX_TIMER_DELAY_MS,
@@ -396,6 +397,120 @@ describe("runWithDurationCap", () => {
     }
     // ...the next fire hits the backstop and expires despite the frozen clock.
     await vi.advanceTimersByTimeAsync(CAP_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runWithDurationCap remote signals", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("paused-clock suspend: discontinuity detector folds over-cap probe age and expires", async () => {
+    const capHooks: { current?: DurationCapHandle } = {};
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => 0,
+      wallClock: () => 0,
+      onCapReady: (h) => {
+        capHooks.current = h;
+      },
+      onHandle: () => undefined,
+      signals: {
+        getLiveness: () => ({ createdAtMs: 0, lastEventAtMs: CAP_MS + 1 }),
+        probeRun: () =>
+          Promise.resolve({
+            createdAtMs: 0,
+            status: "RUNNING",
+            updatedAtMs: CAP_MS + 1,
+          }),
+      },
+      start: () => Promise.resolve(handle),
+    });
+    await Promise.resolve();
+    capHooks.current?.onDiscontinuitySample(100_000, 1_000);
+    await Promise.resolve();
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(out.durationMs).toBeGreaterThanOrEqual(CAP_MS);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("divergent-clock early fire with over-cap stream liveness expires on probe", async () => {
+    let mono = 0;
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => mono,
+      onHandle: () => undefined,
+      signals: {
+        getLiveness: () => ({ createdAtMs: 0, lastEventAtMs: CAP_MS + 1 }),
+        probeRun: () =>
+          Promise.resolve({
+            createdAtMs: 0,
+            updatedAtMs: CAP_MS + 1,
+          }),
+      },
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(CAP_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    mono = 1;
+    await vi.advanceTimersByTimeAsync(0);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("attach with broken seed uses grace window not a full cap", async () => {
+    const onHandle = vi.fn();
+    let resolveStart!: (h: AgentRunHandle) => void;
+    const start = new Promise<AgentRunHandle>((resolve) => {
+      resolveStart = resolve;
+    });
+    const pending = runWithDurationCap({
+      kind: "attach",
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => Date.now(),
+      onHandle,
+      probeAgentId: "agent-x",
+      probeRunId: "run-x",
+      signals: { probeRun: () => Promise.resolve(undefined) },
+      start: () => start,
+    });
+    const rejection = expect(pending).rejects.toBeInstanceOf(CursorRunStartTimedOutError);
+    await vi.advanceTimersByTimeAsync(MIN_RESUMED_CAP_WINDOW_MS);
+    await rejection;
+    expect(onHandle).not.toHaveBeenCalled();
+    const { handle } = fakeHandle(pendingForever());
+    resolveStart(handle);
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  test("stream event fold alone can expire an over-cap remote run", async () => {
+    let capHooks: DurationCapHandle | undefined;
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => Date.now(),
+      onCapReady: (h) => {
+        capHooks = h;
+      },
+      onHandle: () => undefined,
+      serverCreatedAtMs: 0,
+      signals: { getLiveness: () => ({ createdAtMs: 0, lastEventAtMs: CAP_MS }) },
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    capHooks?.onProviderStreamEvent(CAP_MS + 1);
+    await vi.advanceTimersByTimeAsync(0);
     const out = await pending;
     expect(out.status).toBe("failed");
     expect(cancel).toHaveBeenCalledTimes(1);

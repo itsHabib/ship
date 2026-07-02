@@ -12,6 +12,7 @@ import type {
   SDKAgent,
   SDKMessage,
 } from "@cursor/sdk";
+import type { AgentRunProbeArgs, AgentRunProbeResult } from "@ship/agent-runner";
 import type { Logger } from "@ship/logger";
 import type { ArtifactRef } from "@ship/workflow";
 
@@ -48,6 +49,8 @@ import {
   modelArgFromInput,
 } from "./_shared.js";
 import { captureListedArtifacts } from "./artifacts-capture.js";
+import { probeCursorCloudRun } from "./cloud-run-probe.js";
+import { cursorEventProjection } from "./cursor-event-projection.js";
 import { cloudDebugLog } from "./debug.js";
 import {
   CursorAgentNotFoundError,
@@ -58,6 +61,12 @@ import {
 } from "./errors.js";
 
 const API_KEY_ENV = "CURSOR_API_KEY";
+const PROBE_TIMEOUT_MS = 10_000;
+
+function isShipSynthesizedEvent(ev: SDKMessage): boolean {
+  const kind = (ev as { type?: unknown }).type;
+  return kind === "ship.resumed";
+}
 
 function isUnsafeCloudArtifactPath(sdkPath: string): boolean {
   return isAbsolute(sdkPath) || sdkPath.replace(/\\/g, "/").split("/").includes("..");
@@ -143,6 +152,14 @@ function mapCloudRunResult(
 
 /** Construct once, reuse across runs. The runner holds no per-run state. */
 export class CloudCursorRunner implements AgentRunner {
+  async probeRun(args: AgentRunProbeArgs): Promise<AgentRunProbeResult | undefined> {
+    return probeCursorCloudRun({
+      agentId: args.agentId,
+      runId: args.runId,
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+  }
+
   async downloadArtifact(agentId: string, path: string): Promise<Buffer> {
     const apiKey = process.env[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
@@ -302,6 +319,12 @@ export class CloudCursorRunner implements AgentRunner {
       readonly shipResumed?: { readonly agentId: string; readonly runId: string };
     },
   ): AgentRunHandle {
+    const livenessState: { createdAtMs?: number; lastEventAtMs?: number } = {};
+    const createdAtMs = sdkRun.createdAt;
+    if (createdAtMs !== undefined && Number.isFinite(createdAtMs)) {
+      livenessState.createdAtMs = createdAtMs;
+    }
+
     const state = createSdkRunHandleState({
       cancelRun: () => sdkRun.cancel(),
       ...(input.signal !== undefined && { signal: input.signal }),
@@ -310,10 +333,18 @@ export class CloudCursorRunner implements AgentRunner {
     void this.#runPipeline(agent, sdkRun, input, {
       ...state.callbacks,
       ...(opts?.shipResumed !== undefined && { shipResumed: opts.shipResumed }),
+      recordProviderEvent: (ev) => {
+        if (isShipSynthesizedEvent(ev)) return;
+        const ts = cursorEventProjection.timestamp(ev);
+        if (ts === undefined) return;
+        livenessState.lastEventAtMs = ts;
+        livenessState.createdAtMs ??= ts;
+      },
     });
 
     return buildSdkRunHandle({
       agentId: agent.agentId,
+      liveness: () => ({ ...livenessState }),
       runId: sdkRun.id,
       state,
     });
@@ -328,6 +359,7 @@ export class CloudCursorRunner implements AgentRunner {
       finalizeError: (err: unknown) => void;
       detachSignalListener: () => void;
       shipResumed?: { readonly agentId: string; readonly runId: string };
+      recordProviderEvent?: (ev: SDKMessage) => void;
     },
   ): Promise<void> {
     const safelyEmit = (ev: SDKMessage): void => {
@@ -364,6 +396,7 @@ export class CloudCursorRunner implements AgentRunner {
       try {
         for await (const ev of sdkRun.stream()) {
           recordEvent(ev);
+          callbacks.recordProviderEvent?.(ev);
           safelyEmit(ev);
         }
       } catch (streamErr) {

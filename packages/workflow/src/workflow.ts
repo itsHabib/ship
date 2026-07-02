@@ -179,6 +179,8 @@ export const cursorRunRefSchema = z
     artifactsDir: z.string().min(1),
     /** Cloud SDK artifact manifest (refs only). Omitted for local runs. */
     artifacts: z.array(artifactRefSchema).optional(),
+    /** Provider server-stamped run creation time (epoch ms). Cloud dispatch only. */
+    createdAtMs: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type CursorRunRef = z.infer<typeof cursorRunRefSchema>;

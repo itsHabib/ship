@@ -96,6 +96,24 @@ export interface RoomRunSpec {
   readonly pushBranch?: string;
 }
 
+/** Server-stamped liveness snapshot fed by the runner's provider-origin event stream. */
+export interface AgentRunLiveness {
+  readonly createdAtMs?: number;
+  readonly lastEventAtMs?: number;
+}
+
+/** Server-stamped fields returned by an id-addressed run probe. */
+export interface AgentRunProbeResult {
+  readonly status?: string;
+  readonly createdAtMs?: number;
+  readonly updatedAtMs?: number;
+}
+
+export interface AgentRunProbeArgs {
+  readonly agentId: string;
+  readonly runId: string;
+}
+
 /** Handle returned once a run starts. `result` resolves on terminal status; `cancel` is idempotent. */
 export interface AgentRunHandle {
   readonly agentId: string;
@@ -107,6 +125,11 @@ export interface AgentRunHandle {
    */
   readonly result: Promise<AgentRunResult>;
   readonly cancel: () => Promise<void>;
+  /**
+   * Sync, I/O-free liveness snapshot from provider-origin stream events.
+   * Omitted on local and rooms runners.
+   */
+  readonly liveness?: () => AgentRunLiveness;
 }
 
 /** Terminal-state shape `handle.result` resolves to. */
@@ -136,4 +159,9 @@ export interface AgentRunner {
   run(input: AgentRunInput): Promise<AgentRunHandle>;
   attach(input: AgentRunAttachInput): Promise<AgentRunHandle>;
   downloadArtifact?(agentId: string, path: string): Promise<Buffer>;
+  /**
+   * Bounded async probe of a run by id before a handle exists (attach path).
+   * Omitted on local and rooms runners.
+   */
+  probeRun?(args: AgentRunProbeArgs): Promise<AgentRunProbeResult | undefined>;
 }
