@@ -29,6 +29,11 @@ function shellOutcomeFields(event: Record<string, unknown>): Record<string, unkn
   if (event["type"] !== "tool_call" || event["name"] !== "shell") {
     return {};
   }
+  // Completed rows only, and never overwrite an SDK-provided exit_code —
+  // running rows have no outcome yet; error rows already carry failure.
+  if (event["status"] !== "completed" || event["exit_code"] !== undefined) {
+    return {};
+  }
   const exitCode = structuredShellExitCode(event["result"]);
   if (exitCode === undefined) {
     return {};

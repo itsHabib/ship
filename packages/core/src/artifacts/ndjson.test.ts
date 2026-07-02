@@ -78,6 +78,35 @@ describe("prepareEventForPersist", () => {
     expect(prepared.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  test("does not add exit_code to non-completed shell rows", () => {
+    const running = prepareEventForPersist({
+      type: "tool_call",
+      status: "running",
+      name: "shell",
+      result: { exitCode: 0 },
+    }) as { exit_code?: number };
+    expect(running.exit_code).toBeUndefined();
+
+    const errored = prepareEventForPersist({
+      type: "tool_call",
+      status: "error",
+      name: "shell",
+      result: { exitCode: 137 },
+    }) as { exit_code?: number };
+    expect(errored.exit_code).toBeUndefined();
+  });
+
+  test("never overwrites an SDK-provided exit_code field", () => {
+    const prepared = prepareEventForPersist({
+      type: "tool_call",
+      status: "completed",
+      name: "shell",
+      exit_code: 3,
+      result: { exitCode: 1 },
+    }) as { exit_code?: number };
+    expect(prepared.exit_code).toBe(3);
+  });
+
   test("non-object events pass through unchanged", () => {
     expect(prepareEventForPersist("raw")).toBe("raw");
   });
