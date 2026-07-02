@@ -475,6 +475,9 @@ const DRIVER_STREAM_ID_PATTERN = /^ds_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const driverRunIdSchema = z.string().regex(DRIVER_RUN_ID_PATTERN);
 const driverStreamIdSchema = z.string().regex(DRIVER_STREAM_ID_PATTERN);
 
+const driverModelTierSchema = z.enum(["opus", "sonnet", "fable"]);
+const driverEffortTierSchema = z.enum(["extra", "max", "ultracode"]);
+
 const driverStreamViewSchema = z
   .object({
     streamId: driverStreamIdSchema,
@@ -486,6 +489,13 @@ const driverStreamViewSchema = z
     status: z.enum(["pending", "dispatching", "dispatched", "landed", "failed", "skipped", "done"]),
     workflowRunId: workflowRunIdSchema.optional(),
     prUrl: z.string().optional(),
+    modelTier: driverModelTierSchema.optional(),
+    effortTier: driverEffortTierSchema.optional(),
+    dispatchProvider: agentProviderSchema.optional(),
+    dispatchModel: z.string().optional(),
+    dispatchModelParams: z.array(shipInputModelParamEntrySchema).optional(),
+    effortDegraded: z.boolean().optional(),
+    tierDegradeReason: z.string().optional(),
   })
   .strict();
 

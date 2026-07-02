@@ -21,6 +21,11 @@ export interface UpdateDriverStreamInput {
   mergedAt?: string;
   cycles?: number;
   errorMessage?: string;
+  dispatchProvider?: DriverStream["dispatchProvider"];
+  dispatchModel?: string;
+  dispatchModelParams?: DriverStream["dispatchModelParams"];
+  effortDegraded?: boolean;
+  tierDegradeReason?: string;
 }
 
 export interface DriverStreamRow {
@@ -43,6 +48,13 @@ export interface DriverStreamRow {
   merged_at: string | null;
   cycles: number | null;
   error_message: string | null;
+  model_tier: string | null;
+  effort_tier: string | null;
+  dispatch_provider: string | null;
+  dispatch_model: string | null;
+  dispatch_model_params: string | null;
+  effort_degraded: number | null;
+  tier_degrade_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -65,6 +77,8 @@ interface InsertStreamRowInput {
   mergedAt?: string;
   cycles?: number;
   errorMessage?: string;
+  modelTier?: DriverStream["modelTier"];
+  effortTier?: DriverStream["effortTier"];
   createdAt: string;
 }
 
@@ -81,7 +95,7 @@ export interface DriverStreamOps {
 }
 
 const STREAM_COLUMNS =
-  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, error_message, created_at, updated_at";
+  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, created_at, updated_at";
 
 function sqlNull<T>(value: T | undefined): T | null {
   return value ?? null;
@@ -100,8 +114,10 @@ export function createDriverStreamOps(
     `INSERT INTO driver_streams (
        id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch,
        runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url,
-       merge_commit, merged_at, cycles, error_message, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       merge_commit, merged_at, cycles, error_message, model_tier, effort_tier,
+       dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded,
+       tier_degrade_reason, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], DriverStreamRow>(
     `SELECT ${STREAM_COLUMNS} FROM driver_streams WHERE id = ?`,
@@ -133,6 +149,13 @@ export function createDriverStreamOps(
       sqlNull(input.mergedAt),
       sqlNull(input.cycles),
       sqlNull(input.errorMessage),
+      sqlNull(input.modelTier),
+      sqlNull(input.effortTier),
+      null,
+      null,
+      null,
+      null,
+      null,
       input.createdAt,
       now,
     );
@@ -175,6 +198,17 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
   appendStreamPatchColumn(sets, params, "merged_at = ?", patch.mergedAt);
   appendStreamPatchColumn(sets, params, "cycles = ?", patch.cycles);
   appendStreamPatchColumn(sets, params, "error_message = ?", patch.errorMessage);
+  appendStreamPatchColumn(sets, params, "dispatch_provider = ?", patch.dispatchProvider);
+  appendStreamPatchColumn(sets, params, "dispatch_model = ?", patch.dispatchModel);
+  appendStreamPatchColumn(
+    sets,
+    params,
+    "dispatch_model_params = ?",
+    patch.dispatchModelParams,
+    JSON.stringify,
+  );
+  appendStreamPatchColumn(sets, params, "effort_degraded = ?", patch.effortDegraded, boolToInt);
+  appendStreamPatchColumn(sets, params, "tier_degrade_reason = ?", patch.tierDegradeReason);
   if (sets.length === 1) return;
   params.push(id);
   db.prepare(`UPDATE driver_streams SET ${sets.join(", ")} WHERE id = ?`).run(...params);
@@ -192,12 +226,19 @@ function appendStreamPatchColumn<T>(
   params.push(map(value));
 }
 
+function boolToInt(value: boolean): number {
+  return value ? 1 : 0;
+}
+
 function parseStreamRow(row: DriverStreamRow): DriverStream {
   let touches: unknown;
   let attempts: unknown;
+  let dispatchModelParams: unknown;
   try {
     touches = JSON.parse(row.touches);
     attempts = JSON.parse(row.attempts);
+    dispatchModelParams =
+      row.dispatch_model_params === null ? undefined : JSON.parse(row.dispatch_model_params);
   } catch (err: unknown) {
     throw new StoreSchemaError(`driver_streams id=${row.id} has malformed JSON column`, {
       cause: err,
@@ -216,6 +257,7 @@ function parseStreamRow(row: DriverStreamRow): DriverStream {
     touches,
     updatedAt: row.updated_at,
     ...optionalStreamFields(row),
+    ...(dispatchModelParams !== undefined ? { dispatchModelParams } : {}),
   };
 
   const result = driverStreamSchema.safeParse(candidate);
@@ -228,21 +270,27 @@ function parseStreamRow(row: DriverStreamRow): DriverStream {
   return result.data;
 }
 
-function optionalStreamFields(row: DriverStreamRow): Record<string, string | number> {
-  const entries: [string, string | number | null][] = [
+function optionalStreamFields(row: DriverStreamRow): Record<string, string | number | boolean> {
+  const entries: [string, string | number | boolean | null][] = [
     ["branch", row.branch],
     ["cycles", row.cycles],
+    ["dispatchModel", row.dispatch_model],
+    ["dispatchProvider", row.dispatch_provider],
+    ["effortDegraded", row.effort_degraded === null ? null : row.effort_degraded === 1],
+    ["effortTier", row.effort_tier],
     ["errorMessage", row.error_message],
     ["mergeCommit", row.merge_commit],
     ["mergedAt", row.merged_at],
+    ["modelTier", row.model_tier],
     ["prNumber", row.pr_number],
     ["prUrl", row.pr_url],
     ["taskId", row.task_id],
     ["taskSlug", row.task_slug],
+    ["tierDegradeReason", row.tier_degrade_reason],
     ["workflowRunId", row.workflow_run_id],
   ];
   return Object.fromEntries(
-    entries.filter((entry): entry is [string, string | number] => entry[1] !== null),
+    entries.filter((entry): entry is [string, string | number | boolean] => entry[1] !== null),
   );
 }
 

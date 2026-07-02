@@ -18,7 +18,7 @@
 
 import type { DriverStreamStatus } from "@ship/store";
 
-import type { ManifestStream } from "./manifest.js";
+import type { EffortTier, ManifestStream, ModelTier } from "./manifest.js";
 
 type ManifestStreamStatus = NonNullable<ManifestStream["status"]>;
 
@@ -72,3 +72,89 @@ export function manifestBatchStatusToStore(
 }
 
 type ManifestBatchStatus = "pending" | "running" | "in_progress" | "done" | "failed";
+
+export interface ResolvedStreamTier {
+  modelTier?: ModelTier;
+  effortTier?: EffortTier;
+}
+
+/** Resolve per-stream tier: stream field > manifest default > none. */
+export function resolveStreamTier(
+  stream: ManifestStream,
+  defaultModel?: ModelTier,
+  defaultEffort?: EffortTier,
+): ResolvedStreamTier {
+  const resolved: ResolvedStreamTier = {};
+  const modelTier = stream.model ?? defaultModel;
+  const effortTier = stream.effort ?? defaultEffort;
+  if (modelTier !== undefined) resolved.modelTier = modelTier;
+  if (effortTier !== undefined) resolved.effortTier = effortTier;
+  return resolved;
+}
+
+/** Format tier + dispatch mapping for status diagnostics. */
+export function formatStreamTierDiagnostic(stream: {
+  modelTier?: ModelTier;
+  effortTier?: EffortTier;
+  dispatchProvider?: string;
+  dispatchModel?: string;
+  dispatchModelParams?: { id: string; value: string | boolean }[];
+  effortDegraded?: boolean;
+  tierDegradeReason?: string;
+}): string | undefined {
+  const requested = formatRequestedTier(stream.modelTier, stream.effortTier);
+  if (requested === undefined && stream.dispatchModel === undefined) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  appendRequestedTierPart(parts, requested);
+  appendDispatchPart(parts, stream);
+  appendDegradeParts(parts, stream);
+  return parts.join(" ");
+}
+
+function appendRequestedTierPart(parts: string[], requested: string | undefined): void {
+  if (requested === undefined) return;
+  parts.push(`requested=${requested}`);
+}
+
+function appendDispatchPart(
+  parts: string[],
+  stream: {
+    dispatchProvider?: string;
+    dispatchModel?: string;
+    dispatchModelParams?: { id: string; value: string | boolean }[];
+  },
+): void {
+  if (stream.dispatchProvider === undefined && stream.dispatchModel === undefined) {
+    return;
+  }
+  const provider = stream.dispatchProvider ?? "cursor";
+  const model = stream.dispatchModel ?? "(engine default)";
+  parts.push(`dispatch=${provider}/${model}`);
+  if (stream.dispatchModelParams === undefined || stream.dispatchModelParams.length === 0) {
+    return;
+  }
+  parts.push(`params=${JSON.stringify(stream.dispatchModelParams)}`);
+}
+
+function appendDegradeParts(
+  parts: string[],
+  stream: { effortDegraded?: boolean; tierDegradeReason?: string },
+): void {
+  if (stream.effortDegraded === true) {
+    parts.push("effortDegraded=true");
+  }
+  if (stream.tierDegradeReason === undefined) return;
+  parts.push(`degrade=${stream.tierDegradeReason}`);
+}
+
+function formatRequestedTier(modelTier?: ModelTier, effortTier?: EffortTier): string | undefined {
+  if (modelTier === undefined && effortTier === undefined) {
+    return undefined;
+  }
+  const model = modelTier ?? "-";
+  const effort = effortTier ?? "-";
+  return `${model}/${effort}`;
+}

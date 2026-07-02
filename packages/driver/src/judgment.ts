@@ -41,18 +41,40 @@ export function allStreams(run: DriverRun): DriverStream[] {
 
 /** Compact per-stream view for tick results. */
 export function toStreamView(stream: DriverStream, batchIndex: number): DriverStreamView {
-  const view: DriverStreamView = {
+  return {
     batchIndex,
     runtime: stream.runtime,
     specPath: stream.specPath,
     status: stream.status,
     streamId: stream.id,
+    ...optionalStreamViewFields(stream),
   };
-  if (stream.taskSlug !== undefined) view.taskSlug = stream.taskSlug;
-  if (stream.branch !== undefined) view.branch = stream.branch;
-  if (stream.workflowRunId !== undefined) view.workflowRunId = stream.workflowRunId;
-  if (stream.prUrl !== undefined) view.prUrl = stream.prUrl;
-  return view;
+}
+
+function optionalStreamViewFields(stream: DriverStream): Partial<DriverStreamView> {
+  return { ...optionalStreamIdentityFields(stream), ...optionalStreamTierFields(stream) };
+}
+
+function optionalStreamIdentityFields(stream: DriverStream): Partial<DriverStreamView> {
+  const fields: Partial<DriverStreamView> = {};
+  if (stream.taskSlug !== undefined) fields.taskSlug = stream.taskSlug;
+  if (stream.branch !== undefined) fields.branch = stream.branch;
+  if (stream.workflowRunId !== undefined) fields.workflowRunId = stream.workflowRunId;
+  if (stream.prUrl !== undefined) fields.prUrl = stream.prUrl;
+  return fields;
+}
+
+function optionalStreamTierFields(stream: DriverStream): Partial<DriverStreamView> {
+  const fields: Partial<DriverStreamView> = {};
+  if (stream.modelTier !== undefined) fields.modelTier = stream.modelTier;
+  if (stream.effortTier !== undefined) fields.effortTier = stream.effortTier;
+  if (stream.dispatchProvider !== undefined) fields.dispatchProvider = stream.dispatchProvider;
+  if (stream.dispatchModel !== undefined) fields.dispatchModel = stream.dispatchModel;
+  if (stream.dispatchModelParams !== undefined)
+    fields.dispatchModelParams = stream.dispatchModelParams;
+  if (stream.effortDegraded === true) fields.effortDegraded = true;
+  if (stream.tierDegradeReason !== undefined) fields.tierDegradeReason = stream.tierDegradeReason;
+  return fields;
 }
 
 export function buildStreamViews(run: DriverRun): DriverStreamView[] {

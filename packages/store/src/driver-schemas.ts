@@ -2,6 +2,7 @@
  * Zod schemas and domain types for `driver_*` store tables.
  */
 
+import { agentProviderSchema } from "@ship/workflow";
 import { z } from "zod";
 
 export const driverRunStatusSchema = z.enum([
@@ -26,6 +27,16 @@ export const driverStreamStatusSchema = z.enum([
 ]);
 
 export const driverRuntimeSchema = z.enum(["local", "cloud", "rooms"]);
+
+export const driverModelTierSchema = z.enum(["opus", "sonnet", "fable"]);
+export const driverEffortTierSchema = z.enum(["extra", "max", "ultracode"]);
+
+export const shipInputModelParamEntrySchema = z
+  .object({
+    id: z.string().min(1),
+    value: z.union([z.string().min(1), z.boolean()]),
+  })
+  .strict();
 
 export const streamAttemptSchema = z
   .object({
@@ -58,6 +69,13 @@ export const driverStreamSchema = z
     taskId: z.string().optional(),
     taskSlug: z.string().optional(),
     touches: z.array(z.string()),
+    modelTier: driverModelTierSchema.optional(),
+    effortTier: driverEffortTierSchema.optional(),
+    dispatchProvider: agentProviderSchema.optional(),
+    dispatchModel: z.string().optional(),
+    dispatchModelParams: z.array(shipInputModelParamEntrySchema).optional(),
+    effortDegraded: z.boolean().optional(),
+    tierDegradeReason: z.string().optional(),
     updatedAt: z.string().datetime({ offset: true }),
     workflowRunId: z.string().optional(),
   })

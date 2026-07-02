@@ -113,6 +113,39 @@ describe("parseManifest valid manifests", () => {
     expect(result.manifest.batches[0]?.streams[0]?.touches).toEqual([]);
   });
 
+  it("parses per-stream model and effort tiers plus manifest defaults", () => {
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-06-10T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "default_model: sonnet",
+      "default_effort: extra",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        model: opus",
+      "        effort: max",
+      "      - spec_path: docs/b.md",
+      "---",
+    ].join("\n");
+    const result = parseManifest(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.default_model).toBe("sonnet");
+    expect(result.manifest.default_effort).toBe("extra");
+    const streams = result.manifest.batches[0]?.streams ?? [];
+    expect(streams[0]?.model).toBe("opus");
+    expect(streams[0]?.effort).toBe("max");
+    expect(streams[1]?.model).toBeUndefined();
+  });
+
   it("accepts bare-scalar and mapping advisory blocks", () => {
     expectOk(minimalManifest('runtime_notes: "batch 1 uses mixed runtimes"'));
     expectOk(minimalManifest("conflict_notes:\n  summary: none"));
@@ -405,6 +438,52 @@ describe("parseManifest invalid manifests", () => {
       return;
     }
     expect(result.errors.some((error) => error.path === "default_runtime")).toBe(true);
+  });
+
+  it("rejects unknown model tier with line-precise error", () => {
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-06-10T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        model: gpt-5",
+      "---",
+    ].join("\n");
+    const result = parseManifest(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors[0]?.message).toMatch(/invalid model/);
+    expect(result.errors[0]?.line).toBeTypeOf("number");
+  });
+
+  it("rejects unknown effort tier with path", () => {
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-06-10T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        effort: turbo",
+      "---",
+    ].join("\n");
+    expectError(text, /invalid effort/);
   });
 
   it("rejects invalid batch status enum", () => {

@@ -16,6 +16,9 @@ const batchStatusSchema = z.enum(["pending", "running", "in_progress", "done", "
 
 const streamStatusSchema = z.enum(["pending", "todo", "in_progress", "done", "failed", "skipped"]);
 
+export const modelTierSchema = z.enum(["opus", "sonnet", "fable"]);
+export const effortTierSchema = z.enum(["extra", "max", "ultracode"]);
+
 export const manifestStreamSchema = z
   .object({
     spec_path: z.string().min(1),
@@ -23,6 +26,8 @@ export const manifestStreamSchema = z
     task_slug: z.string().optional(),
     branch_name: z.string().optional(),
     runtime: runtimeSchema.optional(),
+    model: modelTierSchema.optional(),
+    effort: effortTierSchema.optional(),
     touches: z.array(z.string()).optional().default([]),
     status: streamStatusSchema.optional(),
     pr_number: z.number().int().optional(),
@@ -65,6 +70,8 @@ export const driverManifestSchema = z
     repo_url: z.string().optional(),
     branch_prefix: z.string().optional(),
     default_runtime: runtimeSchema.optional(),
+    default_model: modelTierSchema.optional(),
+    default_effort: effortTierSchema.optional(),
     batches: z.array(manifestBatchSchema),
     conflict_notes: advisoryBlockSchema,
     skipped_during_resolution: advisoryBlockSchema,
@@ -76,6 +83,8 @@ export const driverManifestSchema = z
 export type ManifestStream = z.infer<typeof manifestStreamSchema>;
 export type ManifestBatch = z.infer<typeof manifestBatchSchema>;
 export type DriverManifest = z.infer<typeof driverManifestSchema>;
+export type ModelTier = z.infer<typeof modelTierSchema>;
+export type EffortTier = z.infer<typeof effortTierSchema>;
 
 export interface ManifestParseError {
   message: string;
