@@ -28,9 +28,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 — audited 2026-06-12
         with:
-          # Full history: the action's tag-mode diff (git hash-object) needs
-          # PR-branch blobs that a depth-1 checkout of main lacks, so a shallow
-          # fetch kills @claude review on any PR that adds files.
+          # For PR-shaped events, check out the PR head: the action diffs via
+          # `git hash-object <path>` against the working tree, so files a PR
+          # adds must exist on disk — a main checkout (any fetch depth) lacks
+          # them and the review dies before it starts. Full history keeps
+          # merge-base diffs against main available. The action's own
+          # actor-permission gate is what makes a head checkout acceptable.
+          ref: >-
+            ${{
+              (github.event_name == 'issue_comment' && github.event.issue.pull_request
+                && format('refs/pull/{0}/head', github.event.issue.number))
+              || (github.event_name == 'pull_request_review'
+                && format('refs/pull/{0}/head', github.event.pull_request.number))
+              || (github.event_name == 'pull_request_review_comment'
+                && format('refs/pull/{0}/head', github.event.pull_request.number))
+              || github.ref
+            }}
           fetch-depth: 0
 
       - name: Run Claude Code
