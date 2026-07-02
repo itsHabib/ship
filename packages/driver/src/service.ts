@@ -2,6 +2,7 @@
  * DriverService factory — public surface (spec §6).
  */
 
+import type { Logger } from "@ship/logger";
 import type { Store } from "@ship/store";
 import type { DriverRun, DriverRunStatus, ListDriverRunsFilter } from "@ship/store";
 
@@ -22,6 +23,7 @@ import { DecideError, DriverRunNotFoundEngineError } from "./errors.js";
 import { importManifest as importManifestFn } from "./import.js";
 import { cancelRun, decide as decideFn, markMerged as markMergedFn } from "./judgment.js";
 import { land as landFn } from "./land.js";
+import { createNotifyPort, type NotifyExec } from "./notify.js";
 import { renderDriverRun } from "./render.js";
 
 export interface DriverService {
@@ -49,10 +51,14 @@ export interface CreateDriverServiceOpts {
   monotonicClock?: () => number;
   rng?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Injectable notify exec for tests; production omits this. */
+  notifyExec?: NotifyExec;
+  /** Structured logger for notify failures; omitted in tests that silence logs. */
+  logger?: Logger;
 }
 
 export function createDriverService(opts: CreateDriverServiceOpts): DriverService {
-  const { store, ship, gh, clock, monotonicClock, rng, sleep } = opts;
+  const { store, ship, gh, clock, monotonicClock, rng, sleep, notifyExec, logger } = opts;
 
   const now = (): string => new Date((clock ?? Date.now)()).toISOString();
 
@@ -73,26 +79,54 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
     markMerged: (driverRunId, streamId, facts) => markMergedFn(store, driverRunId, streamId, facts),
     render: (driverRunId) => renderDriverRun(store, driverRunId),
     run: async (ref, runOpts) => {
-      // A tick is the one driver operation that polls in-flight work, so it
-      // owns orphan recovery: re-attach this process's cloud runs that a prior
-      // tick left orphaned (kill+resume), then let the poll loop harvest the
-      // result. Fire-and-forget keeps the tick within its maxWait bound — the
-      // staleness-guarded re-attach lands in this poll window or the next
-      // re-invocation. Read verbs (status/render/decide/...) never resume.
       void ship.resumeOrphanedRuns?.().catch(() => undefined);
       const resolved = resolveRunOpts(runOpts);
       const { driverRunId, warnings } = resolveRunRef(store, ref);
-      const deps: Parameters<typeof runTick>[2] = { ship, store };
-      if (gh !== undefined) deps.gh = gh;
-      if (clock !== undefined) deps.clock = clock;
-      if (monotonicClock !== undefined) deps.monotonicClock = monotonicClock;
-      if (rng !== undefined) deps.rng = rng;
-      if (sleep !== undefined) deps.sleep = sleep;
-      const tick = await runTick(driverRunId, resolved, deps);
+      const tick = await runTick(
+        driverRunId,
+        resolved,
+        buildTickDeps({
+          resolved,
+          ship,
+          store,
+          clock,
+          gh,
+          logger,
+          monotonicClock,
+          notifyExec,
+          rng,
+          sleep,
+        }),
+      );
       if (warnings === undefined || warnings.length === 0) return tick;
       return { ...tick, warnings };
     },
   };
+}
+
+function buildTickDeps(input: {
+  store: Store;
+  ship: DriverShipPort;
+  resolved: ReturnType<typeof resolveRunOpts>;
+  gh?: DriverGhPort | undefined;
+  logger?: Logger | undefined;
+  notifyExec?: NotifyExec | undefined;
+  clock?: (() => number) | undefined;
+  monotonicClock?: (() => number) | undefined;
+  rng?: (() => number) | undefined;
+  sleep?: ((ms: number) => Promise<void>) | undefined;
+}): Parameters<typeof runTick>[2] {
+  const deps: Parameters<typeof runTick>[2] = { ship: input.ship, store: input.store };
+  if (input.gh !== undefined) deps.gh = input.gh;
+  if (input.logger !== undefined) deps.logger = input.logger;
+  const notifyPort = createNotifyPort(input.resolved.notify, input.notifyExec);
+  if (notifyPort !== undefined) deps.notify = notifyPort;
+  if (input.resolved.escalation !== undefined) deps.escalation = input.resolved.escalation;
+  if (input.clock !== undefined) deps.clock = input.clock;
+  if (input.monotonicClock !== undefined) deps.monotonicClock = input.monotonicClock;
+  if (input.rng !== undefined) deps.rng = input.rng;
+  if (input.sleep !== undefined) deps.sleep = input.sleep;
+  return deps;
 }
 
 interface ResolvedRunRef {

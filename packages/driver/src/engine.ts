@@ -3,6 +3,7 @@
  */
 
 import type { GetWorkflowRunOutput, ShipInput, ShipStartOutput } from "@ship/core";
+import type { Logger } from "@ship/logger";
 import type { Store } from "@ship/store";
 import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/store";
 import type { AgentProvider, FailureCategory } from "@ship/workflow";
@@ -15,9 +16,16 @@ import { dirname, join, resolve } from "node:path";
 import type { DriverGhPort } from "./gh-port.js";
 import type { DispatchAmbiguity } from "./judgment.js";
 import type { DriverShipPort } from "./ship-port.js";
-import type { DriverTickResult, RunOpts, TierDispatchResult } from "./types.js";
+import type {
+  DriverTickResult,
+  EscalationConfig,
+  NotifyConfig,
+  RunOpts,
+  TierDispatchResult,
+} from "./types.js";
 
 import { DriverRunNotFoundEngineError, PreconditionError, TickLiveError } from "./errors.js";
+import { retryPendingEscalationNotifications, writeAndDeliverEscalations } from "./escalation.js";
 import {
   allStreams,
   batchHasPendingDispatchable,
@@ -34,6 +42,7 @@ import {
   recoverDispatchingStreams,
   rollBatchStatus,
 } from "./judgment.js";
+import { createNotifyPort, type NotifyPort } from "./notify.js";
 import { mapTierToDispatch } from "./tier-map.js";
 
 const DEFAULT_DISPATCH_PROVIDER: AgentProvider = "cursor";
@@ -65,6 +74,9 @@ export interface EngineDeps {
   store: Store;
   ship: DriverShipPort;
   gh?: DriverGhPort;
+  notify?: NotifyPort;
+  escalation?: EscalationConfig;
+  logger?: Logger;
   clock?: () => number;
   monotonicClock?: () => number;
   rng?: () => number;
@@ -79,6 +91,8 @@ export interface ResolvedRunOpts {
   maxParallelLocal: number;
   maxParallelCloud: number;
   force: boolean;
+  notify?: NotifyConfig | undefined;
+  escalation?: EscalationConfig | undefined;
 }
 
 interface TickContext {
@@ -89,6 +103,9 @@ interface TickContext {
   ship: DriverShipPort;
   gh?: DriverGhPort;
   store: Store;
+  notify?: NotifyPort | undefined;
+  escalation?: EscalationConfig | undefined;
+  logger?: Logger | undefined;
 }
 
 interface TickLiveness {
@@ -127,6 +144,7 @@ export function resolveRunOpts(opts?: RunOpts): ResolvedRunOpts {
   const parallel = defaultParallelLimits(opts);
   const maxWaitMs = opts?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   return {
+    ...optionalNotifyFields(opts),
     batch: opts?.batch,
     force: opts?.force === true,
     maxParallelCloud: parallel.cloud,
@@ -135,6 +153,13 @@ export function resolveRunOpts(opts?: RunOpts): ResolvedRunOpts {
     pollIntervalMs: opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     runawayBackstopMs: opts?.runawayBackstopMs ?? resolveRunawayBackstopMs(maxWaitMs),
   };
+}
+
+function optionalNotifyFields(opts?: RunOpts): Pick<ResolvedRunOpts, "notify" | "escalation"> {
+  const fields: Pick<ResolvedRunOpts, "notify" | "escalation"> = {};
+  if (opts?.notify !== undefined) fields.notify = opts.notify;
+  if (opts?.escalation !== undefined) fields.escalation = opts.escalation;
+  return fields;
 }
 
 /** Absolute monotonic ceiling — catches trickle events that reset inactivity forever. */
@@ -193,7 +218,10 @@ export async function runTick(
 function buildTickContext(deps: EngineDeps): TickContext {
   const ctx: TickContext = {
     clock: deps.clock ?? Date.now,
+    escalation: deps.escalation,
+    logger: deps.logger,
     monotonicClock: deps.monotonicClock ?? performance.now.bind(performance),
+    notify: deps.notify,
     rng: deps.rng ?? Math.random,
     ship: deps.ship,
     sleep: deps.sleep ?? defaultSleep,
@@ -203,6 +231,33 @@ function buildTickContext(deps: EngineDeps): TickContext {
     ctx.gh = deps.gh;
   }
   return ctx;
+}
+
+function buildEscalationDeps(
+  ctx: TickContext,
+  opts: ResolvedRunOpts,
+): {
+  store: Store;
+  notify?: NotifyPort | undefined;
+  escalation?: EscalationConfig | undefined;
+  logger?: Logger | undefined;
+  clock: () => string;
+} {
+  const notify = ctx.notify ?? createNotifyPort(opts.notify);
+  const deps: {
+    store: Store;
+    notify?: NotifyPort | undefined;
+    escalation?: EscalationConfig | undefined;
+    logger?: Logger | undefined;
+    clock: () => string;
+  } = {
+    clock: () => new Date(ctx.clock()).toISOString(),
+    escalation: opts.escalation ?? ctx.escalation,
+    logger: ctx.logger,
+    store: ctx.store,
+  };
+  if (notify !== undefined) deps.notify = notify;
+  return deps;
 }
 
 async function executeTick(
@@ -215,6 +270,8 @@ async function executeTick(
   if (isStickyTerminal(initialRun.status)) {
     return buildResult(initialRun, ambiguities, normalizeStickyStatus(initialRun.status));
   }
+
+  await retryPendingEscalationNotifications(buildEscalationDeps(ctx, opts));
 
   const running = ensureRunning(ctx.store, driverRunId, initialRun);
   const recovered = await recoverDispatchingStreams(ctx.store, ctx.ship, running, ambiguities);
@@ -252,13 +309,14 @@ async function runDispatchPollLoop(state: PollLoopState): Promise<DriverTickResu
 
     const exit = evaluateExit(current, state.ambiguities);
     if (exit !== undefined) {
-      return finalizeExit(
-        state.driverRunId,
-        current,
-        state.ambiguities,
-        exit.status,
-        state.ctx.store,
-      );
+      return finalizeExit({
+        ambiguities: state.ambiguities,
+        ctx: state.ctx,
+        driverRunId: state.driverRunId,
+        opts: state.opts,
+        run: current,
+        status: exit.status,
+      });
     }
     if (shouldGiveUpTick(state.ctx.monotonicClock(), state.liveness, state.opts)) {
       return buildResult(current, state.ambiguities, "running");
@@ -269,22 +327,27 @@ async function runDispatchPollLoop(state: PollLoopState): Promise<DriverTickResu
   }
 }
 
-function finalizeExit(
-  driverRunId: string,
-  run: DriverRun,
-  ambiguities: DispatchAmbiguity[],
-  status: DriverTickResult["status"],
-  store: Store,
-): DriverTickResult {
+interface FinalizeExitInput {
+  ambiguities: DispatchAmbiguity[];
+  ctx: TickContext;
+  driverRunId: string;
+  opts: ResolvedRunOpts;
+  run: DriverRun;
+  status: DriverTickResult["status"];
+}
+
+async function finalizeExit(input: FinalizeExitInput): Promise<DriverTickResult> {
+  const { ambiguities, ctx, driverRunId, opts, run, status } = input;
   if (status === "awaiting_judgment") {
-    store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
+    ctx.store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
+    await writeAndDeliverEscalations(buildEscalationDeps(ctx, opts), run, ambiguities);
   }
   if (status === "done") {
-    const current = store.getDriverRun(driverRunId) ?? run;
-    rollBatchStatus(store, current);
-    store.updateDriverRunStatus(driverRunId, "done");
+    const current = ctx.store.getDriverRun(driverRunId) ?? run;
+    rollBatchStatus(ctx.store, current);
+    ctx.store.updateDriverRunStatus(driverRunId, "done");
   }
-  const refreshed = store.getDriverRun(driverRunId) ?? run;
+  const refreshed = ctx.store.getDriverRun(driverRunId) ?? run;
   return buildResult(refreshed, ambiguities, status);
 }
 

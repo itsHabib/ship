@@ -42,13 +42,27 @@ export type {
 export type { UpdateDriverBatchInput } from "./driver-batches.js";
 export type { UpdateDriverStreamInput } from "./driver-streams.js";
 
-export { newDriverBatchId, newDriverRunId, newDriverStreamId } from "./driver-ids.js";
+export type { Escalation } from "./escalation-schemas.js";
+export type {
+  EscalationOpenKey,
+  InsertEscalationInput,
+  ListEscalationsFilter,
+} from "./escalations.js";
+
+export {
+  newDriverBatchId,
+  newDriverRunId,
+  newDriverStreamId,
+  newEscalationId,
+} from "./driver-ids.js";
 
 export {
   CursorRunNotFoundError,
   DriverBatchNotFoundError,
   DriverRunNotFoundError,
   DriverStreamNotFoundError,
+  EscalationNotFoundError,
+  EscalationOpenRowExistsError,
   LOCAL_RUN_CONTENTION_HINT,
   LOCAL_RUNTIME_PARALLELISM_LIMIT,
   MigrationError,

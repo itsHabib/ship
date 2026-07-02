@@ -19,6 +19,11 @@ import type {
 } from "./types.js";
 
 import { CancelError, DecideError } from "./errors.js";
+import {
+  resolveAllRunEscalations,
+  resolveAllStreamParkedEscalations,
+  resolveStreamParkedEscalation,
+} from "./escalation.js";
 import { parseManifest } from "./manifest.js";
 
 const LIST_RUNS_LIMIT = 200;
@@ -330,10 +335,15 @@ export function decide(
     case "skip":
       return applySkipDecision(store, driverRunId, streamId, stream, decision.reason);
     case "abort":
-      return store.updateDriverRunStatus(driverRunId, "failed");
+      return applyAbortDecision(store, driverRunId, streamId);
     case "adopt":
       return applyAdoptDecision(store, driverRunId, streamId, stream, decision.workflowRunId);
   }
+}
+
+function applyAbortDecision(store: Store, driverRunId: string, _streamId: string): DriverRun {
+  resolveAllStreamParkedEscalations(store, driverRunId, "decide:abort");
+  return store.updateDriverRunStatus(driverRunId, "failed");
 }
 
 function loadRunForDecision(store: Store, driverRunId: string): DriverRun {
@@ -361,6 +371,7 @@ function applyRetryDecision(
     );
   }
   store.updateDriverStream(streamId, PENDING_RESET_PATCH);
+  resolveStreamParkedEscalation(store, driverRunId, streamId, "decide:retry");
   return resumeAfterDecision(store, driverRunId);
 }
 
@@ -375,6 +386,7 @@ function applySkipDecision(
     throw new DecideError(`stream ${streamId} is not failed (status=${stream.status})`);
   }
   store.updateDriverStream(streamId, { errorMessage: reason, status: "skipped" });
+  resolveStreamParkedEscalation(store, driverRunId, streamId, "decide:skip");
   return resumeAfterDecision(store, driverRunId);
 }
 
@@ -395,6 +407,7 @@ function applyAdoptDecision(
     status: "dispatched",
     workflowRunId,
   });
+  resolveStreamParkedEscalation(store, driverRunId, streamId, "decide:adopt");
   return resumeAfterDecision(store, driverRunId);
 }
 
@@ -469,6 +482,9 @@ export async function cancelRun(
     });
   }
 
+  // A cancelled run's open escalation rows would otherwise keep showing as
+  // unresolved and stay eligible for notify retry; close them all out.
+  resolveAllRunEscalations(store, driverRunId, "driver:cancelled");
   return store.updateDriverRunStatus(driverRunId, "cancelled");
 }
 

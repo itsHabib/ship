@@ -16,6 +16,12 @@ import type { UpdateDriverBatchInput } from "./driver-batches.js";
 import type { ClaimTickInput, InsertDriverRunInput, ListDriverRunsFilter } from "./driver-runs.js";
 import type { DriverBatch, DriverRun, DriverRunStatus, DriverStream } from "./driver-schemas.js";
 import type { UpdateDriverStreamInput } from "./driver-streams.js";
+import type { Escalation } from "./escalation-schemas.js";
+import type {
+  EscalationOpenKey,
+  InsertEscalationInput,
+  ListEscalationsFilter,
+} from "./escalations.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
 import type {
   CreateWorkflowRunInput,
@@ -26,6 +32,7 @@ import type {
 import { createCursorRunOps } from "./cursor-runs.js";
 import { openDatabase, withStoreContentionGuard } from "./db.js";
 import { createDriverRunOps } from "./driver-runs.js";
+import { createEscalationOps } from "./escalations.js";
 import { assertSchemaVersion, runMigrations } from "./migrations.js";
 import { createPhaseOps } from "./phases.js";
 import { createWorkflowRunOps } from "./workflow-runs.js";
@@ -145,6 +152,24 @@ export interface Store {
   updateDriverBatch: (id: string, patch: UpdateDriverBatchInput) => DriverBatch;
   /** Patch driver stream progress columns; bumps parent run `updated_at`. */
   updateDriverStream: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
+  /** Insert an escalation row; rejects when an open row exists for the dedup key. */
+  insertEscalation: (input: InsertEscalationInput) => Escalation;
+  /** Hydrated escalation row, or `null` if unknown. Does not throw. */
+  getEscalation: (id: string) => Escalation | null;
+  /** Filtered list of escalation rows. */
+  listEscalations: (filter: ListEscalationsFilter) => Escalation[];
+  /** Open unresolved escalation for a dedup key, or `null`. */
+  getOpenEscalation: (key: EscalationOpenKey) => Escalation | null;
+  /** Stamp `notified_at` after a successful notify delivery attempt. */
+  markEscalationNotified: (id: string, notifiedAt?: string) => Escalation;
+  /** Resolve an escalation row by id. */
+  resolveEscalation: (id: string, resolution: string, resolvedAt?: string) => Escalation;
+  /** Resolve the open escalation for a dedup key. */
+  resolveOpenEscalation: (
+    key: EscalationOpenKey,
+    resolution: string,
+    resolvedAt?: string,
+  ) => Escalation;
   /**
    * Run `PRAGMA wal_checkpoint(TRUNCATE)` (cleans up `-wal` / `-shm`
    * sidecars) and close the SQLite handle. Caller must not invoke other
@@ -184,6 +209,7 @@ export function createStore(opts: CreateStoreOptions): Store {
     const workflowRunOps = createWorkflowRunOps(db, clock, phaseOps);
     const cursorRunOps = createCursorRunOps(db, clock);
     const driverRunOps = createDriverRunOps(db, clock);
+    const escalationOps = createEscalationOps(db, clock);
 
     return {
       appendPhase: (input) => withStoreContentionGuard(() => phaseOps.append(input)),
@@ -208,6 +234,16 @@ export function createStore(opts: CreateStoreOptions): Store {
         withStoreContentionGuard(() => driverRunOps.claimTick(id, input)),
       updateDriverStream: (id, patch) =>
         withStoreContentionGuard(() => driverRunOps.updateStream(id, patch)),
+      getEscalation: (id) => withStoreContentionGuard(() => escalationOps.get(id)),
+      getOpenEscalation: (key) => withStoreContentionGuard(() => escalationOps.getOpenByKey(key)),
+      insertEscalation: (input) => withStoreContentionGuard(() => escalationOps.insert(input)),
+      listEscalations: (filter) => withStoreContentionGuard(() => escalationOps.list(filter)),
+      markEscalationNotified: (id, notifiedAt) =>
+        withStoreContentionGuard(() => escalationOps.markNotified(id, notifiedAt)),
+      resolveEscalation: (id, resolution, resolvedAt) =>
+        withStoreContentionGuard(() => escalationOps.resolve(id, resolution, resolvedAt)),
+      resolveOpenEscalation: (key, resolution, resolvedAt) =>
+        withStoreContentionGuard(() => escalationOps.resolveOpenByKey(key, resolution, resolvedAt)),
       listWorkflowRunsForPrune: () => withStoreContentionGuard(() => workflowRunOps.listForPrune()),
       close: () => {
         // wal_checkpoint(TRUNCATE) can throw SQLITE_BUSY under contention;
