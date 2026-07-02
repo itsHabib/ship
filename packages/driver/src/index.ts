@@ -8,15 +8,19 @@
 
 export type {
   DriverManifest,
+  EffortTier,
   ManifestBatch,
   ManifestStream,
   ManifestParseError,
+  ModelTier,
   ParseManifestResult,
 } from "./manifest.js";
 export {
   driverManifestSchema,
+  effortTierSchema,
   manifestBatchSchema,
   manifestStreamSchema,
+  modelTierSchema,
   parseManifest,
 } from "./manifest.js";
 
@@ -25,9 +29,13 @@ export type { ImportManifestResult } from "./import.js";
 
 export { renderDriverRun } from "./render.js";
 
+export { mapTierToDispatch } from "./tier-map.js";
+
 export {
+  formatStreamTierDiagnostic,
   manifestBatchStatusToStore,
   manifestStatusToStore,
+  resolveStreamTier,
   storeBatchStatusToManifest,
   storeStatusToManifest,
 } from "./status-mapping.js";
@@ -54,6 +62,8 @@ export type {
   ReviewerBallot,
   ReviewerBallotVerdict,
   RunOpts,
+  TierDegrade,
+  TierDispatchResult,
 } from "./types.js";
 
 export {

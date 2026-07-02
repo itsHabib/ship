@@ -10,6 +10,8 @@ import { LineCounter, parseDocument, stringify } from "yaml";
 
 import { storeBatchStatusToManifest, storeStatusToManifest } from "./status-mapping.js";
 
+export { formatStreamTierDiagnostic } from "./status-mapping.js";
+
 /** Store rows → deterministic `driver.md` text (frontmatter + original body). */
 export function renderDriverRun(store: Store, driverRunId: string): string {
   const run = store.getDriverRun(driverRunId);
