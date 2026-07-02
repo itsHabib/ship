@@ -21,11 +21,11 @@ export interface UpdateDriverStreamInput {
   mergedAt?: string;
   cycles?: number;
   errorMessage?: string;
-  dispatchProvider?: DriverStream["dispatchProvider"];
-  dispatchModel?: string;
-  dispatchModelParams?: DriverStream["dispatchModelParams"];
+  dispatchProvider?: DriverStream["dispatchProvider"] | null;
+  dispatchModel?: string | null;
+  dispatchModelParams?: DriverStream["dispatchModelParams"] | null;
   effortDegraded?: boolean;
-  tierDegradeReason?: string;
+  tierDegradeReason?: string | null;
 }
 
 export interface DriverStreamRow {
@@ -205,7 +205,7 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
     params,
     "dispatch_model_params = ?",
     patch.dispatchModelParams,
-    JSON.stringify,
+    (value) => (value === null ? null : JSON.stringify(value)),
   );
   appendStreamPatchColumn(sets, params, "effort_degraded = ?", patch.effortDegraded, boolToInt);
   appendStreamPatchColumn(sets, params, "tier_degrade_reason = ?", patch.tierDegradeReason);

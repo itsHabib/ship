@@ -581,20 +581,15 @@ function tierDispatchPatch(
   provider: AgentProvider,
   mapping: TierDispatchResult,
 ): Parameters<Store["updateDriverStream"]>[1] {
-  const patch: Parameters<Store["updateDriverStream"]>[1] = { dispatchProvider: provider };
-  if (mapping.model !== undefined) {
-    patch.dispatchModel = mapping.model;
-  }
-  if (mapping.modelParams !== undefined) {
-    patch.dispatchModelParams = mapping.modelParams;
-  }
-  if (mapping.degrade?.effortDegraded === true) {
-    patch.effortDegraded = true;
-  }
-  if (mapping.degrade?.reason !== undefined) {
-    patch.tierDegradeReason = mapping.degrade.reason;
-  }
-  return patch;
+  // Every dispatch writes every tier column: a re-dispatch after a retry
+  // must not inherit a previous attempt's mapping or degrade flags.
+  return {
+    dispatchModel: mapping.model ?? null,
+    dispatchModelParams: mapping.modelParams ?? null,
+    dispatchProvider: provider,
+    effortDegraded: mapping.degrade?.effortDegraded === true,
+    tierDegradeReason: mapping.degrade?.reason ?? null,
+  };
 }
 
 /** @internal Exported for unit tests — builds the `ShipInput` a stream dispatch would send. */
