@@ -8,10 +8,12 @@ import type { Store } from "@ship/store";
 import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/store";
 import type { AgentProvider, FailureCategory } from "@ship/workflow";
 
+import { prNumberFromUrl } from "@ship/receipt";
 import { isTerminal } from "@ship/workflow";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import type { DriverGhPort } from "./gh-port.js";
 import type { DispatchAmbiguity } from "./judgment.js";
 import type { DriverShipPort } from "./ship-port.js";
 import type {
@@ -54,6 +56,7 @@ const RUNAWAY_BACKSTOP_MULTIPLIER = 6;
 export interface EngineDeps {
   store: Store;
   ship: DriverShipPort;
+  gh?: DriverGhPort;
   notify?: NotifyPort;
   escalation?: EscalationConfig;
   logger?: Logger;
@@ -81,6 +84,7 @@ interface TickContext {
   rng: () => number;
   sleep: (ms: number) => Promise<void>;
   ship: DriverShipPort;
+  gh?: DriverGhPort;
   store: Store;
   notify?: NotifyPort | undefined;
   escalation?: EscalationConfig | undefined;
@@ -206,6 +210,9 @@ function buildTickContext(deps: EngineDeps): TickContext {
     sleep: deps.sleep ?? defaultSleep,
     store: deps.store,
   };
+  if (deps.gh !== undefined) {
+    ctx.gh = deps.gh;
+  }
   return ctx;
 }
 
@@ -703,18 +710,22 @@ async function pollDispatched(
   run: DriverRun,
 ): Promise<DriverRun> {
   for (const stream of allStreams(run)) {
-    await pollOneStream(ctx, liveness, store, ship, stream);
+    await pollOneStream({ ctx, liveness, run, ship, store, stream });
   }
   return loadRun(store, run.id);
 }
 
-async function pollOneStream(
-  ctx: TickContext,
-  liveness: TickLiveness,
-  store: Store,
-  ship: DriverShipPort,
-  stream: DriverStream,
-): Promise<void> {
+interface PollOneStreamParams {
+  ctx: TickContext;
+  liveness: TickLiveness;
+  run: DriverRun;
+  ship: DriverShipPort;
+  store: Store;
+  stream: DriverStream;
+}
+
+async function pollOneStream(params: PollOneStreamParams): Promise<void> {
+  const { ctx, liveness, run, ship, store, stream } = params;
   if (stream.status !== "dispatched") return;
   const wfId = stream.workflowRunId;
   if (wfId === undefined) return;
@@ -725,7 +736,7 @@ async function pollOneStream(
   if (!isTerminal(wfRun.status)) return;
 
   if (wfRun.status === "succeeded") {
-    store.updateDriverStream(stream.id, buildLandedPatch(stream, wfRun));
+    await handleSucceededPoll(ctx, run, store, stream, wfRun);
     return;
   }
 
@@ -736,17 +747,71 @@ async function pollOneStream(
   });
 }
 
-function buildLandedPatch(
+async function handleSucceededPoll(
+  ctx: TickContext,
+  run: DriverRun,
+  store: Store,
+  stream: DriverStream,
+  wfRun: GetWorkflowRunOutput,
+): Promise<void> {
+  const prUrl = wfRun.branches?.[0]?.prUrl;
+  if (stream.runtime === "cloud" && prUrl !== undefined) {
+    const flipError = await flipCloudDraftReady(ctx.gh, run, prUrl);
+    if (flipError !== undefined) {
+      store.updateDriverStream(stream.id, {
+        ...buildPrMetaPatch(stream, wfRun),
+        errorMessage: flipError,
+        status: "failed",
+      });
+      return;
+    }
+  }
+  store.updateDriverStream(stream.id, buildLandedPatch(stream, wfRun));
+}
+
+async function flipCloudDraftReady(
+  gh: DriverGhPort | undefined,
+  run: DriverRun,
+  prUrl: string,
+): Promise<string | undefined> {
+  if (gh === undefined) {
+    return "draft→ready flip failed: GitHub port not configured";
+  }
+  const repo = extractRepoUrl(run);
+  if (repo === undefined) {
+    return "draft→ready flip failed: manifest missing repo_url";
+  }
+  const prNumber = prNumberFromUrl(prUrl);
+  if (prNumber === undefined) {
+    return `draft→ready flip failed: cannot parse PR number from prUrl ${prUrl}`;
+  }
+  try {
+    await gh.markReady(repo, prNumber);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `draft→ready flip failed: ${message}`;
+  }
+  return undefined;
+}
+
+function buildPrMetaPatch(
   stream: DriverStream,
   wfRun: GetWorkflowRunOutput,
 ): Parameters<Store["updateDriverStream"]>[1] {
-  const patch: Parameters<Store["updateDriverStream"]>[1] = { status: "landed" };
+  const patch: Parameters<Store["updateDriverStream"]>[1] = {};
   const branchRef = wfRun.branches?.[0];
   if (branchRef?.prUrl !== undefined) patch.prUrl = branchRef.prUrl;
   if (stream.branch === undefined && branchRef?.branch !== undefined) {
     patch.branch = branchRef.branch;
   }
   return patch;
+}
+
+function buildLandedPatch(
+  stream: DriverStream,
+  wfRun: GetWorkflowRunOutput,
+): Parameters<Store["updateDriverStream"]>[1] {
+  return { ...buildPrMetaPatch(stream, wfRun), status: "landed" };
 }
 
 function evaluateExit(

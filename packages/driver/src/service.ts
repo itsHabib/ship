@@ -87,6 +87,7 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
           ship,
           store,
           clock,
+          gh,
           logger,
           monotonicClock,
           notifyExec,
@@ -104,6 +105,7 @@ function buildTickDeps(input: {
   store: Store;
   ship: DriverShipPort;
   resolved: ReturnType<typeof resolveRunOpts>;
+  gh?: DriverGhPort | undefined;
   logger?: Logger | undefined;
   notifyExec?: NotifyExec | undefined;
   clock?: (() => number) | undefined;
@@ -112,6 +114,7 @@ function buildTickDeps(input: {
   sleep?: ((ms: number) => Promise<void>) | undefined;
 }): Parameters<typeof runTick>[2] {
   const deps: Parameters<typeof runTick>[2] = { ship: input.ship, store: input.store };
+  if (input.gh !== undefined) deps.gh = input.gh;
   if (input.logger !== undefined) deps.logger = input.logger;
   const notifyPort = createNotifyPort(input.resolved.notify, input.notifyExec);
   if (notifyPort !== undefined) deps.notify = notifyPort;

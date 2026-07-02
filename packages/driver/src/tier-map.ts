@@ -15,6 +15,8 @@ import type { TierDegrade, TierDispatchResult } from "./types.js";
 type ModelParam = NonNullable<ShipInput["modelParams"]>[number];
 
 // Cursor ids from GET /v1/models (see packages/core/src/default-wiring.ts).
+// Retired ids are rejected at agent.send with [invalid_model] — verify a
+// cell against the live list before changing it.
 const CURSOR_MODEL_BY_TIER: Record<
   ModelTier,
   { model: string; modelParams?: NonNullable<ShipInput["modelParams"]> }
@@ -24,7 +26,15 @@ const CURSOR_MODEL_BY_TIER: Record<
     modelParams: [{ id: "fast", value: "true" }],
   },
   sonnet: { model: "composer-2.5" },
-  opus: { model: "gpt-5.4-high" },
+  opus: { model: "claude-opus-4-8" },
+};
+
+// Cursor models exposing a reasoning-effort parameter; composer ids don't.
+const CURSOR_MODELS_WITH_EFFORT = new Set(["claude-opus-4-8"]);
+
+const CURSOR_EFFORT_VALUE_BY_TIER: Record<Exclude<EffortTier, "ultracode">, string> = {
+  extra: "xhigh",
+  max: "max",
 };
 
 const CLAUDE_MODEL_BY_TIER: Record<ModelTier, string> = {
@@ -60,9 +70,6 @@ function mapCursorTier(
   modelTier: ModelTier | undefined,
   effortTier: EffortTier | undefined,
 ): TierDispatchResult {
-  const degradeParts: string[] = [];
-  const degrade: TierDegrade = {};
-
   let model: string | undefined;
   let modelParams: NonNullable<ShipInput["modelParams"]> | undefined;
 
@@ -72,21 +79,55 @@ function mapCursorTier(
     modelParams = mapped.modelParams;
   }
 
-  if (effortTier !== undefined) {
-    degrade.effortDegraded = true;
-    degradeParts.push(`cursor has no reasoning-effort analog for effort tier "${effortTier}"`);
-  }
-
-  if (effortTier === "ultracode") {
-    degradeParts.push('cursor has no multi-agent analog for effort tier "ultracode"');
-  }
-
-  if (degradeParts.length === 0) {
+  if (effortTier === undefined) {
     return buildDispatchResult(model, modelParams);
   }
 
-  degrade.reason = degradeParts.join("; ");
-  return buildDispatchResult(model, modelParams, degrade);
+  if (model === undefined || !CURSOR_MODELS_WITH_EFFORT.has(model)) {
+    return buildDispatchResult(model, modelParams, {
+      effortDegraded: true,
+      reason: cursorEffortDegradeReason(model, effortTier),
+    });
+  }
+
+  const value = effortTier === "ultracode" ? "max" : CURSOR_EFFORT_VALUE_BY_TIER[effortTier];
+  // Cursor variant matching is exact on the FULL param tuple: a lone effort
+  // param matches no listed variant and agent.send rejects it as
+  // invalid_model. Emit every parameter of the target variant.
+  modelParams = cursorEffortVariantParams(value);
+
+  if (effortTier !== "ultracode") {
+    return buildDispatchResult(model, modelParams);
+  }
+
+  return buildDispatchResult(model, modelParams, {
+    effortDegraded: true,
+    reason:
+      'cursor has no multi-agent analog for effort tier "ultracode"; dispatching at max effort',
+  });
+}
+
+// The claude-family variant tuple on cursor (GET /v1/models, 2026-07-02):
+// cyber/thinking/context/effort/fast. Values other than effort are pinned to
+// the default variant's.
+function cursorEffortVariantParams(effort: string): NonNullable<ShipInput["modelParams"]> {
+  return [
+    { id: "cyber", value: "false" },
+    { id: "thinking", value: "false" },
+    { id: "context", value: "300k" },
+    { id: "effort", value: effort },
+    { id: "fast", value: "false" },
+  ];
+}
+
+function cursorEffortDegradeReason(model: string | undefined, effortTier: EffortTier): string {
+  const parts = [
+    `cursor model "${model ?? "engine default"}" has no reasoning-effort analog for effort tier "${effortTier}"`,
+  ];
+  if (effortTier === "ultracode") {
+    parts.push('cursor has no multi-agent analog for effort tier "ultracode"');
+  }
+  return parts.join("; ");
 }
 
 function mapClaudeTier(
