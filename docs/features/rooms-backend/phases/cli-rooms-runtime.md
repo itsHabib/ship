@@ -18,6 +18,7 @@ The "MCP-only" shape was a deliberate focus scaffold when nothing needed to driv
   - `--room <path>` — a JSON file parsed by `roomRunSpecSchema` (file mode; wins over field flags).
   - Field flags: `--room-repo <url>` (→ `room.repos[0].url`), `--room-starting-ref <ref>` (→ `room.repos[0].startingRef`), `--room-image <path>` (→ `room.image`), `--room-push-branch <name>` (→ `room.pushBranch`).
 - `--runtime rooms` with no room spec → clean `InvalidArgumentError` naming `--room-repo` / `--room` (mirror of the cloud guard). The CLI is the validation boundary for direct service callers — it bypasses `shipInputSchema.superRefine`, so the guard lives here too.
+- `--runtime rooms` with a repo but no image → clean `InvalidArgumentError` naming `--room-image`. `RoomCursorRunner` rejects an imageless spec (`MissingRoomImageError`) and the stock `default-wiring` configures no default image, so without this guard the run persists a row and then fails at dispatch. Fail fast at the CLI for the same reason the `--room-repo` guard exists. (If a default image is ever wired, this guard relaxes.)
 - Provider guard: rooms currently supports only the cursor provider (`RoomCursorRunner`); `--provider claude|codex` + `--runtime rooms` fails fast with a clear message (mirrors the MCP schema, where `refineClaudeProviderRuntime` / `refineCodexProviderRuntime` reject rooms). Claude-in-rooms / codex-in-rooms are separate future phases.
 - Omitting `--runtime` is unchanged (service default; no `room` field on the input).
 

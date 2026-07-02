@@ -724,11 +724,31 @@ describe("ship ship", () => {
       "rooms",
       "--room-repo",
       "https://github.com/o/r",
+      "--room-image",
+      "/images/agent-alpine-cursor.ext4",
     ]);
     expect(code).toBe(0);
     expect(room.calls).toHaveLength(1);
     expect(room.calls[0]?.input.runtime).toBe("rooms");
     expect(room.calls[0]?.input.room?.repos[0]?.url).toBe("https://github.com/o/r");
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
+  test("--runtime rooms with a repo but no image → exit 1; stderr names the image flag", async () => {
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--runtime",
+      "rooms",
+      "--room-repo",
+      "https://github.com/o/r",
+    ]);
+    expect(code).toBe(1);
+    expect(h.stderr.join("")).toMatch(/--room-image/);
     expect(h.harness.cursor.calls).toHaveLength(0);
   });
 
@@ -803,6 +823,7 @@ describe("ship ship", () => {
       roomPath,
       JSON.stringify({
         repos: [{ url: "https://github.com/from/file" }],
+        image: "/images/agent-alpine-cursor.ext4",
         pushBranch: "rooms/from-file",
       }),
     );
@@ -849,7 +870,7 @@ describe("ship ship", () => {
         roomPath,
       ]);
       expect(code).toBe(1);
-      expect(h.stderr.join()).toMatch(/repos/i);
+      expect(h.stderr.join("")).toMatch(/repos/i);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

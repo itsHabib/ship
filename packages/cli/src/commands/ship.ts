@@ -409,6 +409,15 @@ async function resolveRoomSpec(
   if (runtime === "rooms" && spec === undefined) {
     throw new InvalidArgumentError("--runtime rooms requires --room-repo or --room <path>");
   }
+  // RoomCursorRunner rejects a spec with no image and the stock wiring
+  // configures no default image, so a rooms run without one persists a row
+  // and then fails at dispatch. Require it here for the same fail-fast reason.
+  const roomImage = spec?.image;
+  if (runtime === "rooms" && (roomImage === undefined || roomImage === "")) {
+    throw new InvalidArgumentError(
+      '--runtime rooms requires a guest image (--room-image or an "image" field in --room <path>)',
+    );
+  }
   return spec;
 }
 
