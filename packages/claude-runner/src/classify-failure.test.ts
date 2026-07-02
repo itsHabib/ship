@@ -75,6 +75,56 @@ describe("classifyFailure (Claude)", () => {
     ).toBe("gateway-unreachable");
   });
 
+  test("401 Unauthorized → gateway-auth", () => {
+    expect(
+      classifyFailure({
+        events: [],
+        thrownErr: new Error("401 Unauthorized"),
+        thrownError: true,
+      }),
+    ).toBe("gateway-auth");
+  });
+
+  test("403 Forbidden → gateway-auth", () => {
+    expect(
+      classifyFailure({
+        events: [],
+        thrownErr: new Error("403 Forbidden"),
+        thrownError: true,
+      }),
+    ).toBe("gateway-auth");
+  });
+
+  test("401 without gateway keyword → gateway-auth, not sdk-throw", () => {
+    expect(
+      classifyFailure({
+        events: [],
+        thrownErr: new Error("HTTP 401: invalid API key"),
+        thrownError: true,
+      }),
+    ).toBe("gateway-auth");
+  });
+
+  test("5xx gateway error → gateway-unreachable, not gateway-auth", () => {
+    expect(
+      classifyFailure({
+        events: [],
+        thrownErr: new Error("gateway returned 503 Service Unavailable"),
+        thrownError: true,
+      }),
+    ).toBe("gateway-unreachable");
+  });
+
+  test("output merely mentioning 401 → NOT gateway-auth", () => {
+    expect(
+      classifyFailure({
+        events: [],
+        thrownErr: new Error("lint found 401 style violations"),
+        thrownError: true,
+      }),
+    ).toBe("sdk-throw");
+  });
+
   test("non-error subtype delegates to base classifier", () => {
     const events = [
       {

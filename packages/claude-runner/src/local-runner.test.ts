@@ -139,12 +139,37 @@ describe("LocalClaudeRunner — runtime selection", () => {
 });
 
 describe("LocalClaudeRunner — env / pre-run errors", () => {
-  test("throws MissingApiKeyError when ANTHROPIC_API_KEY is unset", async () => {
+  test("throws MissingApiKeyError when both credentials are unset", async () => {
     vi.unstubAllEnvs();
     vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "");
     const runner = new LocalClaudeRunner();
     await expect(runner.run(baseInput())).rejects.toBeInstanceOf(MissingApiKeyError);
     expect(query).not.toHaveBeenCalled();
+  });
+
+  test("passes validateRunInput with only ANTHROPIC_AUTH_TOKEN", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "bearer-token-xyz");
+    const { queryInstance } = makeMockQuery({ events: [successResult] });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    const handle = await runner.run(baseInput());
+    await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+    expect(query).toHaveBeenCalled();
+  });
+
+  test("passes validateRunInput with only ANTHROPIC_API_KEY", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("ANTHROPIC_API_KEY", "test-key-abc123");
+    const { queryInstance } = makeMockQuery({ events: [successResult] });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    const handle = await runner.run(baseInput());
+    await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+    expect(query).toHaveBeenCalled();
   });
 
   test("query() construction throw → AgentRunFailedError", async () => {
@@ -333,6 +358,36 @@ describe("LocalClaudeRunner — query options", () => {
       | undefined;
     expect(call?.options?.env?.["ANTHROPIC_API_KEY"]).toBe("test-key-abc123");
     expect(call?.options?.env?.["ANTHROPIC_BASE_URL"]).toBeUndefined();
+  });
+
+  test("forwards ANTHROPIC_AUTH_TOKEN when set", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "bearer-token-xyz");
+    const { queryInstance } = makeMockQuery({ events: [successResult] });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    await runner.run(baseInput());
+
+    const call = vi.mocked(query).mock.calls[0]?.[0] as
+      | { options?: { env?: Record<string, string | undefined> } }
+      | undefined;
+    expect(call?.options?.env?.["ANTHROPIC_AUTH_TOKEN"]).toBe("bearer-token-xyz");
+  });
+
+  test("omits ANTHROPIC_AUTH_TOKEN from env when unset", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("ANTHROPIC_API_KEY", "test-key-abc123");
+    const { queryInstance } = makeMockQuery({ events: [successResult] });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    await runner.run(baseInput());
+
+    const call = vi.mocked(query).mock.calls[0]?.[0] as
+      | { options?: { env?: Record<string, string | undefined> } }
+      | undefined;
+    expect(call?.options?.env?.["ANTHROPIC_AUTH_TOKEN"]).toBeUndefined();
   });
 
   test("interrupt rejection during cancel is swallowed", async () => {
