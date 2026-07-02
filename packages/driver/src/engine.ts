@@ -532,7 +532,7 @@ function buildShipInput(
       throw new PreconditionError(`cloud stream ${stream.id} requires repo_url in manifest`);
     }
     const repoEntry: NonNullable<ShipInput["cloud"]>["repos"][number] = { url: repoUrl };
-    if (provider === "claude" && stream.branch !== undefined) {
+    if (stream.provider === "claude" && stream.branch !== undefined) {
       repoEntry.prBranch = stream.branch;
     }
     input = {

@@ -126,7 +126,7 @@ function validateStreamProviderRules(
       message: `stream ${label}: codex provider supports only runtime 'local' (runtime is '${runtime}')`,
     };
   }
-  if (provider === "claude" && runtime === "cloud" && stream.branch_name === undefined) {
+  if (provider === "claude" && runtime === "cloud" && !stream.branch_name) {
     return {
       message: `stream ${label}: claude provider with runtime 'cloud' requires branch_name`,
     };
