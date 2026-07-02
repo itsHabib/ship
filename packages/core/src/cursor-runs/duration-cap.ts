@@ -246,6 +246,11 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
   const wallNow = args.wallClock ?? defaultWallClock;
   const startedMono = monotonicNow();
   const windowDeadlineMono = startedMono + windowMs;
+  // Attach evidence shrinks the window to the grace floor, never below it: an
+  // already-terminal run must get the grace to deliver its real result, even
+  // when the very first probe/stream fold proves the run is over cap.
+  const graceDeadlineMono =
+    args.kind === "attach" ? startedMono + Math.min(MIN_RESUMED_CAP_WINDOW_MS, cap) : startedMono;
   const streamAnchorMs = args.serverCreatedAtMs;
 
   let handle: AgentRunHandle | undefined;
@@ -320,7 +325,7 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
   const evaluateDecisionPoint = (): boolean => {
     if (settled) return true;
     const nowMono = monotonicNow();
-    if (floorNow(nowMono) >= cap) {
+    if (floorNow(nowMono) >= cap && nowMono >= graceDeadlineMono) {
       settleExpired(handle === undefined);
       return true;
     }
@@ -345,7 +350,12 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
     const floor = floorNow(nowMono);
     const windowRemainingMs = windowDeadlineMono - nowMono;
     const capRemainderMs = Math.max(0, cap - floor);
-    const nextDelay = Math.min(windowRemainingMs, capRemainderMs);
+    let nextDelay = Math.min(windowRemainingMs, capRemainderMs);
+    // Over-cap evidence inside the attach grace shrinks to the grace
+    // boundary rather than expiring — the result still gets its race.
+    if (nextDelay <= 0 && nowMono < graceDeadlineMono) {
+      nextDelay = graceDeadlineMono - nowMono;
+    }
     if (nextDelay <= 0) {
       settleExpired(handle === undefined);
       return;
@@ -479,6 +489,25 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
     rederiveAndRearm();
   };
 
+  const onServedFire = (nowMono: number, monoDelta: number, windowRemainingMs: number): void => {
+    foldMonoDelta(monoDelta);
+    foldStreamSignals();
+    if (evaluateDecisionPoint()) return;
+    if (windowRemainingMs <= 0) {
+      settleExpired(handle === undefined);
+      return;
+    }
+    const floor = floorNow(nowMono);
+    if (floor >= cap && nowMono >= graceDeadlineMono) {
+      settleExpired(handle === undefined);
+      return;
+    }
+    armedAtMono = nowMono;
+    const floorRemainder = floor >= cap ? graceDeadlineMono - nowMono : cap - floor;
+    armedDelayMs = Math.min(windowRemainingMs, Math.max(1, floorRemainder), MAX_TIMER_DELAY_MS);
+    timer = setTimeout(onCapTimer, armedDelayMs);
+  };
+
   const onCapTimer = (): void => {
     if (settled) return;
     const nowMono = monotonicNow();
@@ -487,21 +516,7 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
     const fireKind = classifyTimerFire(monoDelta, armedDelayMs);
 
     if (fireKind === "served") {
-      foldMonoDelta(monoDelta);
-      foldStreamSignals();
-      if (evaluateDecisionPoint()) return;
-      if (windowRemainingMs <= 0) {
-        settleExpired(handle === undefined);
-        return;
-      }
-      const floor = floorNow(nowMono);
-      if (floor >= cap) {
-        settleExpired(handle === undefined);
-        return;
-      }
-      armedAtMono = nowMono;
-      armedDelayMs = Math.min(windowRemainingMs, Math.max(0, cap - floor), MAX_TIMER_DELAY_MS);
-      timer = setTimeout(onCapTimer, armedDelayMs);
+      onServedFire(nowMono, monoDelta, windowRemainingMs);
       return;
     }
 

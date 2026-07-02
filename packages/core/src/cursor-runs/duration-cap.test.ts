@@ -494,6 +494,61 @@ describe("runWithDurationCap remote signals", () => {
     await vi.advanceTimersByTimeAsync(0);
   });
 
+  test("attach: over-cap probe evidence shrinks to the grace, and a real result inside it wins", async () => {
+    const { handle } = fakeHandle(Promise.resolve(succeededResult));
+    const pending = runWithDurationCap({
+      elapsedMs: CAP_MS + 990,
+      kind: "attach",
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => Date.now(),
+      onHandle: () => undefined,
+      probeAgentId: "agent-x",
+      probeRunId: "run-x",
+      signals: {
+        probeRun: () =>
+          Promise.resolve({
+            createdAtMs: 0,
+            status: "RUNNING",
+            updatedAtMs: CAP_MS + 990,
+          }),
+      },
+      start: () => Promise.resolve(handle),
+    });
+    // The probe folds an over-cap age immediately; the already-terminal
+    // run's real result must still win inside the grace window.
+    await vi.advanceTimersByTimeAsync(0);
+    const out = await pending;
+    expect(out.status).toBe("succeeded");
+  });
+
+  test("attach: over-cap probe evidence with no result expires at the grace boundary", async () => {
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      elapsedMs: CAP_MS + 990,
+      kind: "attach",
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => Date.now(),
+      onHandle: () => undefined,
+      probeAgentId: "agent-x",
+      probeRunId: "run-x",
+      signals: {
+        probeRun: () =>
+          Promise.resolve({
+            createdAtMs: 0,
+            status: "RUNNING",
+            updatedAtMs: CAP_MS + 990,
+          }),
+      },
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(MIN_RESUMED_CAP_WINDOW_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(out.durationMs).toBeGreaterThanOrEqual(CAP_MS);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   test("stream event fold alone can expire an over-cap remote run", async () => {
     let capHooks: DurationCapHandle | undefined;
     const { cancel, handle } = fakeHandle(pendingForever());
