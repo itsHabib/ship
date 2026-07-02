@@ -38,6 +38,8 @@ The dogfood env jumps the **wall clock** ~2.28h between turns. A wall-clock anch
 
 ## Considered alternative — deferred
 
+> **Promoted 2026-07-01** — Codex's P2 on #165 was exactly the named trigger. Design spec: [freeze-cap-remote-liveness.md](freeze-cap-remote-liveness.md), dossier task `cap-liveness-across-cloud-suspend`.
+
 Drive the cap off the cloud run's own liveness (`getRun().updatedAt` / event stream), like #157's tick drives off last-event-age, instead of any local clock. This is strictly more robust for the pathological case where *every* local clock (including the monotonic one) jumps with a VM pause, and for a still-emitting run that should survive regardless of local time. It is deferred because it is a materially larger change — it couples the core cap to a progress signal / the cloud runner's `getRun`, threaded through both cap call sites — and the monotonic re-validation satisfies the acceptance criteria for the stated scenario (a machine whose **wall** clock jumps) at a fraction of the blast radius. If a monotonic-clock-also-jumps environment is observed on real hardware, promote this alternative to its own task.
 
 ## Acceptance
