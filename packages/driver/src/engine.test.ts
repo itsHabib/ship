@@ -731,6 +731,7 @@ batches:
     const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
     const fake = createFakeShipPort([
       {
+        branchName: "cursor/flip-77",
         docPath: docA,
         prUrl: "https://github.com/example/ship/pull/77",
         repo: "ship",
@@ -749,6 +750,8 @@ batches:
     const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
     expect(stream?.status).toBe("failed");
     expect(stream?.errorMessage).toBe("draft→ready flip failed: gh pr ready denied");
+    expect(stream?.prUrl).toBe("https://github.com/example/ship/pull/77");
+    expect(stream?.branch).toBe("cursor/flip-77");
     expect(result.status).toBe("awaiting_judgment");
     store.close();
   });

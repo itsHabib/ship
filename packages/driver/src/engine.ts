@@ -696,6 +696,7 @@ async function handleSucceededPoll(
     const flipError = await flipCloudDraftReady(ctx.gh, run, prUrl);
     if (flipError !== undefined) {
       store.updateDriverStream(stream.id, {
+        ...buildPrMetaPatch(stream, wfRun),
         errorMessage: flipError,
         status: "failed",
       });
@@ -730,17 +731,24 @@ async function flipCloudDraftReady(
   return undefined;
 }
 
-function buildLandedPatch(
+function buildPrMetaPatch(
   stream: DriverStream,
   wfRun: GetWorkflowRunOutput,
 ): Parameters<Store["updateDriverStream"]>[1] {
-  const patch: Parameters<Store["updateDriverStream"]>[1] = { status: "landed" };
+  const patch: Parameters<Store["updateDriverStream"]>[1] = {};
   const branchRef = wfRun.branches?.[0];
   if (branchRef?.prUrl !== undefined) patch.prUrl = branchRef.prUrl;
   if (stream.branch === undefined && branchRef?.branch !== undefined) {
     patch.branch = branchRef.branch;
   }
   return patch;
+}
+
+function buildLandedPatch(
+  stream: DriverStream,
+  wfRun: GetWorkflowRunOutput,
+): Parameters<Store["updateDriverStream"]>[1] {
+  return { ...buildPrMetaPatch(stream, wfRun), status: "landed" };
 }
 
 function evaluateExit(
