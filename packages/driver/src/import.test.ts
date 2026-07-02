@@ -186,3 +186,54 @@ describe("importManifest", () => {
     rmSync(dir, { force: true, recursive: true });
   });
 });
+
+describe("importManifest tier threading", () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = createStore({ dbPath: ":memory:" });
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it("persists resolved tiers on stream rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-import-tier-"));
+    const path = join(dir, "driver.md");
+    writeFileSync(
+      path,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-07-01T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: tier-test",
+        "repo: ship",
+        "default_model: sonnet",
+        "default_effort: extra",
+        "batches:",
+        "  - id: 1",
+        "    depends_on: []",
+        "    streams:",
+        "      - spec_path: docs/a.md",
+        "        branch_name: feat-a",
+        "        model: opus",
+        "      - spec_path: docs/b.md",
+        "        branch_name: feat-b",
+        "---",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { run } = importManifest(store, path);
+    const streams = run.batches[0]?.streams ?? [];
+    expect(streams[0]?.modelTier).toBe("opus");
+    expect(streams[0]?.effortTier).toBe("extra");
+    expect(streams[1]?.modelTier).toBe("sonnet");
+    expect(streams[1]?.effortTier).toBe("extra");
+    rmSync(dir, { force: true, recursive: true });
+  });
+});

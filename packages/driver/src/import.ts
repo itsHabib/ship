@@ -12,7 +12,11 @@ import { readFileSync } from "node:fs";
 import type { ManifestBatch, ManifestParseError, ManifestStream } from "./manifest.js";
 
 import { parseManifest } from "./manifest.js";
-import { manifestBatchStatusToStore, manifestStatusToStore } from "./status-mapping.js";
+import {
+  manifestBatchStatusToStore,
+  manifestStatusToStore,
+  resolveStreamTier,
+} from "./status-mapping.js";
 
 export class ImportManifestError extends Error {
   override readonly name = "ImportManifestError";
@@ -58,7 +62,14 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
     return { alreadyImported: true, run: existing, ...warningExtras };
   }
 
-  const batches = manifest.batches.map((batch) => buildBatchInput(batch, manifest.default_runtime));
+  const batches = manifest.batches.map((batch) =>
+    buildBatchInput(
+      batch,
+      manifest.default_runtime,
+      manifest.default_model,
+      manifest.default_effort,
+    ),
+  );
   const runStatus = deriveRunStatus(batches.map((b) => b.status));
 
   const run = store.insertDriverRun({
@@ -113,6 +124,8 @@ function deriveRunStatus(batchStatuses: DriverBatchStatus[]): DriverRun["status"
 function buildBatchInput(
   batch: ManifestBatch,
   defaultRuntime: ManifestStream["runtime"] | undefined,
+  defaultModel: ManifestStream["model"] | undefined,
+  defaultEffort: ManifestStream["effort"] | undefined,
 ): {
   id: string;
   batchIndex: number;
@@ -139,7 +152,7 @@ function buildBatchInput(
 } {
   const batchStatus = manifestBatchStatusToStore(batch.status, batch.completed_at);
   const streams = batch.streams.map((stream, index) =>
-    buildStreamInput(stream, index, defaultRuntime),
+    buildStreamInput(stream, index, defaultRuntime, defaultModel, defaultEffort),
   );
 
   const result: {
@@ -166,6 +179,8 @@ function buildStreamInput(
   stream: ManifestStream,
   streamIndex: number,
   defaultRuntime: ManifestStream["runtime"] | undefined,
+  defaultModel: ManifestStream["model"] | undefined,
+  defaultEffort: ManifestStream["effort"] | undefined,
 ): {
   id: string;
   streamIndex: number;
@@ -181,6 +196,8 @@ function buildStreamInput(
   mergeCommit?: string;
   mergedAt?: string;
   cycles?: number;
+  modelTier?: ReturnType<typeof resolveStreamTier>["modelTier"];
+  effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
 } {
   const candidate: {
     id: string;
@@ -197,6 +214,8 @@ function buildStreamInput(
     mergeCommit?: string;
     mergedAt?: string;
     cycles?: number;
+    modelTier?: ReturnType<typeof resolveStreamTier>["modelTier"];
+    effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
   } = {
     attempts: [],
     id: newDriverStreamId(),
@@ -205,6 +224,7 @@ function buildStreamInput(
     status: manifestStatusToStore(stream.status),
     streamIndex,
     touches: stream.touches,
+    ...resolveStreamTier(stream, defaultModel, defaultEffort),
   };
   if (stream.task_id !== undefined) candidate.taskId = stream.task_id;
   if (stream.task_slug !== undefined) candidate.taskSlug = stream.task_slug;

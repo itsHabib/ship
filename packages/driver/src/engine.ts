@@ -5,7 +5,7 @@
 import type { GetWorkflowRunOutput, ShipInput, ShipStartOutput } from "@ship/core";
 import type { Store } from "@ship/store";
 import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/store";
-import type { FailureCategory } from "@ship/workflow";
+import type { AgentProvider, FailureCategory } from "@ship/workflow";
 
 import { isTerminal } from "@ship/workflow";
 import { existsSync } from "node:fs";
@@ -13,7 +13,7 @@ import { dirname, join, resolve } from "node:path";
 
 import type { DispatchAmbiguity } from "./judgment.js";
 import type { DriverShipPort } from "./ship-port.js";
-import type { DriverTickResult, RunOpts } from "./types.js";
+import type { DriverTickResult, RunOpts, TierDispatchResult } from "./types.js";
 
 import { DriverRunNotFoundEngineError, PreconditionError, TickLiveError } from "./errors.js";
 import {
@@ -32,7 +32,9 @@ import {
   recoverDispatchingStreams,
   rollBatchStatus,
 } from "./judgment.js";
+import { mapTierToDispatch } from "./tier-map.js";
 
+const DEFAULT_DISPATCH_PROVIDER: AgentProvider = "cursor";
 const DEFAULT_MAX_WAIT_MS = 20 * 60 * 1000;
 const DEFAULT_RUNAWAY_BACKSTOP_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
@@ -461,9 +463,18 @@ async function dispatchStream(ctx: DispatchContext, stream: DriverStream): Promi
     terminal: false,
   };
   const attempts = [...stream.attempts, attempt];
+  const tierMapping = mapTierToDispatch(
+    DEFAULT_DISPATCH_PROVIDER,
+    stream.modelTier,
+    stream.effortTier,
+  );
 
-  ctx.store.updateDriverStream(stream.id, { attempts, status: "dispatching" });
-  const input = buildShipInput(ctx, stream, docPath);
+  ctx.store.updateDriverStream(stream.id, {
+    attempts,
+    status: "dispatching",
+    ...tierDispatchPatch(DEFAULT_DISPATCH_PROVIDER, tierMapping),
+  });
+  const input = buildShipInput(ctx, stream, docPath, tierMapping);
   return dispatchStartShip({
     baseAttempts: attempts,
     input,
@@ -507,7 +518,13 @@ async function dispatchStartShip(params: StartShipParams): Promise<boolean> {
   return true;
 }
 
-function buildShipInput(ctx: DispatchContext, stream: DriverStream, docPath: string): ShipInput {
+function buildShipInput(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  docPath: string,
+  tierMapping?: TierDispatchResult,
+): ShipInput {
+  let input: ShipInput;
   if (stream.runtime === "rooms") {
     throw new PreconditionError(`rooms stream ${stream.id} is not supported by the engine yet`);
   }
@@ -516,7 +533,7 @@ function buildShipInput(ctx: DispatchContext, stream: DriverStream, docPath: str
     if (repoUrl === undefined) {
       throw new PreconditionError(`cloud stream ${stream.id} requires repo_url in manifest`);
     }
-    return {
+    input = {
       docPath,
       repo: loadRun(ctx.store, ctx.runId).repo,
       runtime: "cloud",
@@ -527,19 +544,66 @@ function buildShipInput(ctx: DispatchContext, stream: DriverStream, docPath: str
         workOnCurrentBranch: false,
       },
     };
+  } else {
+    const branch = stream.branch;
+    if (branch === undefined) {
+      throw new PreconditionError(`local stream ${stream.id} missing branch`);
+    }
+    input = {
+      branch,
+      docPath,
+      repo: loadRun(ctx.store, ctx.runId).repo,
+      runtime: "local",
+      workdir: join(ctx.repoRoot, ".claude", "worktrees", branch),
+    };
   }
+  return applyTierMapping(input, tierMapping);
+}
 
-  const branch = stream.branch;
-  if (branch === undefined) {
-    throw new PreconditionError(`local stream ${stream.id} missing branch`);
+function applyTierMapping(input: ShipInput, tierMapping?: TierDispatchResult): ShipInput {
+  if (tierMapping === undefined) {
+    return input;
   }
+  if (tierMapping.model === undefined && tierMapping.modelParams === undefined) {
+    return input;
+  }
+  const mapped: ShipInput = { ...input };
+  if (tierMapping.model !== undefined) {
+    mapped.model = tierMapping.model;
+  }
+  if (tierMapping.modelParams !== undefined) {
+    mapped.modelParams = tierMapping.modelParams;
+  }
+  return mapped;
+}
+
+function tierDispatchPatch(
+  provider: AgentProvider,
+  mapping: TierDispatchResult,
+): Parameters<Store["updateDriverStream"]>[1] {
+  // Every dispatch writes every tier column: a re-dispatch after a retry
+  // must not inherit a previous attempt's mapping or degrade flags.
   return {
-    branch,
-    docPath,
-    repo: loadRun(ctx.store, ctx.runId).repo,
-    runtime: "local",
-    workdir: join(ctx.repoRoot, ".claude", "worktrees", branch),
+    dispatchModel: mapping.model ?? null,
+    dispatchModelParams: mapping.modelParams ?? null,
+    dispatchProvider: provider,
+    effortDegraded: mapping.degrade?.effortDegraded === true,
+    tierDegradeReason: mapping.degrade?.reason ?? null,
   };
+}
+
+/** @internal Exported for unit tests — builds the `ShipInput` a stream dispatch would send. */
+export function buildShipInputForTest(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  docPath: string,
+): ShipInput {
+  const tierMapping = mapTierToDispatch(
+    DEFAULT_DISPATCH_PROVIDER,
+    stream.modelTier,
+    stream.effortTier,
+  );
+  return buildShipInput(ctx, stream, docPath, tierMapping);
 }
 
 function markLatestAttemptWorkflowRunId(

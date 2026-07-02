@@ -34,10 +34,23 @@ describe("judgment", () => {
   test("decide retry/skip/abort/adopt paths", () => {
     const runId = seedAwaitingRun(store);
     const streamId = store.getDriverRun(runId)!.batches[0]!.streams[0]!.id;
+    store.updateDriverStream(streamId, {
+      dispatchModel: "composer-2.5",
+      dispatchProvider: "cursor",
+      effortDegraded: true,
+      tierDegradeReason: "cursor has no effort analog",
+    });
 
     decide(store, runId, streamId, { kind: "retry" });
     expect(store.getDriverRun(runId)?.status).toBe("running");
-    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("pending");
+    const retried = store.getDriverRun(runId)!.batches[0]!.streams[0]!;
+    expect(retried.status).toBe("pending");
+    // A pending reset clears the prior attempt's dispatch mapping — status
+    // output must not present it as a live dispatch.
+    expect(retried.dispatchModel).toBeUndefined();
+    expect(retried.dispatchProvider).toBeUndefined();
+    expect(retried.effortDegraded).not.toBe(true);
+    expect(retried.tierDegradeReason).toBeUndefined();
 
     store.updateDriverRunStatus(runId, "awaiting_judgment");
     store.updateDriverStream(streamId, { status: "failed" });

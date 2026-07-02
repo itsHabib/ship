@@ -4,10 +4,11 @@
 
 import type { GetWorkflowRunOutput, PruneRunsOutput, ShipOutput } from "@ship/core";
 import type { DriverTickResult } from "@ship/driver";
-import type { DriverRun } from "@ship/store";
+import type { DriverRun, DriverStream } from "@ship/store";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
 import { formatPruneAge } from "@ship/core";
+import { formatStreamTierDiagnostic } from "@ship/driver";
 
 /** Renders a `ShipOutput` for the `ship ship` subcommand. */
 export function formatShipOutput(out: ShipOutput, json: boolean): string {
@@ -233,7 +234,52 @@ export function formatDriverStatusOutput(
   if (view.manifestModified === true) {
     lines.push(`warning:     ⚠ manifest modified since import ${view.importedAt}`);
   }
+  for (const batch of view.batches) {
+    for (const stream of batch.streams) {
+      const tierLine = formatStreamTierLine(stream, batch.batchIndex);
+      if (tierLine !== undefined) {
+        lines.push(tierLine);
+      }
+    }
+  }
   return lines.join("\n");
+}
+
+type StreamTierDiagnosticInput = Parameters<typeof formatStreamTierDiagnostic>[0];
+
+function requestedTierFields(stream: DriverStream): StreamTierDiagnosticInput {
+  return {
+    ...(stream.modelTier !== undefined && { modelTier: stream.modelTier }),
+    ...(stream.effortTier !== undefined && { effortTier: stream.effortTier }),
+  };
+}
+
+// A stream reset to pending (retry / recovery) has no live dispatch — showing
+// a prior attempt's dispatch mapping would read as if dispatch already
+// succeeded. Requested tiers are manifest config and always show.
+function liveDispatchFields(stream: DriverStream): StreamTierDiagnosticInput {
+  if (stream.status === "pending") return {};
+  return {
+    ...(stream.dispatchProvider !== undefined && { dispatchProvider: stream.dispatchProvider }),
+    ...(stream.dispatchModel !== undefined && { dispatchModel: stream.dispatchModel }),
+    ...(stream.dispatchModelParams !== undefined && {
+      dispatchModelParams: stream.dispatchModelParams,
+    }),
+    ...(stream.effortDegraded === true && { effortDegraded: true }),
+    ...(stream.tierDegradeReason !== undefined && { tierDegradeReason: stream.tierDegradeReason }),
+  };
+}
+
+function formatStreamTierLine(stream: DriverStream, batchIndex: number): string | undefined {
+  const diagnostic = formatStreamTierDiagnostic({
+    ...requestedTierFields(stream),
+    ...liveDispatchFields(stream),
+  });
+  if (diagnostic === undefined) {
+    return undefined;
+  }
+  const label = stream.taskSlug ?? stream.specPath;
+  return `stream[${String(batchIndex)}] ${label}: ${diagnostic}`;
 }
 
 // Pretty-prints a terminal cursor-run summary; used by `ship ship` in pretty mode.

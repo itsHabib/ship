@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { CursorRunStartTimedOutError } from "../errors.js";
 import {
+  type DurationCapHandle,
   type DurationCapRunArgs,
   MAX_CAP_REARMS,
   MAX_TIMER_DELAY_MS,
@@ -396,6 +397,272 @@ describe("runWithDurationCap", () => {
     }
     // ...the next fire hits the backstop and expires despite the frozen clock.
     await vi.advanceTimersByTimeAsync(CAP_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runWithDurationCap remote signals", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("paused-clock suspend: discontinuity detector folds over-cap probe age and expires", async () => {
+    const capHooks: { current?: DurationCapHandle } = {};
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => 0,
+      wallClock: () => 0,
+      onCapReady: (h) => {
+        capHooks.current = h;
+      },
+      onHandle: () => undefined,
+      signals: {
+        getLiveness: () => ({ createdAtMs: 0, lastEventAtMs: CAP_MS + 1 }),
+        probeRun: () =>
+          Promise.resolve({
+            createdAtMs: 0,
+            status: "RUNNING",
+            updatedAtMs: CAP_MS + 1,
+          }),
+      },
+      start: () => Promise.resolve(handle),
+    });
+    await Promise.resolve();
+    capHooks.current?.onDiscontinuitySample(100_000, 1_000);
+    await Promise.resolve();
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(out.durationMs).toBeGreaterThanOrEqual(CAP_MS);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("divergent-clock early fire with over-cap stream liveness expires on probe", async () => {
+    let mono = 0;
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => mono,
+      onHandle: () => undefined,
+      signals: {
+        getLiveness: () => ({ createdAtMs: 0, lastEventAtMs: CAP_MS + 1 }),
+        probeRun: () =>
+          Promise.resolve({
+            createdAtMs: 0,
+            updatedAtMs: CAP_MS + 1,
+          }),
+      },
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(CAP_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    mono = 1;
+    await vi.advanceTimersByTimeAsync(0);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("attach with broken seed uses grace window not a full cap", async () => {
+    const onHandle = vi.fn();
+    let resolveStart!: (h: AgentRunHandle) => void;
+    const start = new Promise<AgentRunHandle>((resolve) => {
+      resolveStart = resolve;
+    });
+    const pending = runWithDurationCap({
+      kind: "attach",
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => Date.now(),
+      onHandle,
+      probeAgentId: "agent-x",
+      probeRunId: "run-x",
+      signals: { probeRun: () => Promise.resolve(undefined) },
+      start: () => start,
+    });
+    const rejection = expect(pending).rejects.toBeInstanceOf(CursorRunStartTimedOutError);
+    await vi.advanceTimersByTimeAsync(MIN_RESUMED_CAP_WINDOW_MS);
+    await rejection;
+    expect(onHandle).not.toHaveBeenCalled();
+    const { handle } = fakeHandle(pendingForever());
+    resolveStart(handle);
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  test("attach: over-cap probe evidence shrinks to the grace, and a real result inside it wins", async () => {
+    const { handle } = fakeHandle(Promise.resolve(succeededResult));
+    const pending = runWithDurationCap({
+      elapsedMs: CAP_MS + 990,
+      kind: "attach",
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => Date.now(),
+      onHandle: () => undefined,
+      probeAgentId: "agent-x",
+      probeRunId: "run-x",
+      signals: {
+        probeRun: () =>
+          Promise.resolve({
+            createdAtMs: 0,
+            status: "RUNNING",
+            updatedAtMs: CAP_MS + 990,
+          }),
+      },
+      start: () => Promise.resolve(handle),
+    });
+    // The probe folds an over-cap age immediately; the already-terminal
+    // run's real result must still win inside the grace window.
+    await vi.advanceTimersByTimeAsync(0);
+    const out = await pending;
+    expect(out.status).toBe("succeeded");
+  });
+
+  test("attach: over-cap probe evidence with no result expires at the grace boundary", async () => {
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      elapsedMs: CAP_MS + 990,
+      kind: "attach",
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => Date.now(),
+      onHandle: () => undefined,
+      probeAgentId: "agent-x",
+      probeRunId: "run-x",
+      signals: {
+        probeRun: () =>
+          Promise.resolve({
+            createdAtMs: 0,
+            status: "RUNNING",
+            updatedAtMs: CAP_MS + 990,
+          }),
+      },
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(MIN_RESUMED_CAP_WINDOW_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(out.durationMs).toBeGreaterThanOrEqual(CAP_MS);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("rule 5 fail-closed: three unreachable probes with wall age over cap expires", async () => {
+    const capHooks: { current?: DurationCapHandle } = {};
+    const { cancel, handle } = fakeHandle(pendingForever());
+    let mono = 0;
+    let wall = 0;
+    const pending = runWithDurationCap({
+      elapsedMs: CAP_MS + 1000,
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => mono,
+      onCapReady: (h) => {
+        capHooks.current = h;
+      },
+      onHandle: () => undefined,
+      signals: { probeRun: () => Promise.reject(new Error("api down")) },
+      start: () => Promise.resolve(handle),
+      wallClock: () => wall,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // Each discontinuity hit fires one probe; each rejection increments the
+    // shared unreachable counter. The third failure with wallAge >= cap
+    // fails closed.
+    for (const [wallMs, monoMs] of [
+      [100_000, 1],
+      [200_000, 2],
+      [300_000, 3],
+    ] as const) {
+      wall = wallMs;
+      mono = monoMs;
+      capHooks.current?.onDiscontinuitySample(wallMs, monoMs);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(out.durationMs).toBeGreaterThanOrEqual(CAP_MS);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("late fire without a probe charges the suspect segment as served and expires", async () => {
+    let mono = 0;
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => mono,
+      onHandle: () => undefined,
+      signals: { getLiveness: () => undefined },
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // Forward monotonic step: the timer fire is late by more than the
+    // classifier slack, and with no probe to adjudicate, the armed delay is
+    // charged as served — reaching the cap immediately.
+    mono = CAP_MS + 61_000;
+    await vi.advanceTimersByTimeAsync(CAP_MS);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("early fires without a probe still spend the rearm backstop", async () => {
+    // Monotonic clock frozen at zero: every fire is early, nothing folds,
+    // and only the rearm budget bounds the loop.
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => 0,
+      onHandle: () => undefined,
+      signals: { getLiveness: () => undefined },
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i <= MAX_CAP_REARMS; i += 1) {
+      await vi.advanceTimersByTimeAsync(CAP_MS);
+    }
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("a discontinuity sample below the threshold is ignored", async () => {
+    const capHooks: { current?: DurationCapHandle } = {};
+    const { handle } = fakeHandle(Promise.resolve(succeededResult));
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => Date.now(),
+      onCapReady: (h) => {
+        capHooks.current = h;
+      },
+      onHandle: () => undefined,
+      signals: { probeRun: () => Promise.reject(new Error("must not be called")) },
+      start: () => Promise.resolve(handle),
+    });
+    capHooks.current?.onDiscontinuitySample(1_000, 900);
+    await vi.advanceTimersByTimeAsync(0);
+    const out = await pending;
+    expect(out.status).toBe("succeeded");
+  });
+
+  test("stream event fold alone can expire an over-cap remote run", async () => {
+    let capHooks: DurationCapHandle | undefined;
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      maxRunDurationMs: CAP_MS,
+      monotonicClock: () => Date.now(),
+      onCapReady: (h) => {
+        capHooks = h;
+      },
+      onHandle: () => undefined,
+      serverCreatedAtMs: 0,
+      signals: { getLiveness: () => ({ createdAtMs: 0, lastEventAtMs: CAP_MS }) },
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    capHooks?.onProviderStreamEvent(CAP_MS + 1);
+    await vi.advanceTimersByTimeAsync(0);
     const out = await pending;
     expect(out.status).toBe("failed");
     expect(cancel).toHaveBeenCalledTimes(1);

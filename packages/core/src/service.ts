@@ -59,6 +59,7 @@ import {
 import { basename, resolve as resolvePathAbs } from "node:path";
 
 import type { EventWriter } from "./artifacts/ndjson.js";
+import type { DurationCapHandle } from "./cursor-runs/duration-cap.js";
 import type { DocSource } from "./doc-source/doc-source.js";
 import type { ShipFs } from "./fs/shape.js";
 import type { ValidatedDoc } from "./validate.js";
@@ -76,6 +77,12 @@ import {
   type RunArtifactPaths,
 } from "./artifacts/paths.js";
 import { renderImplementationPrompt } from "./artifacts/prompt-template.js";
+import {
+  buildRemoteCapSignals,
+  isRemoteCapRuntime,
+  startCapDiscontinuitySampler,
+  wireCapStreamFold,
+} from "./cursor-runs/duration-cap-wire.js";
 import { runWithDurationCap } from "./cursor-runs/duration-cap.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
 import { selectStaleOrphanResumeCandidates } from "./cursor-runs/orphan-resume.js";
@@ -1035,6 +1042,8 @@ async function runToTerminal(
   let cursorRunId: string | undefined;
   let ndjson: EventWriter | undefined;
   let eventPump: EventPumpHandle | undefined;
+  let stopDiscontinuitySampler: (() => void) | undefined;
+  let capHandle: DurationCapHandle | undefined;
   let scratchOwned = false;
 
   try {
@@ -1058,6 +1067,7 @@ async function runToTerminal(
     const onEvent: AgentRunInput["onEvent"] = (ev) => {
       ndjsonRef.write(prepareEventForPersist(ev));
       eventPump?.heartbeat();
+      wireCapStreamFold(ctx.provider, capHandle, ev);
     };
 
     const runInput = buildShipAgentRunInput({
@@ -1073,16 +1083,36 @@ async function runToTerminal(
     // The cap window opens before the runner is invoked: a stalled SDK start
     // call must not hold the workflow open past the policy cap any more than
     // a hung agent run.
+    const remoteCap = isRemoteCapRuntime(ctx.resolvedCursorRuntime);
+    let capHandleRef: AgentRunHandle | undefined;
     const result = await runWithDurationCap({
       log: runLog,
       maxRunDurationMs: resolveMaxRunDurationMs(ctx.store, prep.workflowRunId),
+      ...(remoteCap && {
+        kind: "fresh" as const,
+        onCapReady: (handle) => {
+          capHandle = handle;
+          if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
+            stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle: handle });
+          }
+        },
+        signals: buildRemoteCapSignals({
+          getHandle: () => capHandleRef,
+          provider: ctx.provider,
+          runner: ctx.runner,
+          runtime: ctx.resolvedCursorRuntime as "cloud" | "rooms",
+        }),
+        wallClock: () => Date.parse(ctx.clock()),
+      }),
       onHandle: (handle) => {
+        capHandleRef = handle;
         // Cloud + rooms both run unattended off the async path; the timer-based
         // pump keeps `workflow_runs.updated_at` fresh while a long run is live.
         if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
           eventPump = startEventPump({ store: ctx.store, workflowRunId: prep.workflowRunId });
         }
         cursorRunId = ctx.ids.cursorRun();
+        const serverCreatedAtMs = handle.liveness?.().createdAtMs;
         ctx.store.recordCursorRun({
           id: cursorRunId,
           workflowRunId: prep.workflowRunId,
@@ -1092,6 +1122,7 @@ async function runToTerminal(
           provider: ctx.provider,
           model,
           artifactsDir: prep.paths.dir,
+          ...(serverCreatedAtMs !== undefined && { createdAtMs: serverCreatedAtMs }),
         });
         // Link the phase to the cursor-run so `getRun()` consumers can
         // join phase rows back to their `cursor_runs` metadata after
@@ -1122,6 +1153,7 @@ async function runToTerminal(
     });
   } finally {
     ctx.activeRuns.delete(prep.workflowRunId);
+    stopDiscontinuitySampler?.();
     eventPump?.stop();
     if (ndjson !== undefined) {
       try {
@@ -2267,9 +2299,12 @@ async function runResumeAttach(
   const runner = target.runner;
 
   let eventPump: EventPumpHandle | undefined;
+  let stopDiscontinuitySampler: (() => void) | undefined;
+  let capHandle: DurationCapHandle | undefined;
   const onEvent: AgentRunAttachInput["onEvent"] = (ev) => {
     target.ndjson.write(prepareEventForPersist(ev));
     eventPump?.heartbeat();
+    wireCapStreamFold(target.shipCtx.provider, capHandle, ev);
   };
 
   try {
@@ -2281,11 +2316,33 @@ async function runResumeAttach(
     // Same single-window cap as the dispatch path: the attach call itself
     // (`Agent.resume` + `Agent.getRun`) can stall, so it runs inside the
     // remaining-budget window rather than ahead of it.
+    const cursorRow = ctx.store.getCursorRun(target.row.id);
+    const rowCreatedAtWallMs =
+      cursorRow?.startedAt !== undefined ? Date.parse(cursorRow.startedAt) : undefined;
+    let capHandleRef: AgentRunHandle | undefined;
     const result = await runWithDurationCap({
       elapsedMs: resumeElapsedMs(ctx, target.row.id),
+      kind: "attach",
       log: resumeLog,
       maxRunDurationMs: resolveMaxRunDurationMs(ctx.store, target.row.workflowRunId),
+      onCapReady: (handle) => {
+        capHandle = handle;
+        stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle: handle });
+      },
+      probeAgentId: target.row.agentId,
+      probeRunId: target.row.runId,
+      ...(cursorRow?.createdAtMs !== undefined && { serverCreatedAtMs: cursorRow.createdAtMs }),
+      ...(rowCreatedAtWallMs !== undefined &&
+        Number.isFinite(rowCreatedAtWallMs) && { rowCreatedAtWallMs }),
+      signals: buildRemoteCapSignals({
+        getHandle: () => capHandleRef,
+        provider: target.shipCtx.provider,
+        runner,
+        runtime: "cloud",
+      }),
+      wallClock: () => Date.parse(ctx.clock()),
       onHandle: (handle) => {
+        capHandleRef = handle;
         eventPump = startEventPump({ store: ctx.store, workflowRunId: target.row.workflowRunId });
         onPumpStarted(eventPump);
         ctx.activeRuns.set(target.row.workflowRunId, { controller: target.controller, handle });
@@ -2314,6 +2371,8 @@ async function runResumeAttach(
     });
   } catch (err) {
     await handleResumeAttachError(ctx, target, err);
+  } finally {
+    stopDiscontinuitySampler?.();
   }
 }
 

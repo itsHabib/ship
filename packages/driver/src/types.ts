@@ -2,8 +2,24 @@
  * Public types for `@ship/driver` engine surface (spec §6).
  */
 
+import type { ShipInput } from "@ship/core";
 import type { DriverRun, DriverRunStatus, DriverStream } from "@ship/store";
-import type { FailureCategory } from "@ship/workflow";
+import type { AgentProvider, FailureCategory } from "@ship/workflow";
+
+import type { EffortTier, ModelTier } from "./manifest.js";
+
+export interface TierDegrade {
+  modelDegraded?: boolean;
+  effortDegraded?: boolean;
+  reason?: string;
+}
+
+/** Result of mapping manifest tiers to concrete `ShipInput` model fields. */
+export interface TierDispatchResult {
+  model?: string;
+  modelParams?: NonNullable<ShipInput["modelParams"]>;
+  degrade?: TierDegrade;
+}
 
 export type DriverRunRef = { driverRunId: string } | { manifestPath: string };
 
@@ -49,6 +65,13 @@ export interface DriverStreamView {
   status: DriverStream["status"];
   workflowRunId?: string;
   prUrl?: string;
+  modelTier?: ModelTier;
+  effortTier?: EffortTier;
+  dispatchProvider?: AgentProvider;
+  dispatchModel?: string;
+  dispatchModelParams?: NonNullable<ShipInput["modelParams"]>;
+  effortDegraded?: boolean;
+  tierDegradeReason?: string;
 }
 
 /** Canonical external reviewers polled before merge authorization. */

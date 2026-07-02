@@ -607,6 +607,65 @@ batches:
     expect(stream?.prUrl).toBe("https://github.com/example/ship/pull/9");
     store.close();
   });
+
+  test("tiered stream dispatches mapped model on ShipInput", async () => {
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-01T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: tier-dispatch
+repo: ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: local
+        model: fable
+        status: pending
+---
+`,
+    );
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_tier" }]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    expect(start?.input).toMatchObject({
+      model: "composer-2.5",
+      modelParams: [{ id: "fast", value: "true" }],
+    });
+
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.modelTier).toBe("fable");
+    expect(stream?.dispatchModel).toBe("composer-2.5");
+    expect(stream?.dispatchProvider).toBe("cursor");
+    store.close();
+  });
+
+  test("legacy stream without tiers produces unchanged ShipInput", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_legacy" }]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    expect(start?.input).not.toHaveProperty("model");
+    expect(start?.input).not.toHaveProperty("modelParams");
+    store.close();
+  });
 });
 
 describe("liveness-aware tick give-up", () => {

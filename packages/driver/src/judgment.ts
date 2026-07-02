@@ -41,18 +41,40 @@ export function allStreams(run: DriverRun): DriverStream[] {
 
 /** Compact per-stream view for tick results. */
 export function toStreamView(stream: DriverStream, batchIndex: number): DriverStreamView {
-  const view: DriverStreamView = {
+  return {
     batchIndex,
     runtime: stream.runtime,
     specPath: stream.specPath,
     status: stream.status,
     streamId: stream.id,
+    ...optionalStreamViewFields(stream),
   };
-  if (stream.taskSlug !== undefined) view.taskSlug = stream.taskSlug;
-  if (stream.branch !== undefined) view.branch = stream.branch;
-  if (stream.workflowRunId !== undefined) view.workflowRunId = stream.workflowRunId;
-  if (stream.prUrl !== undefined) view.prUrl = stream.prUrl;
-  return view;
+}
+
+function optionalStreamViewFields(stream: DriverStream): Partial<DriverStreamView> {
+  return { ...optionalStreamIdentityFields(stream), ...optionalStreamTierFields(stream) };
+}
+
+function optionalStreamIdentityFields(stream: DriverStream): Partial<DriverStreamView> {
+  const fields: Partial<DriverStreamView> = {};
+  if (stream.taskSlug !== undefined) fields.taskSlug = stream.taskSlug;
+  if (stream.branch !== undefined) fields.branch = stream.branch;
+  if (stream.workflowRunId !== undefined) fields.workflowRunId = stream.workflowRunId;
+  if (stream.prUrl !== undefined) fields.prUrl = stream.prUrl;
+  return fields;
+}
+
+function optionalStreamTierFields(stream: DriverStream): Partial<DriverStreamView> {
+  const fields: Partial<DriverStreamView> = {};
+  if (stream.modelTier !== undefined) fields.modelTier = stream.modelTier;
+  if (stream.effortTier !== undefined) fields.effortTier = stream.effortTier;
+  if (stream.dispatchProvider !== undefined) fields.dispatchProvider = stream.dispatchProvider;
+  if (stream.dispatchModel !== undefined) fields.dispatchModel = stream.dispatchModel;
+  if (stream.dispatchModelParams !== undefined)
+    fields.dispatchModelParams = stream.dispatchModelParams;
+  if (stream.effortDegraded === true) fields.effortDegraded = true;
+  if (stream.tierDegradeReason !== undefined) fields.tierDegradeReason = stream.tierDegradeReason;
+  return fields;
 }
 
 export function buildStreamViews(run: DriverRun): DriverStreamView[] {
@@ -121,6 +143,18 @@ export async function recoverDispatchingStreams(
   return store.getDriverRun(current.id) ?? current;
 }
 
+// A stream reset to pending has no live dispatch; clearing the tier columns
+// keeps `driver status` from presenting a previous attempt's mapping as
+// current. The next dispatch rewrites every column.
+const PENDING_RESET_PATCH = {
+  dispatchModel: null,
+  dispatchModelParams: null,
+  dispatchProvider: null,
+  effortDegraded: false,
+  status: "pending",
+  tierDegradeReason: null,
+} as const;
+
 async function recoverOneStream(
   store: Store,
   ship: DriverShipPort,
@@ -130,7 +164,7 @@ async function recoverOneStream(
 ): Promise<DriverRun> {
   const attempt = latestAttempt(stream);
   if (attempt?.docPath === undefined) {
-    store.updateDriverStream(stream.id, { status: "pending" });
+    store.updateDriverStream(stream.id, PENDING_RESET_PATCH);
     return store.getDriverRun(run.id) ?? run;
   }
 
@@ -142,7 +176,7 @@ async function recoverOneStream(
 
   const candidates = filterRecoveryCandidates(listed, stream, attempt);
   if (candidates.length === 0) {
-    store.updateDriverStream(stream.id, { status: "pending" });
+    store.updateDriverStream(stream.id, PENDING_RESET_PATCH);
     return store.getDriverRun(run.id) ?? run;
   }
   if (candidates.length === 1) {
@@ -325,7 +359,7 @@ function applyRetryDecision(
       `stream ${streamId} is not failed or dispatching (status=${stream.status})`,
     );
   }
-  store.updateDriverStream(streamId, { status: "pending" });
+  store.updateDriverStream(streamId, PENDING_RESET_PATCH);
   return resumeAfterDecision(store, driverRunId);
 }
 

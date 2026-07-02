@@ -4,7 +4,7 @@
  * and funnels cancel through a single `cancelInternal` with retry-on-transient.
  */
 
-import type { AgentRunHandle, AgentRunResult } from "./runner.js";
+import type { AgentRunHandle, AgentRunLiveness, AgentRunResult } from "./runner.js";
 
 export interface SdkRunHandleCallbacks {
   readonly finalizeOk: (terminal: AgentRunResult) => void;
@@ -84,10 +84,12 @@ export function buildSdkRunHandle(args: {
   readonly agentId: string;
   readonly runId: string;
   readonly state: SdkRunHandleState;
+  readonly liveness?: () => AgentRunLiveness;
 }): AgentRunHandle {
   return {
     agentId: args.agentId,
     cancel: args.state.cancelInternal,
+    ...(args.liveness !== undefined && { liveness: args.liveness }),
     result: args.state.result,
     runId: args.runId,
   };
