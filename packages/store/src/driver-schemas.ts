@@ -52,6 +52,8 @@ export const driverStreamSchema = z
   .object({
     attempts: z.array(streamAttemptSchema),
     branch: z.string().optional(),
+    /** When true, cloud dispatch continues on `branch` instead of the default ref. */
+    workOnCurrentBranch: z.boolean().optional(),
     createdAt: z.string().datetime({ offset: true }),
     cycles: z.number().int().optional(),
     driverBatchId: z.string(),

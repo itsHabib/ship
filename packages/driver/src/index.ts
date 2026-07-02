@@ -84,7 +84,14 @@ export {
 export { createDriverService } from "./service.js";
 export type { CreateDriverServiceOpts, DriverService } from "./service.js";
 
-export { isTickLive, resolveDocPath, resolveRepoRoot, resolveRunOpts } from "./engine.js";
+export {
+  isTickLive,
+  resolveDocPath,
+  resolveRepoRoot,
+  resolveRunOpts,
+  flipStreamToCloud,
+} from "./engine.js";
+export type { CloudContinuation } from "./engine.js";
 
 export {
   allStreams,

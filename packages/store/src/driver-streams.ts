@@ -15,6 +15,8 @@ export interface UpdateDriverStreamInput {
   workflowRunId?: string;
   attempts?: StreamAttempt[];
   branch?: string;
+  runtime?: DriverStream["runtime"];
+  workOnCurrentBranch?: boolean | null;
   prNumber?: number;
   prUrl?: string;
   mergeCommit?: string;
@@ -56,6 +58,7 @@ export interface DriverStreamRow {
   dispatch_model_params: string | null;
   effort_degraded: number | null;
   tier_degrade_reason: string | null;
+  work_on_current_branch: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -97,7 +100,7 @@ export interface DriverStreamOps {
 }
 
 const STREAM_COLUMNS =
-  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, created_at, updated_at";
+  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, created_at, updated_at";
 
 function sqlNull<T>(value: T | undefined): T | null {
   return value ?? null;
@@ -118,8 +121,8 @@ export function createDriverStreamOps(
        runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url,
        merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, provider,
        dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded,
-       tier_degrade_reason, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       tier_degrade_reason, work_on_current_branch, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], DriverStreamRow>(
     `SELECT ${STREAM_COLUMNS} FROM driver_streams WHERE id = ?`,
@@ -154,6 +157,7 @@ export function createDriverStreamOps(
       sqlNull(input.modelTier),
       sqlNull(input.effortTier),
       sqlNull(input.provider),
+      null,
       null,
       null,
       null,
@@ -195,6 +199,7 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
   appendStreamPatchColumn(sets, params, "workflow_run_id = ?", patch.workflowRunId);
   appendStreamPatchColumn(sets, params, "attempts = ?", patch.attempts, JSON.stringify);
   appendStreamPatchColumn(sets, params, "branch = ?", patch.branch);
+  appendStreamPatchColumn(sets, params, "runtime = ?", patch.runtime);
   appendStreamPatchColumn(sets, params, "pr_number = ?", patch.prNumber);
   appendStreamPatchColumn(sets, params, "pr_url = ?", patch.prUrl);
   appendStreamPatchColumn(sets, params, "merge_commit = ?", patch.mergeCommit);
@@ -212,6 +217,13 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
   );
   appendStreamPatchColumn(sets, params, "effort_degraded = ?", patch.effortDegraded, boolToInt);
   appendStreamPatchColumn(sets, params, "tier_degrade_reason = ?", patch.tierDegradeReason);
+  appendStreamPatchColumn(
+    sets,
+    params,
+    "work_on_current_branch = ?",
+    patch.workOnCurrentBranch,
+    (value) => (value === null ? null : boolToInt(value)),
+  );
   if (sets.length === 1) return;
   params.push(id);
   db.prepare(`UPDATE driver_streams SET ${sets.join(", ")} WHERE id = ?`).run(...params);
@@ -291,6 +303,10 @@ function optionalStreamFields(row: DriverStreamRow): Record<string, string | num
     ["taskId", row.task_id],
     ["taskSlug", row.task_slug],
     ["tierDegradeReason", row.tier_degrade_reason],
+    [
+      "workOnCurrentBranch",
+      row.work_on_current_branch === null ? null : row.work_on_current_branch === 1,
+    ],
     ["workflowRunId", row.workflow_run_id],
   ];
   return Object.fromEntries(

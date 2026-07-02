@@ -109,6 +109,8 @@ export const shipInputSchema = z
     repo: z.string().min(1).optional(),
     worktreeName: z.string().min(1).optional(),
     baseRef: z.string().min(1).optional(),
+    /** Git ref a cloud run checks out before implementing (maps to `cloud.repos[0].startingRef`). */
+    startingRef: z.string().min(1).optional(),
     branch: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     modelParams: z.array(shipInputModelParamEntrySchema).optional(),

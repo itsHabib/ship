@@ -443,4 +443,38 @@ batches:
     await runDriver(["driver", "status", imported.driverRunId]);
     expect(stdout.join("")).toContain("manifest modified since import");
   });
+
+  test("flip-cloud re-dispatches an imported local stream with continuation ref", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    expect(await runDriver(["driver", "import", layout.manifestPath])).toBe(0);
+    const imported = JSON.parse(stdout.join("").trim()) as {
+      driverRunId: string;
+    };
+    const statusBefore = JSON.parse(
+      (
+        await (async () => {
+          stdout.length = 0;
+          await runDriver(["driver", "status", imported.driverRunId, "--json"]);
+          return stdout.join("");
+        })()
+      ).trim(),
+    ) as { batches: { streams: { id: string }[] }[] };
+    const streamId = statusBefore.batches[0]?.streams[0]?.id;
+    expect(streamId).toBeDefined();
+
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    stdout.length = 0;
+    expect(
+      await runDriver(["driver", "flip-cloud", imported.driverRunId, "--stream", streamId!]),
+    ).toBe(0);
+    await h.drainShip();
+
+    const startCall = h.cursor.calls.at(-1);
+    expect(startCall?.input.runtime).toBe("cloud");
+    expect(startCall?.input.cloud?.repos[0]?.startingRef).toBe("feat-a");
+    expect(startCall?.input.cloud?.workOnCurrentBranch).toBe(true);
+  });
 });

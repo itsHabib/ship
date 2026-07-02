@@ -18,7 +18,7 @@ import type {
   RunOpts,
 } from "./types.js";
 
-import { resolveRunOpts, runTick } from "./engine.js";
+import { flipStreamToCloud, resolveRunOpts, runTick } from "./engine.js";
 import { DecideError, DriverRunNotFoundEngineError } from "./errors.js";
 import { importManifest as importManifestFn } from "./import.js";
 import { cancelRun, decide as decideFn, markMerged as markMergedFn } from "./judgment.js";
@@ -33,6 +33,7 @@ export interface DriverService {
   markMerged(driverRunId: string, streamId: string, facts: MergeFacts): DriverRun;
   land(driverRunId: string, opts: LandOpts): Promise<DriverRun>;
   cancel(driverRunId: string): Promise<DriverRun>;
+  flipStreamToCloud(driverRunId: string, streamId: string): Promise<DriverRun>;
   render(driverRunId: string): string;
   getDriverRun(id: string): DriverRun | null;
   listDriverRuns(filter?: {
@@ -63,6 +64,8 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
 
   return {
     cancel: (driverRunId) => cancelRun(store, ship, driverRunId, now()),
+    flipStreamToCloud: (driverRunId, streamId) =>
+      flipStreamToCloud(store, ship, driverRunId, streamId, clock ?? Date.now),
     decide: (driverRunId, streamId, decision) => decideFn(store, driverRunId, streamId, decision),
     getDriverRun: (id) => store.getDriverRun(id),
     importManifest: (manifestPath) => importManifestFn(store, manifestPath),

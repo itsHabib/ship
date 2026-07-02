@@ -20,6 +20,8 @@ export interface DriverDiskHarness {
   readonly cursor: FakeCursorRunner;
   readonly tmp: string;
   readonly repoRoot: string;
+  /** Await in-flight `startShip` continuations before closing the store. */
+  readonly drainShip: () => Promise<void>;
   /** Closes the shared store, then removes the temp dir — Windows cannot unlink an open SQLite file. */
   readonly dispose: () => void;
 }
@@ -30,12 +32,19 @@ export function createDriverDiskHarness(ghPort?: DriverGhPort): DriverDiskHarnes
   const runsDir = join(tmp, "runs");
   const repoRoot = join(tmp, "repo");
   const cursor = new FakeCursorRunner();
-  const opts = { dbPath, runsDir, cursor };
+  const opts = { cloudCursor: cursor, cursor, dbPath, runsDir };
   const shipFactory = createCliService(opts);
   const program = buildProgram(shipFactory, createCliDriverService(opts, shipFactory, ghPort));
   const dispose = (): void => {
     closeDefaultSharedStore(dbPath);
     rmSync(tmp, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
   };
-  return { program, cursor, tmp, repoRoot, dispose };
+  return {
+    program,
+    cursor,
+    tmp,
+    repoRoot,
+    drainShip: () => shipFactory().drainBackground(),
+    dispose,
+  };
 }

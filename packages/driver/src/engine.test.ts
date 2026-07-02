@@ -10,6 +10,7 @@ import type { DriverStreamView } from "./types.js";
 
 import {
   buildShipInputForTest,
+  flipStreamToCloud,
   isTickLive,
   resolveDocPath,
   resolveRepoRoot,
@@ -1116,6 +1117,266 @@ describe("buildShipInputForTest", () => {
       runtime: "local",
       workdir: join(repoRoot, ".claude", "worktrees", "feat-a"),
     });
+  });
+
+  test("propagates startingRef and workOnCurrentBranch when set on cloud stream", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              branch: "feat-continue",
+              id: streamId,
+              runtime: "cloud",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: join(repoRoot, "driver.md"),
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\nrepo_url: https://github.com/example/ship\n---\n",
+      status: "pending",
+    });
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream).toBeDefined();
+    store.updateDriverStream(streamId, { workOnCurrentBranch: true });
+    const persisted = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(persisted?.workOnCurrentBranch).toBe(true);
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId,
+        ship: createFakeShipPort([]).port,
+        store,
+      },
+      persisted!,
+      "docs/a.md",
+    );
+    expect(input).toMatchObject({
+      runtime: "cloud",
+      startingRef: "feat-continue",
+      cloud: {
+        repos: [{ url: "https://github.com/example/ship", startingRef: "feat-continue" }],
+        workOnCurrentBranch: true,
+      },
+    });
+  });
+
+  test("default cloud path is unchanged when continuation fields are absent", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              id: streamId,
+              runtime: "cloud",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: join(repoRoot, "driver.md"),
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\nrepo_url: https://github.com/example/ship\n---\n",
+      status: "pending",
+    });
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream).toBeDefined();
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId,
+        ship: createFakeShipPort([]).port,
+        store,
+      },
+      stream!,
+      "docs/a.md",
+    );
+    expect(input).toMatchObject({
+      runtime: "cloud",
+      cloud: {
+        autoCreatePR: true,
+        env: { type: "cloud" },
+        repos: [{ url: "https://github.com/example/ship" }],
+        workOnCurrentBranch: false,
+      },
+    });
+    expect(input).not.toHaveProperty("startingRef");
+  });
+});
+
+describe("flipStreamToCloud", () => {
+  let tmpDir: string;
+  let repoRoot: string;
+  let store: ReturnType<typeof createStore>;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "driver-flip-cloud-"));
+    repoRoot = join(tmpDir, "repo");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    mkdirSync(join(repoRoot, "docs"), { recursive: true });
+    writeFileSync(join(repoRoot, "docs", "a.md"), "# task\n");
+    mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-a"), { recursive: true });
+    store = createStore({ dbPath: ":memory:" });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(tmpDir, { force: true, recursive: true });
+  });
+
+  test("re-dispatches to cloud with continuation ref from the local branch", async () => {
+    const manifestPath = join(repoRoot, "driver.md");
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-06-26T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: flip
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/a.md
+        branch_name: feat-a
+        runtime: local
+        status: pending
+---
+`,
+    );
+    const fake = createFakeShipPort([
+      { docPath: join(repoRoot, "docs", "a.md"), repo: "ship", workflowRunId: "wf_flip_cloud" },
+    ]);
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+    const streamId = imported.run.batches[0]?.streams[0]?.id;
+    expect(streamId).toBeDefined();
+
+    await flipStreamToCloud(store, fake.port, imported.run.id, streamId!, () => 0);
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    expect(start?.input).toMatchObject({
+      runtime: "cloud",
+      startingRef: "feat-a",
+      cloud: {
+        repos: [{ url: "https://github.com/example/ship", startingRef: "feat-a" }],
+        workOnCurrentBranch: true,
+      },
+    });
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.status).toBe("dispatched");
+    expect(stream?.workOnCurrentBranch).toBe(true);
+  });
+
+  test("retry re-dispatch after flip keeps branch continuation on the stream row", async () => {
+    const manifestPath = join(repoRoot, "driver.md");
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-06-26T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: flip-retry
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/a.md
+        branch_name: feat-a
+        runtime: local
+        status: pending
+---
+`,
+    );
+    const docPath = join(repoRoot, "docs", "a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath,
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_flip_fail",
+      },
+    ]);
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+    const streamId = imported.run.batches[0]?.streams[0]?.id;
+    expect(streamId).toBeDefined();
+
+    await flipStreamToCloud(store, fake.port, imported.run.id, streamId!, () => 0);
+    store.updateDriverStream(streamId!, { status: "failed" });
+    store.updateDriverRunStatus(imported.run.id, "awaiting_judgment");
+    driver.decide(imported.run.id, streamId!, { kind: "retry" });
+
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.workOnCurrentBranch).toBe(true);
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId: imported.run.id,
+        ship: fake.port,
+        store,
+      },
+      stream!,
+      docPath,
+    );
+    expect(input.cloud?.repos[0]?.startingRef).toBe("feat-a");
+    expect(input.cloud?.workOnCurrentBranch).toBe(true);
   });
 });
 

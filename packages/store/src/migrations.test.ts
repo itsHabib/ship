@@ -53,7 +53,7 @@ describe("runMigrations", () => {
     expect(tables).toContain("escalations");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(11);
+    expect(applied).toHaveLength(12);
     expect(applied.map((r) => r.name)).toEqual([
       "0001_init.sql",
       "0002_cursor_runs_run_id.sql",
@@ -65,6 +65,7 @@ describe("runMigrations", () => {
       "0008_cursor_runs_created_at_ms.sql",
       "0009_driver_streams_tier.sql",
       "0010_driver_streams_provider.sql",
+      "0012_driver_streams_continuation.sql",
       "0013_escalations.sql",
     ]);
 
@@ -96,7 +97,7 @@ describe("runMigrations", () => {
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(11);
+    expect(applied).toHaveLength(12);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {
