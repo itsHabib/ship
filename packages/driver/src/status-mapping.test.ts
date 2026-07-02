@@ -2,7 +2,11 @@
 
 import { describe, expect, it } from "vitest";
 
-import { formatStreamTierDiagnostic, resolveStreamTier } from "./status-mapping.js";
+import {
+  formatStreamTierDiagnostic,
+  resolveStreamProvider,
+  resolveStreamTier,
+} from "./status-mapping.js";
 
 describe("resolveStreamTier", () => {
   it("prefers stream fields over manifest defaults", () => {
@@ -27,6 +31,24 @@ describe("resolveStreamTier", () => {
   });
 });
 
+describe("resolveStreamProvider", () => {
+  it("prefers stream field over manifest default", () => {
+    expect(
+      resolveStreamProvider({ spec_path: "a.md", provider: "claude", touches: [] }, "cursor"),
+    ).toEqual({ provider: "claude" });
+  });
+
+  it("falls back to manifest default when stream omits provider", () => {
+    expect(resolveStreamProvider({ spec_path: "a.md", touches: [] }, "codex")).toEqual({
+      provider: "codex",
+    });
+  });
+
+  it("returns empty when no provider is configured", () => {
+    expect(resolveStreamProvider({ spec_path: "a.md", touches: [] })).toEqual({});
+  });
+});
+
 describe("formatStreamTierDiagnostic", () => {
   it("renders requested tier, dispatch mapping, and degrade flags", () => {
     const line = formatStreamTierDiagnostic({
@@ -41,5 +63,15 @@ describe("formatStreamTierDiagnostic", () => {
     expect(line).toMatch(/dispatch=cursor\/gpt-5.4-high/);
     expect(line).toMatch(/effortDegraded=true/);
     expect(line).toContain("degrade=");
+  });
+
+  it("renders requested provider alongside tier fields", () => {
+    const line = formatStreamTierDiagnostic({
+      modelTier: "opus",
+      effortTier: "max",
+      provider: "claude",
+    });
+    expect(line).toMatch(/requested=opus\/max/);
+    expect(line).toMatch(/provider=claude/);
   });
 });

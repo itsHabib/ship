@@ -491,6 +491,7 @@ const driverStreamViewSchema = z
     prUrl: z.string().optional(),
     modelTier: driverModelTierSchema.optional(),
     effortTier: driverEffortTierSchema.optional(),
+    provider: agentProviderSchema.optional(),
     dispatchProvider: agentProviderSchema.optional(),
     dispatchModel: z.string().optional(),
     dispatchModelParams: z.array(shipInputModelParamEntrySchema).optional(),

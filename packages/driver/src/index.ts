@@ -36,6 +36,7 @@ export {
   manifestBatchStatusToStore,
   manifestStatusToStore,
   resolveStreamTier,
+  resolveStreamProvider,
   storeBatchStatusToManifest,
   storeStatusToManifest,
 } from "./status-mapping.js";

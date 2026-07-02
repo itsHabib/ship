@@ -5,6 +5,7 @@
 import type { Store } from "@ship/store";
 import type { DriverRun } from "@ship/store";
 import type { DriverBatchStatus } from "@ship/store";
+import type { AgentProvider } from "@ship/workflow";
 
 import { newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
 import { readFileSync } from "node:fs";
@@ -15,6 +16,7 @@ import { parseManifest } from "./manifest.js";
 import {
   manifestBatchStatusToStore,
   manifestStatusToStore,
+  resolveStreamProvider,
   resolveStreamTier,
 } from "./status-mapping.js";
 
@@ -62,13 +64,22 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
     return { alreadyImported: true, run: existing, ...warningExtras };
   }
 
+  const providerErrors = collectProviderValidationErrors(
+    manifest.batches,
+    manifest.default_runtime,
+    manifest.default_provider,
+  );
+  if (providerErrors.length > 0) {
+    throw new ImportManifestError(providerErrors);
+  }
+
   const batches = manifest.batches.map((batch) =>
-    buildBatchInput(
-      batch,
-      manifest.default_runtime,
-      manifest.default_model,
-      manifest.default_effort,
-    ),
+    buildBatchInput(batch, {
+      defaultEffort: manifest.default_effort,
+      defaultModel: manifest.default_model,
+      defaultProvider: manifest.default_provider,
+      defaultRuntime: manifest.default_runtime,
+    }),
   );
   const runStatus = deriveRunStatus(batches.map((b) => b.status));
 
@@ -84,6 +95,48 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
   });
 
   return { run, ...warningExtras };
+}
+
+function collectProviderValidationErrors(
+  batches: ManifestBatch[],
+  defaultRuntime: ManifestStream["runtime"] | undefined,
+  defaultProvider: AgentProvider | undefined,
+): ManifestParseError[] {
+  const errors: ManifestParseError[] = [];
+  for (const batch of batches) {
+    for (const stream of batch.streams) {
+      const runtime = stream.runtime ?? defaultRuntime ?? "local";
+      const provider = resolveStreamProvider(stream, defaultProvider).provider;
+      const streamError = validateStreamProviderRules(stream, runtime, provider);
+      if (streamError !== undefined) errors.push(streamError);
+    }
+  }
+  return errors;
+}
+
+function validateStreamProviderRules(
+  stream: ManifestStream,
+  runtime: NonNullable<ManifestStream["runtime"]> | "local",
+  provider: AgentProvider | undefined,
+): ManifestParseError | undefined {
+  if (provider === undefined) return undefined;
+  const label = streamLabel(stream);
+  if (provider === "codex" && runtime !== "local") {
+    return {
+      message: `stream ${label}: codex provider supports only runtime 'local' (runtime is '${runtime}')`,
+    };
+  }
+  if (provider === "claude" && runtime === "cloud" && !stream.branch_name) {
+    return {
+      message: `stream ${label}: claude provider with runtime 'cloud' requires branch_name`,
+    };
+  }
+  return undefined;
+}
+
+function streamLabel(stream: ManifestStream): string {
+  if (stream.task_slug !== undefined) return stream.task_slug;
+  return stream.spec_path;
 }
 
 function findExistingRun(
@@ -121,11 +174,16 @@ function deriveRunStatus(batchStatuses: DriverBatchStatus[]): DriverRun["status"
   return "pending";
 }
 
+interface ManifestStreamDefaults {
+  defaultRuntime: ManifestStream["runtime"] | undefined;
+  defaultModel: ManifestStream["model"] | undefined;
+  defaultEffort: ManifestStream["effort"] | undefined;
+  defaultProvider: AgentProvider | undefined;
+}
+
 function buildBatchInput(
   batch: ManifestBatch,
-  defaultRuntime: ManifestStream["runtime"] | undefined,
-  defaultModel: ManifestStream["model"] | undefined,
-  defaultEffort: ManifestStream["effort"] | undefined,
+  defaults: ManifestStreamDefaults,
 ): {
   id: string;
   batchIndex: number;
@@ -151,9 +209,7 @@ function buildBatchInput(
   }[];
 } {
   const batchStatus = manifestBatchStatusToStore(batch.status, batch.completed_at);
-  const streams = batch.streams.map((stream, index) =>
-    buildStreamInput(stream, index, defaultRuntime, defaultModel, defaultEffort),
-  );
+  const streams = batch.streams.map((stream, index) => buildStreamInput(stream, index, defaults));
 
   const result: {
     id: string;
@@ -178,9 +234,7 @@ function buildBatchInput(
 function buildStreamInput(
   stream: ManifestStream,
   streamIndex: number,
-  defaultRuntime: ManifestStream["runtime"] | undefined,
-  defaultModel: ManifestStream["model"] | undefined,
-  defaultEffort: ManifestStream["effort"] | undefined,
+  defaults: ManifestStreamDefaults,
 ): {
   id: string;
   streamIndex: number;
@@ -198,6 +252,7 @@ function buildStreamInput(
   cycles?: number;
   modelTier?: ReturnType<typeof resolveStreamTier>["modelTier"];
   effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
+  provider?: ReturnType<typeof resolveStreamProvider>["provider"];
 } {
   const candidate: {
     id: string;
@@ -216,15 +271,17 @@ function buildStreamInput(
     cycles?: number;
     modelTier?: ReturnType<typeof resolveStreamTier>["modelTier"];
     effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
+    provider?: ReturnType<typeof resolveStreamProvider>["provider"];
   } = {
     attempts: [],
     id: newDriverStreamId(),
-    runtime: stream.runtime ?? defaultRuntime ?? "local",
+    runtime: stream.runtime ?? defaults.defaultRuntime ?? "local",
     specPath: stream.spec_path,
     status: manifestStatusToStore(stream.status),
     streamIndex,
     touches: stream.touches,
-    ...resolveStreamTier(stream, defaultModel, defaultEffort),
+    ...resolveStreamTier(stream, defaults.defaultModel, defaults.defaultEffort),
+    ...resolveStreamProvider(stream, defaults.defaultProvider),
   };
   if (stream.task_id !== undefined) candidate.taskId = stream.task_id;
   if (stream.task_slug !== undefined) candidate.taskSlug = stream.task_slug;

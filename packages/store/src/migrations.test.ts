@@ -52,7 +52,7 @@ describe("runMigrations", () => {
     expect(tables).toContain("driver_streams");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(9);
+    expect(applied).toHaveLength(10);
     expect(applied.map((r) => r.name)).toEqual([
       "0001_init.sql",
       "0002_cursor_runs_run_id.sql",
@@ -63,6 +63,7 @@ describe("runMigrations", () => {
       "0007_cursor_runs_provider.sql",
       "0008_cursor_runs_created_at_ms.sql",
       "0009_driver_streams_tier.sql",
+      "0010_driver_streams_provider.sql",
     ]);
 
     const phaseColumns = db
@@ -79,6 +80,12 @@ describe("runMigrations", () => {
     expect(columns).toContain("artifacts_json");
     expect(columns).toContain("provider");
     expect(columns).toContain("created_at_ms");
+
+    const driverStreamColumns = db
+      .prepare("PRAGMA table_info(driver_streams)")
+      .all()
+      .map((r) => (r as { name: string }).name);
+    expect(driverStreamColumns).toContain("provider");
   });
 
   test("re-run on already-migrated DB is a no-op (two _migrations rows)", () => {
@@ -87,7 +94,7 @@ describe("runMigrations", () => {
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(9);
+    expect(applied).toHaveLength(10);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {

@@ -71,6 +71,7 @@ export const driverStreamSchema = z
     touches: z.array(z.string()),
     modelTier: driverModelTierSchema.optional(),
     effortTier: driverEffortTierSchema.optional(),
+    provider: agentProviderSchema.optional(),
     dispatchProvider: agentProviderSchema.optional(),
     dispatchModel: z.string().optional(),
     dispatchModelParams: z.array(shipInputModelParamEntrySchema).optional(),

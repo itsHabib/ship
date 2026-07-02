@@ -249,6 +249,7 @@ type StreamTierDiagnosticInput = Parameters<typeof formatStreamTierDiagnostic>[0
 
 function requestedTierFields(stream: DriverStream): StreamTierDiagnosticInput {
   return {
+    ...(stream.provider !== undefined && { provider: stream.provider }),
     ...(stream.modelTier !== undefined && { modelTier: stream.modelTier }),
     ...(stream.effortTier !== undefined && { effortTier: stream.effortTier }),
   };

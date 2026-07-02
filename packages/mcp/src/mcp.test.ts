@@ -768,6 +768,30 @@ describe("driver MCP schemas", () => {
     expect(driverTickResultSchema.safeParse(result).success).toBe(true);
   });
 
+  test("driverTickResultSchema accepts a stream view carrying a requested provider", () => {
+    const result = {
+      driverRunId: DRV_ID,
+      status: "blocked_on_merges",
+      awaiting: [],
+      unmerged: [],
+      progress: { batchIndex: 1, dispatched: 0, landed: 1, failed: 0, remaining: 0 },
+      streams: [
+        {
+          streamId: DS_ID,
+          batchIndex: 1,
+          specPath: "docs/features/x/spec.md",
+          runtime: "cloud",
+          status: "landed",
+          provider: "claude",
+          dispatchProvider: "claude",
+          modelTier: "sonnet",
+          effortTier: "extra",
+        },
+      ],
+    };
+    expect(driverTickResultSchema.safeParse(result).success).toBe(true);
+  });
+
   test("driverDecideInputSchema accepts retry/skip/abort/adopt decisions", () => {
     expect(
       driverDecideInputSchema.safeParse({

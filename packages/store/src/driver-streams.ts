@@ -50,6 +50,7 @@ export interface DriverStreamRow {
   error_message: string | null;
   model_tier: string | null;
   effort_tier: string | null;
+  provider: string | null;
   dispatch_provider: string | null;
   dispatch_model: string | null;
   dispatch_model_params: string | null;
@@ -79,6 +80,7 @@ interface InsertStreamRowInput {
   errorMessage?: string;
   modelTier?: DriverStream["modelTier"];
   effortTier?: DriverStream["effortTier"];
+  provider?: DriverStream["provider"];
   createdAt: string;
 }
 
@@ -95,7 +97,7 @@ export interface DriverStreamOps {
 }
 
 const STREAM_COLUMNS =
-  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, created_at, updated_at";
+  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, created_at, updated_at";
 
 function sqlNull<T>(value: T | undefined): T | null {
   return value ?? null;
@@ -114,10 +116,10 @@ export function createDriverStreamOps(
     `INSERT INTO driver_streams (
        id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch,
        runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url,
-       merge_commit, merged_at, cycles, error_message, model_tier, effort_tier,
+       merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, provider,
        dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded,
        tier_degrade_reason, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], DriverStreamRow>(
     `SELECT ${STREAM_COLUMNS} FROM driver_streams WHERE id = ?`,
@@ -151,6 +153,7 @@ export function createDriverStreamOps(
       sqlNull(input.errorMessage),
       sqlNull(input.modelTier),
       sqlNull(input.effortTier),
+      sqlNull(input.provider),
       null,
       null,
       null,
@@ -284,6 +287,7 @@ function optionalStreamFields(row: DriverStreamRow): Record<string, string | num
     ["modelTier", row.model_tier],
     ["prNumber", row.pr_number],
     ["prUrl", row.pr_url],
+    ["provider", row.provider],
     ["taskId", row.task_id],
     ["taskSlug", row.task_slug],
     ["tierDegradeReason", row.tier_degrade_reason],

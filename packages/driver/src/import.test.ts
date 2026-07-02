@@ -237,3 +237,121 @@ describe("importManifest tier threading", () => {
     rmSync(dir, { force: true, recursive: true });
   });
 });
+
+describe("importManifest provider threading", () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = createStore({ dbPath: ":memory:" });
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it("persists resolved provider on stream rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-import-provider-"));
+    const path = join(dir, "driver.md");
+    writeFileSync(
+      path,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-07-02T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: provider-test",
+        "repo: ship",
+        "default_provider: claude",
+        "batches:",
+        "  - id: 1",
+        "    depends_on: []",
+        "    streams:",
+        "      - spec_path: docs/a.md",
+        "        branch_name: feat-a",
+        "        provider: codex",
+        "      - spec_path: docs/b.md",
+        "        branch_name: feat-b",
+        "---",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { run } = importManifest(store, path);
+    const streams = run.batches[0]?.streams ?? [];
+    expect(streams[0]?.provider).toBe("codex");
+    expect(streams[1]?.provider).toBe("claude");
+    rmSync(dir, { force: true, recursive: true });
+  });
+
+  it("rejects codex provider with cloud runtime at import", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-import-codex-cloud-"));
+    const path = join(dir, "driver.md");
+    writeFileSync(
+      path,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-07-02T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: codex-cloud",
+        "repo: ship",
+        "repo_url: https://github.com/example/ship",
+        "batches:",
+        "  - id: 1",
+        "    depends_on: []",
+        "    streams:",
+        "      - spec_path: docs/a.md",
+        "        task_slug: codex-cloud-task",
+        "        provider: codex",
+        "        runtime: cloud",
+        "---",
+      ].join("\n"),
+      "utf8",
+    );
+
+    expect(() => importManifest(store, path)).toThrow(ImportManifestError);
+    expect(() => importManifest(store, path)).toThrow(/codex-cloud-task/);
+    expect(() => importManifest(store, path)).toThrow(
+      /codex provider supports only runtime 'local'/,
+    );
+    rmSync(dir, { force: true, recursive: true });
+  });
+
+  it("rejects claude cloud stream without branch_name at import", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-import-claude-cloud-"));
+    const path = join(dir, "driver.md");
+    writeFileSync(
+      path,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-07-02T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: claude-cloud",
+        "repo: ship",
+        "repo_url: https://github.com/example/ship",
+        "batches:",
+        "  - id: 1",
+        "    depends_on: []",
+        "    streams:",
+        "      - spec_path: docs/a.md",
+        "        task_slug: claude-cloud-task",
+        "        provider: claude",
+        "        runtime: cloud",
+        "---",
+      ].join("\n"),
+      "utf8",
+    );
+
+    expect(() => importManifest(store, path)).toThrow(ImportManifestError);
+    expect(() => importManifest(store, path)).toThrow(/claude-cloud-task/);
+    expect(() => importManifest(store, path)).toThrow(/requires branch_name/);
+    rmSync(dir, { force: true, recursive: true });
+  });
+});

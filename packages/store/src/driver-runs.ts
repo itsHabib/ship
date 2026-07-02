@@ -37,6 +37,7 @@ export interface InsertDriverStreamInput {
   errorMessage?: string;
   modelTier?: DriverStream["modelTier"];
   effortTier?: DriverStream["effortTier"];
+  provider?: DriverStream["provider"];
 }
 
 /** Nested batch input for aggregate insert. */

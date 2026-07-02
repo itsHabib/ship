@@ -463,18 +463,15 @@ async function dispatchStream(ctx: DispatchContext, stream: DriverStream): Promi
     terminal: false,
   };
   const attempts = [...stream.attempts, attempt];
-  const tierMapping = mapTierToDispatch(
-    DEFAULT_DISPATCH_PROVIDER,
-    stream.modelTier,
-    stream.effortTier,
-  );
+  const provider = stream.provider ?? DEFAULT_DISPATCH_PROVIDER;
+  const tierMapping = mapTierToDispatch(provider, stream.modelTier, stream.effortTier);
 
   ctx.store.updateDriverStream(stream.id, {
     attempts,
     status: "dispatching",
-    ...tierDispatchPatch(DEFAULT_DISPATCH_PROVIDER, tierMapping),
+    ...tierDispatchPatch(provider, tierMapping),
   });
-  const input = buildShipInput(ctx, stream, docPath, tierMapping);
+  const input = buildShipInput(ctx, stream, docPath, provider, tierMapping);
   return dispatchStartShip({
     baseAttempts: attempts,
     input,
@@ -522,6 +519,7 @@ function buildShipInput(
   ctx: DispatchContext,
   stream: DriverStream,
   docPath: string,
+  provider: AgentProvider,
   tierMapping?: TierDispatchResult,
 ): ShipInput {
   let input: ShipInput;
@@ -533,6 +531,10 @@ function buildShipInput(
     if (repoUrl === undefined) {
       throw new PreconditionError(`cloud stream ${stream.id} requires repo_url in manifest`);
     }
+    const repoEntry: NonNullable<ShipInput["cloud"]>["repos"][number] = { url: repoUrl };
+    if (stream.provider === "claude" && stream.branch !== undefined) {
+      repoEntry.prBranch = stream.branch;
+    }
     input = {
       docPath,
       repo: loadRun(ctx.store, ctx.runId).repo,
@@ -540,7 +542,7 @@ function buildShipInput(
       cloud: {
         autoCreatePR: true,
         env: { type: "cloud" },
-        repos: [{ url: repoUrl }],
+        repos: [repoEntry],
         workOnCurrentBranch: false,
       },
     };
@@ -556,6 +558,9 @@ function buildShipInput(
       runtime: "local",
       workdir: join(ctx.repoRoot, ".claude", "worktrees", branch),
     };
+  }
+  if (stream.provider !== undefined) {
+    input = { ...input, provider: stream.provider };
   }
   return applyTierMapping(input, tierMapping);
 }
@@ -598,12 +603,9 @@ export function buildShipInputForTest(
   stream: DriverStream,
   docPath: string,
 ): ShipInput {
-  const tierMapping = mapTierToDispatch(
-    DEFAULT_DISPATCH_PROVIDER,
-    stream.modelTier,
-    stream.effortTier,
-  );
-  return buildShipInput(ctx, stream, docPath, tierMapping);
+  const provider = stream.provider ?? DEFAULT_DISPATCH_PROVIDER;
+  const tierMapping = mapTierToDispatch(provider, stream.modelTier, stream.effortTier);
+  return buildShipInput(ctx, stream, docPath, provider, tierMapping);
 }
 
 function markLatestAttemptWorkflowRunId(
