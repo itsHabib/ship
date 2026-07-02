@@ -305,6 +305,33 @@ describe("LocalCursorRunner — happy path + status mapping", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("error-status tool_call events pass through onEvent unchanged for ndjson persistence", async () => {
+    const toolErrEv = {
+      agent_id: "agent-test-0001",
+      call_id: "call-err-1",
+      name: "shell",
+      result: "database is locked",
+      run_id: "run-test-0001",
+      status: "error",
+      type: "tool_call",
+    } as unknown as SDKMessage;
+    const { run } = makeMockRun({
+      events: [toolErrEv],
+      result: { durationMs: 1000, id: "run-test-0001", status: "error" },
+    });
+    const { agent } = makeMockAgent({ run });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const onEvent = vi.fn();
+    const runner = new LocalCursorRunner();
+    const handle = await runner.run(baseInput({ onEvent }));
+    await handle.result;
+
+    const forwarded = onEvent.mock.calls.map((c) => (c as [SDKMessage])[0]);
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]).toMatchObject({ type: "tool_call", status: "error", name: "shell" });
+  });
+
   test("error → failed; result resolves (does NOT throw); errorMessage populated", async () => {
     const { run } = makeMockRun({
       result: {

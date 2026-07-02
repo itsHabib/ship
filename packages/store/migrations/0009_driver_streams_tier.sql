@@ -1,4 +1,4 @@
--- 0008_driver_streams_tier.sql — per-stream model/effort tier persistence (F2).
+-- 0009_driver_streams_tier.sql — per-stream model/effort tier persistence (F2).
 --
 -- Requested tiers are resolved at import (stream > manifest default > none).
 -- Dispatch mapping + degrade flags are written when the engine starts a ship run.

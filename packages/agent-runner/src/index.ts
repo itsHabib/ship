@@ -41,8 +41,12 @@ export type {
   AgentRunAttachInput,
   AgentRunHandle,
   AgentRunInput,
+  AgentRunLiveness,
+  AgentRunProbeArgs,
+  AgentRunProbeResult,
   AgentRunner,
   AgentRunResult,
+  AgentRunUsage,
   CloudRunSpec,
   RoomRunSpec,
 } from "./runner.js";
