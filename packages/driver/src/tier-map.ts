@@ -91,7 +91,10 @@ function mapCursorTier(
   }
 
   const value = effortTier === "ultracode" ? "max" : CURSOR_EFFORT_VALUE_BY_TIER[effortTier];
-  modelParams = appendParam(modelParams, { id: "effort", value });
+  // Cursor variant matching is exact on the FULL param tuple: a lone effort
+  // param matches no listed variant and agent.send rejects it as
+  // invalid_model. Emit every parameter of the target variant.
+  modelParams = cursorEffortVariantParams(value);
 
   if (effortTier !== "ultracode") {
     return buildDispatchResult(model, modelParams);
@@ -102,6 +105,19 @@ function mapCursorTier(
     reason:
       'cursor has no multi-agent analog for effort tier "ultracode"; dispatching at max effort',
   });
+}
+
+// The claude-family variant tuple on cursor (GET /v1/models, 2026-07-02):
+// cyber/thinking/context/effort/fast. Values other than effort are pinned to
+// the default variant's.
+function cursorEffortVariantParams(effort: string): NonNullable<ShipInput["modelParams"]> {
+  return [
+    { id: "cyber", value: "false" },
+    { id: "thinking", value: "false" },
+    { id: "context", value: "300k" },
+    { id: "effort", value: effort },
+    { id: "fast", value: "false" },
+  ];
 }
 
 function cursorEffortDegradeReason(model: string | undefined, effortTier: EffortTier): string {

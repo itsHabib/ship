@@ -11,24 +11,32 @@ describe("mapTierToDispatch", () => {
     });
   });
 
-  test("cursor opus + max maps effort to the model's effort parameter, undegraded", () => {
+  test("cursor opus + max emits the full effort variant tuple, undegraded", () => {
     expect(mapTierToDispatch("cursor", "opus", "max")).toEqual({
       model: "claude-opus-4-8",
-      modelParams: [{ id: "effort", value: "max" }],
+      modelParams: [
+        { id: "cyber", value: "false" },
+        { id: "thinking", value: "false" },
+        { id: "context", value: "300k" },
+        { id: "effort", value: "max" },
+        { id: "fast", value: "false" },
+      ],
     });
   });
 
-  test("cursor opus + extra maps to effort xhigh", () => {
-    expect(mapTierToDispatch("cursor", "opus", "extra")).toEqual({
-      model: "claude-opus-4-8",
-      modelParams: [{ id: "effort", value: "xhigh" }],
-    });
+  test("cursor opus + extra maps to effort xhigh within the full tuple", () => {
+    const mapped = mapTierToDispatch("cursor", "opus", "extra");
+    expect(mapped.model).toBe("claude-opus-4-8");
+    expect(mapped.modelParams).toContainEqual({ id: "effort", value: "xhigh" });
+    expect(mapped.modelParams).toHaveLength(5);
+    expect(mapped.degrade).toBeUndefined();
   });
 
   test("cursor opus + ultracode dispatches at max effort with multi-agent degrade", () => {
     const mapped = mapTierToDispatch("cursor", "opus", "ultracode");
     expect(mapped.model).toBe("claude-opus-4-8");
-    expect(mapped.modelParams).toEqual([{ id: "effort", value: "max" }]);
+    expect(mapped.modelParams).toContainEqual({ id: "effort", value: "max" });
+    expect(mapped.modelParams).toHaveLength(5);
     expect(mapped.degrade?.effortDegraded).toBe(true);
     expect(mapped.degrade?.reason).toContain("multi-agent");
   });
