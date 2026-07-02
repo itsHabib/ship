@@ -44,6 +44,23 @@ const DEFAULT_MAX_PARALLEL_LOCAL = 1;
 const DEFAULT_MAX_PARALLEL_CLOUD = 4;
 const RUNAWAY_BACKSTOP_MULTIPLIER = 6;
 
+/** Cloud branch-continuation override — used by `flipStreamToCloud` and unit tests. */
+export interface CloudContinuation {
+  readonly startingRef: string;
+  readonly workOnCurrentBranch: true;
+}
+
+const FLIP_CLOUD_RESET_PATCH = {
+  dispatchModel: null,
+  dispatchModelParams: null,
+  dispatchProvider: null,
+  effortDegraded: false,
+  status: "pending" as const,
+  tierDegradeReason: null,
+  runtime: "cloud" as const,
+  workOnCurrentBranch: true,
+};
+
 export interface EngineDeps {
   store: Store;
   ship: DriverShipPort;
@@ -463,7 +480,11 @@ function countInFlight(run: DriverRun, runtime: "local" | "cloud"): number {
   }).length;
 }
 
-async function dispatchStream(ctx: DispatchContext, stream: DriverStream): Promise<boolean> {
+async function dispatchStream(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  continuation?: CloudContinuation,
+): Promise<boolean> {
   const docPath = resolveStreamDocPath(ctx.repoRoot, stream);
   const attempt: StreamAttempt = {
     dispatchedAt: new Date(ctx.clock()).toISOString(),
@@ -479,7 +500,13 @@ async function dispatchStream(ctx: DispatchContext, stream: DriverStream): Promi
     status: "dispatching",
     ...tierDispatchPatch(provider, tierMapping),
   });
-  const input = buildShipInput(ctx, stream, docPath, provider, tierMapping);
+  const input = buildShipInput({
+    ctx,
+    docPath,
+    stream,
+    tierMapping,
+    ...(continuation !== undefined ? { continuation } : {}),
+  });
   return dispatchStartShip({
     baseAttempts: attempts,
     input,
@@ -523,13 +550,14 @@ async function dispatchStartShip(params: StartShipParams): Promise<boolean> {
   return true;
 }
 
-function buildShipInput(
-  ctx: DispatchContext,
-  stream: DriverStream,
-  docPath: string,
-  provider: AgentProvider,
-  tierMapping?: TierDispatchResult,
-): ShipInput {
+function buildShipInput(params: {
+  ctx: DispatchContext;
+  stream: DriverStream;
+  docPath: string;
+  tierMapping?: TierDispatchResult;
+  continuation?: CloudContinuation;
+}): ShipInput {
+  const { ctx, stream, docPath, tierMapping, continuation } = params;
   let input: ShipInput;
   if (stream.runtime === "rooms") {
     throw new PreconditionError(`rooms stream ${stream.id} is not supported by the engine yet`);
@@ -539,7 +567,11 @@ function buildShipInput(
     if (repoUrl === undefined) {
       throw new PreconditionError(`cloud stream ${stream.id} requires repo_url in manifest`);
     }
+    const cloudContinuation = resolveCloudContinuation(stream, continuation);
     const repoEntry: NonNullable<ShipInput["cloud"]>["repos"][number] = { url: repoUrl };
+    if (cloudContinuation.startingRef !== undefined) {
+      repoEntry.startingRef = cloudContinuation.startingRef;
+    }
     if (stream.provider === "claude" && stream.branch !== undefined) {
       repoEntry.prBranch = stream.branch;
     }
@@ -547,11 +579,14 @@ function buildShipInput(
       docPath,
       repo: loadRun(ctx.store, ctx.runId).repo,
       runtime: "cloud",
+      ...(cloudContinuation.startingRef !== undefined
+        ? { startingRef: cloudContinuation.startingRef }
+        : {}),
       cloud: {
         autoCreatePR: true,
         env: { type: "cloud" },
         repos: [repoEntry],
-        workOnCurrentBranch: false,
+        workOnCurrentBranch: cloudContinuation.workOnCurrentBranch,
       },
     };
   } else {
@@ -571,6 +606,103 @@ function buildShipInput(
     input = { ...input, provider: stream.provider };
   }
   return applyTierMapping(input, tierMapping);
+}
+
+function resolveCloudContinuation(
+  stream: DriverStream,
+  override?: CloudContinuation,
+): { startingRef?: string; workOnCurrentBranch: boolean } {
+  if (override !== undefined) {
+    return { startingRef: override.startingRef, workOnCurrentBranch: true };
+  }
+  if (stream.workOnCurrentBranch === true) {
+    const ref = stream.branch;
+    if (ref !== undefined) {
+      return { startingRef: ref, workOnCurrentBranch: true };
+    }
+  }
+  return { workOnCurrentBranch: false };
+}
+
+/**
+ * Flip an imported local stream to cloud dispatch, continuing from its branch
+ * without re-importing the manifest.
+ */
+export async function flipStreamToCloud(
+  store: Store,
+  ship: DriverShipPort,
+  driverRunId: string,
+  streamId: string,
+  clock: () => number = Date.now,
+): Promise<DriverRun> {
+  const run = loadRun(store, driverRunId);
+  const stream = allStreams(run).find((s) => s.id === streamId);
+  if (stream === undefined) {
+    throw new PreconditionError(`stream not found: ${streamId}`);
+  }
+  const branch = assertFlipEligibleStream(stream, run);
+
+  store.updateDriverStream(streamId, FLIP_CLOUD_RESET_PATCH);
+  const refreshed = store.getDriverRun(driverRunId);
+  if (refreshed === null) {
+    throw new DriverRunNotFoundEngineError(driverRunId);
+  }
+  const flipped = allStreams(refreshed).find((s) => s.id === streamId);
+  if (flipped === undefined) {
+    throw new PreconditionError(`stream not found after flip: ${streamId}`);
+  }
+
+  if (refreshed.status !== "running" && refreshed.status !== "awaiting_judgment") {
+    store.updateDriverRunStatus(driverRunId, "running");
+  }
+
+  const ctx: DispatchContext = {
+    clock,
+    cloudInFlight: 0,
+    localInFlight: 0,
+    onProgress: () => undefined,
+    opts: resolveRunOpts(),
+    repoRoot: resolveRepoRoot(refreshed.manifestPath),
+    repoUrl: extractRepoUrl(refreshed),
+    runId: driverRunId,
+    ship,
+    store,
+  };
+  const continuation: CloudContinuation = {
+    startingRef: branch,
+    workOnCurrentBranch: true,
+  };
+  const dispatched = await dispatchStream(ctx, flipped, continuation);
+  if (!dispatched) {
+    throw new PreconditionError(`cloud dispatch failed for stream ${streamId} after flip`);
+  }
+  const finalRun = store.getDriverRun(driverRunId);
+  if (finalRun === null) {
+    throw new DriverRunNotFoundEngineError(driverRunId);
+  }
+  return finalRun;
+}
+
+function assertFlipEligibleStream(stream: DriverStream, run: DriverRun): string {
+  if (stream.runtime !== "local") {
+    throw new PreconditionError(
+      `stream ${stream.id} is not local (runtime=${stream.runtime}); flip-cloud applies to local streams only`,
+    );
+  }
+  const branch = stream.branch;
+  if (branch === undefined || branch === "") {
+    throw new PreconditionError(`stream ${stream.id} missing branch — cannot continue on cloud`);
+  }
+  if (stream.status !== "pending" && stream.status !== "failed") {
+    throw new PreconditionError(
+      `stream ${stream.id} is not flip-eligible (status=${stream.status}); expected pending or failed`,
+    );
+  }
+  const repoUrl = extractRepoUrl(run);
+  if (repoUrl === undefined) {
+    throw new PreconditionError(`cloud flip for stream ${stream.id} requires repo_url in manifest`);
+  }
+  return branch;
 }
 
 function applyTierMapping(input: ShipInput, tierMapping?: TierDispatchResult): ShipInput {
@@ -610,10 +742,17 @@ export function buildShipInputForTest(
   ctx: DispatchContext,
   stream: DriverStream,
   docPath: string,
+  continuation?: CloudContinuation,
 ): ShipInput {
   const provider = stream.provider ?? DEFAULT_DISPATCH_PROVIDER;
   const tierMapping = mapTierToDispatch(provider, stream.modelTier, stream.effortTier);
-  return buildShipInput(ctx, stream, docPath, provider, tierMapping);
+  return buildShipInput({
+    ctx,
+    docPath,
+    stream,
+    tierMapping,
+    ...(continuation !== undefined ? { continuation } : {}),
+  });
 }
 
 function markLatestAttemptWorkflowRunId(
