@@ -105,6 +105,36 @@ describe("classifyFailure (Claude)", () => {
     ).toBe("gateway-auth");
   });
 
+  test("gateway returned 401 → gateway-auth", () => {
+    expect(
+      classifyFailure({
+        events: [],
+        thrownErr: new Error("gateway returned 401"),
+        thrownError: true,
+      }),
+    ).toBe("gateway-auth");
+  });
+
+  test("gateway returned 403 → gateway-auth", () => {
+    expect(
+      classifyFailure({
+        events: [],
+        thrownErr: new Error("gateway returned 403"),
+        thrownError: true,
+      }),
+    ).toBe("gateway-auth");
+  });
+
+  test("gateway returned 502 → gateway-unreachable, not gateway-auth", () => {
+    expect(
+      classifyFailure({
+        events: [],
+        thrownErr: new Error("gateway returned 502 Bad Gateway"),
+        thrownError: true,
+      }),
+    ).toBe("gateway-unreachable");
+  });
+
   test("5xx gateway error → gateway-unreachable, not gateway-auth", () => {
     expect(
       classifyFailure({

@@ -45,6 +45,8 @@ function isGatewayAuthText(text: string): boolean {
   if (/\bHTTP\s+401\b/i.test(text)) return true;
   if (/\bHTTP\s+403\b/i.test(text)) return true;
   if (/\bstatus(?:\s+code)?\s*[=:]\s*(401|403)\b/i.test(text)) return true;
+  // A gateway phrasing its rejection as "gateway returned 401/403" is auth, not transport.
+  if (/gateway/i.test(text) && /\b40[13]\b/.test(text)) return true;
   return false;
 }
 
