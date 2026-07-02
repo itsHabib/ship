@@ -25,25 +25,43 @@ jobs:
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
+      # The action diffs via `git hash-object <path>` against the working
+      # tree, so files a PR adds must exist on disk — a main checkout (any
+      # fetch depth) lacks them and the review dies before it starts. Check
+      # out the PR head instead, but ONLY when the head lives in this repo:
+      # in-repo branches require push access, so their content is as trusted
+      # as the commenter the action already gates on. A fork head never
+      # replaces the trusted workspace — fork PRs keep the main checkout.
+      - name: Resolve review ref (PR head for same-repo PRs)
+        id: review_ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: >-
+            ${{
+              (github.event_name == 'issue_comment' && github.event.issue.pull_request
+                && github.event.issue.number)
+              || ((github.event_name == 'pull_request_review'
+                  || github.event_name == 'pull_request_review_comment')
+                && github.event.pull_request.number)
+              || ''
+            }}
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF}"
+          if [ -n "${PR_NUMBER}" ]; then
+            same_repo=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+              --jq '.head.repo.full_name == .base.repo.full_name')
+            if [ "${same_repo}" = "true" ]; then
+              ref="refs/pull/${PR_NUMBER}/head"
+            fi
+          fi
+          echo "resolved review ref: ${ref}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 — audited 2026-06-12
         with:
-          # For PR-shaped events, check out the PR head: the action diffs via
-          # `git hash-object <path>` against the working tree, so files a PR
-          # adds must exist on disk — a main checkout (any fetch depth) lacks
-          # them and the review dies before it starts. Full history keeps
-          # merge-base diffs against main available. The action's own
-          # actor-permission gate is what makes a head checkout acceptable.
-          ref: >-
-            ${{
-              (github.event_name == 'issue_comment' && github.event.issue.pull_request
-                && format('refs/pull/{0}/head', github.event.issue.number))
-              || (github.event_name == 'pull_request_review'
-                && format('refs/pull/{0}/head', github.event.pull_request.number))
-              || (github.event_name == 'pull_request_review_comment'
-                && format('refs/pull/{0}/head', github.event.pull_request.number))
-              || github.ref
-            }}
+          ref: ${{ steps.review_ref.outputs.ref }}
           fetch-depth: 0
 
       - name: Run Claude Code
