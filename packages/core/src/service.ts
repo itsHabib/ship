@@ -1091,6 +1091,9 @@ async function runToTerminal(
         kind: "fresh" as const,
         onCapReady: (handle) => {
           capHandle = handle;
+          if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
+            stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle: handle });
+          }
         },
         signals: buildRemoteCapSignals({
           getHandle: () => capHandleRef,
@@ -1106,7 +1109,6 @@ async function runToTerminal(
         // pump keeps `workflow_runs.updated_at` fresh while a long run is live.
         if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
           eventPump = startEventPump({ store: ctx.store, workflowRunId: prep.workflowRunId });
-          stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle });
         }
         cursorRunId = ctx.ids.cursorRun();
         const serverCreatedAtMs = handle.liveness?.().createdAtMs;
@@ -2324,6 +2326,7 @@ async function runResumeAttach(
       maxRunDurationMs: resolveMaxRunDurationMs(ctx.store, target.row.workflowRunId),
       onCapReady: (handle) => {
         capHandle = handle;
+        stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle: handle });
       },
       probeAgentId: target.row.agentId,
       probeRunId: target.row.runId,
@@ -2340,7 +2343,6 @@ async function runResumeAttach(
       onHandle: (handle) => {
         capHandleRef = handle;
         eventPump = startEventPump({ store: ctx.store, workflowRunId: target.row.workflowRunId });
-        stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle });
         onPumpStarted(eventPump);
         ctx.activeRuns.set(target.row.workflowRunId, { controller: target.controller, handle });
       },

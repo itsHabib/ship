@@ -472,8 +472,10 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
     foldMonoDelta(Math.max(0, monotonicNow() - armedAtMono));
     foldStreamSignals();
     if (evaluateDecisionPoint()) return;
-    rearms += 1;
-    fireProbe(reason, false);
+    if (probeTargets() !== undefined) {
+      rearms += 1;
+      fireProbe(reason, false);
+    }
     rederiveAndRearm();
   };
 
@@ -512,8 +514,10 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
     pendingStepSuspectMs = armedDelayMs;
     foldStreamSignals();
     if (evaluateDecisionPoint()) return;
-    rearms += 1;
-    fireProbe("late-fire", true);
+    if (probeTargets() !== undefined) {
+      rearms += 1;
+      fireProbe("late-fire", true);
+    }
     rederiveAndRearm();
   };
 
