@@ -6,7 +6,7 @@
 import type { ShipInput } from "@ship/mcp";
 import type { Command } from "commander";
 
-import { cloudRunSpecSchema } from "@ship/mcp";
+import { cloudRunSpecSchema, roomRunSpecSchema } from "@ship/mcp";
 import { readFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 
@@ -17,8 +17,10 @@ import { formatShipOutput } from "../format.js";
 
 /** Wire shape for `ShipInput.cloud` — matches `cloudRunSpecSchema`; narrowed for `ShipService`. */
 type ShipCloud = NonNullable<ShipInput["cloud"]>;
+/** Wire shape for `ShipInput.room` — matches `roomRunSpecSchema`; narrowed for `ShipService`. */
+type ShipRoom = NonNullable<ShipInput["room"]>;
 type CliProvider = "cursor" | "claude" | "codex";
-type CliRuntime = "local" | "cloud";
+type CliRuntime = "local" | "cloud" | "rooms";
 
 interface ShipOpts {
   workdir: string;
@@ -38,6 +40,12 @@ interface ShipOpts {
   cloudAutoCreatePr?: boolean;
   cloudSkipReviewerRequest?: boolean;
   cloudEnvVar?: string[];
+  /** `--room` JSON file path; when set, other `--room-*` field flags are ignored. */
+  room?: string;
+  roomRepo?: string;
+  roomStartingRef?: string;
+  roomImage?: string;
+  roomPushBranch?: string;
 }
 
 export function registerShipCommand(program: Command, factory: ServiceFactory): void {
@@ -58,7 +66,7 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
     )
     .option(
       "--runtime <mode>",
-      "agent runtime (local|cloud); cloud supports cursor + claude; omit to use service default",
+      "agent runtime (local|cloud|rooms); cloud supports cursor + claude; rooms is cursor-only; omit to use service default",
     )
     .option("--provider <name>", "agent provider (cursor|claude|codex); omit to use cursor")
     .option(
@@ -81,6 +89,20 @@ export function registerShipCommand(program: Command, factory: ServiceFactory): 
       collectPair,
       [] as string[],
     )
+    .option(
+      "--room <path>",
+      "JSON file with full RoomRunSpec (via roomRunSpecSchema); when set, ignores --room-repo and other --room-* field flags",
+    )
+    .option("--room-repo <url>", "rooms: single repo URL (maps to room.repos[0].url)")
+    .option(
+      "--room-starting-ref <ref>",
+      "rooms: git ref the room checks out (maps to room.repos[0].startingRef)",
+    )
+    .option("--room-image <path>", "rooms: guest image path (maps to room.image)")
+    .option(
+      "--room-push-branch <name>",
+      "rooms: branch the agent pushes from inside the microVM (maps to room.pushBranch)",
+    )
     .option("--json", "emit machine-readable JSON instead of pretty output")
     .action(async (docPath: string, rawOpts: ShipOpts) => {
       try {
@@ -100,9 +122,11 @@ async function buildShipCliInput(opts: ShipOpts, docPath: string): Promise<ShipI
   const provider = parseProvider(opts.provider);
   const runtime = parseRuntime(opts.runtime);
   enforceLocalOnlyProviderGuard(provider, runtime);
+  enforceRoomsProviderGuard(provider, runtime);
   const cloud = await resolveCloudSpec(opts, runtime);
   enforceClaudeCloudPrBranchGuard(provider, runtime, cloud);
-  return buildShipInputFromCli(opts, docPath, { modelParams, provider, runtime, cloud });
+  const room = await resolveRoomSpec(opts, runtime);
+  return buildShipInputFromCli(opts, docPath, { modelParams, provider, runtime, cloud, room });
 }
 
 // The CLI is the validation boundary for direct service callers (it bypasses the
@@ -141,6 +165,7 @@ function buildShipInputFromCli(
     provider: CliProvider | undefined;
     runtime: CliRuntime | undefined;
     cloud: ShipCloud | undefined;
+    room: ShipRoom | undefined;
   },
 ): ShipInput {
   return {
@@ -155,6 +180,7 @@ function buildShipInputFromCli(
     ...(parsed.provider !== undefined && { provider: parsed.provider }),
     ...(parsed.runtime !== undefined && { runtime: parsed.runtime }),
     ...(parsed.cloud !== undefined && { cloud: parsed.cloud }),
+    ...(parsed.room !== undefined && { room: parsed.room }),
   };
 }
 
@@ -197,8 +223,8 @@ function parseModelParam(raw: string): { id: string; value: string | boolean } {
 /** Mirrors parseModelParam omission → undefined semantics for runtime. */
 function parseRuntime(raw: string | undefined): CliRuntime | undefined {
   if (raw === undefined) return undefined;
-  if (raw === "local" || raw === "cloud") return raw;
-  throw new InvalidArgumentError(`invalid --runtime: ${raw} (expected: local | cloud)`);
+  if (raw === "local" || raw === "cloud" || raw === "rooms") return raw;
+  throw new InvalidArgumentError(`invalid --runtime: ${raw} (expected: local | cloud | rooms)`);
 }
 
 /** Mirrors parseRuntime omission → undefined semantics for provider. */
@@ -220,6 +246,19 @@ function enforceLocalOnlyProviderGuard(
   if (effectiveRuntime === "cloud") {
     throw new InvalidArgumentError(`${provider} provider supports only runtime 'local'`);
   }
+}
+
+// rooms runs through RoomCursorRunner — cursor only. claude-in-rooms and
+// codex-in-rooms are separate future phases; mirror the mcp schema's net
+// effect (its claude/codex refinements reject rooms) so a CLI caller fails
+// fast instead of persisting a run row the runner can't dispatch.
+function enforceRoomsProviderGuard(
+  provider: CliProvider | undefined,
+  runtime: CliRuntime | undefined,
+): void {
+  if (runtime !== "rooms") return;
+  if (provider === undefined || provider === "cursor") return;
+  throw new InvalidArgumentError(`${provider} provider does not support runtime 'rooms' yet`);
 }
 
 function hasCloudFieldFlags(opts: ShipOpts): boolean {
@@ -310,4 +349,75 @@ async function resolveCloudSpecRaw(opts: ShipOpts): Promise<ShipCloud | undefine
     return undefined;
   }
   return buildCloudRunSpecFromFlags(opts);
+}
+
+function hasRoomFieldFlags(opts: ShipOpts): boolean {
+  return (
+    opts.roomRepo !== undefined ||
+    opts.roomStartingRef !== undefined ||
+    opts.roomImage !== undefined ||
+    opts.roomPushBranch !== undefined
+  );
+}
+
+function buildRoomRunSpecFromFlags(opts: ShipOpts): ShipRoom {
+  const draft: Record<string, unknown> = {};
+  if (opts.roomRepo !== undefined) {
+    draft["repos"] = [
+      {
+        url: opts.roomRepo,
+        ...(opts.roomStartingRef !== undefined && { startingRef: opts.roomStartingRef }),
+      },
+    ];
+  }
+  if (opts.roomImage !== undefined) {
+    draft["image"] = opts.roomImage;
+  }
+  if (opts.roomPushBranch !== undefined) {
+    draft["pushBranch"] = opts.roomPushBranch;
+  }
+  return roomRunSpecSchema.parse(draft);
+}
+
+async function loadRoomRunSpecFromFile(pathArg: string): Promise<ShipRoom> {
+  const absolute = resolvePath(pathArg);
+  let text: string;
+  try {
+    text = await readFile(absolute, "utf-8");
+  } catch {
+    throw new InvalidArgumentError(`cannot read --room file: ${absolute}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new InvalidArgumentError(`invalid JSON in --room file: ${msg}`);
+  }
+  return roomRunSpecSchema.parse(parsed);
+}
+
+async function resolveRoomSpec(
+  opts: ShipOpts,
+  runtime: CliRuntime | undefined,
+): Promise<ShipRoom | undefined> {
+  const spec = await resolveRoomSpecRaw(opts);
+  // CLI is the validation boundary for direct service callers — it bypasses
+  // shipInputSchema's .superRefine (refineRuntimeRoomsSpec). Without this
+  // guard a missing room spec would surface as a runner-layer error after
+  // the workflow run row was persisted.
+  if (runtime === "rooms" && spec === undefined) {
+    throw new InvalidArgumentError("--runtime rooms requires --room-repo or --room <path>");
+  }
+  return spec;
+}
+
+async function resolveRoomSpecRaw(opts: ShipOpts): Promise<ShipRoom | undefined> {
+  if (opts.room !== undefined) {
+    return await loadRoomRunSpecFromFile(opts.room);
+  }
+  if (!hasRoomFieldFlags(opts)) {
+    return undefined;
+  }
+  return buildRoomRunSpecFromFlags(opts);
 }

@@ -707,4 +707,151 @@ describe("ship ship", () => {
     expect(h.stderr.join("")).toMatch(/invalid --provider: bogus/);
     expect(h.harness.cursor.calls).toHaveLength(0);
   });
+
+  test("--runtime rooms --room-repo routes to the room runner with runtime + room.repos[0].url", async () => {
+    const room = new FakeCursorRunner();
+    h.close();
+    h = await createCliHarness({ roomCursor: room });
+    room.enqueue(CLOUD_SCRIPT);
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--runtime",
+      "rooms",
+      "--room-repo",
+      "https://github.com/o/r",
+    ]);
+    expect(code).toBe(0);
+    expect(room.calls).toHaveLength(1);
+    expect(room.calls[0]?.input.runtime).toBe("rooms");
+    expect(room.calls[0]?.input.room?.repos[0]?.url).toBe("https://github.com/o/r");
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
+  test("--room-starting-ref / --room-image / --room-push-branch forward to the room spec", async () => {
+    const room = new FakeCursorRunner();
+    h.close();
+    h = await createCliHarness({ roomCursor: room });
+    room.enqueue(CLOUD_SCRIPT);
+    await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--runtime",
+      "rooms",
+      "--room-repo",
+      "https://github.com/o/r",
+      "--room-starting-ref",
+      "feat/base",
+      "--room-image",
+      "/images/agent-alpine-cursor.ext4",
+      "--room-push-branch",
+      "rooms/x",
+    ]);
+    expect(room.calls[0]?.input.room?.repos[0]?.startingRef).toBe("feat/base");
+    expect(room.calls[0]?.input.room?.image).toBe("/images/agent-alpine-cursor.ext4");
+    expect(room.calls[0]?.input.room?.pushBranch).toBe("rooms/x");
+  });
+
+  test("--runtime rooms without room spec → exit 1; stderr names room-repo", async () => {
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--runtime",
+      "rooms",
+    ]);
+    expect(code).toBe(1);
+    expect(h.stderr.join("")).toMatch(/--room-repo|--room </);
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
+  test("--provider claude --runtime rooms fails fast at CLI boundary", async () => {
+    const { code } = await runArgv(h.program, [
+      "ship",
+      "docs.md",
+      "--workdir",
+      TEST_WORKDIR,
+      "--repo",
+      "ship",
+      "--provider",
+      "claude",
+      "--runtime",
+      "rooms",
+      "--room-repo",
+      "https://github.com/o/r",
+    ]);
+    expect(code).toBe(1);
+    expect(h.stderr.join("")).toMatch(/claude provider does not support runtime 'rooms'/);
+    expect(h.harness.cursor.calls).toHaveLength(0);
+  });
+
+  test("--room <path> loads JSON spec from disk", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-room-json-"));
+    const roomPath = join(dir, "spec.json");
+    writeFileSync(
+      roomPath,
+      JSON.stringify({
+        repos: [{ url: "https://github.com/from/file" }],
+        pushBranch: "rooms/from-file",
+      }),
+    );
+    try {
+      const room = new FakeCursorRunner();
+      h.close();
+      h = await createCliHarness({ roomCursor: room });
+      room.enqueue(CLOUD_SCRIPT);
+      const { code } = await runArgv(h.program, [
+        "ship",
+        "docs.md",
+        "--workdir",
+        TEST_WORKDIR,
+        "--repo",
+        "ship",
+        "--runtime",
+        "rooms",
+        "--room",
+        roomPath,
+      ]);
+      expect(code).toBe(0);
+      expect(room.calls[0]?.input.room?.repos[0]?.url).toBe("https://github.com/from/file");
+      expect(room.calls[0]?.input.room?.pushBranch).toBe("rooms/from-file");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("--room JSON shape mismatch → exit 1; stderr includes Zod message", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-room-zod-"));
+    const roomPath = join(dir, "spec.json");
+    writeFileSync(roomPath, JSON.stringify({ repos: [] }));
+    try {
+      const { code } = await runArgv(h.program, [
+        "ship",
+        "docs.md",
+        "--workdir",
+        TEST_WORKDIR,
+        "--repo",
+        "ship",
+        "--runtime",
+        "rooms",
+        "--room",
+        roomPath,
+      ]);
+      expect(code).toBe(1);
+      expect(h.stderr.join()).toMatch(/repos/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

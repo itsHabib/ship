@@ -38,27 +38,41 @@ export interface CliHarness {
   readonly cloudCursor?: AgentRunner;
   readonly claude?: AgentRunner;
   readonly codex?: AgentRunner;
+  readonly roomCursor?: AgentRunner;
   readonly stdout: string[];
   readonly stderr: string[];
   readonly close: () => void;
 }
 
-export async function createCliHarness(
-  opts: {
-    defaultModel?: ModelSelection;
-    cloudCursor?: AgentRunner;
-    claude?: AgentRunner;
-    cloudClaude?: AgentRunner;
-    codex?: AgentRunner;
-  } = {},
-): Promise<CliHarness> {
+interface CliHarnessOpts {
+  defaultModel?: ModelSelection;
+  cloudCursor?: AgentRunner;
+  claude?: AgentRunner;
+  cloudClaude?: AgentRunner;
+  codex?: AgentRunner;
+  roomCursor?: AgentRunner;
+}
+
+// Injected-runner fields exposed on the returned CliHarness (the subset tests
+// assert `.calls` against). Kept out of createCliHarness to hold its
+// cyclomatic complexity under the lint cap as runners are added.
+function harnessRunnerFields(
+  opts: CliHarnessOpts,
+): Pick<CliHarness, "cloudCursor" | "claude" | "codex" | "roomCursor"> {
+  return {
+    ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
+    ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
+    ...(opts.codex !== undefined ? { codex: opts.codex } : {}),
+    ...(opts.roomCursor !== undefined ? { roomCursor: opts.roomCursor } : {}),
+  };
+}
+
+export async function createCliHarness(opts: CliHarnessOpts = {}): Promise<CliHarness> {
   const harness = createHarness();
   const bundle = createServiceFromHarness(harness, {
     ...(opts.defaultModel !== undefined ? { defaultModel: opts.defaultModel } : {}),
-    ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
-    ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
+    ...harnessRunnerFields(opts),
     ...(opts.cloudClaude !== undefined ? { cloudClaude: opts.cloudClaude } : {}),
-    ...(opts.codex !== undefined ? { codex: opts.codex } : {}),
   });
   await bundle.fs.mkdir(WORKDIR, { recursive: true });
   await bundle.fs.writeFile(`${WORKDIR}/docs.md`, "# Task\n\nDo it.\n");
@@ -87,9 +101,7 @@ export async function createCliHarness(
     driver,
     bundle,
     harness,
-    ...(opts.cloudCursor !== undefined ? { cloudCursor: opts.cloudCursor } : {}),
-    ...(opts.claude !== undefined ? { claude: opts.claude } : {}),
-    ...(opts.codex !== undefined ? { codex: opts.codex } : {}),
+    ...harnessRunnerFields(opts),
     stdout,
     stderr,
     close: () => {
