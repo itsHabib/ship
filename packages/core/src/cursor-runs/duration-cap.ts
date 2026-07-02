@@ -420,7 +420,9 @@ async function runRemoteDurationCap(args: DurationCapRunArgs): Promise<AgentRunR
     }
     const created = probe.createdAtMs;
     const updated = probe.updatedAtMs;
-    if (created === undefined || updated === undefined) {
+    // An inverted server pair is as unusable as a missing one — it must not
+    // discard a pending step-suspect segment the fold then never charges.
+    if (created === undefined || updated === undefined || updated < created) {
       noteProbeMiss(shouldAdjudicate, suspectMs, attachProbe);
       return;
     }
