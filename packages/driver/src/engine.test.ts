@@ -9,16 +9,20 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { DriverStreamView } from "./types.js";
 
 import {
+  buildShipInputForTest,
   isTickLive,
   resolveDocPath,
   resolveRepoRoot,
   resolveRunawayBackstopMs,
+  resolveRunOpts,
   shouldGiveUpTick,
 } from "./engine.js";
 import { TickLiveError } from "./errors.js";
 import { type DispatchAmbiguity, recoverDispatchingStreams } from "./judgment.js";
 import { createDriverService } from "./service.js";
 import { createFakeShipPort } from "./test/fake-ship-port.js";
+
+const noopProgress = (): void => undefined;
 
 describe("driver engine", () => {
   let tmpDir: string;
@@ -665,6 +669,191 @@ batches:
     expect(start?.input).not.toHaveProperty("model");
     expect(start?.input).not.toHaveProperty("modelParams");
     store.close();
+  });
+
+  test("claude cloud stream dispatches provider and prBranch on ShipInput", async () => {
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-02T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: claude-cloud-dispatch
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-claude
+        runtime: cloud
+        provider: claude
+        model: opus
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", workflowRunId: "wf_claude_cloud" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    expect(start?.input).toMatchObject({
+      provider: "claude",
+      runtime: "cloud",
+      cloud: {
+        repos: [{ url: "https://github.com/example/ship", prBranch: "feat-claude" }],
+      },
+    });
+
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.provider).toBe("claude");
+    expect(stream?.dispatchProvider).toBe("claude");
+    store.close();
+  });
+});
+
+describe("buildShipInputForTest", () => {
+  let tmpDir: string;
+  let repoRoot: string;
+  let store: ReturnType<typeof createStore>;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "driver-ship-input-"));
+    repoRoot = join(tmpDir, "repo");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    store = createStore({ dbPath: ":memory:" });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(tmpDir, { force: true, recursive: true });
+  });
+
+  test("forwards provider and prBranch when set on claude cloud stream", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              branch: "feat-claude",
+              id: streamId,
+              provider: "claude",
+              runtime: "cloud",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: join(repoRoot, "driver.md"),
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\nrepo_url: https://github.com/example/ship\n---\n",
+      status: "pending",
+    });
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream).toBeDefined();
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId,
+        ship: createFakeShipPort([]).port,
+        store,
+      },
+      stream!,
+      "docs/a.md",
+    );
+    expect(input).toMatchObject({
+      provider: "claude",
+      runtime: "cloud",
+      cloud: { repos: [{ url: "https://github.com/example/ship", prBranch: "feat-claude" }] },
+    });
+  });
+
+  test("omits provider when unset so ShipInput matches legacy cursor shape", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-a"), { recursive: true });
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              branch: "feat-a",
+              id: streamId,
+              runtime: "local",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: join(repoRoot, "driver.md"),
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "pending",
+    });
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream).toBeDefined();
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: undefined,
+        runId,
+        ship: createFakeShipPort([]).port,
+        store,
+      },
+      stream!,
+      "docs/a.md",
+    );
+    expect(input).not.toHaveProperty("provider");
+    expect(input).toMatchObject({
+      branch: "feat-a",
+      runtime: "local",
+      workdir: join(repoRoot, ".claude", "worktrees", "feat-a"),
+    });
   });
 });
 

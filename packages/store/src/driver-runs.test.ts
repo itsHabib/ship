@@ -121,6 +121,41 @@ describe("driver runs (via createStore)", () => {
     expect(run?.batches[0]?.streams[0]?.prNumber).toBe(42);
   });
 
+  test("provider column round-trips through insert and read", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              id: streamId,
+              provider: "claude",
+              runtime: "cloud",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: "/tmp/provider.md",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "pending",
+    });
+
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.provider).toBe("claude");
+  });
+
   test("updateDriverStream throws DriverStreamNotFoundError for unknown id", () => {
     expect(() => store.updateDriverStream(newDriverStreamId(), { status: "failed" })).toThrow(
       DriverStreamNotFoundError,

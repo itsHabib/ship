@@ -67,6 +67,7 @@ export interface DriverStreamView {
   prUrl?: string;
   modelTier?: ModelTier;
   effortTier?: EffortTier;
+  provider?: AgentProvider;
   dispatchProvider?: AgentProvider;
   dispatchModel?: string;
   dispatchModelParams?: NonNullable<ShipInput["modelParams"]>;

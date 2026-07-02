@@ -7,6 +7,7 @@
  * engine's input, not prep-time human notes.
  */
 
+import { agentProviderSchema } from "@ship/workflow";
 import { type Document, LineCounter, type ParsedNode, parseDocument } from "yaml";
 import { z } from "zod";
 
@@ -18,6 +19,7 @@ const streamStatusSchema = z.enum(["pending", "todo", "in_progress", "done", "fa
 
 export const modelTierSchema = z.enum(["opus", "sonnet", "fable"]);
 export const effortTierSchema = z.enum(["extra", "max", "ultracode"]);
+export const manifestProviderSchema = agentProviderSchema;
 
 export const manifestStreamSchema = z
   .object({
@@ -28,6 +30,7 @@ export const manifestStreamSchema = z
     runtime: runtimeSchema.optional(),
     model: modelTierSchema.optional(),
     effort: effortTierSchema.optional(),
+    provider: manifestProviderSchema.optional(),
     touches: z.array(z.string()).optional().default([]),
     status: streamStatusSchema.optional(),
     pr_number: z.number().int().optional(),
@@ -72,6 +75,7 @@ export const driverManifestSchema = z
     default_runtime: runtimeSchema.optional(),
     default_model: modelTierSchema.optional(),
     default_effort: effortTierSchema.optional(),
+    default_provider: manifestProviderSchema.optional(),
     batches: z.array(manifestBatchSchema),
     conflict_notes: advisoryBlockSchema,
     skipped_during_resolution: advisoryBlockSchema,

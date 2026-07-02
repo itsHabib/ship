@@ -68,6 +68,7 @@ function optionalStreamTierFields(stream: DriverStream): Partial<DriverStreamVie
   const fields: Partial<DriverStreamView> = {};
   if (stream.modelTier !== undefined) fields.modelTier = stream.modelTier;
   if (stream.effortTier !== undefined) fields.effortTier = stream.effortTier;
+  if (stream.provider !== undefined) fields.provider = stream.provider;
   if (stream.dispatchProvider !== undefined) fields.dispatchProvider = stream.dispatchProvider;
   if (stream.dispatchModel !== undefined) fields.dispatchModel = stream.dispatchModel;
   if (stream.dispatchModelParams !== undefined)

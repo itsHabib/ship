@@ -17,6 +17,7 @@
  */
 
 import type { DriverStreamStatus } from "@ship/store";
+import type { AgentProvider } from "@ship/workflow";
 
 import type { EffortTier, ManifestStream, ModelTier } from "./manifest.js";
 
@@ -78,6 +79,10 @@ export interface ResolvedStreamTier {
   effortTier?: EffortTier;
 }
 
+export interface ResolvedStreamProvider {
+  provider?: AgentProvider;
+}
+
 /** Resolve per-stream tier: stream field > manifest default > none. */
 export function resolveStreamTier(
   stream: ManifestStream,
@@ -92,10 +97,22 @@ export function resolveStreamTier(
   return resolved;
 }
 
+/** Resolve per-stream provider: stream field > manifest default > none. */
+export function resolveStreamProvider(
+  stream: ManifestStream,
+  defaultProvider?: AgentProvider,
+): ResolvedStreamProvider {
+  const resolved: ResolvedStreamProvider = {};
+  const provider = stream.provider ?? defaultProvider;
+  if (provider !== undefined) resolved.provider = provider;
+  return resolved;
+}
+
 /** Format tier + dispatch mapping for status diagnostics. */
 export function formatStreamTierDiagnostic(stream: {
   modelTier?: ModelTier;
   effortTier?: EffortTier;
+  provider?: AgentProvider;
   dispatchProvider?: string;
   dispatchModel?: string;
   dispatchModelParams?: { id: string; value: string | boolean }[];
@@ -103,15 +120,25 @@ export function formatStreamTierDiagnostic(stream: {
   tierDegradeReason?: string;
 }): string | undefined {
   const requested = formatRequestedTier(stream.modelTier, stream.effortTier);
-  if (requested === undefined && stream.dispatchModel === undefined) {
+  if (
+    requested === undefined &&
+    stream.provider === undefined &&
+    stream.dispatchModel === undefined
+  ) {
     return undefined;
   }
 
   const parts: string[] = [];
   appendRequestedTierPart(parts, requested);
+  appendRequestedProviderPart(parts, stream.provider);
   appendDispatchPart(parts, stream);
   appendDegradeParts(parts, stream);
   return parts.join(" ");
+}
+
+function appendRequestedProviderPart(parts: string[], provider?: AgentProvider): void {
+  if (provider === undefined) return;
+  parts.push(`provider=${provider}`);
 }
 
 function appendRequestedTierPart(parts: string[], requested: string | undefined): void {
