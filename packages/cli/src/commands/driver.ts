@@ -150,6 +150,17 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     });
 
   driver
+    .command("flip-cloud <driverRunId>")
+    .description("flip an imported local stream to cloud, continuing its branch")
+    .requiredOption("--stream <ds_id>", "driver stream id")
+    .action(async (driverRunId: string, rawOpts: { stream: string }) => {
+      await runDriverActionAsync(async () => {
+        const run = await factory().flipStreamToCloud(driverRunId, rawOpts.stream);
+        process.stdout.write(`${formatDriverDecideOutput(run)}\n`);
+      });
+    });
+
+  driver
     .command("cancel <driverRunId>")
     .description("cancel an in-flight driver run")
     .action(async (driverRunId: string) => {

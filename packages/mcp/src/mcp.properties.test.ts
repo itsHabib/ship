@@ -51,6 +51,7 @@ const localShipInputArbitrary: fc.Arbitrary<ShipInput> = fc.record({
   worktreeName: fc.option(fc.string({ minLength: 1 }), { nil: undefined }),
   branch: fc.option(fc.string({ minLength: 1 }), { nil: undefined }),
   baseRef: fc.option(fc.string({ minLength: 1 }), { nil: undefined }),
+  startingRef: fc.option(fc.string({ minLength: 1 }), { nil: undefined }),
   model: fc.option(fc.string({ minLength: 1 }), { nil: undefined }),
   modelParams: fc.option(
     fc.array(
