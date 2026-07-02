@@ -28,11 +28,30 @@ function errorText(err: unknown): string {
   return "";
 }
 
-function isGatewayUnreachableError(err: unknown): boolean {
-  const text = errorText(err);
+function isGatewayUnreachableText(text: string): boolean {
   if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(text)) return true;
-  if (/gateway/i.test(text) && /\b[45]\d{2}\b/.test(text)) return true;
+  // Only 5xx signal an unreachable gateway. 401/403 are auth rejections, not transport.
+  if (/gateway/i.test(text) && /\b5\d{2}\b/.test(text)) return true;
   return false;
+}
+
+function isGatewayUnreachableError(err: unknown): boolean {
+  return isGatewayUnreachableText(errorText(err));
+}
+
+function isGatewayAuthText(text: string): boolean {
+  if (/\b401\s+Unauthorized\b/i.test(text)) return true;
+  if (/\b403\s+Forbidden\b/i.test(text)) return true;
+  if (/\bHTTP\s+401\b/i.test(text)) return true;
+  if (/\bHTTP\s+403\b/i.test(text)) return true;
+  if (/\bstatus(?:\s+code)?\s*[=:]\s*(401|403)\b/i.test(text)) return true;
+  // A gateway phrasing its rejection as "gateway returned 401/403" is auth, not transport.
+  if (/gateway/i.test(text) && /\b40[13]\b/.test(text)) return true;
+  return false;
+}
+
+function isGatewayAuthError(err: unknown): boolean {
+  return isGatewayAuthText(errorText(err));
 }
 
 function subtypeCategory(subtype: string | undefined): FailureCategory | undefined {
@@ -47,6 +66,9 @@ export function classifyFailure(input: ClaudeClassifyFailureInput): FailureCateg
   if (input.thrownError === true) {
     if (input.thrownErr !== undefined && isGatewayUnreachableError(input.thrownErr)) {
       return "gateway-unreachable";
+    }
+    if (input.thrownErr !== undefined && isGatewayAuthError(input.thrownErr)) {
+      return "gateway-auth";
     }
     return "sdk-throw";
   }

@@ -154,6 +154,13 @@ describe("mapMidStreamFailure", () => {
     expect(result.errorMessage).toBe("fetch failed");
   });
 
+  test("401 auth rejection resolves failed with gateway-auth", () => {
+    const result = mapMidStreamFailure(new Error("401 Unauthorized"), baseInput(), []);
+    expect(result.status).toBe("failed");
+    expect(result.failureCategory).toBe("gateway-auth");
+    expect(result.errorMessage).toBe("401 Unauthorized");
+  });
+
   test("non-gateway throw resolves sdk-throw category", () => {
     const result = mapMidStreamFailure(new Error("unexpected"), baseInput(), []);
     expect(result.failureCategory).toBe("sdk-throw");

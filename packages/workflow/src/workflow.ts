@@ -67,6 +67,7 @@ export const failureCategorySchema = z.enum([
   "agent-collapse-on-running-tool",
   "sdk-throw",
   "gateway-unreachable",
+  "gateway-auth",
   "budget-exceeded",
   "sandbox-denial",
   "patch-apply-fail",

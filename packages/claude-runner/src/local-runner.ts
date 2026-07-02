@@ -41,6 +41,7 @@ import { MAX_CLASSIFICATION_EVENTS } from "./terminal-map.js";
 import { mapMidStreamFailure, mapResultMessage } from "./terminal-map.js";
 
 const API_KEY_ENV = "ANTHROPIC_API_KEY";
+const AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN";
 const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 
 const SUPPORTED_PLATFORM_KEYS = new Set([
@@ -133,6 +134,8 @@ function buildGatewayEnv(): Record<string, string> {
   const gatewayEnv: Record<string, string> = {};
   const apiKey = process.env[API_KEY_ENV];
   if (apiKey !== undefined && apiKey !== "") gatewayEnv[API_KEY_ENV] = apiKey;
+  const authToken = process.env[AUTH_TOKEN_ENV];
+  if (authToken !== undefined && authToken !== "") gatewayEnv[AUTH_TOKEN_ENV] = authToken;
   const baseUrl = process.env[BASE_URL_ENV];
   if (baseUrl !== undefined && baseUrl !== "") gatewayEnv[BASE_URL_ENV] = baseUrl;
   return gatewayEnv;
@@ -190,8 +193,13 @@ function validateRunInput(input: AgentRunInput): void {
     );
   }
   const apiKey = process.env[API_KEY_ENV];
-  if (apiKey === undefined || apiKey === "") {
-    throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
+  const authToken = process.env[AUTH_TOKEN_ENV];
+  const hasApiKey = apiKey !== undefined && apiKey !== "";
+  const hasAuthToken = authToken !== undefined && authToken !== "";
+  if (!hasApiKey && !hasAuthToken) {
+    throw new MissingApiKeyError(
+      "no API credential set (ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN required)",
+    );
   }
 }
 

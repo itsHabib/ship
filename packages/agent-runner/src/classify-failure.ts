@@ -174,6 +174,15 @@ function detailForGatewayUnreachable<E>(input: BuildFailureDetailInput<E>): stri
   return "gateway unreachable";
 }
 
+function detailForGatewayAuth<E>(input: BuildFailureDetailInput<E>): string {
+  const fromErr = thrownErrorMessage(input.thrownErr);
+  if (fromErr !== undefined) return fromErr;
+  if (input.rawErrorMessage !== undefined && input.rawErrorMessage.length > 0) {
+    return input.rawErrorMessage;
+  }
+  return "gateway rejected credentials or authorization";
+}
+
 function detailForBudgetExceeded<E>(input: BuildFailureDetailInput<E>): string {
   if (input.sdkTerminalStatus !== undefined && input.sdkTerminalStatus.length > 0) {
     return `SDK status ${input.sdkTerminalStatus}`;
@@ -204,6 +213,7 @@ const DETAIL_BUILDERS: Record<FailureCategory, <E>(input: BuildFailureDetailInpu
   "agent-collapse-on-running-tool": detailForAgentCollapse,
   "sdk-throw": detailForSdkThrow,
   "gateway-unreachable": detailForGatewayUnreachable,
+  "gateway-auth": detailForGatewayAuth,
   "budget-exceeded": detailForBudgetExceeded,
   "sandbox-denial": detailForSandboxDenial,
   "patch-apply-fail": detailForPatchApplyFail,
