@@ -20,11 +20,16 @@ export interface FakeGhPrState {
   checks?: GhPrCheck[];
   /** After merge, return a stale OPEN view this many times before the merged state. */
   postMergeViewLagReads?: number;
+  /** When set, `markReady` throws with this message. */
+  markReadyError?: string;
+  /** When true, `markReady` leaves the PR draft (simulates unconfirmed flip). */
+  markReadyUnconfirmed?: boolean;
 }
 
 export interface FakeGhPort extends DriverGhPort {
   mergeCalls: { repo: string; prNumber: number; admin: boolean }[];
   viewCalls: { repo: string; prNumber: number }[];
+  markReadyCalls: { repo: string; prNumber: number }[];
 }
 
 export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): FakeGhPort {
@@ -33,9 +38,11 @@ export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): F
   );
   const mergeCalls: { repo: string; prNumber: number; admin: boolean }[] = [];
   const viewCalls: { repo: string; prNumber: number }[] = [];
+  const markReadyCalls: { repo: string; prNumber: number }[] = [];
   const postMergeLagRemaining = new Map<number, number>();
 
   return {
+    markReadyCalls,
     mergeCalls,
     viewCalls,
     mergePullRequest(_repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void> {
@@ -88,6 +95,23 @@ export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): F
         mergeable: current?.mergeable ?? "MERGEABLE",
         state,
       });
+    },
+    markReady(_repo: string, prNumber: number): Promise<void> {
+      markReadyCalls.push({ prNumber, repo: _repo });
+      const current = prs.get(prNumber);
+      if (current?.markReadyError !== undefined) {
+        return Promise.reject(new Error(current.markReadyError));
+      }
+      if (current?.isDraft !== true) {
+        return Promise.resolve();
+      }
+      if (current.markReadyUnconfirmed === true) {
+        return Promise.reject(
+          new Error(`PR #${String(prNumber)} is still draft after gh pr ready — flip unconfirmed`),
+        );
+      }
+      prs.set(prNumber, { ...current, isDraft: false });
+      return Promise.resolve();
     },
   };
 }

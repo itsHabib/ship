@@ -80,6 +80,7 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
       const resolved = resolveRunOpts(runOpts);
       const { driverRunId, warnings } = resolveRunRef(store, ref);
       const deps: Parameters<typeof runTick>[2] = { ship, store };
+      if (gh !== undefined) deps.gh = gh;
       if (clock !== undefined) deps.clock = clock;
       if (monotonicClock !== undefined) deps.monotonicClock = monotonicClock;
       if (rng !== undefined) deps.rng = rng;
