@@ -20,18 +20,31 @@ const baseInput = (): AgentRunInput => ({
 });
 
 describe("mapResultMessage", () => {
-  test("success maps to succeeded with summary and empty branches", () => {
+  test("success maps to succeeded with summary, usage, cost, and empty branches", () => {
     const msg = {
       duration_ms: 5000,
       result: "done",
       subtype: "success",
       type: "result",
+      total_cost_usd: 0.42,
+      usage: {
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 5,
+        input_tokens: 100,
+        output_tokens: 50,
+      },
     } as SDKResultMessage;
     expect(mapResultMessage(msg, baseInput(), [])).toMatchObject({
       branches: [],
+      costUsd: 0.42,
       durationMs: 5000,
       status: "succeeded",
       summary: "done",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 165,
+      },
     });
   });
 

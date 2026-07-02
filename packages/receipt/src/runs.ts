@@ -26,6 +26,15 @@ const resultSchema = z
     durationMs: z.number().optional(),
     model: z.object({ id: z.string().optional() }).passthrough().optional(),
     branches: z.array(z.object({ prUrl: z.string().optional() }).passthrough()).optional(),
+    usage: z
+      .object({
+        inputTokens: z.number().optional(),
+        outputTokens: z.number().optional(),
+        totalTokens: z.number().optional(),
+      })
+      .passthrough()
+      .optional(),
+    costUsd: z.number().optional(),
   })
   .passthrough();
 
@@ -56,13 +65,21 @@ export function runResultToReceipt(input: RunInput): Receipt | null {
     model: result.model?.id,
     pr_url: prUrl,
     pr_number: prNumberFromUrl(prUrl),
-    cost_tokens: null,
+    cost_tokens: costTokensFromResult(result),
     dispatched_at: input.dispatchedAt,
     terminal_at: input.terminalAt,
   };
   // Isolate per-run: a single result that fails schema validation (e.g. a
   // malformed PR URL) yields null and is skipped — it never aborts the load.
   return tryBuild(raw);
+}
+
+function costTokensFromResult(result: z.infer<typeof resultSchema>): number | null {
+  const total = result.usage?.totalTokens;
+  if (total === undefined || !Number.isFinite(total) || total < 0) {
+    return null;
+  }
+  return Math.round(total);
 }
 
 function tryBuild(raw: Record<string, unknown>): Receipt | null {

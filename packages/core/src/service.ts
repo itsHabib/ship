@@ -64,6 +64,7 @@ import type { ShipFs } from "./fs/shape.js";
 import type { ValidatedDoc } from "./validate.js";
 import type { CloudDocResolveOptions } from "./validate.js";
 
+import { prepareEventForPersist } from "./artifacts/event-persist.js";
 import { createNdjsonEventWriter } from "./artifacts/ndjson.js";
 import {
   assertSafeCloudArtifactPath,
@@ -1055,7 +1056,7 @@ async function runToTerminal(
     const ndjsonRef = ndjson;
 
     const onEvent: AgentRunInput["onEvent"] = (ev) => {
-      ndjsonRef.write(ev);
+      ndjsonRef.write(prepareEventForPersist(ev));
       eventPump?.heartbeat();
     };
 
@@ -2267,7 +2268,7 @@ async function runResumeAttach(
 
   let eventPump: EventPumpHandle | undefined;
   const onEvent: AgentRunAttachInput["onEvent"] = (ev) => {
-    target.ndjson.write(ev);
+    target.ndjson.write(prepareEventForPersist(ev));
     eventPump?.heartbeat();
   };
 

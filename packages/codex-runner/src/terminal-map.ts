@@ -3,7 +3,7 @@
  */
 
 import type { ThreadEvent } from "@openai/codex-sdk";
-import type { AgentRunInput, AgentRunResult } from "@ship/agent-runner";
+import type { AgentRunInput, AgentRunResult, AgentRunUsage } from "@ship/agent-runner";
 
 import { MAX_CLASSIFICATION_EVENTS } from "@ship/agent-runner";
 
@@ -16,6 +16,21 @@ import {
 import { codexEventProjection } from "./codex-event-projection.js";
 
 export { MAX_CLASSIFICATION_EVENTS };
+
+function liftCodexUsage(
+  terminal: Extract<ThreadEvent, { type: "turn.completed" }>,
+): AgentRunUsage | undefined {
+  const usage = terminal.usage;
+  const inputTokens = usage.input_tokens;
+  const outputTokens = usage.output_tokens;
+  const cachedInput = usage.cached_input_tokens;
+  const reasoningOutput = usage.reasoning_output_tokens;
+  const totalTokens = inputTokens + outputTokens + cachedInput + reasoningOutput;
+  if (!Number.isFinite(totalTokens) || totalTokens <= 0) {
+    return undefined;
+  }
+  return { inputTokens, outputTokens, totalTokens };
+}
 
 function synthesizeErrorMessage(events: readonly ThreadEvent[]): string | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
@@ -113,11 +128,13 @@ export function mapTerminalEvent(
   const sdkTerminalStatus = codexEventProjection.terminalStatus(terminal);
   if (sdkTerminalStatus === "turn.completed") {
     const summary = lastAgentMessageText(events) ?? "";
+    const usage = liftCodexUsage(terminal as Extract<ThreadEvent, { type: "turn.completed" }>);
     return {
       branches: [],
       durationMs,
       status: "succeeded",
       summary,
+      ...(usage !== undefined && { usage }),
     };
   }
 

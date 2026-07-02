@@ -27,6 +27,30 @@ describe("runResultToReceipt", () => {
     expect(receipt?.terminal_at).toBe("2026-05-10T18:51:00.000Z");
   });
 
+  it("maps usage.totalTokens to cost_tokens when present", () => {
+    const receipt = runResultToReceipt({
+      runId: "wf_usage",
+      result: {
+        status: "succeeded",
+        durationMs: 1000,
+        usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+      },
+      dispatchedAt: undefined,
+      terminalAt: undefined,
+    });
+    expect(receipt?.cost_tokens).toBe(150);
+  });
+
+  it("leaves cost_tokens null when result.json has no usage", () => {
+    const receipt = runResultToReceipt({
+      runId: "wf_no_usage",
+      result: { status: "succeeded", durationMs: 1000 },
+      dispatchedAt: undefined,
+      terminalAt: undefined,
+    });
+    expect(receipt?.cost_tokens).toBeNull();
+  });
+
   it("maps failed and cancelled terminal statuses", () => {
     expect(
       runResultToReceipt({

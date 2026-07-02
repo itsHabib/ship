@@ -109,6 +109,13 @@ export interface AgentRunHandle {
   readonly cancel: () => Promise<void>;
 }
 
+/** Per-run token usage lifted from provider terminal messages. */
+export interface AgentRunUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+}
+
 /** Terminal-state shape `handle.result` resolves to. */
 export interface AgentRunResult {
   readonly status: "succeeded" | "failed" | "cancelled";
@@ -129,6 +136,10 @@ export interface AgentRunResult {
   readonly classificationEvents?: readonly AgentEvent[];
   readonly failureCategory?: FailureCategory;
   readonly failureDetail?: string;
+  /** Provider-reported token usage (claude/codex only today). */
+  readonly usage?: AgentRunUsage;
+  /** Provider-reported USD cost when exposed (claude only today). */
+  readonly costUsd?: number;
 }
 
 /** The contract `core` codes against. */

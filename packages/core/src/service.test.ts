@@ -401,6 +401,40 @@ describe("ShipService.ship — happy path", () => {
     expect(row?.phases[0]?.status).toBe("succeeded");
   });
 
+  test("persisted events.ndjson rows carry ts stamped at the onEvent choke point", async () => {
+    const statusEv = { type: "status", status: "RUNNING" };
+    const toolErrEv = {
+      type: "tool_call",
+      status: "error",
+      name: "shell",
+      result: "database is locked",
+    };
+    h.cursor.enqueue({
+      events: [statusEv, toolErrEv],
+      result: {
+        status: "failed",
+        durationMs: 1000,
+        errorMessage: "database is locked",
+        branches: [],
+      },
+    });
+
+    const out = await h.service.ship({
+      workdir: WORKDIR,
+      repo: "ship",
+      docPath: "docs.md",
+    });
+    await waitForRunTerminal(h.service, out.workflowRunId);
+
+    const content = await h.fs.readFile(out.artifacts.eventsPath, "utf-8");
+    const lines = content.split("\n").filter((line) => line.length > 0);
+    expect(lines).toHaveLength(2);
+    const parsed = lines.map((line) => JSON.parse(line) as { ts?: string; status?: string });
+    expect(parsed[0]?.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(parsed[1]?.status).toBe("error");
+    expect(parsed[1]?.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  });
+
   test("ShipOutput.summary omitted when result.summary missing", async () => {
     h.cursor.enqueue({
       events: [],
