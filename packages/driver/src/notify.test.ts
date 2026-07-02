@@ -5,7 +5,11 @@ import { describe, expect, test, vi } from "vitest";
 
 import type { EscalationPayload } from "./types.js";
 
-import { deliverPageTierEscalation, resolveEscalationTier } from "./escalation.js";
+import {
+  deliverPageTierEscalation,
+  resolveEscalationTier,
+  retryPendingEscalationNotifications,
+} from "./escalation.js";
 import { createNotifyPort, DEFAULT_NOTIFY_TIMEOUT_MS } from "./notify.js";
 
 const FAKE_NOW = "2026-07-02T12:00:00.000Z";
@@ -181,6 +185,109 @@ describe("notify hook", () => {
         }),
       });
       await expect(deliverPageTierEscalation({ notify: port, store }, id)).resolves.toBeUndefined();
+      expect(store.getEscalation(id)?.notifiedAt).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
+  test("pre-resolved page row delivers notify at write time", async () => {
+    const store = createStore({ clock: () => FAKE_NOW, dbPath: ":memory:" });
+    const exec = vi.fn(async () => {
+      await Promise.resolve();
+    });
+    const port = createNotifyPort({ command: "notify" }, exec)!;
+    try {
+      const id = newEscalationId();
+      store.insertEscalation({
+        class: "grant-mutated",
+        id,
+        payloadJson: JSON.stringify({
+          class: "grant-mutated",
+          createdAt: FAKE_NOW,
+          question: "grant activated",
+          v: 1,
+        }),
+        preResolved: { resolution: "grant:activate" },
+        repo: "owner/ship",
+      });
+      await deliverPageTierEscalation({ notify: port, store }, id);
+      expect(exec).toHaveBeenCalledOnce();
+      expect(store.getEscalation(id)?.notifiedAt).toBe(FAKE_NOW);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("pre-resolved page delivery failure is retried on later ticks", async () => {
+    const store = createStore({ clock: () => FAKE_NOW, dbPath: ":memory:" });
+    let calls = 0;
+    const exec = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("transient failure");
+      }
+      await Promise.resolve();
+    });
+    const port = createNotifyPort({ command: "notify" }, exec)!;
+    try {
+      const id = newEscalationId();
+      store.insertEscalation({
+        class: "grant-mutated",
+        id,
+        payloadJson: JSON.stringify({
+          class: "grant-mutated",
+          createdAt: FAKE_NOW,
+          question: "grant activated",
+          v: 1,
+        }),
+        preResolved: { resolution: "grant:activate" },
+        repo: "owner/ship",
+      });
+      await retryPendingEscalationNotifications({ notify: port, store });
+      expect(store.getEscalation(id)?.notifiedAt).toBeUndefined();
+
+      await retryPendingEscalationNotifications({ notify: port, store });
+      expect(store.getEscalation(id)?.notifiedAt).toBe(FAKE_NOW);
+      expect(calls).toBe(2);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("page row resolved after opening is skipped by the retry path", async () => {
+    const store = createStore({ clock: () => FAKE_NOW, dbPath: ":memory:" });
+    const exec = vi.fn(async () => {
+      await Promise.resolve();
+    });
+    const port = createNotifyPort({ command: "notify" }, exec)!;
+    try {
+      const runId = newDriverRunId();
+      store.insertDriverRun({
+        batches: [],
+        id: runId,
+        manifestPath: "/tmp/x.driver.md",
+        repo: "ship",
+        sourceJson: "{}",
+        status: "running",
+      });
+      const id = newEscalationId();
+      store.insertEscalation({
+        class: "cycle-exhausted",
+        driverRunId: runId,
+        id,
+        payloadJson: JSON.stringify({
+          class: "cycle-exhausted",
+          createdAt: FAKE_NOW,
+          question: "exhausted",
+          v: 1,
+        }),
+      });
+      // Answered on a later tick (resolved_at strictly after created_at).
+      store.resolveEscalation(id, "decide:abort", "2026-07-02T13:00:00.000Z");
+
+      await retryPendingEscalationNotifications({ notify: port, store });
+      expect(exec).not.toHaveBeenCalled();
       expect(store.getEscalation(id)?.notifiedAt).toBeUndefined();
     } finally {
       store.close();

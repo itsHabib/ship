@@ -246,4 +246,32 @@ describe("escalations store", () => {
       store.close();
     }
   });
+
+  test("pendingNotifyOnly includes born-resolved rows, excludes answered-later", () => {
+    const store = memoryStore();
+    try {
+      const runId = seedDriverRun(store);
+      const bornResolvedId = newEscalationId();
+      store.insertEscalation({
+        class: "grant-mutated",
+        id: bornResolvedId,
+        payloadJson: "{}",
+        preResolved: { resolution: "grant:activate" },
+        repo: "owner/ship",
+      });
+      const answeredId = newEscalationId();
+      store.insertEscalation({
+        class: "cycle-exhausted",
+        driverRunId: runId,
+        id: answeredId,
+        payloadJson: "{}",
+      });
+      store.resolveEscalation(answeredId, "decide:abort", "2026-07-02T13:00:00.000Z");
+
+      const pending = store.listEscalations({ pendingNotifyOnly: true });
+      expect(pending.map((r) => r.id)).toEqual([bornResolvedId]);
+    } finally {
+      store.close();
+    }
+  });
 });

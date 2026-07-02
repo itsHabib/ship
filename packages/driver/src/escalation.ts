@@ -3,7 +3,7 @@
  */
 
 import type { Logger } from "@ship/logger";
-import type { Store } from "@ship/store";
+import type { Escalation, Store } from "@ship/store";
 import type { DriverRun, DriverStream } from "@ship/store";
 
 import {
@@ -266,6 +266,16 @@ export function resolveAllRunEscalations(
   }
 }
 
+/**
+ * True when a row was resolved by an answer after it was opened, as opposed to
+ * a born-resolved FYI page (resolved_at stamped equal to created_at at insert).
+ * An answered question stays quiet; a born-resolved FYI page still delivers.
+ */
+function isAnsweredAfterOpen(row: Escalation): boolean {
+  if (row.resolvedAt === undefined) return false;
+  return row.resolvedAt !== row.createdAt;
+}
+
 /** Attempt notify for one escalation row; failures are logged, never thrown. */
 export async function deliverPageTierEscalation(
   deps: EscalationDeps,
@@ -273,8 +283,8 @@ export async function deliverPageTierEscalation(
 ): Promise<void> {
   const row = deps.store.getEscalation(escalationId);
   if (row === null) return;
-  if (row.resolvedAt !== undefined) return;
   if (row.notifiedAt !== undefined) return;
+  if (isAnsweredAfterOpen(row)) return;
 
   const escalationClass = row.class as EscalationClass;
   const tier = resolveEscalationTier(escalationClass, deps.escalation);

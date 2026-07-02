@@ -223,8 +223,10 @@ export function createEscalationOps(db: Db, clock: () => string): EscalationOps 
       clauses.push("resolved_at IS NULL");
     }
     if (filter.pendingNotifyOnly === true) {
-      clauses.push("resolved_at IS NULL");
+      // Born-resolved FYI rows (resolved_at stamped equal to created_at at
+      // insert) still need delivery; rows answered after opening do not.
       clauses.push("notified_at IS NULL");
+      clauses.push("(resolved_at IS NULL OR resolved_at = created_at)");
     }
 
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
