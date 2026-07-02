@@ -3,7 +3,85 @@
 import { describe, expect, test } from "vitest";
 
 import { createMemoryShipFs } from "../fs/memory.js";
+import { prepareEventForPersist } from "./event-persist.js";
 import { createNdjsonEventWriter } from "./ndjson.js";
+
+describe("prepareEventForPersist", () => {
+  test("stamps ts when absent", () => {
+    const prepared = prepareEventForPersist({ type: "assistant" }) as { ts?: string };
+    expect(prepared.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test("preserves SDK ts and startedAt without overwriting", () => {
+    const withTs = prepareEventForPersist({ type: "status", ts: "2026-07-02T12:00:00.000Z" }) as {
+      ts: string;
+    };
+    expect(withTs.ts).toBe("2026-07-02T12:00:00.000Z");
+
+    const withStartedAt = prepareEventForPersist({
+      type: "status",
+      startedAt: "2026-07-02T12:01:00.000Z",
+    }) as { ts?: string; startedAt: string };
+    expect(withStartedAt.startedAt).toBe("2026-07-02T12:01:00.000Z");
+    expect(withStartedAt.ts).toBeUndefined();
+  });
+
+  test("adds exit_code from structured shell result on completed tool_call", () => {
+    const prepared = prepareEventForPersist({
+      type: "tool_call",
+      status: "completed",
+      name: "shell",
+      result: { stdout: "", stderr: "fail", exitCode: 1 },
+    }) as { exit_code?: number; status: string };
+    expect(prepared.exit_code).toBe(1);
+    expect(prepared.status).toBe("completed");
+  });
+
+  test("adds exit_code from exit_code alias on structured shell result", () => {
+    const prepared = prepareEventForPersist({
+      type: "tool_call",
+      status: "completed",
+      name: "shell",
+      result: { exit_code: 2 },
+    }) as { exit_code?: number };
+    expect(prepared.exit_code).toBe(2);
+  });
+
+  test("does not add exit_code for non-shell tool_call rows", () => {
+    const prepared = prepareEventForPersist({
+      type: "tool_call",
+      status: "completed",
+      name: "grep",
+      result: { exitCode: 1 },
+    }) as { exit_code?: number };
+    expect(prepared.exit_code).toBeUndefined();
+  });
+
+  test("does not add exit_code when result is free text", () => {
+    const prepared = prepareEventForPersist({
+      type: "tool_call",
+      status: "completed",
+      name: "shell",
+      result: "command failed",
+    }) as { exit_code?: number };
+    expect(prepared.exit_code).toBeUndefined();
+  });
+
+  test("preserves error-status tool_call rows verbatim aside from ts", () => {
+    const prepared = prepareEventForPersist({
+      type: "tool_call",
+      status: "error",
+      name: "shell",
+      result: "database is locked",
+    }) as { status: string; ts?: string };
+    expect(prepared.status).toBe("error");
+    expect(prepared.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test("non-object events pass through unchanged", () => {
+    expect(prepareEventForPersist("raw")).toBe("raw");
+  });
+});
 
 describe("createNdjsonEventWriter", () => {
   test("one JSON line per write; trailing newline; ordering preserved", async () => {
@@ -21,6 +99,27 @@ describe("createNdjsonEventWriter", () => {
     expect(lines.map((l) => JSON.parse(l) as { n: number }).map((e) => e.n)).toEqual([1, 2, 3]);
     // Trailing newline is preserved.
     expect(content.endsWith("\n")).toBe(true);
+  });
+
+  test("prepareEventForPersist fields round-trip through the writer", async () => {
+    const fs = createMemoryShipFs();
+    await fs.mkdir("/runs/wf_1", { recursive: true });
+    const w = createNdjsonEventWriter(fs, "/runs/wf_1/events.ndjson");
+    w.write(
+      prepareEventForPersist({
+        type: "tool_call",
+        status: "completed",
+        name: "shell",
+        result: { exitCode: 1 },
+      }),
+    );
+    await w.close();
+
+    const line = (await fs.readFile("/runs/wf_1/events.ndjson", "utf-8")).trim();
+    const parsed = JSON.parse(line) as { exit_code?: number; ts?: string; status: string };
+    expect(parsed.status).toBe("completed");
+    expect(parsed.exit_code).toBe(1);
+    expect(parsed.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   test("close() is idempotent", async () => {

@@ -21,7 +21,7 @@ const baseInput = (): AgentRunInput => ({
 });
 
 describe("mapTerminalEvent", () => {
-  test("turn.completed maps to succeeded with last agent_message summary", () => {
+  test("turn.completed maps to succeeded with last agent_message summary and usage", () => {
     const events = [
       {
         item: { id: "msg-1", text: "implementation done", type: "agent_message" },
@@ -43,6 +43,11 @@ describe("mapTerminalEvent", () => {
       durationMs: 1500,
       status: "succeeded",
       summary: "implementation done",
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        totalTokens: 2,
+      },
     });
   });
 

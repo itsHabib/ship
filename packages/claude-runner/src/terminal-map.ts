@@ -3,7 +3,7 @@
  */
 
 import type { SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentRunInput, AgentRunResult } from "@ship/agent-runner";
+import type { AgentRunInput, AgentRunResult, AgentRunUsage } from "@ship/agent-runner";
 
 import { MAX_CLASSIFICATION_EVENTS } from "@ship/agent-runner";
 
@@ -16,6 +16,21 @@ import {
 import { claudeEventProjection } from "./claude-event-projection.js";
 
 export { MAX_CLASSIFICATION_EVENTS };
+
+function liftClaudeUsage(
+  msg: Extract<SDKResultMessage, { subtype: "success" }>,
+): AgentRunUsage | undefined {
+  const usage = msg.usage;
+  const inputTokens = usage.input_tokens;
+  const outputTokens = usage.output_tokens;
+  const cacheRead = usage.cache_read_input_tokens;
+  const cacheCreate = usage.cache_creation_input_tokens;
+  const totalTokens = inputTokens + outputTokens + cacheRead + cacheCreate;
+  if (!Number.isFinite(totalTokens) || totalTokens <= 0) {
+    return undefined;
+  }
+  return { inputTokens, outputTokens, totalTokens };
+}
 
 function resultErrors(msg: SDKResultMessage): string[] {
   if (msg.subtype === "success") return [];
@@ -105,11 +120,14 @@ export function mapResultMessage(
   events: readonly SDKMessage[],
 ): AgentRunResult {
   if (msg.subtype === "success") {
+    const usage = liftClaudeUsage(msg);
     return {
       branches: [],
       durationMs: msg.duration_ms,
       status: "succeeded",
       summary: msg.result,
+      ...(usage !== undefined && { usage }),
+      ...(typeof msg.total_cost_usd === "number" && { costUsd: msg.total_cost_usd }),
     };
   }
 
