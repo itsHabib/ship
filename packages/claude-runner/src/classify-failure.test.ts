@@ -125,6 +125,16 @@ describe("classifyFailure (Claude)", () => {
     ).toBe("gateway-auth");
   });
 
+  test("gateway 4xx → not gateway-unreachable (wrong-endpoint, not transport)", () => {
+    expect(
+      classifyFailure({
+        events: [],
+        thrownErr: new Error("gateway returned 404 Not Found"),
+        thrownError: true,
+      }),
+    ).not.toBe("gateway-unreachable");
+  });
+
   test("gateway returned 502 → gateway-unreachable, not gateway-auth", () => {
     expect(
       classifyFailure({
