@@ -1,40 +1,39 @@
-# claude-runner gateway classifier — narrow to 5xx-only
+# claude-runner gateway classifier — regression test for the 5xx-only boundary
 
 Status: ready
 Owner: claude-code:michael
-Scope: ~5 LOC + 1 test in `packages/claude-runner/src/classify-failure.{ts,test.ts}`. Weighted budget < 50.
+Scope: test-only, +~10 lines in `packages/claude-runner/src/classify-failure.test.ts` — the production classifier is already 5xx-only. Weighted budget < 20.
 
 ## Problem
 
-`isGatewayUnreachableError` in `packages/claude-runner/src/classify-failure.ts` currently
-matches **both** 4xx and 5xx status codes when the text mentions a gateway:
+`isGatewayUnreachableText` in `packages/claude-runner/src/classify-failure.ts` already narrows
+gateway status matching to **5xx-only**:
 
 ```
-/gateway/i.test(text) && /\b[45]\d{2}\b/.test(text)
+/gateway/i.test(text) && /\b5\d{2}\b/.test(text)
 ```
 
-A 4xx from a gateway is **not** transport unreachability — a `401`/`403` is an auth failure
-and a `400`/`404` is a wrong-endpoint config error. Only a **5xx** means the gateway itself is
-unreachable/erroring. The codex-runner classifier was mirrored from this one and has already
-been narrowed to 5xx-only (PR #155, commit 271c271); claude-runner carries the same latent
-over-match. This only mislabels the `FailureCategory` on a claude run that hits a gateway 4xx —
-no functional break — so it is low priority, but the label should be correct.
+This mirrors the codex-runner fix (PR #155, commit 271c271): a 4xx from a gateway is **not**
+transport unreachability — a `401`/`403` is an auth rejection and a `400`/`404` a wrong-endpoint
+config error; only a **5xx** means the gateway itself is unreachable. The source narrowing had
+already landed; what was missing was a **regression test** pinning the 4xx boundary so it can't
+silently drift back to a `[45]xx` match.
 
 ## Change
 
-1. In `packages/claude-runner/src/classify-failure.ts`, narrow the status-code regex inside
-   `isGatewayUnreachableError` from `/\b[45]\d{2}\b/` to `/\b5\d{2}\b/` (5xx only). Leave the
-   `/gateway/i` text requirement unchanged.
-2. In `packages/claude-runner/src/classify-failure.test.ts`, add a test asserting a gateway
-   error message carrying a **4xx** status (e.g. a `401` containing the word "gateway") does
-   **not** classify as `gateway-unreachable`. Keep or add a positive case confirming a **5xx**
-   with "gateway" still **does** classify as `gateway-unreachable`.
+Test-only — no production change. Add the missing regression coverage:
+
+1. In `packages/claude-runner/src/classify-failure.test.ts`, add a negative case asserting a
+   gateway `404` classifies as **`sdk-throw`** (i.e. not `gateway-unreachable`). Asserting the
+   exact category — rather than merely "not `gateway-unreachable`" — also catches an accidental
+   mis-route into any other wrong category. The existing `502` / `5xx` positive cases already
+   lock the other side of the boundary.
 
 ## Validation
 
-- `pnpm --filter @ship/claude-runner test` passes, including the new 4xx-negative case.
-- Typecheck/lint clean for the changed files.
-- No behavior change outside the classifier's 4xx branch.
+- `pnpm --filter @ship/claude-runner test` passes, including the new gateway-`404` → `sdk-throw` case.
+- Typecheck/lint clean for the changed file.
+- No production behavior change — coverage only.
 
 ## Out of scope
 
