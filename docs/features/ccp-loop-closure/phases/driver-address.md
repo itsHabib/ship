@@ -39,19 +39,35 @@ file opaquely — no parsing, no selection, no policy.
 What the verb does, in order:
 
 1. **Validate addressability** (structured refusals, never silent no-ops — see
-   *Refusals* below): stream exists, is `landed`, has `prNumber` + `branch`, PR is
-   open, run is not cancelled/mid-dispatch, cycle cap not exhausted.
-2. **Read the findings file** and embed it verbatim in the re-dispatch input under a
-   fixed mechanical preamble ("address the following review findings on the current
-   branch; do not open a new PR"). The findings path is recorded on the attempt row
-   (`StreamAttempt.docPath`) for the audit trail.
-3. **Re-dispatch onto the existing PR branch** by reusing the branch-continuation
-   mechanism that `flipStreamToCloud` already exercises: pass
-   `CloudContinuation { startingRef: stream.branch, workOnCurrentBranch: true }`
-   into `dispatchStream`. One lift inside `buildShipInput`: it currently
-   hardcodes `cloud.autoCreatePR: true` — correct for flip-cloud, whose streams
-   have no PR yet — so the address path must send it `false` (a PR already
-   exists; the run pushes to the branch). The rest is landed `#180` threading
+   *Refusals* below): stream exists, is `landed`, runtime is cloud, has `prUrl` +
+   `branch` (the cloud landing path persists `prUrl`/`branch` via
+   `buildPrMetaPatch`; `prNumber` is only written later by `land`/`markMerged`,
+   so the precondition must key off `prUrl`), the PR is open — checked live via
+   `gh.viewPullRequest` with the number parsed by the existing `prNumberFromUrl`
+   — run not cancelled/failed, cycle cap not exhausted.
+2. **Synthesize the address doc**: a fixed mechanical preamble ("address the
+   following review findings on the current branch; do not open a new PR")
+   prepended to the findings file's content, written as a file beside the run's
+   driver state so the exact dispatched text is auditable. That synthesized file
+   is passed as the dispatch `docPath` — `buildShipInput` keeps its
+   docPath-in/ShipInput-out shape — and recorded on the attempt row
+   (`StreamAttempt.docPath`).
+3. **Persist the continuation, then re-dispatch onto the existing PR branch.**
+   Address patches the stream row first — `workOnCurrentBranch: true` — and then
+   dispatches via the same `CloudContinuation` path `flipStreamToCloud`
+   exercises. Persisting (rather than only passing the one-shot override into
+   this one `dispatchStream` call) is load-bearing: a failed address re-dispatch
+   retried via `decide retry` re-enters the tick path, which resolves the
+   continuation from the *stream row* (`resolveCloudContinuation(stream)`) — so
+   the retry stays on the PR branch instead of silently forking a fresh one.
+   One lift inside `buildShipInput`: it currently hardcodes
+   `cloud.autoCreatePR: true` — correct for fresh dispatch and flip-cloud, whose
+   streams have no PR yet — and the cloud runner defaults an *omitted* value to
+   `true` (`spec.autoCreatePR ?? true`), so the lift is a mechanism rule keyed on
+   persisted state, sending an explicit `false` whenever the stream already
+   carries a `prUrl`: never auto-create when the PR exists. Fresh/flip-cloud
+   dispatches (no `prUrl`) keep `true`; address dispatches *and any retry of an
+   address stream* get `false`. The rest is landed `#180` threading
    (`buildShipInput` → `ShipInput.cloud.repos[0].startingRef` +
    `cloud.workOnCurrentBranch`); no new runner plumbing.
 4. **Increment the stream's review-cycle counter** (`reviewCycles`, migration
@@ -96,10 +112,11 @@ and `decide retry` attempts must not count against review cycles.
 ### Refusals
 
 Structured errors in the `land`/`decide` family (a `PreconditionError`-shaped
-code + message), one per condition: `no-pr` (stream has no `prNumber`/`branch`),
+code + message), one per condition: `no-pr` (stream has no `prUrl`/`branch`),
 `pr-not-open` (merged/closed), `not-landed` (stream status outside `landed`),
-`run-not-addressable` (cancelled/failed run), `cycle-exhausted` (cap reached —
-also writes the escalation row), `findings-unreadable` (missing/empty file).
+`not-cloud` (local/rooms runtime — see *Runtime scope*), `run-not-addressable`
+(cancelled/failed run), `cycle-exhausted` (cap reached — also writes the
+escalation row), `findings-unreadable` (missing/empty file).
 
 ### Runtime scope
 
@@ -133,31 +150,59 @@ follow-on if the refusal ever bites in practice.
 ## EDs (engineering decisions)
 
 1. `AddressOpts = { streamId, findingsPath, maxCycles? }`; verb signature
-   `address(store, ship, driverRunId, opts): Promise<DriverRun>` — `ship` port
-   needed because it dispatches, unlike `land` which takes the `gh` port.
-2. The findings block is embedded into the ShipInput task text; the original
-   spec docPath is *not* re-sent (the agent is fixing review findings, not
-   re-implementing the spec). `StreamAttempt.docPath` records the findings path.
-3. `flipCloudDraftReady` (the `#177` poll-boundary flip) is a no-op for address
-   re-dispatches — the PR is already ready; nothing to guard.
-4. No MCP surface in this PR — `driver_address` parity rides
+   `address(store, ship, gh, driverRunId, opts): Promise<DriverRun>` — both
+   ports: `ship` because it dispatches, `gh` because the `pr-not-open` refusal
+   needs live PR state (`viewPullRequest`), which the store does not hold.
+2. The dispatch input is a *synthesized address doc* (preamble + findings file
+   content, written beside the run's driver state), passed as `docPath` — the
+   original spec docPath is *not* re-sent (the agent is fixing review findings,
+   not re-implementing the spec), and `buildShipInput` keeps its existing
+   docPath-in/ShipInput-out shape. `StreamAttempt.docPath` records the
+   synthesized doc.
+3. **The `#177` poll-boundary flip must not fire on address re-dispatches.**
+   `handleSucceededPoll` calls `flipCloudDraftReady` whenever a succeeded cloud
+   result carries a `prUrl`, and `flipCloudDraftReady` calls `gh.markReady`
+   unconditionally — an error there marks the stream `failed`. Whether
+   `markReady` on an already-ready PR errors is a GitHub-behavior detail this
+   design refuses to depend on: the mechanism rule is to flip only when this
+   dispatch *created* the PR — i.e. skip the flip when the stream row already
+   carried a `prUrl` before the poll. That predicate is state the engine already
+   owns, covers address and retries-of-address uniformly, and never calls
+   `markReady` on a PR the engine knows is past its draft phase.
+4. **`reviewCycles` is a new counter, distinct from the existing `cycles`
+   column.** `driver_streams.cycles` (0005) is the *seat-reported* count written
+   at merge time via `land --cycles` / `mark-merged --cycles` — how many
+   `/review-coordinator` passes the seat ran. `reviewCycles` (0014) is
+   *engine-incremented*, once per `address` dispatch. They can legitimately
+   disagree (a seat may run more coordinator passes than address re-dispatches);
+   the cap enforces `reviewCycles` only. Do not conflate them, and do not wire
+   `AddressOpts.maxCycles`'s default to `REQUIRED_REVIEW_COORDINATOR_CYCLES`
+   (`types.ts`) — same value 3, different semantic scope (merge-gate evidence
+   vs re-dispatch budget).
+5. No MCP surface in this PR — `driver_address` parity rides
    `ccp-mcp-verb-parity` (Phase 2), keeping this PR inside the sizing band.
-5. Migration number `0014` (0011 is skipped in-tree; 0012 continuation and 0013
+6. Migration number `0014` (0011 is skipped in-tree; 0012 continuation and 0013
    escalations are landed).
 
 ## Validation
 
 - Unit (`engine.test.ts`): address on a `landed` cloud stream → dispatch input
-  carries `startingRef == stream.branch`, `workOnCurrentBranch: true`, no
-  `autoCreatePR`, findings block present; `reviewCycles` increments exactly
-  once per call; refusal matrix (`no-pr`, `pr-not-open`, `not-landed`,
-  `not-cloud`, `findings-unreadable`) each return the structured code and leave
-  the stream row untouched; call at `maxCycles` → refusal + `cycle-exhausted`
-  escalation row written once (dedup on the open row).
+  carries `startingRef == stream.branch`, `workOnCurrentBranch: true`,
+  `cloud.autoCreatePR === false` (explicit false, never omitted — the runner
+  defaults omission to `true`), findings block present; `reviewCycles`
+  increments exactly once per call; the stream row persists
+  `workOnCurrentBranch: true`; a subsequent tick/`decide retry` re-dispatch of
+  that stream still resolves `startingRef == branch` + `autoCreatePR === false`
+  from the row alone (no override in scope); `handleSucceededPoll` skips the
+  draft→ready flip when the stream carried a `prUrl` before the poll; refusal
+  matrix (`no-pr`, `pr-not-open`, `not-landed`, `not-cloud`,
+  `findings-unreadable`) each return the structured code and leave the stream
+  row untouched; call at `maxCycles` → refusal + `cycle-exhausted` escalation
+  row written once (dedup on the open row).
 - Store: migration 0014 round-trips `reviewCycles` (defaults 0 for existing
   rows); counter survives a store reopen.
 - L2 scenario: `landed` → address → `dispatched` → poll terminal-succeeded →
-  `landed` again with `reviewCycles == 1` and the same `prNumber`.
+  `landed` again with `reviewCycles == 1` and the same `prUrl`.
 - `make check` green (ubuntu + windows matrix).
 
 ## Risks
@@ -170,8 +215,9 @@ follow-on if the refusal ever bites in practice.
   commit. Mechanism doesn't guard this; the re-review cycle catches it.
 - **Cap bypass by `decide retry`.** A failed address re-dispatch can be retried
   via `decide` without bumping `reviewCycles` (retry ≠ new cycle). Deliberate:
-  the cap counts *review* cycles, not infra retries — noted here so it isn't
-  re-litigated as a bug.
+  the cap counts *review* cycles, not infra retries — and the retry stays on
+  the PR branch because the continuation is persisted on the stream row (see
+  Functional step 3). Noted here so it isn't re-litigated as a bug.
 
 ## Out of scope
 
@@ -186,10 +232,15 @@ follow-on if the refusal ever bites in practice.
 
 1. Migration `0014_driver_streams_review_cycles.sql` + `driver-schemas.ts`
    field (`reviewCycles`, default 0) + store round-trip test.
-2. `address()` in the engine: validation → findings read → continuation
-   dispatch (reusing `resolveCloudContinuation` override) → cycle bump; refusal
+2. The `buildShipInput` lift (`autoCreatePR: false` when the stream carries a
+   `prUrl`) + the `handleSucceededPoll` flip-skip (stream had `prUrl` before the
+   poll) — both are stream-state predicates, independent of the new verb, and
+   land first so retries and polls behave before address exists.
+3. `address()` in the engine: validation (via `gh.viewPullRequest` +
+   `prNumberFromUrl`) → synthesized address doc → persist
+   `workOnCurrentBranch: true` → continuation dispatch → cycle bump; refusal
    taxonomy in `types.ts`; `cycle-exhausted` escalation wiring.
-3. `service.ts` factory method + CLI verb (`driver.ts`), mirroring `land`'s
+4. `service.ts` factory method + CLI verb (`driver.ts`), mirroring `land`'s
    registration; JSON output via the existing formatter.
-4. Tests per *Validation*; update `docs/features/cloud-control-plane/spec.md`
+5. Tests per *Validation*; update `docs/features/cloud-control-plane/spec.md`
    checklist row for the verb.
