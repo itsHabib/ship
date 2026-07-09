@@ -196,9 +196,14 @@ follow-on if the refusal ever bites in practice.
    `prBranch` into delivery instructions that include opening a PR. The same
    stream-has-`prUrl` predicate therefore conditions that instruction block:
    when the PR exists, the prompt instructs pushing to the existing branch and
-   explicitly not opening a PR. One prompt-assembly branch in the claude
-   runner's cloud path — mechanism, not policy; without it, claude-provider
-   address runs would try to open a duplicate PR.
+   explicitly not opening a PR. Mechanically this is a *new mode*, not
+   `prBranch` suppression: `buildDispatchPrompt` today knows only "prBranch set
+   → push + open PR" and "prBranch absent → no delivery instructions at all",
+   and an address run with no delivery instructions could push to a random
+   branch or open a duplicate PR anyway. So the prompt assembler grows an
+   `existingPr`-style option that emits the push instruction and omits the
+   open-a-PR fragment — one prompt-assembly branch in the claude runner's cloud
+   path, mechanism not policy.
 6. No MCP surface in this PR — `driver_address` parity rides
    `ccp-mcp-verb-parity` (Phase 2), keeping this PR inside the sizing band.
 7. Migration number `0014` (0011 is skipped in-tree; 0012 continuation and 0013
