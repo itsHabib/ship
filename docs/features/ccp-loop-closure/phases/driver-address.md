@@ -9,9 +9,9 @@
 
 | Bucket | Files | Est. LOC | Weighted |
 |---|---|---|---|
-| Production source | `packages/driver/src/engine.ts` (verb + dispatch-input lift), `packages/driver/src/types.ts`, `packages/driver/src/service.ts`, `packages/cli/src/commands/driver.ts`, `packages/store/src/driver-schemas.ts` + `packages/store/migrations/0014_driver_streams_review_cycles.sql` | ~380 | 380 |
-| Tests | `packages/driver/src/engine.test.ts`, CLI + store tests | ~380 | 190 |
-| **Total** | | | **~570** |
+| Production source | `packages/driver/src/engine.ts` (verb + dispatch-input lift + flip-skip + latest-attempt docPath resolution), `packages/driver/src/types.ts`, `packages/driver/src/service.ts`, `packages/cli/src/commands/driver.ts`, `packages/claude-runner/src/*` (condition the prBranch open-a-PR delivery instructions on PR-exists), `packages/store/src/driver-schemas.ts` + `packages/store/migrations/0014_driver_streams_review_cycles.sql` | ~420 | 420 |
+| Tests | `packages/driver/src/engine.test.ts`, claude-runner prompt test, CLI + store tests | ~400 | 200 |
+| **Total** | | | **~620** |
 
 Band: **ideal**. No-split justification: the verb, its dispatch-input lift, and the
 cycle counter are one state transition — a verb that re-dispatches without counting
@@ -47,11 +47,17 @@ What the verb does, in order:
    — run not cancelled/failed, cycle cap not exhausted.
 2. **Synthesize the address doc**: a fixed mechanical preamble ("address the
    following review findings on the current branch; do not open a new PR")
-   prepended to the findings file's content, written as a file beside the run's
-   driver state so the exact dispatched text is auditable. That synthesized file
-   is passed as the dispatch `docPath` — `buildShipInput` keeps its
-   docPath-in/ShipInput-out shape — and recorded on the attempt row
-   (`StreamAttempt.docPath`).
+   prepended to the findings file's content, written adjacent to the run
+   manifest — `<manifest-dir>/address-<streamId>-cycle<N>.md` — so the exact
+   dispatched text is auditable. That synthesized file is the dispatch
+   `docPath`, and it needs a mechanism: `dispatchStream` today always derives
+   `docPath` from `stream.specPath` via `resolveStreamDocPath`, so it gains an
+   optional `docPath` override (a small, local parameter — `buildShipInput`
+   already accepts an explicit path). The attempt row records the synthesized
+   doc (`StreamAttempt.docPath`), and the tick-path re-dispatch resolves the
+   *latest attempt's* recorded docPath before falling back to
+   `stream.specPath` — so a `decide retry` of a failed address re-runs the
+   findings doc, never the original spec, without any retry-specific plumbing.
 3. **Persist the continuation, then re-dispatch onto the existing PR branch.**
    Address patches the stream row first — `workOnCurrentBranch: true` — and then
    dispatches via the same `CloudContinuation` path `flipStreamToCloud`
@@ -91,10 +97,14 @@ landed --address--> dispatched --poll--> landed   (terminal-succeeded, same PR)
 - `pending|dispatching|dispatched`: refuse — the stream is still in flight.
 - `failed`: refuse — that's `decide retry`'s lane, which re-dispatches fresh.
 - `skipped|done`: refuse — terminal; `done` means the PR already merged.
-- Run status: `address` is legal while the run is `running` or
-  `awaiting_judgment`; refused on `cancelled|failed|done`... with one carve-out:
-  a run that reached `done` while its stream is still `landed` cannot exist
-  (exit evaluation requires streams terminal), so no special case is needed.
+- Run status: legality is defined negatively — `address` is refused only when
+  the run is sticky-terminal (`done|failed|cancelled`, the `isStickyTerminal`
+  set). That admits `running`, `awaiting_judgment`, **and `blocked_on_merges`**
+  — the derived status a run presents when every stream is `landed` and nothing
+  is in flight, which is precisely the post-land review-fix moment on a typical
+  single-stream cloud run. (A `done` run with a still-`landed` stream cannot
+  exist — exit evaluation requires streams terminal — so no carve-out is
+  needed.)
 
 ### Cycle cap
 
@@ -159,16 +169,16 @@ follow-on if the refusal ever bites in practice.
    not re-implementing the spec), and `buildShipInput` keeps its existing
    docPath-in/ShipInput-out shape. `StreamAttempt.docPath` records the
    synthesized doc.
-3. **The `#177` poll-boundary flip must not fire on address re-dispatches.**
+3. **The `#177` poll-boundary flip skips address re-dispatches.**
    `handleSucceededPoll` calls `flipCloudDraftReady` whenever a succeeded cloud
-   result carries a `prUrl`, and `flipCloudDraftReady` calls `gh.markReady`
-   unconditionally — an error there marks the stream `failed`. Whether
-   `markReady` on an already-ready PR errors is a GitHub-behavior detail this
-   design refuses to depend on: the mechanism rule is to flip only when this
-   dispatch *created* the PR — i.e. skip the flip when the stream row already
-   carried a `prUrl` before the poll. That predicate is state the engine already
-   owns, covers address and retries-of-address uniformly, and never calls
-   `markReady` on a PR the engine knows is past its draft phase.
+   result carries a `prUrl`. `markReady` in the gh-port is already idempotent —
+   it checks `fetchPrReadiness().isDraft` first and early-returns on a
+   non-draft — so this is not a failure mode; the mechanism rule is still worth
+   one line: flip only when this dispatch *created* the PR (skip when the
+   stream row already carried a `prUrl` before the poll). It saves the
+   pointless readiness round-trip on every address poll and keeps the flip's
+   meaning precise — it belongs to PR creation, not to every succeeded cloud
+   poll.
 4. **`reviewCycles` is a new counter, distinct from the existing `cycles`
    column.** `driver_streams.cycles` (0005) is the *seat-reported* count written
    at merge time via `land --cycles` / `mark-merged --cycles` — how many
@@ -179,9 +189,19 @@ follow-on if the refusal ever bites in practice.
    `AddressOpts.maxCycles`'s default to `REQUIRED_REVIEW_COORDINATOR_CYCLES`
    (`types.ts`) — same value 3, different semantic scope (merge-gate evidence
    vs re-dispatch budget).
-5. No MCP surface in this PR — `driver_address` parity rides
+5. **The claude cloud provider needs the same no-new-PR treatment.**
+   `autoCreatePR` only governs the cursor cloud runner. For
+   `provider: "claude"` cloud streams, `buildShipInput` sets
+   `cloud.repos[0].prBranch`, and the claude runner's cloud prompt turns a
+   `prBranch` into delivery instructions that include opening a PR. The same
+   stream-has-`prUrl` predicate therefore conditions that instruction block:
+   when the PR exists, the prompt instructs pushing to the existing branch and
+   explicitly not opening a PR. One prompt-assembly branch in the claude
+   runner's cloud path — mechanism, not policy; without it, claude-provider
+   address runs would try to open a duplicate PR.
+6. No MCP surface in this PR — `driver_address` parity rides
    `ccp-mcp-verb-parity` (Phase 2), keeping this PR inside the sizing band.
-6. Migration number `0014` (0011 is skipped in-tree; 0012 continuation and 0013
+7. Migration number `0014` (0011 is skipped in-tree; 0012 continuation and 0013
    escalations are landed).
 
 ## Validation
@@ -192,13 +212,17 @@ follow-on if the refusal ever bites in practice.
   defaults omission to `true`), findings block present; `reviewCycles`
   increments exactly once per call; the stream row persists
   `workOnCurrentBranch: true`; a subsequent tick/`decide retry` re-dispatch of
-  that stream still resolves `startingRef == branch` + `autoCreatePR === false`
-  from the row alone (no override in scope); `handleSucceededPoll` skips the
-  draft→ready flip when the stream carried a `prUrl` before the poll; refusal
-  matrix (`no-pr`, `pr-not-open`, `not-landed`, `not-cloud`,
-  `findings-unreadable`) each return the structured code and leave the stream
-  row untouched; call at `maxCycles` → refusal + `cycle-exhausted` escalation
-  row written once (dedup on the open row).
+  that stream resolves `startingRef == branch` + `autoCreatePR === false` from
+  the row alone AND dispatches the *latest attempt's* recorded docPath (the
+  synthesized findings doc), not `stream.specPath`; address is accepted on a
+  run presenting `blocked_on_merges` (all streams `landed`) and refused only on
+  sticky-terminal runs; a `provider: "claude"` address dispatch carries the
+  push-to-existing-branch delivery instructions and no open-a-PR instruction;
+  `handleSucceededPoll` skips the draft→ready flip when the stream carried a
+  `prUrl` before the poll; refusal matrix (`no-pr`, `pr-not-open`,
+  `not-landed`, `not-cloud`, `findings-unreadable`) each return the structured
+  code and leave the stream row untouched; call at `maxCycles` → refusal +
+  `cycle-exhausted` escalation row written once (dedup on the open row).
 - Store: migration 0014 round-trips `reviewCycles` (defaults 0 for existing
   rows); counter survives a store reopen.
 - L2 scenario: `landed` → address → `dispatched` → poll terminal-succeeded →
@@ -232,14 +256,18 @@ follow-on if the refusal ever bites in practice.
 
 1. Migration `0014_driver_streams_review_cycles.sql` + `driver-schemas.ts`
    field (`reviewCycles`, default 0) + store round-trip test.
-2. The `buildShipInput` lift (`autoCreatePR: false` when the stream carries a
-   `prUrl`) + the `handleSucceededPoll` flip-skip (stream had `prUrl` before the
-   poll) — both are stream-state predicates, independent of the new verb, and
-   land first so retries and polls behave before address exists.
+2. The dispatch-path groundwork, all stream-state predicates independent of the
+   new verb, landing first so retries and polls behave before address exists:
+   the `buildShipInput` lift (`autoCreatePR: false` when the stream carries a
+   `prUrl`), the claude-runner prompt branch (PR exists → push-to-branch
+   instructions, no open-a-PR), the `handleSucceededPoll` flip-skip (stream had
+   `prUrl` before the poll), the `dispatchStream` optional `docPath` override,
+   and latest-attempt docPath resolution on the tick path.
 3. `address()` in the engine: validation (via `gh.viewPullRequest` +
    `prNumberFromUrl`) → synthesized address doc → persist
-   `workOnCurrentBranch: true` → continuation dispatch → cycle bump; refusal
-   taxonomy in `types.ts`; `cycle-exhausted` escalation wiring.
+   `workOnCurrentBranch: true` → continuation dispatch with the docPath
+   override → cycle bump; refusal taxonomy in `types.ts`; `cycle-exhausted`
+   escalation wiring.
 4. `service.ts` factory method + CLI verb (`driver.ts`), mirroring `land`'s
    registration; JSON output via the existing formatter.
 5. Tests per *Validation*; update `docs/features/cloud-control-plane/spec.md`
