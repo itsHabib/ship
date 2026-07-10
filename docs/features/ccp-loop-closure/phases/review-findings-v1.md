@@ -83,7 +83,7 @@ The engine validates the artifact against live state before any write:
 1. manifest repo, PR URL number, and artifact subject agree;
 2. `gh view` reports the PR open and returns `headRefOid`;
 3. artifact `head_sha` equals that exact current PR head;
-4. artifact id and raw-file SHA-256 digest have not been consumed;
+4. artifact id and canonical content SHA-256 digest have not been consumed;
 5. the normal landed/cloud/cycle guards still pass.
 
 On success Ship writes the synthesized address document, then atomically records
@@ -102,9 +102,18 @@ again.
 2. **Engine-owned review cycles stay engine-owned.** The artifact has no cycle
    counter. A producer must not read deep Ship state merely to manufacture one;
    the durable consumption row links artifact, stream, and resulting engine cycle.
-3. **Digest is over the exact input bytes.** `artifact_id` catches semantic
-   redelivery after reformatting; SHA-256 catches exact payload reuse under another
-   id. Both are unique.
+3. **Replay identity is semantic, not byte-level.** `artifact_id` catches replay
+   of the same envelope. A canonical SHA-256 digest catches a producer retry that
+   regenerates the envelope id or timestamp, reformats JSON, or reorders sets.
+   The digest input is a fixed known-field projection containing
+   `schema_version`, `decision`, `subject`, normalized `panel`, and normalized
+   `findings`; it excludes `artifact_id`, all of `producer`, and every unknown
+   optional/receipt field. Canonicalization writes object keys in a fixed order,
+   sorts each panel array, sorts findings by finding id, sorts each finding's
+   sources by `(reviewer, comment_id, url, file, line)`, serializes stable JSON,
+   and hashes those UTF-8 bytes. Thus transport metadata and collection ordering
+   cannot turn one review result into a second dispatch. Both artifact id and
+   canonical digest are unique.
 4. **Consumption and dispatch preparation are one store transaction.** Recording
    consumption before a separate stream update creates a crash window; updating
    the stream first permits duplicate dispatch. The store method inserts the
@@ -140,7 +149,7 @@ CREATE UNIQUE INDEX driver_streams_run_id_id_idx
 
 CREATE TABLE driver_review_artifacts (
   artifact_id TEXT PRIMARY KEY,
-  digest_sha256 TEXT NOT NULL UNIQUE,
+  canonical_sha256 TEXT NOT NULL UNIQUE,
   driver_run_id TEXT NOT NULL,
   stream_id TEXT NOT NULL,
   repo TEXT NOT NULL,
@@ -155,7 +164,8 @@ CREATE TABLE driver_review_artifacts (
 ```
 
 The store exposes one sharp operation:
-`consumeReviewArtifactAndPrepareDispatch(input)`. It refuses duplicate id/digest,
+`consumeReviewArtifactAndPrepareDispatch(input)`. It refuses duplicate artifact
+id/canonical digest,
 non-landed state, and stale expected cycle with typed store errors; inserts the
 row; appends the prepared attempt; updates `review_cycles`,
 `work_on_current_branch`, and status `dispatching`; and bumps the parent timestamp
@@ -168,7 +178,7 @@ Extend `AddressErrorCode` with:
 - `findings-invalid` — malformed JSON or schema/consistency failure;
 - `findings-subject-mismatch` — repo or PR number differs;
 - `findings-stale-head` — reviewed head differs from live `headRefOid`;
-- `findings-duplicate` — artifact id or digest already consumed.
+- `findings-duplicate` — artifact id or canonical digest already consumed;
 - `address-raced` — compare-and-update found a non-landed stream or a different
   current review cycle after validation.
 
@@ -189,7 +199,9 @@ a printed seed/counterexample:
    reviewer's completed-panel membership never dispatches. Adding one invalid
    source among otherwise valid findings/sources also always refuses.
 3. **At most once:** for generated repeated sequences of one artifact, same-id
-   variants, and same-byte/different-id variants, Ship dispatches at most once.
+   variants, and canonical replay variants with regenerated artifact ids and
+   timestamps, reformatted JSON, and reordered panel/finding/source arrays, Ship
+   dispatches at most once.
    A dedicated `Promise.all` example sends two concurrent calls; SQLite serializes
    the writes and exactly one consume-and-prepare transaction wins.
 4. **Extension tolerance:** adding unknown optional fields at any object level
@@ -219,9 +231,9 @@ must pass on Windows and Ubuntu.
 - **GH adapter drift.** `viewPullRequest` adds `headRefOid` to its existing
   query and fake port; exact-head behavior is tested at the port and engine.
 - **Oversized bot evidence.** Hard bounds fail closed before prompt construction.
-- **Concurrent address calls.** SQLite's write lock plus the unique id/digest and
-  expected-cycle compare-and-update serialize the winner; the loser maps to
-  `findings-duplicate` or `address-raced` and never starts Ship.
+- **Concurrent address calls.** SQLite's write lock plus the unique artifact id /
+  canonical digest and expected-cycle compare-and-update serialize the winner;
+  the loser maps to `findings-duplicate` or `address-raced` and never starts Ship.
 
 ## Out of scope
 
