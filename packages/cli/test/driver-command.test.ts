@@ -1,6 +1,7 @@
 /** Argv → DriverService plumbing for `ship driver` subcommands. */
 
 import { createFakeGhPort } from "@ship/driver/test/fake-gh";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { CliExit } from "../src/errors.js";
@@ -476,5 +477,38 @@ batches:
     expect(startCall?.input.runtime).toBe("cloud");
     expect(startCall?.input.cloud?.repos[0]?.startingRef).toBe("feat-a");
     expect(startCall?.input.cloud?.workOnCurrentBranch).toBe(true);
+  });
+
+  test("address refuses a non-landed stream with exit 1 and a structured message", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    expect(await runDriver(["driver", "import", layout.manifestPath])).toBe(0);
+    const imported = JSON.parse(stdout.join("").trim()) as { driverRunId: string };
+
+    stdout.length = 0;
+    await runDriver(["driver", "status", imported.driverRunId, "--json"]);
+    const status = JSON.parse(stdout.join("").trim()) as {
+      batches: { streams: { id: string }[] }[];
+    };
+    const streamId = status.batches[0]?.streams[0]?.id;
+    expect(streamId).toBeDefined();
+
+    const { writeFileSync } = await import("node:fs");
+    const findingsPath = join(h.tmp, "findings.md");
+    writeFileSync(findingsPath, "- fix the null deref\n");
+    stdout.length = 0;
+    stderr.length = 0;
+    // A freshly imported stream is local + pending — address refuses `not-landed`.
+    expect(
+      await runDriver([
+        "driver",
+        "address",
+        imported.driverRunId,
+        "--stream",
+        streamId!,
+        "--findings",
+        findingsPath,
+      ]),
+    ).toBe(1);
+    expect(stderr.join("")).toContain("not landed");
   });
 });

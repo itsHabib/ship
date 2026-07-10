@@ -100,6 +100,14 @@ export interface LandOpts {
   admin?: boolean;
 }
 
+export interface AddressOpts {
+  streamId: string;
+  /** File whose content is the consolidated review findings (carried opaquely). */
+  findingsPath: string;
+  /** Review-cycle cap (policy value; default 3). Refuses + escalates at the cap. */
+  maxCycles?: number;
+}
+
 export interface DriverStreamView {
   streamId: string;
   batchIndex: number;

@@ -300,10 +300,17 @@ export function branchNotFoundResult(
 }
 
 /**
- * Append the prescribed-branch + open-PR delivery instruction to the dispatched
- * message. Returns the base prompt unchanged when no `prBranch` is set (the 3a
- * behavior — cursor-shaped cloud spec with no branch prescription). Kept minimal
- * + deterministic so the branch name is predictable for the `gh` fallback (ED-4).
+ * Append the prescribed-branch delivery instruction to the dispatched message.
+ * Returns the base prompt unchanged when no `prBranch` is set (the 3a behavior —
+ * cursor-shaped cloud spec with no branch prescription). Kept minimal +
+ * deterministic so the branch name is predictable for the `gh` fallback (ED-4).
+ *
+ * Two modes on `prBranch`: the default (`existingPr` absent/false) is
+ * push-branch + open-a-PR — a fresh cloud dispatch that must create the PR. When
+ * `existingPr` is true the PR is already open (a `driver address` re-dispatch),
+ * so the instruction is push-to-the-existing-branch and explicitly NOT to open a
+ * new PR — a distinct mode, not `prBranch` suppression, so an address run never
+ * pushes to a random branch or opens a duplicate.
  *
  * `baseRef` is expected to be a branch name (a PR base must be a branch); a bare
  * commit SHA would read oddly in the instruction and `gh pr create` can't target
@@ -315,9 +322,11 @@ export function buildDispatchPrompt(
     readonly prBranch?: string;
     readonly baseRef?: string;
     readonly githubMcpAvailable: boolean;
+    readonly existingPr?: boolean;
   },
 ): string {
   if (opts.prBranch === undefined) return basePrompt;
+  if (opts.existingPr === true) return existingPrPrompt(basePrompt, opts.prBranch);
   const base = opts.baseRef ?? "the repository's default branch";
   const openPr = opts.githubMcpAvailable
     ? `open a pull request from \`${opts.prBranch}\` into ${base} using the \`${PR_CREATE_TOOL}\` tool on the \`github\` MCP server`
@@ -328,5 +337,15 @@ export function buildDispatchPrompt(
     "## Delivery instructions (required)",
     `When the work is complete: commit your changes, push them to a branch named exactly \`${opts.prBranch}\`, and ${openPr}.`,
     `Use the exact branch name \`${opts.prBranch}\` — do not choose a different name.`,
+  ].join("\n");
+}
+
+function existingPrPrompt(basePrompt: string, prBranch: string): string {
+  return [
+    basePrompt,
+    "",
+    "## Delivery instructions (required)",
+    `When the work is complete: commit your changes and push them to the existing branch named exactly \`${prBranch}\`. A pull request from this branch is already open — do not open a new pull request.`,
+    `Use the exact branch name \`${prBranch}\` — do not choose a different name.`,
   ].join("\n");
 }

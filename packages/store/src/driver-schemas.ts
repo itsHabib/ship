@@ -56,6 +56,9 @@ export const driverStreamSchema = z
     workOnCurrentBranch: z.boolean().optional(),
     createdAt: z.string().datetime({ offset: true }),
     cycles: z.number().int().optional(),
+    // Engine-owned re-dispatch counter, bumped once per `driver address`.
+    // Distinct from `cycles` (seat-reported coordinator passes at merge time).
+    reviewCycles: z.number().int().optional(),
     driverBatchId: z.string(),
     driverRunId: z.string(),
     errorMessage: z.string().optional(),

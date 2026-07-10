@@ -2,7 +2,7 @@
  * `ship driver <subverb>` — brain-facing driver surface (spec §6).
  */
 
-import type { Decision, DriverRunRef, LandOpts, MergeFacts } from "@ship/driver";
+import type { AddressOpts, Decision, DriverRunRef, LandOpts, MergeFacts } from "@ship/driver";
 import type { Command } from "commander";
 
 import { parsePruneDuration, PruneDurationError } from "@ship/core";
@@ -50,6 +50,12 @@ interface LandCommandOpts {
   stream?: string;
   cycles?: string;
   admin?: boolean;
+}
+
+interface AddressCommandOpts {
+  stream: string;
+  findings: string;
+  maxCycles?: string;
 }
 
 interface RenderOpts {
@@ -156,6 +162,20 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     .action(async (driverRunId: string, rawOpts: { stream: string }) => {
       await runDriverActionAsync(async () => {
         const run = await factory().flipStreamToCloud(driverRunId, rawOpts.stream);
+        process.stdout.write(`${formatDriverDecideOutput(run)}\n`);
+      });
+    });
+
+  driver
+    .command("address <driverRunId>")
+    .description("re-dispatch consolidated review findings onto a landed stream's PR branch")
+    .requiredOption("--stream <ds_id>", "driver stream id")
+    .requiredOption("--findings <path>", "path to the consolidated review-findings file")
+    .option("--max-cycles <n>", "review-cycle cap (default 3)")
+    .action(async (driverRunId: string, rawOpts: AddressCommandOpts) => {
+      await runDriverActionAsync(async () => {
+        const addressOpts = buildAddressOpts(rawOpts);
+        const run = await factory().address(driverRunId, addressOpts);
         process.stdout.write(`${formatDriverDecideOutput(run)}\n`);
       });
     });
@@ -314,6 +334,17 @@ function buildMergeFacts(opts: MarkMergedOpts): MergeFacts {
     facts.cycles = parseIntOptionAtLeast(opts.cycles, "--cycles", 0);
   }
   return facts;
+}
+
+function buildAddressOpts(opts: AddressCommandOpts): AddressOpts {
+  const addressOpts: AddressOpts = {
+    findingsPath: resolvePath(opts.findings),
+    streamId: opts.stream,
+  };
+  if (opts.maxCycles !== undefined) {
+    addressOpts.maxCycles = parseIntOptionAtLeast(opts.maxCycles, "--max-cycles", 1);
+  }
+  return addressOpts;
 }
 
 function buildLandOpts(opts: LandCommandOpts): LandOpts {

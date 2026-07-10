@@ -5,6 +5,7 @@
  */
 
 import {
+  AddressError,
   CancelError,
   DecideError,
   DriverRunNotFoundEngineError,
@@ -24,6 +25,7 @@ const DRIVER_ENGINE_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] 
   PreconditionError,
   DecideError,
   CancelError,
+  AddressError,
   DriverRunNotFoundEngineError,
   DriverRunNotFoundError,
   ImportManifestError,

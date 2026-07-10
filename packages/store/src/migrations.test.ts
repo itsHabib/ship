@@ -53,7 +53,7 @@ describe("runMigrations", () => {
     expect(tables).toContain("escalations");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(12);
+    expect(applied).toHaveLength(13);
     expect(applied.map((r) => r.name)).toEqual([
       "0001_init.sql",
       "0002_cursor_runs_run_id.sql",
@@ -67,6 +67,7 @@ describe("runMigrations", () => {
       "0010_driver_streams_provider.sql",
       "0012_driver_streams_continuation.sql",
       "0013_escalations.sql",
+      "0014_driver_streams_review_cycles.sql",
     ]);
 
     const phaseColumns = db
@@ -89,6 +90,7 @@ describe("runMigrations", () => {
       .all()
       .map((r) => (r as { name: string }).name);
     expect(driverStreamColumns).toContain("provider");
+    expect(driverStreamColumns).toContain("review_cycles");
   });
 
   test("re-run on already-migrated DB is a no-op (two _migrations rows)", () => {
@@ -97,7 +99,7 @@ describe("runMigrations", () => {
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(12);
+    expect(applied).toHaveLength(13);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {

@@ -10,6 +10,7 @@ import type { DriverGhPort } from "./gh-port.js";
 import type { ImportManifestResult } from "./import.js";
 import type { DriverShipPort } from "./ship-port.js";
 import type {
+  AddressOpts,
   Decision,
   DriverRunRef,
   DriverTickResult,
@@ -18,7 +19,7 @@ import type {
   RunOpts,
 } from "./types.js";
 
-import { flipStreamToCloud, resolveRunOpts, runTick } from "./engine.js";
+import { address as addressFn, flipStreamToCloud, resolveRunOpts, runTick } from "./engine.js";
 import { DecideError, DriverRunNotFoundEngineError } from "./errors.js";
 import { importManifest as importManifestFn } from "./import.js";
 import { cancelRun, decide as decideFn, markMerged as markMergedFn } from "./judgment.js";
@@ -34,6 +35,7 @@ export interface DriverService {
   land(driverRunId: string, opts: LandOpts): Promise<DriverRun>;
   cancel(driverRunId: string): Promise<DriverRun>;
   flipStreamToCloud(driverRunId: string, streamId: string): Promise<DriverRun>;
+  address(driverRunId: string, opts: AddressOpts): Promise<DriverRun>;
   render(driverRunId: string): string;
   getDriverRun(id: string): DriverRun | null;
   listDriverRuns(filter?: {
@@ -63,6 +65,12 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
   const now = (): string => new Date((clock ?? Date.now)()).toISOString();
 
   return {
+    address: async (driverRunId, addressOpts) => {
+      if (gh === undefined) {
+        throw new DecideError("address requires a GitHub port — wire gh in createDriverService");
+      }
+      return addressFn({ clock: clock ?? Date.now, gh, ship, store }, driverRunId, addressOpts);
+    },
     cancel: (driverRunId) => cancelRun(store, ship, driverRunId, now()),
     flipStreamToCloud: (driverRunId, streamId) =>
       flipStreamToCloud(store, ship, driverRunId, streamId, clock ?? Date.now),

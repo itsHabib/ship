@@ -258,6 +258,32 @@ describe("buildDispatchPrompt", () => {
     expect(out).not.toContain("create_pull_request");
     expect(out).toContain("default branch");
   });
+
+  test("existingPr → push-to-existing-branch, no open-a-PR instruction", () => {
+    const out = buildDispatchPrompt("fix the findings", {
+      prBranch: "ship/x",
+      baseRef: "main",
+      githubMcpAvailable: true,
+      existingPr: true,
+    });
+    expect(out).toContain("ship/x");
+    expect(out).toContain("already open");
+    expect(out).toContain("do not open a new pull request");
+    // The open-a-PR fragments are omitted entirely for an address re-dispatch.
+    expect(out).not.toContain("create_pull_request");
+    expect(out).not.toContain("open a pull request from");
+  });
+
+  test("existingPr false behaves like the default open-a-PR path", () => {
+    const out = buildDispatchPrompt("do the work", {
+      prBranch: "ship/x",
+      baseRef: "main",
+      githubMcpAvailable: true,
+      existingPr: false,
+    });
+    expect(out).toContain("open a pull request from");
+    expect(out).not.toContain("already open");
+  });
 });
 
 describe("branchNotFoundResult", () => {
