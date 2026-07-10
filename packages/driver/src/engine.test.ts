@@ -1753,6 +1753,25 @@ batches:
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBe(2);
   });
 
+  test("throws when the address dispatch fails, leaving the stream failed for decide retry", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const failingPort = { ...fake.port, startShip: () => Promise.reject(new Error("boom")) };
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await expect(
+      address({ clock: () => 0, gh, ship: failingPort, store }, runId, {
+        findingsPath,
+        streamId,
+      }),
+    ).rejects.toThrow(/address dispatch failed/);
+
+    const stream = firstStream(runId);
+    expect(stream?.status).toBe("failed");
+    // The call consumed a review cycle; the follow-up `decide retry` won't re-count.
+    expect(stream?.reviewCycles).toBe(1);
+  });
+
   test("a decide-retry re-dispatch resolves the findings doc and branch from the row alone", async () => {
     const { runId, streamId } = landedSeed();
     const fake = createFakeShipPort([]);

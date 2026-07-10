@@ -861,6 +861,10 @@ export interface AddressDeps {
  * *which* findings to take and *whether* to push back stays seat-side. Every
  * illegal call refuses with a structured `AddressError` code — never a silent
  * no-op — and a call at the cycle cap also writes a `cycle-exhausted` escalation.
+ *
+ * Caller invariant: not safe to call concurrently for the same stream — the
+ * cycle-cap read and the `reviewCycles` increment are separate store operations
+ * (no lease; the seat owns not racing its own verb, as with its own PR branch).
  */
 export async function address(
   deps: AddressDeps,
@@ -921,6 +925,9 @@ async function dispatchAddress(
   if (flipped === undefined) {
     throw new PreconditionError(`stream not found after patch: ${streamId}`);
   }
+  // The sticky-terminal guard in `address()` already refused done/failed/
+  // cancelled, so this stamp only catches "pending" (a never-ticked import)
+  // and the derived blocked-on-merges presentation — not a general fallback.
   if (refreshed.status !== "running" && refreshed.status !== "awaiting_judgment") {
     store.updateDriverRunStatus(driverRunId, "running");
   }
@@ -936,10 +943,15 @@ async function dispatchAddress(
     ship,
     store,
   };
-  await dispatchStream(ctx, flipped, {
+  const dispatched = await dispatchStream(ctx, flipped, {
     continuation: { startingRef: branch, workOnCurrentBranch: true },
     docPath,
   });
+  if (!dispatched) {
+    throw new PreconditionError(
+      `address dispatch failed for stream ${streamId}; stream is failed — decide retry re-dispatches the findings doc on the PR branch`,
+    );
+  }
   return loadRun(store, driverRunId);
 }
 
@@ -958,7 +970,8 @@ function assertAddressableStream(stream: DriverStream): string {
     );
   }
   if (stream.prUrl === undefined || stream.branch === undefined) {
-    throw new AddressError("no-pr", `stream ${stream.id} has no open PR to address`);
+    const missing = stream.prUrl === undefined ? "PR" : "branch";
+    throw new AddressError("no-pr", `stream ${stream.id} has no ${missing} to address`);
   }
   return stream.branch;
 }
@@ -1015,7 +1028,15 @@ function writeAddressDoc(
     dirname(resolve(manifestPath)),
     `address-${streamId}-cycle${String(cycle)}.md`,
   );
-  writeFileSync(outPath, `${ADDRESS_DOC_PREAMBLE}${findings}`, "utf8");
+  // Structured like the read side (`findings-unreadable`) so a disk/permission
+  // failure surfaces through the land/decide error formatter, not as a raw
+  // throw. The store is untouched at this point — the state stays clean.
+  try {
+    writeFileSync(outPath, `${ADDRESS_DOC_PREAMBLE}${findings}`, "utf8");
+  } catch (err: unknown) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new PreconditionError(`cannot write address doc ${outPath}: ${detail}`);
+  }
   return outPath;
 }
 
