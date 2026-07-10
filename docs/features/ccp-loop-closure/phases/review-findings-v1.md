@@ -64,15 +64,16 @@ A valid artifact has this transport shape:
 
 Objects tolerate unknown optional fields so compatible producers can add receipt
 metadata. Unknown schema majors, decisions, subject types, and malformed known
-fields refuse. `severity` is a non-empty bounded string, not a Ship-owned enum:
+fields refuse. `severity` is a non-blank bounded string, not a Ship-owned enum:
 the engine transports it but never ranks or acts on coordinator vocabulary.
 
 The parser additionally enforces:
 
 - at least one finding and one source per finding;
-- non-empty evidence, summary, producer id, reviewer id, and stable finding id;
+- non-blank evidence, summary, producer id, reviewer id, and stable finding id;
 - unique finding ids and unique entries in each panel set;
 - `completed` and `missing` are disjoint and their union equals `requested`;
+  members absent from `requested` therefore refuse rather than becoming extras;
 - every finding source reviewer appears in `panel.completed`;
 - a 1 MiB input cap; at most 100 findings, 32 sources per finding, and 16 panel
   members; ids/reviewer/producer values at most 128 bytes, summaries 512 bytes,
@@ -121,8 +122,9 @@ again.
    review cycle in one SQLite transaction. That update appends the attempt with
    its synthesized `docPath` and leaves the stream in `dispatching` before any
    external call. A crash before `startShip` is therefore handled by Ship's
-   existing dispatch-recovery path: no candidate resets the prepared attempt to
-   `pending`, and the next tick re-dispatches its recorded address document.
+   existing dispatch-recovery path: no matching candidate resets the stream to
+   `pending` while preserving its attempts, and the next dispatch tick resolves
+   the latest attempt's `docPath` and re-dispatches that recorded document.
    The synthesized document write intentionally precedes this transaction. Its
    path and content are deterministic for `(stream, next cycle, artifact)`, and no
    external dispatch occurs before commit. A crash between file write and commit
@@ -158,6 +160,7 @@ CREATE TABLE driver_review_artifacts (
   address_cycle INTEGER NOT NULL,
   doc_path TEXT NOT NULL,
   consumed_at TEXT NOT NULL,
+  UNIQUE (driver_run_id, stream_id, address_cycle),
   FOREIGN KEY (driver_run_id, stream_id)
     REFERENCES driver_streams(driver_run_id, id) ON DELETE CASCADE
 );
@@ -170,6 +173,12 @@ non-landed state, and stale expected cycle with typed store errors; inserts the
 row; appends the prepared attempt; updates `review_cycles`,
 `work_on_current_branch`, and status `dispatching`; and bumps the parent timestamp
 inside one transaction.
+
+The artifact row retains `doc_path` as audit history; the attempt copy is the
+operational recovery source used by `resolveDispatchDocPath`. Foreign-key
+violations mean the engine/store contract was called with impossible run or
+stream identity and remain programming errors rather than user-facing address
+refusals.
 
 ## Refusals
 
@@ -197,19 +206,23 @@ a printed seed/counterexample:
    never dispatches and never consumes.
 2. **Unsourced input:** removing all findings, evidence, sources, or the source
    reviewer's completed-panel membership never dispatches. Adding one invalid
-   source among otherwise valid findings/sources also always refuses.
+   source among otherwise valid findings/sources also always refuses. Blank and
+   whitespace-only evidence, summary, producer id, reviewer id, and finding id
+   refuse as well.
 3. **At most once:** for generated repeated sequences of one artifact, same-id
    variants, and canonical replay variants with regenerated artifact ids and
    timestamps, reformatted JSON, and reordered panel/finding/source arrays, Ship
    dispatches at most once.
    A dedicated `Promise.all` example sends two concurrent calls; SQLite serializes
    the writes and exactly one consume-and-prepare transaction wins.
-4. **Extension tolerance:** adding unknown optional fields at any object level
-   preserves the routing projection and outcome.
+4. **Extension tolerance:** adding unknown optional fields at any object level,
+   including individual source objects, preserves the routing projection,
+   canonical digest, and outcome.
 5. **Panel partition:** generated valid requested/completed/missing partitions
    parse; overlap, omission, and extras refuse.
 6. **Transaction recovery:** store reopen preserves consumption, resulting cycle,
-   and the prepared address attempt. A crash-before-start simulation re-enters
+   and the prepared address attempt. A fake start port that throws after the
+   transaction commits simulates crash-before-start; a reopened engine then runs
    existing dispatch recovery and re-dispatches the recorded doc. Store tests
    install a temporary SQLite `BEFORE UPDATE` trigger that raises after the
    artifact insert; the transaction must roll back both rows without a production
