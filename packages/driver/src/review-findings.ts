@@ -117,6 +117,7 @@ function assertArtifactConsistency(artifact: ReviewFindingsV1): void {
     throw new ReviewFindingsValidationError("panel completed/missing must partition requested");
   }
   for (const finding of artifact.findings) {
+    assertUnique(`sources for finding ${finding.id}`, finding.sources.map(sourceKey));
     for (const source of finding.sources) {
       if (!completed.has(source.reviewer)) {
         throw new ReviewFindingsValidationError(

@@ -78,6 +78,12 @@ describe("ReviewFindingsV1", () => {
     });
     expect(() => parseReviewFindings(JSON.stringify(mixed))).toThrow(ReviewFindingsValidationError);
 
+    const duplicate = artifact();
+    duplicate.findings[0]!.sources.push({ ...duplicate.findings[0]!.sources[0]! });
+    expect(() => parseReviewFindings(JSON.stringify(duplicate))).toThrow(
+      ReviewFindingsValidationError,
+    );
+
     const extra = artifact();
     extra.panel.completed.push("copilot");
     expect(() => parseReviewFindings(JSON.stringify(extra))).toThrow(ReviewFindingsValidationError);
