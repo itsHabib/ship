@@ -66,6 +66,16 @@ describe("driver runs (via createStore)", () => {
     return runId;
   }
 
+  // Single accessor for the seeded run's first stream — keeps assertion bodies
+  // off a long optional-chain (each `?.` counts against complexity).
+  function firstStreamOf(
+    runId: string,
+  ):
+    | NonNullable<ReturnType<Store["getDriverRun"]>>["batches"][number]["streams"][number]
+    | undefined {
+    return store.getDriverRun(runId)?.batches[0]?.streams[0];
+  }
+
   test("insertDriverRun + getDriverRun returns hydrated aggregate", () => {
     const runId = seedRun();
     const run = store.getDriverRun(runId);
@@ -119,6 +129,20 @@ describe("driver runs (via createStore)", () => {
     const run = store.getDriverRun(runId);
     expect(run?.updatedAt).toBe("2026-06-10T03:00:00.000Z");
     expect(run?.batches[0]?.streams[0]?.prNumber).toBe(42);
+  });
+
+  test("reviewCycles defaults undefined and round-trips through update", () => {
+    const runId = seedRun();
+    const streamId = firstStreamOf(runId)?.id;
+    expect(streamId).toBeDefined();
+    // Existing rows carry no review-cycle count until `address` sets one.
+    expect(firstStreamOf(runId)?.reviewCycles).toBeUndefined();
+
+    store.updateDriverStream(streamId!, { reviewCycles: 1 });
+    expect(firstStreamOf(runId)?.reviewCycles).toBe(1);
+
+    store.updateDriverStream(streamId!, { reviewCycles: 2 });
+    expect(firstStreamOf(runId)?.reviewCycles).toBe(2);
   });
 
   test("provider column round-trips through insert and read", () => {
@@ -242,6 +266,52 @@ describe("driver runs (via createStore)", () => {
       const tables = upgraded.listDriverRuns({ limit: 1 }).map(() => true);
       expect(tables).toEqual([]);
       upgraded.close();
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  test("reviewCycles survives a store close and reopen", () => {
+    store.close();
+    const dir = mkdtempSync(join(tmpdir(), "ship-driver-review-cycles-"));
+    const dbPath = join(dir, "state.db");
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    try {
+      const first = createStore({ clock: () => currentNow, dbPath });
+      first.insertDriverRun({
+        batches: [
+          {
+            batchIndex: 1,
+            dependsOn: [],
+            id: batchId,
+            status: "pending",
+            streams: [
+              {
+                attempts: [],
+                id: streamId,
+                runtime: "cloud",
+                specPath: "docs/a.md",
+                status: "landed",
+                streamIndex: 0,
+                touches: [],
+              },
+            ],
+          },
+        ],
+        id: runId,
+        manifestPath: "/tmp/driver.md",
+        repo: "ship",
+        sourceJson: "---\ndriver_version: 1\n---\n",
+        status: "running",
+      });
+      first.updateDriverStream(streamId, { reviewCycles: 3 });
+      first.close();
+
+      const reopened = createStore({ clock: () => currentNow, dbPath });
+      expect(reopened.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBe(3);
+      reopened.close();
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }

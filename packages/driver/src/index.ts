@@ -47,6 +47,7 @@ export { createExecGhPort } from "./gh-port.js";
 export type { DriverShipPort } from "./ship-port.js";
 
 export type {
+  AddressOpts,
   CanonicalReviewer,
   CiCheckState,
   Decision,
@@ -74,24 +75,27 @@ export {
 } from "./merge-verdict.js";
 
 export {
+  AddressError,
   CancelError,
   DecideError,
   DriverRunNotFoundEngineError,
   PreconditionError,
   TickLiveError,
 } from "./errors.js";
+export type { AddressRefusalCode } from "./errors.js";
 
 export { createDriverService } from "./service.js";
 export type { CreateDriverServiceOpts, DriverService } from "./service.js";
 
 export {
+  address,
   isTickLive,
   resolveDocPath,
   resolveRepoRoot,
   resolveRunOpts,
   flipStreamToCloud,
 } from "./engine.js";
-export type { CloudContinuation } from "./engine.js";
+export type { AddressDeps, CloudContinuation } from "./engine.js";
 
 export {
   allStreams,

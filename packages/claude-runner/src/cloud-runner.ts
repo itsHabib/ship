@@ -177,6 +177,24 @@ function logCloudStartFailure(
   }
 }
 
+type CloudRepoSpec = NonNullable<AgentRunInput["cloud"]>["repos"][number];
+
+// Assemble the dispatch prompt from the repo spec: a prescribed `prBranch` adds
+// delivery instructions, and a present `prUrl` (an address re-dispatch) flips
+// those to push-to-existing-branch with no open-a-PR fragment.
+function buildCloudDispatchPrompt(
+  basePrompt: string,
+  repo: CloudRepoSpec,
+  githubMcpUrl: string | undefined,
+): string {
+  return buildDispatchPrompt(basePrompt, {
+    ...(repo.prBranch !== undefined && { prBranch: repo.prBranch }),
+    ...(repo.startingRef !== undefined && { baseRef: repo.startingRef }),
+    githubMcpAvailable: githubMcpUrl !== undefined,
+    ...(repo.prUrl !== undefined && { existingPr: true }),
+  });
+}
+
 /** Construct once, reuse across runs. The runner holds no per-run state. */
 export class CloudClaudeRunner implements AgentRunner {
   readonly #gh: GhRunner;
@@ -283,11 +301,7 @@ export class CloudClaudeRunner implements AgentRunner {
         pat,
       });
 
-      const prompt = buildDispatchPrompt(input.prompt, {
-        ...(repo.prBranch !== undefined && { prBranch: repo.prBranch }),
-        ...(repo.startingRef !== undefined && { baseRef: repo.startingRef }),
-        githubMcpAvailable: githubMcpUrl !== undefined,
-      });
+      const prompt = buildCloudDispatchPrompt(input.prompt, repo, githubMcpUrl);
       await dispatch(client, sessionId, prompt);
     } catch (err) {
       logCloudStartFailure(input.log, err, githubMcpUrl);

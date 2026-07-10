@@ -1,7 +1,9 @@
 /** Engine tick loop tests — fake clock, fake port, in-memory store. */
 
+import type { DriverStream } from "@ship/store";
+
 import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -9,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { DriverStreamView } from "./types.js";
 
 import {
+  address,
   buildShipInputForTest,
   flipStreamToCloud,
   isTickLive,
@@ -18,7 +21,7 @@ import {
   resolveRunOpts,
   shouldGiveUpTick,
 } from "./engine.js";
-import { TickLiveError } from "./errors.js";
+import { AddressError, TickLiveError } from "./errors.js";
 import { type DispatchAmbiguity, recoverDispatchingStreams } from "./judgment.js";
 import { createDriverService } from "./service.js";
 import { createFakeGhPort } from "./test/fake-gh-port.js";
@@ -854,6 +857,60 @@ batches:
     store.close();
   });
 
+  test("decide retry after a failed flip re-runs the flip on the persisted prUrl", async () => {
+    const manifest = join(repoRoot, "cloud-flip-retry.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-02T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: cloud-flip-retry
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        branchName: "cursor/flip-88",
+        docPath: docA,
+        prUrl: "https://github.com/example/ship/pull/88",
+        repo: "ship",
+        workflowRunId: "wf_flip_retry",
+      },
+    ]);
+    const prState = { isDraft: true, markReadyError: "gh pr ready denied", state: "OPEN" as const };
+    const gh = createFakeGhPort({ 88: prState });
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ gh, ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+    const failed = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(failed?.status).toBe("failed");
+    expect(failed?.prUrl).toBe("https://github.com/example/ship/pull/88");
+
+    // The prUrl persisted by the failed flip must not suppress the retry's flip.
+    delete (prState as { markReadyError?: string }).markReadyError;
+    driver.decide(imported.run.id, failed?.id ?? "", { kind: "retry" });
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    expect(gh.markReadyCalls).toHaveLength(2);
+    expect(store.getDriverRun(imported.run.id)?.batches[0]?.streams[0]?.status).toBe("landed");
+    store.close();
+  });
+
   test("local succeeded stream does not call markReady", async () => {
     const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const fake = createFakeShipPort([
@@ -1603,6 +1660,394 @@ batches:
     store.close();
   });
 });
+
+describe("driver address", () => {
+  let tmpDir: string;
+  let repoRoot: string;
+  let manifestPath: string;
+  let findingsPath: string;
+  let store: ReturnType<typeof createStore>;
+
+  const PR_URL = "https://github.com/example/ship/pull/77";
+  const SOURCE_JSON = `---
+driver_version: 1
+generated_at: 2026-07-09T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: address-test
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/a.md
+        runtime: cloud
+        status: pending
+---
+`;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "driver-address-"));
+    repoRoot = join(tmpDir, "repo");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    manifestPath = join(repoRoot, "driver.md");
+    findingsPath = join(repoRoot, "findings.md");
+    writeFileSync(findingsPath, "- fix the null deref in foo.ts\n");
+    store = createStore({ dbPath: ":memory:" });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(tmpDir, { force: true, recursive: true });
+  });
+
+  interface SeedOpts {
+    status?: string;
+    runtime?: string;
+    prUrl?: string | undefined;
+    branch?: string | undefined;
+    runStatus?: string;
+    provider?: "claude" | "cursor";
+    reviewCycles?: number;
+  }
+
+  function seed(opts: SeedOpts = {}): { runId: string; streamId: string } {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "running",
+          streams: [
+            {
+              attempts: [],
+              ...(opts.branch !== undefined ? { branch: opts.branch } : {}),
+              id: streamId,
+              ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
+              ...(opts.prUrl !== undefined ? { prUrl: opts.prUrl } : {}),
+              runtime: (opts.runtime ?? "cloud") as "cloud" | "local",
+              specPath: "docs/a.md",
+              status: (opts.status ?? "landed") as "landed" | "pending" | "failed",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath,
+      repo: "ship",
+      sourceJson: SOURCE_JSON,
+      status: (opts.runStatus ?? "running") as "running",
+    });
+    if (opts.reviewCycles !== undefined) {
+      store.updateDriverStream(streamId, { reviewCycles: opts.reviewCycles });
+    }
+    return { runId, streamId };
+  }
+
+  function landedSeed(over: SeedOpts = {}): { runId: string; streamId: string } {
+    return seed({ branch: "feat-a", prUrl: PR_URL, ...over });
+  }
+
+  // Single accessor for the seeded run's first stream — keeps the assertion
+  // bodies below off a long optional-chain (each `?.` counts against the
+  // per-function complexity budget).
+  function firstStream(runId: string): DriverStream | undefined {
+    return store.getDriverRun(runId)?.batches[0]?.streams[0];
+  }
+
+  test("dispatches on the existing branch with autoCreatePR false and a findings doc", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      findingsPath,
+      streamId,
+    });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    expect(start?.input).toMatchObject({
+      runtime: "cloud",
+      startingRef: "feat-a",
+      cloud: {
+        autoCreatePR: false,
+        repos: [{ url: "https://github.com/example/ship", startingRef: "feat-a", prUrl: PR_URL }],
+        workOnCurrentBranch: true,
+      },
+    });
+    const dispatchedDoc = (start?.input as { docPath: string }).docPath;
+    const docText = readFileSync(dispatchedDoc, "utf8");
+    expect(docText).toContain("do not open a new PR");
+    expect(docText).toContain("fix the null deref in foo.ts");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.status).toBe("dispatched");
+    expect(stream?.reviewCycles).toBe(1);
+    expect(stream?.workOnCurrentBranch).toBe(true);
+  });
+
+  test("increments reviewCycles exactly once per call", async () => {
+    const { runId, streamId } = landedSeed({ reviewCycles: 1 });
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      findingsPath,
+      streamId,
+    });
+
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBe(2);
+  });
+
+  test("throws when the address dispatch fails, leaving the stream failed for decide retry", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const failingPort = { ...fake.port, startShip: () => Promise.reject(new Error("boom")) };
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await expect(
+      address({ clock: () => 0, gh, ship: failingPort, store }, runId, {
+        findingsPath,
+        streamId,
+      }),
+    ).rejects.toThrow(/address dispatch failed/);
+
+    const stream = firstStream(runId);
+    expect(stream?.status).toBe("failed");
+    // The call consumed a review cycle; the follow-up `decide retry` won't re-count.
+    expect(stream?.reviewCycles).toBe(1);
+    // The run is awaiting judgment so `decide retry` is legal without another tick.
+    expect(store.getDriverRun(runId)?.status).toBe("awaiting_judgment");
+  });
+
+  test("a decide-retry re-dispatch resolves the findings doc and branch from the row alone", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      findingsPath,
+      streamId,
+    });
+    const synthesizedDoc = firstStream(runId)?.attempts.at(-1)?.docPath;
+    expect(synthesizedDoc).toContain(`address-${streamId}-cycle1.md`);
+
+    // Simulate the address dispatch failing, then a `decide retry`.
+    store.updateDriverStream(streamId, { status: "failed" });
+    store.updateDriverRunStatus(runId, "awaiting_judgment");
+    const driver = createDriverService({ gh, ship: fake.port, store });
+    driver.decide(runId, streamId, { kind: "retry" });
+
+    const retried = firstStream(runId);
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId,
+        ship: fake.port,
+        store,
+      },
+      retried!,
+      // The tick resolves the latest attempt's docPath; assert that is the
+      // synthesized findings doc, not the original spec.
+      retried!.attempts.at(-1)!.docPath!,
+    );
+    expect((input as { docPath: string }).docPath).toBe(synthesizedDoc);
+    expect(input.docPath).not.toBe("docs/a.md");
+    expect(input.cloud?.repos[0]?.startingRef).toBe("feat-a");
+    expect(input.cloud?.autoCreatePR).toBe(false);
+    expect(input.cloud?.workOnCurrentBranch).toBe(true);
+  });
+
+  test("accepted on a run presenting blocked_on_merges (all streams landed)", async () => {
+    const { runId, streamId } = landedSeed({ runStatus: "running" });
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await expect(
+      address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+    ).resolves.toBeDefined();
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("dispatched");
+  });
+
+  test.each(["done", "failed", "cancelled"] as const)(
+    "refuses run-not-addressable on sticky-terminal run status=%s",
+    async (runStatus) => {
+      const { runId, streamId } = landedSeed();
+      store.updateDriverRunStatus(runId, runStatus);
+      const fake = createFakeShipPort([]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+      await expectRefusal(
+        () =>
+          address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+            findingsPath,
+            streamId,
+          }),
+        "run-not-addressable",
+      );
+      expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    },
+  );
+
+  test("a claude address dispatch carries prBranch, prUrl, and autoCreatePR false", async () => {
+    const { runId, streamId } = landedSeed({ provider: "claude" });
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      findingsPath,
+      streamId,
+    });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    expect(start?.input).toMatchObject({
+      provider: "claude",
+      cloud: {
+        autoCreatePR: false,
+        repos: [{ prBranch: "feat-a", prUrl: PR_URL }],
+      },
+    });
+  });
+
+  test("landed → address → poll succeeded → landed with same PR, no draft flip", async () => {
+    const { runId, streamId } = landedSeed();
+    const synthesizedDoc = join(repoRoot, `address-${streamId}-cycle1.md`);
+    const fake = createFakeShipPort([
+      {
+        branchName: "feat-a",
+        docPath: synthesizedDoc,
+        prUrl: PR_URL,
+        repo: "ship",
+        workflowRunId: "wf_addr",
+      },
+    ]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    const driver = createDriverService({ gh, ship: fake.port, store });
+
+    await driver.address(runId, { findingsPath, streamId });
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("dispatched");
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+    expect(result.status).toBe("blocked_on_merges");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.status).toBe("landed");
+    expect(stream?.reviewCycles).toBe(1);
+    expect(stream?.prUrl).toBe(PR_URL);
+    // The stream already carried a prUrl before the poll, so the draft→ready
+    // flip is skipped entirely.
+    expect(gh.markReadyCalls).toHaveLength(0);
+  });
+
+  test("call at maxCycles refuses cycle-exhausted and writes one escalation row", async () => {
+    const { runId, streamId } = landedSeed({ reviewCycles: 3 });
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await expectRefusal(
+      () =>
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "cycle-exhausted",
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    const rows = store.listEscalations({ class: "cycle-exhausted", driverRunId: runId });
+    expect(rows).toHaveLength(1);
+
+    // A second call dedups on the open row (still one).
+    await expectRefusal(
+      () =>
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "cycle-exhausted",
+    );
+    expect(store.listEscalations({ class: "cycle-exhausted", driverRunId: runId })).toHaveLength(1);
+    // The row was untouched by the refusal.
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBe(3);
+  });
+
+  test.each([
+    ["not-landed", { status: "dispatched" as const }],
+    ["not-cloud", { runtime: "local", branch: "feat-a", status: "landed", prUrl: PR_URL }],
+    ["no-pr", { prUrl: undefined, branch: undefined }],
+    ["no-pr", { prUrl: PR_URL, branch: undefined }],
+  ])("refuses %s and leaves the stream row untouched", async (code, over) => {
+    const { runId, streamId } = landedSeed(over as SeedOpts);
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await expectRefusal(
+      () =>
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      code as AddressError["code"],
+    );
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.reviewCycles).toBeUndefined();
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+  });
+
+  test("refuses pr-not-open when the PR is merged or closed", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "MERGED" } });
+
+    await expectRefusal(
+      () =>
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "pr-not-open",
+    );
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBeUndefined();
+  });
+
+  test("refuses findings-unreadable for a missing or empty findings file", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await expectRefusal(
+      () =>
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          findingsPath: join(repoRoot, "nope.md"),
+          streamId,
+        }),
+      "findings-unreadable",
+    );
+
+    writeFileSync(findingsPath, "   \n");
+    await expectRefusal(
+      () =>
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "findings-unreadable",
+    );
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBeUndefined();
+  });
+});
+
+async function expectRefusal(
+  fn: () => Promise<unknown>,
+  code: AddressError["code"],
+): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    expect(err).toBeInstanceOf(AddressError);
+    expect((err as AddressError).code).toBe(code);
+    return;
+  }
+  throw new Error(`expected AddressError(${code}) but call resolved`);
+}
 
 const DEFAULT_TWO_HOUR_MS = 2 * 60 * 60 * 1000;
 

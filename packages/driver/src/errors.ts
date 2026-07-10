@@ -51,3 +51,25 @@ export class CancelError extends Error {
     this.detail = message;
   }
 }
+
+/** One structured refusal reason for `driver address` (never a silent no-op). */
+export type AddressRefusalCode =
+  | "no-pr"
+  | "pr-not-open"
+  | "not-landed"
+  | "not-cloud"
+  | "run-not-addressable"
+  | "cycle-exhausted"
+  | "findings-unreadable";
+
+export class AddressError extends Error {
+  override readonly name = "AddressError";
+  readonly code: AddressRefusalCode;
+  readonly detail: string;
+
+  constructor(code: AddressRefusalCode, message: string) {
+    super(message);
+    this.code = code;
+    this.detail = message;
+  }
+}

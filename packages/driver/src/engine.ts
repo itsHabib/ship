@@ -10,13 +10,14 @@ import type { AgentProvider, FailureCategory } from "@ship/workflow";
 
 import { prNumberFromUrl } from "@ship/receipt";
 import { isTerminal } from "@ship/workflow";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import type { DriverGhPort } from "./gh-port.js";
 import type { DispatchAmbiguity } from "./judgment.js";
 import type { DriverShipPort } from "./ship-port.js";
 import type {
+  AddressOpts,
   DriverTickResult,
   EscalationConfig,
   NotifyConfig,
@@ -24,8 +25,17 @@ import type {
   TierDispatchResult,
 } from "./types.js";
 
-import { DriverRunNotFoundEngineError, PreconditionError, TickLiveError } from "./errors.js";
-import { retryPendingEscalationNotifications, writeAndDeliverEscalations } from "./escalation.js";
+import {
+  AddressError,
+  DriverRunNotFoundEngineError,
+  PreconditionError,
+  TickLiveError,
+} from "./errors.js";
+import {
+  retryPendingEscalationNotifications,
+  writeAndDeliverEscalations,
+  writeCycleExhaustedEscalation,
+} from "./escalation.js";
 import {
   allStreams,
   batchHasPendingDispatchable,
@@ -52,6 +62,24 @@ const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_PARALLEL_LOCAL = 1;
 const DEFAULT_MAX_PARALLEL_CLOUD = 4;
 const RUNAWAY_BACKSTOP_MULTIPLIER = 6;
+
+// Review-cycle cap for `address` re-dispatch (TDD §7 Flow B). A policy value
+// with a default — NOT wired to REQUIRED_REVIEW_COORDINATOR_CYCLES (same 3,
+// different semantic scope: re-dispatch budget vs merge-gate evidence).
+const DEFAULT_MAX_REVIEW_CYCLES = 3;
+
+// Fixed mechanical preamble prepended to the findings file — instructs the
+// agent to fix findings on the current branch and NOT open a new PR. The
+// findings themselves are carried opaquely (no parsing, no selection).
+const ADDRESS_DOC_PREAMBLE = [
+  "# Address review findings",
+  "",
+  "Address the following review findings on the current branch; do not open a new PR.",
+  "Push your changes to the branch the existing pull request already tracks.",
+  "",
+  "## Review findings",
+  "",
+].join("\n");
 
 /** Cloud branch-continuation override — used by `flipStreamToCloud` and unit tests. */
 export interface CloudContinuation {
@@ -543,12 +571,18 @@ function countInFlight(run: DriverRun, runtime: "local" | "cloud"): number {
   }).length;
 }
 
+interface DispatchStreamOpts {
+  continuation?: CloudContinuation;
+  /** Explicit dispatch doc, overriding the latest-attempt/spec resolution. */
+  docPath?: string;
+}
+
 async function dispatchStream(
   ctx: DispatchContext,
   stream: DriverStream,
-  continuation?: CloudContinuation,
+  opts: DispatchStreamOpts = {},
 ): Promise<boolean> {
-  const docPath = resolveStreamDocPath(ctx.repoRoot, stream);
+  const docPath = opts.docPath ?? resolveDispatchDocPath(ctx.repoRoot, stream);
   const attempt: StreamAttempt = {
     dispatchedAt: new Date(ctx.clock()).toISOString(),
     docPath,
@@ -568,7 +602,7 @@ async function dispatchStream(
     docPath,
     stream,
     tierMapping,
-    ...(continuation !== undefined ? { continuation } : {}),
+    ...(opts.continuation !== undefined ? { continuation: opts.continuation } : {}),
   });
   return dispatchStartShip({
     baseAttempts: attempts,
@@ -578,6 +612,19 @@ async function dispatchStream(
     store: ctx.store,
     streamId: stream.id,
   });
+}
+
+/**
+ * The doc a tick re-dispatch resolves: the latest attempt's recorded docPath
+ * (so a `decide retry` of a failed `address` re-runs the synthesized findings
+ * doc, not the spec) before falling back to the stream's spec path for a fresh
+ * dispatch. Callers that change runtime (flip-cloud) or synthesize a doc
+ * (address) pass an explicit `docPath` and never hit this.
+ */
+function resolveDispatchDocPath(repoRoot: string, stream: DriverStream): string {
+  const recorded = stream.attempts.at(-1)?.docPath;
+  if (recorded !== undefined) return recorded;
+  return resolveStreamDocPath(repoRoot, stream);
 }
 
 interface StartShipParams {
@@ -621,54 +668,81 @@ function buildShipInput(params: {
   continuation?: CloudContinuation;
 }): ShipInput {
   const { ctx, stream, docPath, tierMapping, continuation } = params;
-  let input: ShipInput;
   if (stream.runtime === "rooms") {
     throw new PreconditionError(`rooms stream ${stream.id} is not supported by the engine yet`);
   }
-  if (stream.runtime === "cloud") {
-    const repoUrl = ctx.repoUrl;
-    if (repoUrl === undefined) {
-      throw new PreconditionError(`cloud stream ${stream.id} requires repo_url in manifest`);
-    }
-    const cloudContinuation = resolveCloudContinuation(stream, continuation);
-    const repoEntry: NonNullable<ShipInput["cloud"]>["repos"][number] = { url: repoUrl };
-    if (cloudContinuation.startingRef !== undefined) {
-      repoEntry.startingRef = cloudContinuation.startingRef;
-    }
-    if (stream.provider === "claude" && stream.branch !== undefined) {
-      repoEntry.prBranch = stream.branch;
-    }
-    input = {
-      docPath,
-      repo: loadRun(ctx.store, ctx.runId).repo,
-      runtime: "cloud",
-      ...(cloudContinuation.startingRef !== undefined
-        ? { startingRef: cloudContinuation.startingRef }
-        : {}),
-      cloud: {
-        autoCreatePR: true,
-        env: { type: "cloud" },
-        repos: [repoEntry],
-        workOnCurrentBranch: cloudContinuation.workOnCurrentBranch,
-      },
-    };
-  } else {
-    const branch = stream.branch;
-    if (branch === undefined) {
-      throw new PreconditionError(`local stream ${stream.id} missing branch`);
-    }
-    input = {
-      branch,
-      docPath,
-      repo: loadRun(ctx.store, ctx.runId).repo,
-      runtime: "local",
-      workdir: join(ctx.repoRoot, ".claude", "worktrees", branch),
-    };
-  }
-  if (stream.provider !== undefined) {
-    input = { ...input, provider: stream.provider };
-  }
+  const base =
+    stream.runtime === "cloud"
+      ? buildCloudShipInput(ctx, stream, docPath, continuation)
+      : buildLocalShipInput(ctx, stream, docPath);
+  const input = stream.provider !== undefined ? { ...base, provider: stream.provider } : base;
   return applyTierMapping(input, tierMapping);
+}
+
+function buildCloudShipInput(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  docPath: string,
+  continuation?: CloudContinuation,
+): ShipInput {
+  const repoUrl = ctx.repoUrl;
+  if (repoUrl === undefined) {
+    throw new PreconditionError(`cloud stream ${stream.id} requires repo_url in manifest`);
+  }
+  const cloudContinuation = resolveCloudContinuation(stream, continuation);
+  // A persisted prUrl means the PR already exists (an `address` re-dispatch, or
+  // any retry of one): never auto-create a second PR, and carry the prUrl so the
+  // claude runner's prompt switches to push-to-existing-branch. Fresh + flip-cloud
+  // streams have no prUrl and keep the auto-create-on-omitted-or-true default.
+  const prExists = stream.prUrl !== undefined;
+  const repoEntry = buildCloudRepoEntry(stream, repoUrl, cloudContinuation.startingRef, prExists);
+  return {
+    docPath,
+    repo: loadRun(ctx.store, ctx.runId).repo,
+    runtime: "cloud",
+    ...(cloudContinuation.startingRef !== undefined
+      ? { startingRef: cloudContinuation.startingRef }
+      : {}),
+    cloud: {
+      autoCreatePR: !prExists,
+      env: { type: "cloud" },
+      repos: [repoEntry],
+      workOnCurrentBranch: cloudContinuation.workOnCurrentBranch,
+    },
+  };
+}
+
+function buildCloudRepoEntry(
+  stream: DriverStream,
+  repoUrl: string,
+  startingRef: string | undefined,
+  prExists: boolean,
+): NonNullable<ShipInput["cloud"]>["repos"][number] {
+  const repoEntry: NonNullable<ShipInput["cloud"]>["repos"][number] = { url: repoUrl };
+  if (startingRef !== undefined) repoEntry.startingRef = startingRef;
+  if (stream.provider === "claude" && stream.branch !== undefined) {
+    repoEntry.prBranch = stream.branch;
+  }
+  if (prExists) repoEntry.prUrl = stream.prUrl;
+  return repoEntry;
+}
+
+function buildLocalShipInput(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  docPath: string,
+): ShipInput {
+  const branch = stream.branch;
+  if (branch === undefined) {
+    throw new PreconditionError(`local stream ${stream.id} missing branch`);
+  }
+  return {
+    branch,
+    docPath,
+    repo: loadRun(ctx.store, ctx.runId).repo,
+    runtime: "local",
+    workdir: join(ctx.repoRoot, ".claude", "worktrees", branch),
+  };
 }
 
 function resolveCloudContinuation(
@@ -735,7 +809,12 @@ export async function flipStreamToCloud(
     startingRef: branch,
     workOnCurrentBranch: true,
   };
-  const dispatched = await dispatchStream(ctx, flipped, continuation);
+  // Explicit docPath: the flip changed runtime to cloud, so resolve against the
+  // repo root now rather than inherit a prior local attempt's worktree path.
+  const dispatched = await dispatchStream(ctx, flipped, {
+    continuation,
+    docPath: resolveStreamDocPath(ctx.repoRoot, flipped),
+  });
   if (!dispatched) {
     throw new PreconditionError(`cloud dispatch failed for stream ${streamId} after flip`);
   }
@@ -766,6 +845,219 @@ function assertFlipEligibleStream(stream: DriverStream, run: DriverRun): string 
     throw new PreconditionError(`cloud flip for stream ${stream.id} requires repo_url in manifest`);
   }
   return branch;
+}
+
+/** Ports + clock a `driver address` call needs (dispatch + live PR state). */
+export interface AddressDeps {
+  store: Store;
+  ship: DriverShipPort;
+  gh: DriverGhPort;
+  clock?: () => number;
+}
+
+/**
+ * Re-dispatch consolidated review findings onto a landed stream's existing PR
+ * branch (TDD §7 Flow B). Mechanism only: the findings file is carried opaquely;
+ * *which* findings to take and *whether* to push back stays seat-side. Every
+ * illegal call refuses with a structured `AddressError` code — never a silent
+ * no-op — and a call at the cycle cap also writes a `cycle-exhausted` escalation.
+ *
+ * Caller invariant: not safe to call concurrently for the same stream — the
+ * cycle-cap read and the `reviewCycles` increment are separate store operations
+ * (no lease; the seat owns not racing its own verb, as with its own PR branch).
+ */
+export async function address(
+  deps: AddressDeps,
+  driverRunId: string,
+  opts: AddressOpts,
+): Promise<DriverRun> {
+  const { store, ship, gh } = deps;
+  const clock = deps.clock ?? Date.now;
+  const run = loadRun(store, driverRunId);
+  if (isStickyTerminal(run.status)) {
+    throw new AddressError(
+      "run-not-addressable",
+      `run ${driverRunId} is ${run.status}; cannot address findings`,
+    );
+  }
+  const stream = allStreams(run).find((s) => s.id === opts.streamId);
+  if (stream === undefined) {
+    throw new PreconditionError(`stream not found: ${opts.streamId}`);
+  }
+  const branch = assertAddressableStream(stream);
+  await assertPrOpen(gh, run, stream);
+
+  const maxCycles = opts.maxCycles ?? DEFAULT_MAX_REVIEW_CYCLES;
+  const current = stream.reviewCycles ?? 0;
+  if (current >= maxCycles) {
+    writeCycleExhaustedRow(store, run, stream, maxCycles, clock);
+    throw new AddressError(
+      "cycle-exhausted",
+      `stream ${opts.streamId} has reached the review-cycle cap (${String(maxCycles)})`,
+    );
+  }
+
+  const findings = readFindings(opts.findingsPath);
+  const nextCycle = current + 1;
+  const docPath = writeAddressDoc(run.manifestPath, stream.id, nextCycle, findings);
+
+  // Persist the continuation on the row (load-bearing: a failed address retried
+  // via `decide retry` resolves the continuation from the row) and bump the
+  // engine-owned counter before dispatch — one `address` call is one cycle,
+  // whether or not the dispatch lands.
+  store.updateDriverStream(stream.id, { reviewCycles: nextCycle, workOnCurrentBranch: true });
+  return dispatchAddress({ clock, ship, store }, driverRunId, stream.id, branch, docPath);
+}
+
+async function dispatchAddress(
+  deps: { store: Store; ship: DriverShipPort; clock: () => number },
+  driverRunId: string,
+  streamId: string,
+  branch: string,
+  docPath: string,
+): Promise<DriverRun> {
+  const { store, ship, clock } = deps;
+  const refreshed = store.getDriverRun(driverRunId);
+  if (refreshed === null) {
+    throw new DriverRunNotFoundEngineError(driverRunId);
+  }
+  const flipped = allStreams(refreshed).find((s) => s.id === streamId);
+  if (flipped === undefined) {
+    throw new PreconditionError(`stream not found after patch: ${streamId}`);
+  }
+  // The sticky-terminal guard in `address()` already refused done/failed/
+  // cancelled, so this stamp only catches "pending" (a never-ticked import)
+  // and the derived blocked-on-merges presentation — not a general fallback.
+  if (refreshed.status !== "running" && refreshed.status !== "awaiting_judgment") {
+    store.updateDriverRunStatus(driverRunId, "running");
+  }
+  const ctx: DispatchContext = {
+    clock,
+    cloudInFlight: 0,
+    localInFlight: 0,
+    onProgress: () => undefined,
+    opts: resolveRunOpts(),
+    repoRoot: resolveRepoRoot(refreshed.manifestPath),
+    repoUrl: extractRepoUrl(refreshed),
+    runId: driverRunId,
+    ship,
+    store,
+  };
+  const dispatched = await dispatchStream(ctx, flipped, {
+    continuation: { startingRef: branch, workOnCurrentBranch: true },
+    docPath,
+  });
+  if (!dispatched) {
+    // The failed launch left the stream `failed`; stamp the run awaiting_judgment
+    // so the advertised recovery (`decide retry`) is legal immediately, without
+    // an interposed tick to restamp the run.
+    store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
+    throw new PreconditionError(
+      `address dispatch failed for stream ${streamId}; stream is failed — decide retry re-dispatches the findings doc on the PR branch`,
+    );
+  }
+  return loadRun(store, driverRunId);
+}
+
+/** Assert a stream is address-eligible; returns its branch. */
+function assertAddressableStream(stream: DriverStream): string {
+  if (stream.status !== "landed") {
+    throw new AddressError(
+      "not-landed",
+      `stream ${stream.id} is not landed (status=${stream.status})`,
+    );
+  }
+  if (stream.runtime !== "cloud") {
+    throw new AddressError(
+      "not-cloud",
+      `stream ${stream.id} runtime is ${stream.runtime}; address handles cloud streams only`,
+    );
+  }
+  if (stream.prUrl === undefined || stream.branch === undefined) {
+    const missing = stream.prUrl === undefined ? "PR" : "branch";
+    throw new AddressError("no-pr", `stream ${stream.id} has no ${missing} to address`);
+  }
+  return stream.branch;
+}
+
+async function assertPrOpen(gh: DriverGhPort, run: DriverRun, stream: DriverStream): Promise<void> {
+  const repo = extractRepoUrl(run);
+  if (repo === undefined) {
+    throw new PreconditionError(`cannot resolve repo URL for gh operations on run ${run.id}`);
+  }
+  const prNumber = prNumberFromUrl(stream.prUrl);
+  if (prNumber === undefined) {
+    throw new AddressError(
+      "pr-not-open",
+      `cannot parse PR number from prUrl ${String(stream.prUrl)}`,
+    );
+  }
+  let view: Awaited<ReturnType<DriverGhPort["viewPullRequest"]>>;
+  try {
+    view = await gh.viewPullRequest(repo, prNumber);
+  } catch (err: unknown) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new AddressError("pr-not-open", `gh view failed for PR #${String(prNumber)}: ${detail}`);
+  }
+  if (view.state !== "OPEN") {
+    throw new AddressError("pr-not-open", `PR #${String(prNumber)} is ${view.state}, not open`);
+  }
+}
+
+function readFindings(findingsPath: string): string {
+  let content: string;
+  try {
+    content = readFileSync(findingsPath, "utf8");
+  } catch {
+    throw new AddressError("findings-unreadable", `findings file not readable: ${findingsPath}`);
+  }
+  if (content.trim() === "") {
+    throw new AddressError("findings-unreadable", `findings file is empty: ${findingsPath}`);
+  }
+  return content;
+}
+
+/**
+ * Write the synthesized address doc beside the run manifest so the exact
+ * dispatched text is auditable, and return its absolute path (the dispatch
+ * `docPath`).
+ */
+function writeAddressDoc(
+  manifestPath: string,
+  streamId: string,
+  cycle: number,
+  findings: string,
+): string {
+  const outPath = join(
+    dirname(resolve(manifestPath)),
+    `address-${streamId}-cycle${String(cycle)}.md`,
+  );
+  // Structured like the read side (`findings-unreadable`) so a disk/permission
+  // failure surfaces through the land/decide error formatter, not as a raw
+  // throw. The store is untouched at this point — the state stays clean.
+  try {
+    writeFileSync(outPath, `${ADDRESS_DOC_PREAMBLE}${findings}`, "utf8");
+  } catch (err: unknown) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new PreconditionError(`cannot write address doc ${outPath}: ${detail}`);
+  }
+  return outPath;
+}
+
+function writeCycleExhaustedRow(
+  store: Store,
+  run: DriverRun,
+  stream: DriverStream,
+  maxCycles: number,
+  clock: () => number,
+): void {
+  writeCycleExhaustedEscalation(
+    { store, clock: () => new Date(clock()).toISOString() },
+    run,
+    stream,
+    `Review-cycle cap (${String(maxCycles)}) reached for stream ${stream.id}; seat must decide next step`,
+    "address findings manually, extend the cap, or abandon the PR",
+  );
 }
 
 function applyTierMapping(input: ShipInput, tierMapping?: TierDispatchResult): ShipInput {
@@ -894,7 +1186,12 @@ async function handleSucceededPoll(
   wfRun: GetWorkflowRunOutput,
 ): Promise<void> {
   const prUrl = wfRun.branches?.[0]?.prUrl;
-  if (stream.runtime === "cloud" && prUrl !== undefined) {
+  // Skip the flip only for an address-shaped re-dispatch (prUrl + persisted
+  // continuation): it works an already-open, already-ready PR — nothing to
+  // flip. A prUrl alone is NOT enough to skip: a failed flip persists the
+  // prUrl on the failure path below, and the `decide retry` of that stream
+  // must re-run the (idempotent) flip or the draft PR never becomes ready.
+  if (stream.runtime === "cloud" && prUrl !== undefined && !isAddressRedispatch(stream)) {
     const flipError = await flipCloudDraftReady(ctx.gh, run, prUrl);
     if (flipError !== undefined) {
       store.updateDriverStream(stream.id, {
@@ -906,6 +1203,17 @@ async function handleSucceededPoll(
     }
   }
   store.updateDriverStream(stream.id, buildLandedPatch(stream, wfRun));
+}
+
+/**
+ * An `address` re-dispatch (or a retry of one): the stream carries a prUrl AND
+ * an engine-bumped review cycle — `address` is only legal from `landed`, so the
+ * PR was already flipped ready when the stream first landed. `workOnCurrentBranch`
+ * is NOT the discriminator: flip-cloud persists it too, and a flip-cloud stream
+ * whose PR-creation flip failed must re-run the flip on retry.
+ */
+function isAddressRedispatch(stream: DriverStream): boolean {
+  return stream.prUrl !== undefined && (stream.reviewCycles ?? 0) > 0;
 }
 
 async function flipCloudDraftReady(

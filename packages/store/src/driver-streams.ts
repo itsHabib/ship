@@ -22,6 +22,7 @@ export interface UpdateDriverStreamInput {
   mergeCommit?: string;
   mergedAt?: string;
   cycles?: number;
+  reviewCycles?: number;
   errorMessage?: string;
   dispatchProvider?: DriverStream["dispatchProvider"] | null;
   dispatchModel?: string | null;
@@ -49,6 +50,7 @@ export interface DriverStreamRow {
   merge_commit: string | null;
   merged_at: string | null;
   cycles: number | null;
+  review_cycles: number | null;
   error_message: string | null;
   model_tier: string | null;
   effort_tier: string | null;
@@ -100,7 +102,7 @@ export interface DriverStreamOps {
 }
 
 const STREAM_COLUMNS =
-  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, created_at, updated_at";
+  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, created_at, updated_at";
 
 function sqlNull<T>(value: T | undefined): T | null {
   return value ?? null;
@@ -205,6 +207,7 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
   appendStreamPatchColumn(sets, params, "merge_commit = ?", patch.mergeCommit);
   appendStreamPatchColumn(sets, params, "merged_at = ?", patch.mergedAt);
   appendStreamPatchColumn(sets, params, "cycles = ?", patch.cycles);
+  appendStreamPatchColumn(sets, params, "review_cycles = ?", patch.reviewCycles);
   appendStreamPatchColumn(sets, params, "error_message = ?", patch.errorMessage);
   appendStreamPatchColumn(sets, params, "dispatch_provider = ?", patch.dispatchProvider);
   appendStreamPatchColumn(sets, params, "dispatch_model = ?", patch.dispatchModel);
@@ -289,6 +292,7 @@ function optionalStreamFields(row: DriverStreamRow): Record<string, string | num
   const entries: [string, string | number | boolean | null][] = [
     ["branch", row.branch],
     ["cycles", row.cycles],
+    ["reviewCycles", row.review_cycles],
     ["dispatchModel", row.dispatch_model],
     ["dispatchProvider", row.dispatch_provider],
     ["effortDegraded", row.effort_degraded === null ? null : row.effort_degraded === 1],
