@@ -84,10 +84,12 @@ The engine validates the artifact against live state before any write:
 5. the normal landed/cloud/cycle guards still pass.
 
 On success Ship writes the synthesized address document, then atomically records
-the consumed artifact and advances the stream to the next address cycle with
-`workOnCurrentBranch: true`. Dispatch follows the existing continuation path.
-A failed dispatch is recovered through `decide retry`, which reuses the recorded
-address document; the same artifact is never submitted again.
+the consumed artifact, advances the stream to the next address cycle, persists
+`workOnCurrentBranch: true`, appends the address attempt, and sets the stream to
+`dispatching`. The engine then starts that already-prepared attempt through the
+existing continuation path. A failed dispatch is recovered through `decide retry`,
+which reuses the recorded address document; the same artifact is never submitted
+again.
 
 ## Contract decisions
 
@@ -100,11 +102,15 @@ address document; the same artifact is never submitted again.
 3. **Digest is over the exact input bytes.** `artifact_id` catches semantic
    redelivery after reformatting; SHA-256 catches exact payload reuse under another
    id. Both are unique.
-4. **Consumption and stream transition are one store transaction.** Recording
+4. **Consumption and dispatch preparation are one store transaction.** Recording
    consumption before a separate stream update creates a crash window; updating
    the stream first permits duplicate dispatch. The store method inserts the
-   consumption row and compare-and-updates the expected current review cycle in
-   one SQLite transaction.
+   consumption row and compare-and-updates the expected landed stream and current
+   review cycle in one SQLite transaction. That update appends the attempt with
+   its synthesized `docPath` and leaves the stream in `dispatching` before any
+   external call. A crash before `startShip` is therefore handled by Ship's
+   existing dispatch-recovery path: no candidate resets the prepared attempt to
+   `pending`, and the next tick re-dispatches its recorded address document.
 5. **Missing reviewers do not block address.** Addressing known findings may
    proceed while a reviewer is absent. The artifact preserves `panel.missing`;
    the later Gate path must not reinterpret that as clean evidence.
@@ -135,9 +141,10 @@ CREATE TABLE driver_review_artifacts (
 ```
 
 The store exposes one sharp operation:
-`consumeReviewArtifactAndAdvanceStream(input)`. It refuses duplicate id/digest
-and stale expected cycle with typed store errors, inserts the row, updates
-`review_cycles` plus `work_on_current_branch`, and bumps the parent timestamp
+`consumeReviewArtifactAndPrepareDispatch(input)`. It refuses duplicate id/digest,
+non-landed state, and stale expected cycle with typed store errors; inserts the
+row; appends the prepared attempt; updates `review_cycles`,
+`work_on_current_branch`, and status `dispatching`; and bumps the parent timestamp
 inside one transaction.
 
 ## Refusals
@@ -170,8 +177,10 @@ a printed seed/counterexample:
    preserves the routing projection and outcome.
 5. **Panel partition:** generated valid requested/completed/missing partitions
    parse; overlap, omission, and extras refuse.
-6. **Transaction recovery:** store reopen preserves consumption and resulting
-   cycle; an injected transactional failure preserves neither.
+6. **Transaction recovery:** store reopen preserves consumption, resulting cycle,
+   and the prepared address attempt. A crash-before-start simulation re-enters
+   existing dispatch recovery and re-dispatches the recorded doc; an injected
+   transactional failure preserves none of them.
 
 The existing `driver address` state/refusal suite remains green. `make check`
 must pass on Windows and Ubuntu.
@@ -180,9 +189,10 @@ must pass on Windows and Ubuntu.
 
 - **Schema becomes coordinator policy.** Avoided by limiting Ship to evidence
   presence, source/panel consistency, and exact routing identity.
-- **Idempotency blocks recovery.** The atomic row records the synthesized
-  `doc_path`; failed external dispatch recovery stays `decide retry`, not a
-  second address call.
+- **Idempotency blocks recovery.** The atomic transition also prepares a normal
+  `dispatching` attempt with the synthesized `docPath`. Existing recovery can
+  adopt a started run or reset/re-dispatch one that never started; failed starts
+  stay `decide retry`, never a second address call.
 - **GH adapter drift.** `viewPullRequest` adds `headRefOid` to its existing
   query and fake port; exact-head behavior is tested at the port and engine.
 - **Oversized bot evidence.** Hard bounds fail closed before prompt construction.
@@ -198,7 +208,8 @@ must pass on Windows and Ubuntu.
 ## Implementation plan
 
 1. Land parser/types and generated contract tests.
-2. Add migration 0015, transactional store operation, uniqueness/reopen tests.
-3. Extend the GH view with `headRefOid`; integrate validation and durable
-   consumption into `address`.
+2. Add migration 0015, transactional consume-and-prepare operation, and
+   uniqueness/reopen/crash-before-start tests.
+3. Extend the GH view with `headRefOid`; refactor address dispatch to start an
+   already-prepared attempt after validation and durable consumption.
 4. Update CLI fixtures/docs from markdown to JSON and run the full check matrix.
