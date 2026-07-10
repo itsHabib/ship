@@ -123,6 +123,9 @@ again.
 Migration `0015_driver_review_artifacts.sql` adds:
 
 ```sql
+CREATE UNIQUE INDEX driver_streams_run_id_id_idx
+  ON driver_streams (driver_run_id, id);
+
 CREATE TABLE driver_review_artifacts (
   artifact_id TEXT PRIMARY KEY,
   digest_sha256 TEXT NOT NULL UNIQUE,
@@ -134,9 +137,8 @@ CREATE TABLE driver_review_artifacts (
   address_cycle INTEGER NOT NULL,
   doc_path TEXT NOT NULL,
   consumed_at TEXT NOT NULL,
-  FOREIGN KEY (driver_run_id) REFERENCES driver_runs(id),
-  FOREIGN KEY (stream_id, driver_run_id)
-    REFERENCES driver_streams(id, driver_run_id)
+  FOREIGN KEY (driver_run_id, stream_id)
+    REFERENCES driver_streams(driver_run_id, id) ON DELETE CASCADE
 );
 ```
 
