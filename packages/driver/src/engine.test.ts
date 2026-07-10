@@ -2180,6 +2180,19 @@ batches:
     );
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBeUndefined();
   });
+
+  test("refuses an over-limit findings file as findings-unreadable", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    writeFileSync(findingsPath, "x".repeat(1024 * 1024 + 1));
+
+    await expectRefusal(
+      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "findings-unreadable",
+    );
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
 });
 
 async function expectRefusal(

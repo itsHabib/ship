@@ -36,7 +36,10 @@ const artifactSchema = z.object({
       .refine((value) => /^[^/\s]+\/[^/\s]+$/u.test(value), "subject repo must be owner/repo")
       .transform((value) => value.toLowerCase()),
     number: z.number().int().positive(),
-    head_sha: z.string().regex(/^[0-9a-f]{40}$/iu),
+    head_sha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/iu)
+      .transform((value) => value.toLowerCase()),
   }),
   producer: z.object({
     id: bounded("producer id", 128),
@@ -138,7 +141,7 @@ export function canonicalReviewFindingsSha256(artifact: ReviewFindingsV1): strin
       type: artifact.subject.type,
       repo: artifact.subject.repo,
       number: artifact.subject.number,
-      head_sha: artifact.subject.head_sha.toLowerCase(),
+      head_sha: artifact.subject.head_sha,
     },
     panel: {
       requested: [...artifact.panel.requested].sort((left, right) =>
@@ -173,13 +176,13 @@ function compareSources(left: ReviewFindingSource, right: ReviewFindingSource): 
 }
 
 function sourceKey(source: ReviewFindingSource): string {
-  return [
+  return JSON.stringify([
     source.reviewer,
     source.comment_id,
     source.url,
     source.file ?? "",
     source.line ?? "",
-  ].join("\u0000");
+  ]);
 }
 
 export function renderReviewFindings(artifact: ReviewFindingsV1): string {

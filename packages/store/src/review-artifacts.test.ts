@@ -52,6 +52,7 @@ describe("review artifact consumption", () => {
               status: "landed",
               streamIndex: 0,
               touches: [],
+              workflowRunId: "wf_old_succeeded",
             },
           ],
         },
@@ -100,9 +101,17 @@ describe("review artifact consumption", () => {
       status: "dispatching",
       workOnCurrentBranch: true,
     });
+    expect(stream?.workflowRunId).toBeUndefined();
     expect(() => {
       store.consumeReviewArtifactAndPrepareDispatch(input);
     }).toThrow(ReviewArtifactDuplicateError);
+    expect(() => {
+      store.consumeReviewArtifactAndPrepareDispatch({
+        ...input,
+        artifactId: "rf_competing",
+        canonicalSha256: "c".repeat(64),
+      });
+    }).toThrow(ReviewArtifactAddressRacedError);
     expect(stream?.id).toBe(streamId);
   });
 

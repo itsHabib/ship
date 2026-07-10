@@ -37,7 +37,7 @@ export function createReviewArtifactOps(db: Db, clock: () => string): ReviewArti
   );
   const updateStream = db.prepare(
     `UPDATE driver_streams
-     SET attempts = ?, status = 'dispatching', review_cycles = ?,
+     SET attempts = ?, status = 'dispatching', review_cycles = ?, workflow_run_id = NULL,
          work_on_current_branch = 1, dispatch_provider = ?, dispatch_model = ?,
          dispatch_model_params = ?, effort_degraded = ?, tier_degrade_reason = ?,
          updated_at = ?
@@ -45,6 +45,13 @@ export function createReviewArtifactOps(db: Db, clock: () => string): ReviewArti
        AND COALESCE(review_cycles, 0) = ?`,
   );
   const bumpRun = db.prepare(`UPDATE driver_runs SET updated_at = ? WHERE id = ?`);
+  const selectCycle = db.prepare<
+    [string, string, number],
+    { artifact_id: string; canonical_sha256: string }
+  >(
+    `SELECT artifact_id, canonical_sha256 FROM driver_review_artifacts
+     WHERE driver_run_id = ? AND stream_id = ? AND address_cycle = ?`,
+  );
 
   const transaction = db.transaction((input: ConsumeReviewArtifactInput): void => {
     const now = clock();
@@ -91,6 +98,16 @@ export function createReviewArtifactOps(db: Db, clock: () => string): ReviewArti
         transaction(input);
       } catch (error: unknown) {
         if (isUniqueConstraint(error)) {
+          const winner = selectCycle.get(input.driverRunId, input.streamId, input.addressCycle);
+          if (
+            winner !== undefined &&
+            winner.artifact_id !== input.artifactId &&
+            winner.canonical_sha256 !== input.canonicalSha256
+          ) {
+            throw new ReviewArtifactAddressRacedError(
+              `stream ${input.streamId} address cycle ${String(input.addressCycle)} was consumed by a competing artifact`,
+            );
+          }
           throw new ReviewArtifactDuplicateError("review artifact already consumed", {
             cause: error,
           });

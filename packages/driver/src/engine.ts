@@ -969,7 +969,7 @@ function assertArtifactMatchesPr(artifact: ReviewFindingsV1, pr: AddressPr): voi
       `findings target ${artifact.subject.repo}#${String(artifact.subject.number)} does not match ${pr.repo}#${String(pr.prNumber)}`,
     );
   }
-  if (artifact.subject.head_sha.toLowerCase() !== pr.view.headRefOid.toLowerCase()) {
+  if (artifact.subject.head_sha !== pr.view.headRefOid.toLowerCase()) {
     throw new AddressError(
       "findings-stale-head",
       `findings head ${artifact.subject.head_sha} does not match live head ${pr.view.headRefOid}`,
@@ -1026,7 +1026,7 @@ function consumePreparedAddress(params: {
       docPath,
       driverRunId,
       expectedReviewCycle: nextCycle - 1,
-      headSha: artifact.subject.head_sha.toLowerCase(),
+      headSha: artifact.subject.head_sha,
       prNumber: pr.prNumber,
       repo: pr.repo,
       streamId: stream.id,

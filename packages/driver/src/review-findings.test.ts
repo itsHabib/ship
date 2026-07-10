@@ -56,6 +56,7 @@ describe("ReviewFindingsV1", () => {
   test("accepts opaque severity and strips compatible extension fields", () => {
     const input = {
       ...artifact(),
+      subject: { ...artifact().subject, head_sha: HEAD.toUpperCase() },
       receipt: { trace: "ignored" },
       findings: artifact().findings.map((finding) => ({ ...finding, confidence: 0.9 })),
     };
@@ -63,6 +64,7 @@ describe("ReviewFindingsV1", () => {
     const parsed = parseReviewFindings(JSON.stringify(input));
 
     expect(parsed.findings[0]?.severity).toBe("suggestion");
+    expect(parsed.subject.head_sha).toBe(HEAD);
     expect(parsed).not.toHaveProperty("receipt");
     expect(parsed.findings[0]).not.toHaveProperty("confidence");
   });
