@@ -10,13 +10,18 @@ const bounded = (name: string, max: number) =>
     .refine((value) => value.trim().length > 0, `${name} must not be blank`)
     .refine((value) => bytes(value) <= max, `${name} exceeds ${String(max)} bytes`);
 
-const sourceSchema = z.object({
-  reviewer: bounded("source reviewer", 128),
-  comment_id: bounded("source comment_id", 128),
-  url: bounded("source url", 2048).refine(isUrl, "source url must be a URL"),
-  file: bounded("source file", 1024).optional(),
-  line: z.number().int().positive().optional(),
-});
+const sourceSchema = z
+  .object({
+    reviewer: bounded("source reviewer", 128),
+    comment_id: bounded("source comment_id", 128),
+    url: bounded("source url", 2048).refine(isUrl, "source url must be a URL"),
+    file: bounded("source file", 1024).optional(),
+    line: z.number().int().positive().optional(),
+  })
+  .refine((source) => source.line === undefined || source.file !== undefined, {
+    message: "source line requires source file",
+    path: ["line"],
+  });
 
 const findingSchema = z.object({
   id: bounded("finding id", 128),

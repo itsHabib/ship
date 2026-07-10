@@ -84,6 +84,18 @@ describe("ReviewFindingsV1", () => {
       ReviewFindingsValidationError,
     );
 
+    const lineBase = artifact();
+    const lineWithoutFile = {
+      ...lineBase,
+      findings: lineBase.findings.map((finding, index) => ({
+        ...finding,
+        sources: finding.sources.map((source) => (index === 0 ? { ...source, line: 42 } : source)),
+      })),
+    };
+    expect(() => parseReviewFindings(JSON.stringify(lineWithoutFile))).toThrow(
+      ReviewFindingsValidationError,
+    );
+
     const extra = artifact();
     extra.panel.completed.push("copilot");
     expect(() => parseReviewFindings(JSON.stringify(extra))).toThrow(ReviewFindingsValidationError);
