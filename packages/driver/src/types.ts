@@ -102,7 +102,7 @@ export interface LandOpts {
 
 export interface AddressOpts {
   streamId: string;
-  /** File whose content is the consolidated review findings (carried opaquely). */
+  /** File containing one validated ReviewFindingsV1 JSON artifact. */
   findingsPath: string;
   /** Review-cycle cap (policy value; default 3). Refuses + escalates at the cap. */
   maxCycles?: number;

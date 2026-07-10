@@ -23,6 +23,7 @@ import type {
   ListEscalationsFilter,
 } from "./escalations.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
+import type { ConsumeReviewArtifactInput } from "./review-artifacts.js";
 import type {
   CreateWorkflowRunInput,
   ListRunsFilter,
@@ -35,6 +36,7 @@ import { createDriverRunOps } from "./driver-runs.js";
 import { createEscalationOps } from "./escalations.js";
 import { assertSchemaVersion, runMigrations } from "./migrations.js";
 import { createPhaseOps } from "./phases.js";
+import { createReviewArtifactOps } from "./review-artifacts.js";
 import { createWorkflowRunOps } from "./workflow-runs.js";
 
 /**
@@ -152,6 +154,8 @@ export interface Store {
   updateDriverBatch: (id: string, patch: UpdateDriverBatchInput) => DriverBatch;
   /** Patch driver stream progress columns; bumps parent run `updated_at`. */
   updateDriverStream: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
+  /** Atomically consume a review artifact and prepare its address dispatch. */
+  consumeReviewArtifactAndPrepareDispatch: (input: ConsumeReviewArtifactInput) => void;
   /** Insert an escalation row; rejects when an open row exists for the dedup key. */
   insertEscalation: (input: InsertEscalationInput) => Escalation;
   /** Hydrated escalation row, or `null` if unknown. Does not throw. */
@@ -210,6 +214,7 @@ export function createStore(opts: CreateStoreOptions): Store {
     const cursorRunOps = createCursorRunOps(db, clock);
     const driverRunOps = createDriverRunOps(db, clock);
     const escalationOps = createEscalationOps(db, clock);
+    const reviewArtifactOps = createReviewArtifactOps(db, clock);
 
     return {
       appendPhase: (input) => withStoreContentionGuard(() => phaseOps.append(input)),
@@ -234,6 +239,11 @@ export function createStore(opts: CreateStoreOptions): Store {
         withStoreContentionGuard(() => driverRunOps.claimTick(id, input)),
       updateDriverStream: (id, patch) =>
         withStoreContentionGuard(() => driverRunOps.updateStream(id, patch)),
+      consumeReviewArtifactAndPrepareDispatch: (input) => {
+        withStoreContentionGuard(() => {
+          reviewArtifactOps.consumeAndPrepareDispatch(input);
+        });
+      },
       getEscalation: (id) => withStoreContentionGuard(() => escalationOps.get(id)),
       getOpenEscalation: (key) => withStoreContentionGuard(() => escalationOps.getOpenByKey(key)),
       insertEscalation: (input) => withStoreContentionGuard(() => escalationOps.insert(input)),

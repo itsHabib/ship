@@ -170,7 +170,7 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     .command("address <driverRunId>")
     .description("re-dispatch consolidated review findings onto a landed stream's PR branch")
     .requiredOption("--stream <ds_id>", "driver stream id")
-    .requiredOption("--findings <path>", "path to the consolidated review-findings file")
+    .requiredOption("--findings <path>", "path to a ReviewFindingsV1 JSON artifact")
     .option("--max-cycles <n>", "review-cycle cap (default 3)")
     .action(async (driverRunId: string, rawOpts: AddressCommandOpts) => {
       await runDriverActionAsync(async () => {

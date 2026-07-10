@@ -74,6 +74,7 @@ describe("createExecGhPort — viewPullRequest", () => {
   test("parses state, mergeCommit, and mergedAt from gh JSON", async () => {
     const { calls, exec } = fakeExec(
       JSON.stringify({
+        headRefOid: "deadbeef",
         mergeCommit: { oid: "abc123" },
         mergedAt: "2026-06-19T12:00:00Z",
         state: "MERGED",
@@ -84,23 +85,37 @@ describe("createExecGhPort — viewPullRequest", () => {
     const view = await gh.viewPullRequest("org/repo", 42);
 
     expect(view).toEqual({
+      headRefOid: "deadbeef",
       mergeCommit: { oid: "abc123" },
       mergedAt: "2026-06-19T12:00:00Z",
       state: "MERGED",
     });
     expect(calls[0]).toEqual({
-      args: ["pr", "view", "42", "--json", "mergeCommit,mergedAt,state", "-R", "org/repo"],
+      args: [
+        "pr",
+        "view",
+        "42",
+        "--json",
+        "headRefOid,mergeCommit,mergedAt,state",
+        "-R",
+        "org/repo",
+      ],
       file: "gh",
     });
   });
 
   test("defaults missing mergeCommit and mergedAt to null", async () => {
-    const { exec } = fakeExec(JSON.stringify({ state: "OPEN" }));
+    const { exec } = fakeExec(JSON.stringify({ headRefOid: "cafebabe", state: "OPEN" }));
     const gh = createExecGhPort(exec);
 
     const view = await gh.viewPullRequest("org/repo", 5);
 
-    expect(view).toEqual({ mergeCommit: null, mergedAt: null, state: "OPEN" });
+    expect(view).toEqual({
+      headRefOid: "cafebabe",
+      mergeCommit: null,
+      mergedAt: null,
+      state: "OPEN",
+    });
   });
 });
 
