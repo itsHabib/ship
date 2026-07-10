@@ -150,16 +150,12 @@ export function canonicalReviewFindingsSha256(artifact: ReviewFindingsV1): strin
       head_sha: artifact.subject.head_sha,
     },
     panel: {
-      requested: [...artifact.panel.requested].sort((left, right) =>
-        left.localeCompare(right, "en"),
-      ),
-      completed: [...artifact.panel.completed].sort((left, right) =>
-        left.localeCompare(right, "en"),
-      ),
-      missing: [...artifact.panel.missing].sort((left, right) => left.localeCompare(right, "en")),
+      requested: [...artifact.panel.requested].sort(compareUtf8),
+      completed: [...artifact.panel.completed].sort(compareUtf8),
+      missing: [...artifact.panel.missing].sort(compareUtf8),
     },
     findings: [...artifact.findings]
-      .sort((left, right) => left.id.localeCompare(right.id, "en"))
+      .sort((left, right) => compareUtf8(left.id, right.id))
       .map((finding) => ({
         id: finding.id,
         severity: finding.severity,
@@ -178,7 +174,11 @@ export function canonicalReviewFindingsSha256(artifact: ReviewFindingsV1): strin
 }
 
 function compareSources(left: ReviewFindingSource, right: ReviewFindingSource): number {
-  return sourceKey(left).localeCompare(sourceKey(right), "en");
+  return compareUtf8(sourceKey(left), sourceKey(right));
+}
+
+function compareUtf8(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
 function sourceKey(source: ReviewFindingSource): string {
@@ -193,7 +193,7 @@ function sourceKey(source: ReviewFindingSource): string {
 
 export function renderReviewFindings(artifact: ReviewFindingsV1): string {
   return [...artifact.findings]
-    .sort((left, right) => left.id.localeCompare(right.id, "en"))
+    .sort((left, right) => compareUtf8(left.id, right.id))
     .map((finding, index) => {
       const sources = [...finding.sources]
         .sort(compareSources)
