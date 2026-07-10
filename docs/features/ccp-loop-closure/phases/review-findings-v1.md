@@ -63,8 +63,9 @@ A valid artifact has this transport shape:
 ```
 
 Objects tolerate unknown optional fields so compatible producers can add receipt
-metadata. Unknown schema majors, decisions, subject types, severities, and malformed
-known fields refuse.
+metadata. Unknown schema majors, decisions, subject types, and malformed known
+fields refuse. `severity` is a non-empty bounded string, not a Ship-owned enum:
+the engine transports it but never ranks or acts on coordinator vocabulary.
 
 The parser additionally enforces:
 
@@ -73,7 +74,9 @@ The parser additionally enforces:
 - unique finding ids and unique entries in each panel set;
 - `completed` and `missing` are disjoint and their union equals `requested`;
 - every finding source reviewer appears in `panel.completed`;
-- a bounded input size (1 MiB) and bounded collection/string lengths.
+- a 1 MiB input cap; at most 100 findings, 32 sources per finding, and 16 panel
+  members; ids/reviewer/producer values at most 128 bytes, summaries 512 bytes,
+  evidence 32 KiB, URLs 2048 bytes, and file paths 1024 bytes.
 
 The engine validates the artifact against live state before any write:
 
@@ -111,12 +114,21 @@ again.
    external call. A crash before `startShip` is therefore handled by Ship's
    existing dispatch-recovery path: no candidate resets the prepared attempt to
    `pending`, and the next tick re-dispatches its recorded address document.
+   The synthesized document write intentionally precedes this transaction. Its
+   path and content are deterministic for `(stream, next cycle, artifact)`, and no
+   external dispatch occurs before commit. A crash between file write and commit
+   can leave only an orphan file; retry overwrites the same path, then performs
+   the first and only dispatch. Moving filesystem rename "inside" SQLite would
+   not make the two resources atomic.
 5. **Missing reviewers do not block address.** Addressing known findings may
    proceed while a reviewer is absent. The artifact preserves `panel.missing`;
    the later Gate path must not reinterpret that as clean evidence.
 6. **Existing free-form findings stop being accepted.** This is a versioned
    boundary break, not an auto-detection shim. A markdown fallback would preserve
    the untestable path the contract is meant to remove.
+7. **`decision` is closed to `address` in v1.** Unlike severity, the command acts
+   on this field by dispatching work. A future no-action/reject artifact is a new
+   schema major or a different consumer, not an unknown value Ship passes through.
 
 ## Data model
 
@@ -157,6 +169,8 @@ Extend `AddressErrorCode` with:
 - `findings-subject-mismatch` — repo or PR number differs;
 - `findings-stale-head` — reviewed head differs from live `headRefOid`;
 - `findings-duplicate` — artifact id or digest already consumed.
+- `address-raced` — compare-and-update found a non-landed stream or a different
+  current review cycle after validation.
 
 Existing `findings-unreadable` remains for missing, unreadable, empty, or
 over-limit files. Every refusal occurs before dispatch and leaves stream/cycle
@@ -172,17 +186,24 @@ a printed seed/counterexample:
 1. **Exact head:** replacing a valid artifact head with any different 40-hex head
    never dispatches and never consumes.
 2. **Unsourced input:** removing all findings, evidence, sources, or the source
-   reviewer's completed-panel membership never dispatches.
+   reviewer's completed-panel membership never dispatches. Adding one invalid
+   source among otherwise valid findings/sources also always refuses.
 3. **At most once:** for generated repeated sequences of one artifact, same-id
    variants, and same-byte/different-id variants, Ship dispatches at most once.
+   A dedicated `Promise.all` example sends two concurrent calls; SQLite serializes
+   the writes and exactly one consume-and-prepare transaction wins.
 4. **Extension tolerance:** adding unknown optional fields at any object level
    preserves the routing projection and outcome.
 5. **Panel partition:** generated valid requested/completed/missing partitions
    parse; overlap, omission, and extras refuse.
 6. **Transaction recovery:** store reopen preserves consumption, resulting cycle,
    and the prepared address attempt. A crash-before-start simulation re-enters
-   existing dispatch recovery and re-dispatches the recorded doc; an injected
-   transactional failure preserves none of them.
+   existing dispatch recovery and re-dispatches the recorded doc. Store tests
+   install a temporary SQLite `BEFORE UPDATE` trigger that raises after the
+   artifact insert; the transaction must roll back both rows without a production
+   test hook. A filesystem-port write failure proves no consume/dispatch occurs;
+   a write followed by forced transaction rollback leaves an orphan that a retry
+   deterministically overwrites before the first dispatch.
 
 The existing `driver address` state/refusal suite remains green. `make check`
 must pass on Windows and Ubuntu.
@@ -198,6 +219,9 @@ must pass on Windows and Ubuntu.
 - **GH adapter drift.** `viewPullRequest` adds `headRefOid` to its existing
   query and fake port; exact-head behavior is tested at the port and engine.
 - **Oversized bot evidence.** Hard bounds fail closed before prompt construction.
+- **Concurrent address calls.** SQLite's write lock plus the unique id/digest and
+  expected-cycle compare-and-update serialize the winner; the loser maps to
+  `findings-duplicate` or `address-raced` and never starts Ship.
 
 ## Out of scope
 
@@ -209,7 +233,8 @@ must pass on Windows and Ubuntu.
 
 ## Implementation plan
 
-1. Land parser/types and generated contract tests.
+1. Land parser/types, a narrow injectable address-file port, and generated
+   contract tests.
 2. Add migration 0015, transactional consume-and-prepare operation, and
    uniqueness/reopen/crash-before-start tests.
 3. Extend the GH view with `headRefOid`; refactor address dispatch to start an
