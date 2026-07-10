@@ -5,6 +5,11 @@
 
 # `driver address` — re-dispatch consolidated review findings onto the existing PR branch
 
+> Transport update: `review-findings-v1.md` supersedes this phase's original
+> opaque-file boundary. `--findings` now requires a validated ReviewFindingsV1
+> JSON artifact with exact-head and durable replay protection; dispatch and
+> cycle behavior below remains the mechanism foundation.
+
 ## Scope
 
 | Bucket | Files | Est. LOC | Weighted |
@@ -33,8 +38,8 @@ ship driver address <driverRunId> --stream <streamId> --findings <path>
 ```
 
 **Mechanism only.** *Which* findings to take and *whether* to push back stays
-seat-side (`/review-coordinator` + seat judgment). The engine carries the findings
-file opaquely — no parsing, no selection, no policy.
+seat-side (`/review-coordinator` + seat judgment). The engine validates transport,
+source consistency, and routing identity, but performs no selection or policy.
 
 What the verb does, in order:
 
@@ -48,7 +53,7 @@ What the verb does, in order:
 2. **Synthesize the address doc**: a fixed mechanical preamble ("address the
    following review findings on the current branch; do not open a new PR")
    prepended to the findings file's content, written adjacent to the run
-   manifest — `<manifest-dir>/address-<streamId>-cycle<N>.md` — so the exact
+   manifest — `<manifest-dir>/address-<streamId>-cycle<N>-<digest>.md` — so the exact
    dispatched text is auditable. That synthesized file is the dispatch
    `docPath`, and it needs a mechanism: `dispatchStream` today always derives
    `docPath` from `stream.specPath` via `resolveStreamDocPath`, so it gains an

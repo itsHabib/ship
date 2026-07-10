@@ -60,7 +60,12 @@ export type AddressRefusalCode =
   | "not-cloud"
   | "run-not-addressable"
   | "cycle-exhausted"
-  | "findings-unreadable";
+  | "findings-unreadable"
+  | "findings-invalid"
+  | "findings-subject-mismatch"
+  | "findings-stale-head"
+  | "findings-duplicate"
+  | "address-raced";
 
 export class AddressError extends Error {
   override readonly name = "AddressError";

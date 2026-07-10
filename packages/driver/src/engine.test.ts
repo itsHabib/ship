@@ -23,6 +23,7 @@ import {
 } from "./engine.js";
 import { AddressError, TickLiveError } from "./errors.js";
 import { type DispatchAmbiguity, recoverDispatchingStreams } from "./judgment.js";
+import { canonicalReviewFindingsSha256, parseReviewFindings } from "./review-findings.js";
 import { createDriverService } from "./service.js";
 import { createFakeGhPort } from "./test/fake-gh-port.js";
 import { createFakeShipPort } from "./test/fake-ship-port.js";
@@ -1669,6 +1670,7 @@ describe("driver address", () => {
   let store: ReturnType<typeof createStore>;
 
   const PR_URL = "https://github.com/example/ship/pull/77";
+  const HEAD_SHA = "0000000000000000000000000000000000000000";
   const SOURCE_JSON = `---
 driver_version: 1
 generated_at: 2026-07-09T00:00:00Z
@@ -1693,8 +1695,8 @@ batches:
     repoRoot = join(tmpDir, "repo");
     mkdirSync(join(repoRoot, ".git"), { recursive: true });
     manifestPath = join(repoRoot, "driver.md");
-    findingsPath = join(repoRoot, "findings.md");
-    writeFileSync(findingsPath, "- fix the null deref in foo.ts\n");
+    findingsPath = join(repoRoot, "findings.json");
+    writeFileSync(findingsPath, validFindingsArtifact());
     store = createStore({ dbPath: ":memory:" });
   });
 
@@ -1763,6 +1765,42 @@ batches:
     return store.getDriverRun(runId)?.batches[0]?.streams[0];
   }
 
+  function validFindingsArtifact(over: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      schema_version: 1,
+      artifact_id: "rf_test",
+      decision: "address",
+      subject: {
+        type: "pull_request",
+        repo: "example/ship",
+        number: 77,
+        head_sha: HEAD_SHA,
+      },
+      producer: {
+        id: "review-coordinator",
+        harness: "test",
+        generated_at: "2026-07-10T00:00:00Z",
+      },
+      panel: { requested: ["codex"], completed: ["codex"], missing: [] },
+      findings: [
+        {
+          id: "finding-1",
+          severity: "high",
+          summary: "fix the null deref in foo.ts",
+          evidence: "foo() dereferences a nullable value",
+          sources: [
+            {
+              reviewer: "codex",
+              comment_id: "1",
+              url: "https://github.com/example/ship/pull/77#discussion_r1",
+            },
+          ],
+        },
+      ],
+      ...over,
+    });
+  }
+
   test("dispatches on the existing branch with autoCreatePR false and a findings doc", async () => {
     const { runId, streamId } = landedSeed();
     const fake = createFakeShipPort([]);
@@ -1807,6 +1845,114 @@ batches:
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBe(2);
   });
 
+  test("refuses findings for a different subject or stale exact head", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { headRefOid: HEAD_SHA, state: "OPEN" } });
+
+    writeFileSync(
+      findingsPath,
+      validFindingsArtifact({
+        subject: {
+          type: "pull_request",
+          repo: "other/ship",
+          number: 77,
+          head_sha: HEAD_SHA,
+        },
+      }),
+    );
+    await expectRefusal(
+      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "findings-subject-mismatch",
+    );
+
+    writeFileSync(
+      findingsPath,
+      validFindingsArtifact({
+        subject: {
+          type: "pull_request",
+          repo: "example/ship",
+          number: 77,
+          head_sha: "1".repeat(40),
+        },
+      }),
+    );
+    await expectRefusal(
+      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "findings-stale-head",
+    );
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test("canonical replay with regenerated envelope dispatches at most once", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      findingsPath,
+      streamId,
+    });
+    store.updateDriverStream(streamId, { status: "landed" });
+    writeFileSync(
+      findingsPath,
+      validFindingsArtifact({
+        artifact_id: "rf_retry",
+        producer: {
+          id: "review-coordinator",
+          harness: "claude",
+          generated_at: "2026-07-10T01:00:00Z",
+        },
+      }),
+    );
+
+    await expectRefusal(
+      () =>
+        address({ clock: () => 1, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "findings-duplicate",
+    );
+    expect(fake.calls.filter((call) => call.kind === "startShip")).toHaveLength(1);
+  });
+
+  test("two concurrent address calls produce exactly one dispatch", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    const call = () =>
+      address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId });
+
+    const results = await Promise.allSettled([call(), call()]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(fake.calls.filter((entry) => entry.kind === "startShip")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected?.status === "rejected" ? rejected.reason : undefined).toBeInstanceOf(
+      AddressError,
+    );
+  });
+
+  test("a synthesized-doc write failure consumes nothing and retry can win", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    const files = {
+      read: (path: string) => readFileSync(path, "utf8"),
+      write: () => {
+        throw new Error("disk full");
+      },
+    };
+
+    await expect(
+      address({ files, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+    ).rejects.toThrow(/disk full/u);
+    expect(firstStream(runId)).toMatchObject({ attempts: [], status: "landed" });
+
+    await expect(
+      address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+    ).resolves.toBeDefined();
+    expect(fake.calls.filter((entry) => entry.kind === "startShip")).toHaveLength(1);
+  });
+
   test("throws when the address dispatch fails, leaving the stream failed for decide retry", async () => {
     const { runId, streamId } = landedSeed();
     const fake = createFakeShipPort([]);
@@ -1838,7 +1984,7 @@ batches:
       streamId,
     });
     const synthesizedDoc = firstStream(runId)?.attempts.at(-1)?.docPath;
-    expect(synthesizedDoc).toContain(`address-${streamId}-cycle1.md`);
+    expect(synthesizedDoc).toContain(`address-${streamId}-cycle1-`);
 
     // Simulate the address dispatch failing, then a `decide retry`.
     store.updateDriverStream(streamId, { status: "failed" });
@@ -1925,7 +2071,8 @@ batches:
 
   test("landed → address → poll succeeded → landed with same PR, no draft flip", async () => {
     const { runId, streamId } = landedSeed();
-    const synthesizedDoc = join(repoRoot, `address-${streamId}-cycle1.md`);
+    const digest = canonicalReviewFindingsSha256(parseReviewFindings(validFindingsArtifact()));
+    const synthesizedDoc = join(repoRoot, `address-${streamId}-cycle1-${digest.slice(0, 12)}.md`);
     const fake = createFakeShipPort([
       {
         branchName: "feat-a",
@@ -2032,6 +2179,19 @@ batches:
       "findings-unreadable",
     );
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBeUndefined();
+  });
+
+  test("refuses an over-limit findings file as findings-unreadable", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    writeFileSync(findingsPath, "x".repeat(1024 * 1024 + 1));
+
+    await expectRefusal(
+      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "findings-unreadable",
+    );
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
   });
 });
 

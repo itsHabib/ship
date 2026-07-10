@@ -96,6 +96,16 @@ export {
   flipStreamToCloud,
 } from "./engine.js";
 export type { AddressDeps, CloudContinuation } from "./engine.js";
+export type { AddressFilePort } from "./engine.js";
+
+export {
+  canonicalReviewFindingsSha256,
+  MAX_REVIEW_FINDINGS_BYTES,
+  parseReviewFindings,
+  renderReviewFindings,
+  ReviewFindingsValidationError,
+} from "./review-findings.js";
+export type { ReviewFinding, ReviewFindingsV1, ReviewFindingSource } from "./review-findings.js";
 
 export {
   allStreams,

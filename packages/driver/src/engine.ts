@@ -9,11 +9,12 @@ import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/
 import type { AgentProvider, FailureCategory } from "@ship/workflow";
 
 import { prNumberFromUrl } from "@ship/receipt";
+import { ReviewArtifactAddressRacedError, ReviewArtifactDuplicateError } from "@ship/store";
 import { isTerminal } from "@ship/workflow";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-import type { DriverGhPort } from "./gh-port.js";
+import type { DriverGhPort, GhPullRequestView } from "./gh-port.js";
 import type { DispatchAmbiguity } from "./judgment.js";
 import type { DriverShipPort } from "./ship-port.js";
 import type {
@@ -36,6 +37,7 @@ import {
   writeAndDeliverEscalations,
   writeCycleExhaustedEscalation,
 } from "./escalation.js";
+import { toGhRepo } from "./gh-port.js";
 import {
   allStreams,
   batchHasPendingDispatchable,
@@ -53,6 +55,14 @@ import {
   rollBatchStatus,
 } from "./judgment.js";
 import { createNotifyPort, type NotifyPort } from "./notify.js";
+import {
+  canonicalReviewFindingsSha256,
+  MAX_REVIEW_FINDINGS_BYTES,
+  parseReviewFindings,
+  renderReviewFindings,
+  type ReviewFindingsV1,
+  ReviewFindingsValidationError,
+} from "./review-findings.js";
 import { mapTierToDispatch } from "./tier-map.js";
 
 const DEFAULT_DISPATCH_PROVIDER: AgentProvider = "cursor";
@@ -68,9 +78,7 @@ const RUNAWAY_BACKSTOP_MULTIPLIER = 6;
 // different semantic scope: re-dispatch budget vs merge-gate evidence).
 const DEFAULT_MAX_REVIEW_CYCLES = 3;
 
-// Fixed mechanical preamble prepended to the findings file — instructs the
-// agent to fix findings on the current branch and NOT open a new PR. The
-// findings themselves are carried opaquely (no parsing, no selection).
+// Fixed mechanical preamble prepended to the validated findings projection.
 const ADDRESS_DOC_PREAMBLE = [
   "# Address review findings",
   "",
@@ -853,18 +861,35 @@ export interface AddressDeps {
   ship: DriverShipPort;
   gh: DriverGhPort;
   clock?: () => number;
+  files?: AddressFilePort;
 }
+
+export interface AddressFilePort {
+  read(path: string): string;
+  write(path: string, content: string): void;
+}
+
+const DEFAULT_ADDRESS_FILES: AddressFilePort = {
+  read(path) {
+    if (statSync(path).size > MAX_REVIEW_FINDINGS_BYTES) {
+      throw new Error("findings file exceeds 1 MiB");
+    }
+    return readFileSync(path, "utf8");
+  },
+  write(path, content) {
+    writeFileSync(path, content, "utf8");
+  },
+};
 
 /**
  * Re-dispatch consolidated review findings onto a landed stream's existing PR
- * branch (TDD §7 Flow B). Mechanism only: the findings file is carried opaquely;
+ * branch (TDD §7 Flow B). Mechanism only: findings are structurally validated;
  * *which* findings to take and *whether* to push back stays seat-side. Every
  * illegal call refuses with a structured `AddressError` code — never a silent
  * no-op — and a call at the cycle cap also writes a `cycle-exhausted` escalation.
  *
- * Caller invariant: not safe to call concurrently for the same stream — the
- * cycle-cap read and the `reviewCycles` increment are separate store operations
- * (no lease; the seat owns not racing its own verb, as with its own PR branch).
+ * Concurrent callers are serialized by the store's consume-and-prepare
+ * transaction; exactly one artifact/cycle can win.
  */
 export async function address(
   deps: AddressDeps,
@@ -873,6 +898,49 @@ export async function address(
 ): Promise<DriverRun> {
   const { store, ship, gh } = deps;
   const clock = deps.clock ?? Date.now;
+  const files = deps.files ?? DEFAULT_ADDRESS_FILES;
+  const { branch, run, stream } = loadAddressTarget(store, driverRunId, opts.streamId);
+  const pr = await loadAddressPr(gh, run, stream);
+  const artifact = readFindings(files, opts.findingsPath);
+  assertArtifactMatchesPr(artifact, pr);
+  const nextCycle = nextAddressCycle(
+    store,
+    run,
+    stream,
+    opts.maxCycles ?? DEFAULT_MAX_REVIEW_CYCLES,
+    clock,
+  );
+  const canonicalSha256 = canonicalReviewFindingsSha256(artifact);
+  const docPath = writeAddressDoc({
+    canonicalSha256,
+    cycle: nextCycle,
+    files,
+    findings: renderReviewFindings(artifact),
+    manifestPath: run.manifestPath,
+    streamId: stream.id,
+  });
+  const tierMapping = consumePreparedAddress({
+    artifact,
+    canonicalSha256,
+    clock,
+    docPath,
+    driverRunId,
+    nextCycle,
+    pr,
+    store,
+    stream,
+  });
+  return dispatchAddress({
+    branch,
+    deps: { clock, ship, store },
+    docPath,
+    driverRunId,
+    streamId: stream.id,
+    tierMapping,
+  });
+}
+
+function loadAddressTarget(store: Store, driverRunId: string, streamId: string) {
   const run = loadRun(store, driverRunId);
   if (isStickyTerminal(run.status)) {
     throw new AddressError(
@@ -880,42 +948,120 @@ export async function address(
       `run ${driverRunId} is ${run.status}; cannot address findings`,
     );
   }
-  const stream = allStreams(run).find((s) => s.id === opts.streamId);
+  const stream = allStreams(run).find((candidate) => candidate.id === streamId);
   if (stream === undefined) {
-    throw new PreconditionError(`stream not found: ${opts.streamId}`);
+    throw new PreconditionError(`stream not found: ${streamId}`);
   }
   const branch = assertAddressableStream(stream);
-  await assertPrOpen(gh, run, stream);
+  return { branch, run, stream };
+}
 
-  const maxCycles = opts.maxCycles ?? DEFAULT_MAX_REVIEW_CYCLES;
+interface AddressPr {
+  prNumber: number;
+  repo: string;
+  view: GhPullRequestView;
+}
+
+function assertArtifactMatchesPr(artifact: ReviewFindingsV1, pr: AddressPr): void {
+  if (artifact.subject.repo !== pr.repo || artifact.subject.number !== pr.prNumber) {
+    throw new AddressError(
+      "findings-subject-mismatch",
+      `findings target ${artifact.subject.repo}#${String(artifact.subject.number)} does not match ${pr.repo}#${String(pr.prNumber)}`,
+    );
+  }
+  if (artifact.subject.head_sha !== pr.view.headRefOid.toLowerCase()) {
+    throw new AddressError(
+      "findings-stale-head",
+      `findings head ${artifact.subject.head_sha} does not match live head ${pr.view.headRefOid}`,
+    );
+  }
+}
+
+function nextAddressCycle(
+  store: Store,
+  run: DriverRun,
+  stream: DriverStream,
+  maxCycles: number,
+  clock: () => number,
+): number {
   const current = stream.reviewCycles ?? 0;
   if (current >= maxCycles) {
     writeCycleExhaustedRow(store, run, stream, maxCycles, clock);
     throw new AddressError(
       "cycle-exhausted",
-      `stream ${opts.streamId} has reached the review-cycle cap (${String(maxCycles)})`,
+      `stream ${stream.id} has reached the review-cycle cap (${String(maxCycles)})`,
     );
   }
-
-  const findings = readFindings(opts.findingsPath);
-  const nextCycle = current + 1;
-  const docPath = writeAddressDoc(run.manifestPath, stream.id, nextCycle, findings);
-
-  // Persist the continuation on the row (load-bearing: a failed address retried
-  // via `decide retry` resolves the continuation from the row) and bump the
-  // engine-owned counter before dispatch — one `address` call is one cycle,
-  // whether or not the dispatch lands.
-  store.updateDriverStream(stream.id, { reviewCycles: nextCycle, workOnCurrentBranch: true });
-  return dispatchAddress({ clock, ship, store }, driverRunId, stream.id, branch, docPath);
+  return current + 1;
 }
 
-async function dispatchAddress(
-  deps: { store: Store; ship: DriverShipPort; clock: () => number },
-  driverRunId: string,
-  streamId: string,
-  branch: string,
-  docPath: string,
-): Promise<DriverRun> {
+function consumePreparedAddress(params: {
+  artifact: ReviewFindingsV1;
+  canonicalSha256: string;
+  clock: () => number;
+  docPath: string;
+  driverRunId: string;
+  nextCycle: number;
+  pr: AddressPr;
+  store: Store;
+  stream: DriverStream;
+}): TierDispatchResult {
+  const { artifact, canonicalSha256, clock, docPath, driverRunId, nextCycle, pr, store, stream } =
+    params;
+  const attempt: StreamAttempt = {
+    dispatchedAt: new Date(clock()).toISOString(),
+    docPath,
+    terminal: false,
+  };
+  const provider = stream.provider ?? DEFAULT_DISPATCH_PROVIDER;
+  const tierMapping = mapTierToDispatch(provider, stream.modelTier, stream.effortTier);
+  const dispatchPatch = tierDispatchPatch(provider, tierMapping);
+  try {
+    store.consumeReviewArtifactAndPrepareDispatch({
+      addressCycle: nextCycle,
+      artifactId: artifact.artifact_id,
+      attempts: [...stream.attempts, attempt],
+      canonicalSha256,
+      dispatchProvider: provider,
+      docPath,
+      driverRunId,
+      expectedReviewCycle: nextCycle - 1,
+      headSha: artifact.subject.head_sha,
+      prNumber: pr.prNumber,
+      repo: pr.repo,
+      streamId: stream.id,
+      ...(typeof dispatchPatch.dispatchModel === "string"
+        ? { dispatchModel: dispatchPatch.dispatchModel }
+        : {}),
+      ...(Array.isArray(dispatchPatch.dispatchModelParams)
+        ? { dispatchModelParams: dispatchPatch.dispatchModelParams }
+        : {}),
+      effortDegraded: dispatchPatch.effortDegraded ?? false,
+      ...(typeof dispatchPatch.tierDegradeReason === "string"
+        ? { tierDegradeReason: dispatchPatch.tierDegradeReason }
+        : {}),
+    });
+  } catch (error: unknown) {
+    if (error instanceof ReviewArtifactDuplicateError) {
+      throw new AddressError("findings-duplicate", error.message);
+    }
+    if (error instanceof ReviewArtifactAddressRacedError) {
+      throw new AddressError("address-raced", error.message);
+    }
+    throw error;
+  }
+  return tierMapping;
+}
+
+async function dispatchAddress(params: {
+  branch: string;
+  deps: { store: Store; ship: DriverShipPort; clock: () => number };
+  docPath: string;
+  driverRunId: string;
+  streamId: string;
+  tierMapping: TierDispatchResult;
+}): Promise<DriverRun> {
+  const { branch, deps, docPath, driverRunId, streamId, tierMapping } = params;
   const { store, ship, clock } = deps;
   const refreshed = store.getDriverRun(driverRunId);
   if (refreshed === null) {
@@ -943,9 +1089,20 @@ async function dispatchAddress(
     ship,
     store,
   };
-  const dispatched = await dispatchStream(ctx, flipped, {
+  const input = buildShipInput({
     continuation: { startingRef: branch, workOnCurrentBranch: true },
+    ctx,
     docPath,
+    stream: flipped,
+    tierMapping,
+  });
+  const dispatched = await dispatchStartShip({
+    baseAttempts: flipped.attempts,
+    input,
+    runId: driverRunId,
+    ship,
+    store,
+    streamId: flipped.id,
   });
   if (!dispatched) {
     // The failed launch left the stream `failed`; stamp the run awaiting_judgment
@@ -980,7 +1137,11 @@ function assertAddressableStream(stream: DriverStream): string {
   return stream.branch;
 }
 
-async function assertPrOpen(gh: DriverGhPort, run: DriverRun, stream: DriverStream): Promise<void> {
+async function loadAddressPr(
+  gh: DriverGhPort,
+  run: DriverRun,
+  stream: DriverStream,
+): Promise<{ prNumber: number; repo: string; view: GhPullRequestView }> {
   const repo = extractRepoUrl(run);
   if (repo === undefined) {
     throw new PreconditionError(`cannot resolve repo URL for gh operations on run ${run.id}`);
@@ -992,9 +1153,10 @@ async function assertPrOpen(gh: DriverGhPort, run: DriverRun, stream: DriverStre
       `cannot parse PR number from prUrl ${String(stream.prUrl)}`,
     );
   }
+  const ghRepo = toGhRepo(repo);
   let view: Awaited<ReturnType<DriverGhPort["viewPullRequest"]>>;
   try {
-    view = await gh.viewPullRequest(repo, prNumber);
+    view = await gh.viewPullRequest(ghRepo, prNumber);
   } catch (err: unknown) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new AddressError("pr-not-open", `gh view failed for PR #${String(prNumber)}: ${detail}`);
@@ -1002,19 +1164,31 @@ async function assertPrOpen(gh: DriverGhPort, run: DriverRun, stream: DriverStre
   if (view.state !== "OPEN") {
     throw new AddressError("pr-not-open", `PR #${String(prNumber)} is ${view.state}, not open`);
   }
+  return { prNumber, repo: ghRepo.toLowerCase(), view };
 }
 
-function readFindings(findingsPath: string): string {
+function readFindings(files: AddressFilePort, findingsPath: string) {
   let content: string;
   try {
-    content = readFileSync(findingsPath, "utf8");
-  } catch {
-    throw new AddressError("findings-unreadable", `findings file not readable: ${findingsPath}`);
+    content = files.read(findingsPath);
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new AddressError(
+      "findings-unreadable",
+      `findings file not readable: ${findingsPath}${detail}`,
+    );
   }
   if (content.trim() === "") {
     throw new AddressError("findings-unreadable", `findings file is empty: ${findingsPath}`);
   }
-  return content;
+  try {
+    return parseReviewFindings(content);
+  } catch (error: unknown) {
+    if (error instanceof ReviewFindingsValidationError) {
+      throw new AddressError("findings-invalid", error.message);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -1022,21 +1196,24 @@ function readFindings(findingsPath: string): string {
  * dispatched text is auditable, and return its absolute path (the dispatch
  * `docPath`).
  */
-function writeAddressDoc(
-  manifestPath: string,
-  streamId: string,
-  cycle: number,
-  findings: string,
-): string {
+function writeAddressDoc(params: {
+  canonicalSha256: string;
+  cycle: number;
+  files: AddressFilePort;
+  findings: string;
+  manifestPath: string;
+  streamId: string;
+}): string {
+  const { canonicalSha256, cycle, files, findings, manifestPath, streamId } = params;
   const outPath = join(
     dirname(resolve(manifestPath)),
-    `address-${streamId}-cycle${String(cycle)}.md`,
+    `address-${streamId}-cycle${String(cycle)}-${canonicalSha256.slice(0, 12)}.md`,
   );
   // Structured like the read side (`findings-unreadable`) so a disk/permission
   // failure surfaces through the land/decide error formatter, not as a raw
   // throw. The store is untouched at this point — the state stays clean.
   try {
-    writeFileSync(outPath, `${ADDRESS_DOC_PREAMBLE}${findings}`, "utf8");
+    files.write(outPath, `${ADDRESS_DOC_PREAMBLE}${findings}`);
   } catch (err: unknown) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new PreconditionError(`cannot write address doc ${outPath}: ${detail}`);

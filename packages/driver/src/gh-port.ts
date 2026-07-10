@@ -23,6 +23,7 @@ export interface GhMergeCommit {
 
 export interface GhPullRequestView {
   state: "OPEN" | "MERGED" | "CLOSED";
+  headRefOid: string;
   mergeCommit?: GhMergeCommit | null;
   mergedAt?: string | null;
 }
@@ -60,6 +61,7 @@ export interface DriverGhPort {
 
 interface GhPrViewJson {
   state: GhPullRequestView["state"];
+  headRefOid: string;
   mergeCommit?: { oid: string } | null;
   mergedAt?: string | null;
 }
@@ -117,12 +119,13 @@ export function createExecGhPort(exec: GhExec = defaultGhExec): DriverGhPort {
         "view",
         String(prNumber),
         "--json",
-        "mergeCommit,mergedAt,state",
+        "headRefOid,mergeCommit,mergedAt,state",
         "-R",
         toGhRepo(repo),
       ]);
       const parsed = JSON.parse(stdout) as GhPrViewJson;
       return {
+        headRefOid: parsed.headRefOid,
         mergeCommit: parsed.mergeCommit ?? null,
         mergedAt: parsed.mergedAt ?? null,
         state: parsed.state,

@@ -10,6 +10,7 @@ import type {
 
 export interface FakeGhPrState {
   state: GhPullRequestView["state"];
+  headRefOid?: string;
   mergeCommit?: { oid: string } | null;
   mergedAt?: string | null;
   /** Readiness facts the land guard reads via `fetchPrReadiness`. */
@@ -54,6 +55,7 @@ export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): F
       }
       if (current === undefined) {
         prs.set(prNumber, {
+          headRefOid: "0000000000000000000000000000000000000000",
           mergeCommit: { oid: "fake-merge-sha" },
           mergedAt: new Date().toISOString(),
           state: "MERGED",
@@ -73,13 +75,26 @@ export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): F
       const lagLeft = postMergeLagRemaining.get(prNumber) ?? 0;
       if (lagLeft > 0) {
         postMergeLagRemaining.set(prNumber, lagLeft - 1);
-        return Promise.resolve({ mergeCommit: null, mergedAt: null, state: "OPEN" });
+        return Promise.resolve({
+          headRefOid: "0000000000000000000000000000000000000000",
+          mergeCommit: null,
+          mergedAt: null,
+          state: "OPEN",
+        });
       }
       const current = prs.get(prNumber);
       if (current === undefined) {
-        return Promise.resolve({ state: "OPEN", mergeCommit: null, mergedAt: null });
+        return Promise.resolve({
+          headRefOid: "0000000000000000000000000000000000000000",
+          state: "OPEN",
+          mergeCommit: null,
+          mergedAt: null,
+        });
       }
-      return Promise.resolve(current);
+      return Promise.resolve({
+        ...current,
+        headRefOid: current.headRefOid ?? "0000000000000000000000000000000000000000",
+      });
     },
     fetchPrReadiness(_repo: string, prNumber: number): Promise<GhPrReadiness> {
       const current = prs.get(prNumber);

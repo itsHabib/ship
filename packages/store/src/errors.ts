@@ -77,6 +77,28 @@ export class DriverStreamNotFoundError extends Error {
   }
 }
 
+/** A review artifact or its canonical content was already consumed. */
+export class ReviewArtifactDuplicateError extends Error {
+  override readonly name = "ReviewArtifactDuplicateError";
+  readonly detail: string;
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.detail = message;
+  }
+}
+
+/** The landed stream changed after address validation and lost the compare-and-swap. */
+export class ReviewArtifactAddressRacedError extends Error {
+  override readonly name = "ReviewArtifactAddressRacedError";
+  readonly detail: string;
+
+  constructor(message: string) {
+    super(message);
+    this.detail = message;
+  }
+}
+
 /** Thrown by `updatePhase` when the phase id does not resolve. */
 export class PhaseNotFoundError extends Error {
   override readonly name = "PhaseNotFoundError";
