@@ -1186,11 +1186,12 @@ async function handleSucceededPoll(
   wfRun: GetWorkflowRunOutput,
 ): Promise<void> {
   const prUrl = wfRun.branches?.[0]?.prUrl;
-  // Flip only when THIS dispatch created the PR: a stream that already carried a
-  // prUrl before the poll (an `address` re-dispatch onto an open PR) has nothing
-  // to flip — skip the readiness round-trip and keep the flip's meaning tied to
-  // PR creation.
-  if (stream.runtime === "cloud" && prUrl !== undefined && stream.prUrl === undefined) {
+  // Skip the flip only for an address-shaped re-dispatch (prUrl + persisted
+  // continuation): it works an already-open, already-ready PR — nothing to
+  // flip. A prUrl alone is NOT enough to skip: a failed flip persists the
+  // prUrl on the failure path below, and the `decide retry` of that stream
+  // must re-run the (idempotent) flip or the draft PR never becomes ready.
+  if (stream.runtime === "cloud" && prUrl !== undefined && !isAddressRedispatch(stream)) {
     const flipError = await flipCloudDraftReady(ctx.gh, run, prUrl);
     if (flipError !== undefined) {
       store.updateDriverStream(stream.id, {
@@ -1202,6 +1203,17 @@ async function handleSucceededPoll(
     }
   }
   store.updateDriverStream(stream.id, buildLandedPatch(stream, wfRun));
+}
+
+/**
+ * An `address` re-dispatch (or a retry of one): the stream carries a prUrl AND
+ * an engine-bumped review cycle — `address` is only legal from `landed`, so the
+ * PR was already flipped ready when the stream first landed. `workOnCurrentBranch`
+ * is NOT the discriminator: flip-cloud persists it too, and a flip-cloud stream
+ * whose PR-creation flip failed must re-run the flip on retry.
+ */
+function isAddressRedispatch(stream: DriverStream): boolean {
+  return stream.prUrl !== undefined && (stream.reviewCycles ?? 0) > 0;
 }
 
 async function flipCloudDraftReady(

@@ -857,6 +857,60 @@ batches:
     store.close();
   });
 
+  test("decide retry after a failed flip re-runs the flip on the persisted prUrl", async () => {
+    const manifest = join(repoRoot, "cloud-flip-retry.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-02T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: cloud-flip-retry
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        branchName: "cursor/flip-88",
+        docPath: docA,
+        prUrl: "https://github.com/example/ship/pull/88",
+        repo: "ship",
+        workflowRunId: "wf_flip_retry",
+      },
+    ]);
+    const prState = { isDraft: true, markReadyError: "gh pr ready denied", state: "OPEN" as const };
+    const gh = createFakeGhPort({ 88: prState });
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ gh, ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+    const failed = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(failed?.status).toBe("failed");
+    expect(failed?.prUrl).toBe("https://github.com/example/ship/pull/88");
+
+    // The prUrl persisted by the failed flip must not suppress the retry's flip.
+    delete (prState as { markReadyError?: string }).markReadyError;
+    driver.decide(imported.run.id, failed?.id ?? "", { kind: "retry" });
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    expect(gh.markReadyCalls).toHaveLength(2);
+    expect(store.getDriverRun(imported.run.id)?.batches[0]?.streams[0]?.status).toBe("landed");
+    store.close();
+  });
+
   test("local succeeded stream does not call markReady", async () => {
     const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const fake = createFakeShipPort([
