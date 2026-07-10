@@ -948,6 +948,10 @@ async function dispatchAddress(
     docPath,
   });
   if (!dispatched) {
+    // The failed launch left the stream `failed`; stamp the run awaiting_judgment
+    // so the advertised recovery (`decide retry`) is legal immediately, without
+    // an interposed tick to restamp the run.
+    store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
     throw new PreconditionError(
       `address dispatch failed for stream ${streamId}; stream is failed — decide retry re-dispatches the findings doc on the PR branch`,
     );

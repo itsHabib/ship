@@ -1770,6 +1770,8 @@ batches:
     expect(stream?.status).toBe("failed");
     // The call consumed a review cycle; the follow-up `decide retry` won't re-count.
     expect(stream?.reviewCycles).toBe(1);
+    // The run is awaiting judgment so `decide retry` is legal without another tick.
+    expect(store.getDriverRun(runId)?.status).toBe("awaiting_judgment");
   });
 
   test("a decide-retry re-dispatch resolves the findings doc and branch from the row alone", async () => {
@@ -1926,6 +1928,7 @@ batches:
     ["not-landed", { status: "dispatched" as const }],
     ["not-cloud", { runtime: "local", branch: "feat-a", status: "landed", prUrl: PR_URL }],
     ["no-pr", { prUrl: undefined, branch: undefined }],
+    ["no-pr", { prUrl: PR_URL, branch: undefined }],
   ])("refuses %s and leaves the stream row untouched", async (code, over) => {
     const { runId, streamId } = landedSeed(over as SeedOpts);
     const fake = createFakeShipPort([]);
