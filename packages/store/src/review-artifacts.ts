@@ -26,6 +26,8 @@ export interface ConsumeReviewArtifactInput {
 
 export interface ReviewArtifactOps {
   consumeAndPrepareDispatch: (input: ConsumeReviewArtifactInput) => void;
+  /** Return the consumed `head_sha` for a stream+cycle pair, or undefined if absent. */
+  getConsumedHeadSha: (streamId: string, cycle: number) => string | undefined;
 }
 
 export function createReviewArtifactOps(db: Db, clock: () => string): ReviewArtifactOps {
@@ -51,6 +53,9 @@ export function createReviewArtifactOps(db: Db, clock: () => string): ReviewArti
   >(
     `SELECT artifact_id, canonical_sha256 FROM driver_review_artifacts
      WHERE driver_run_id = ? AND stream_id = ? AND address_cycle = ?`,
+  );
+  const selectHeadSha = db.prepare<[string, number], { head_sha: string }>(
+    `SELECT head_sha FROM driver_review_artifacts WHERE stream_id = ? AND address_cycle = ?`,
   );
 
   const transaction = db.transaction((input: ConsumeReviewArtifactInput): void => {
@@ -93,6 +98,9 @@ export function createReviewArtifactOps(db: Db, clock: () => string): ReviewArti
   });
 
   return {
+    getConsumedHeadSha(streamId, cycle) {
+      return selectHeadSha.get(streamId, cycle)?.head_sha;
+    },
     consumeAndPrepareDispatch(input) {
       try {
         transaction(input);

@@ -67,7 +67,8 @@ metadata. Unknown schema majors, decisions, subject types, and malformed known
 fields refuse. `severity` is a non-blank bounded string, not a Ship-owned enum:
 the engine transports it but never ranks or acts on coordinator vocabulary.
 
-The parser additionally enforces:
+The 1 MiB input cap is enforced at the file-read boundary and maps to
+`findings-unreadable`. The parser additionally enforces:
 
 - at least one finding and one source per finding;
 - non-blank evidence, summary, producer id, reviewer id, and stable finding id;
@@ -75,8 +76,8 @@ The parser additionally enforces:
 - `completed` and `missing` are disjoint and their union equals `requested`;
   members absent from `requested` therefore refuse rather than becoming extras;
 - every finding source reviewer appears in `panel.completed`;
-- a 1 MiB input cap; at most 100 findings, 32 sources per finding, and 16 panel
-  members; ids/reviewer/producer values at most 128 bytes, summaries 512 bytes,
+- at most 100 findings, 32 sources per finding, and 16 panel members;
+  ids/reviewer/producer values at most 128 bytes, summaries 512 bytes,
   evidence 32 KiB, URLs 2048 bytes, and file paths 1024 bytes.
 
 The engine validates the artifact against live state before any write:
@@ -95,7 +96,13 @@ existing continuation path. A failed dispatch is recovered through `decide retry
 which reuses the recorded address document; the same artifact is never submitted
 again.
 
-## Contract decisions
+## Tradeoffs
+
+Parsing without durable consumption permits duplicate dispatch; durable consumption
+without exact-head validation can make stale review text authoritative. Both
+invariants must hold at the same boundary, so they ship as one atomic unit.
+
+## EDs
 
 1. **Ship validates transport and routing facts, not finding truth.** It checks
    sources exist and agree with panel metadata; it does not decide whether a bot
@@ -182,7 +189,7 @@ refusals.
 
 ## Refusals
 
-Extend `AddressErrorCode` with:
+Extend `AddressRefusalCode` with:
 
 - `findings-invalid` — malformed JSON or schema/consistency failure;
 - `findings-subject-mismatch` — repo or PR number differs;
@@ -195,7 +202,7 @@ Existing `findings-unreadable` remains for missing, unreadable, empty, or
 over-limit files. Every refusal occurs before dispatch and leaves stream/cycle
 state unchanged.
 
-## Property and example validation
+## Validation
 
 Example tests pin every refusal code and one successful address flow.
 
