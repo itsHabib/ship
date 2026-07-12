@@ -2286,6 +2286,44 @@ batches:
       expect(startCalls).toHaveLength(1); // only the initial dispatch
     });
 
+    test("parks stream on tick re-dispatch when the driver has no gh port", async () => {
+      const { runId, streamId } = landedSeed();
+      // Initial address dispatch consumes the artifact and sets reviewCycles.
+      const fake = createFakeShipPort([]);
+      const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      await address({ clock: () => 0, gh: ghInitial, ship: fake.port, store }, runId, {
+        findingsPath,
+        streamId,
+      });
+      expect(firstStream(runId)?.status).toBe("dispatched");
+
+      // Recovery reset back to pending.
+      store.updateDriverStream(streamId, {
+        dispatchModel: null,
+        dispatchModelParams: null,
+        dispatchProvider: null,
+        effortDegraded: false,
+        status: "pending",
+        tierDegradeReason: null,
+      });
+      store.updateDriverRunStatus(runId, "running");
+
+      // Tick with a gh-less driver: an address-cycle re-dispatch cannot
+      // re-validate the head, so the stream fails closed instead of bypassing.
+      const driver = createDriverService({ clock: () => 0, ship: fake.port, store });
+      const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+
+      expect(result.status).toBe("awaiting_judgment");
+      const stream = firstStream(runId);
+      expect(stream?.status).toBe("failed");
+      expect(stream?.errorMessage).toMatch(/no gh port/);
+      // reviewCycles is preserved from the consumed artifact.
+      expect(stream?.reviewCycles).toBe(1);
+      // No stale re-dispatch was attempted.
+      const startCalls = fake.calls.filter((c) => c.kind === "startShip");
+      expect(startCalls).toHaveLength(1); // only the initial dispatch
+    });
+
     test("head unchanged on tick re-dispatch proceeds normally", async () => {
       const { runId, streamId } = landedSeed();
       const digest = canonicalReviewFindingsSha256(parseReviewFindings(validFindingsArtifact()));

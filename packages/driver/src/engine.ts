@@ -593,10 +593,8 @@ async function dispatchStream(
   stream: DriverStream,
   opts: DispatchStreamOpts = {},
 ): Promise<boolean> {
-  if (ctx.gh !== undefined) {
-    const headOk = await checkAddressAttemptHead(ctx.store, ctx.gh, ctx.repoUrl, stream);
-    if (!headOk) return false;
-  }
+  const headOk = await checkTickAddressHead(ctx, stream);
+  if (!headOk) return false;
   const docPath = opts.docPath ?? resolveDispatchDocPath(ctx.repoRoot, stream);
   const attempt: StreamAttempt = {
     dispatchedAt: new Date(ctx.clock()).toISOString(),
@@ -630,6 +628,27 @@ async function dispatchStream(
 }
 
 /**
+ * Tick-path guard for the stale-head check. A fresh (cycle-0) dispatch needs no
+ * head re-validation and may proceed without a gh port. An address-cycle
+ * re-dispatch must re-validate the consumed head against the live PR — so when
+ * the driver was created without a gh port, fail the stream closed rather than
+ * bypass the check. The design requires that no path re-dispatch an address
+ * attempt on a stale head; a silent skip here would be a fail-open.
+ */
+async function checkTickAddressHead(ctx: DispatchContext, stream: DriverStream): Promise<boolean> {
+  const cycle = stream.reviewCycles;
+  if (cycle === undefined || cycle === 0) return true;
+  if (ctx.gh === undefined) {
+    ctx.store.updateDriverStream(stream.id, {
+      errorMessage: "stale-head: cannot re-validate address head — driver has no gh port",
+      status: "failed",
+    });
+    return false;
+  }
+  return checkAddressAttemptHead(ctx.store, ctx.gh, ctx.repoUrl, ctx.runId, stream);
+}
+
+/**
  * Re-validate the consumed artifact's head against the live PR before starting
  * any address-cycle attempt. Returns true when OK to proceed; false when the PR
  * head has moved, in which case the stream is already marked failed so the
@@ -643,18 +662,19 @@ async function checkAddressAttemptHead(
   store: Store,
   gh: DriverGhPort,
   repoUrl: string | undefined,
+  runId: string,
   stream: DriverStream,
 ): Promise<boolean> {
   const cycle = stream.reviewCycles;
   if (cycle === undefined || cycle === 0) return true;
-  const consumedHead = store.getConsumedArtifactHeadSha(stream.id, cycle);
+  const consumedHead = store.getConsumedArtifactHeadSha(runId, stream.id, cycle);
   if (consumedHead === undefined) return true;
   if (repoUrl === undefined) return true;
   const prNumber = prNumberFromUrl(stream.prUrl);
   if (prNumber === undefined) return true;
   const view = await gh.viewPullRequest(toGhRepo(repoUrl), prNumber);
   const liveHead = view.headRefOid.toLowerCase();
-  if (consumedHead === liveHead) return true;
+  if (consumedHead.toLowerCase() === liveHead) return true;
   store.updateDriverStream(stream.id, {
     errorMessage: `stale-head: findings head ${consumedHead} does not match live head ${liveHead}`,
     status: "failed",
@@ -1119,7 +1139,13 @@ async function dispatchAddress(params: {
   }
   // Re-validate the consumed head against the live PR before dispatching.
   // This guards the window between consumption and dispatch startup.
-  const headOk = await checkAddressAttemptHead(store, gh, extractRepoUrl(refreshed), flipped);
+  const headOk = await checkAddressAttemptHead(
+    store,
+    gh,
+    extractRepoUrl(refreshed),
+    driverRunId,
+    flipped,
+  );
   if (!headOk) {
     store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
     throw new PreconditionError(
