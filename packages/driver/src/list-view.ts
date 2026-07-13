@@ -13,7 +13,7 @@ import type {
 } from "@ship/store";
 
 import { createHash } from "node:crypto";
-import { relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import { resolveRepoRoot } from "./engine.js";
 
@@ -88,8 +88,8 @@ export interface DriverListAttemptView {
 /** Build the versioned list envelope from hydrated store rows. */
 export function buildDriverListEnvelope(runs: readonly DriverRun[]): DriverListEnvelope {
   return {
-    runs: runs.map(buildDriverListRunView),
     v: DRIVER_LIST_ENVELOPE_VERSION,
+    runs: runs.map(buildDriverListRunView),
   };
 }
 
@@ -242,16 +242,11 @@ function hashSourceJson(sourceJson: string): string {
 
 function sanitizeErrorMessage(message: string | undefined): string | undefined {
   if (message === undefined) return undefined;
-  let redacted = message;
-  let changed = false;
-  for (const segment of message.split(/\s+/)) {
-    if (segment.startsWith("/") || /^[A-Za-z]:\\/.test(segment)) {
-      redacted = redacted.replace(segment, "[path]");
-      changed = true;
-    }
-  }
-  if (!changed) return message;
-  return redacted;
+  const quoted = message.replace(/(["'])(?:[A-Za-z]:\\|\/)[^"'\r\n]*\1/g, "[path]");
+  return quoted.replace(
+    /(^|[\s(,;=])(?:[A-Za-z]:\\|\/)[^\s"',;)]*/g,
+    (_match, prefix: string) => `${prefix}[path]`,
+  );
 }
 
 function resolveSafeManifestRef(manifestPath: string): string | undefined {
@@ -259,7 +254,9 @@ function resolveSafeManifestRef(manifestPath: string): string | undefined {
     const repoRoot = resolve(resolveRepoRoot(manifestPath));
     const resolvedManifest = resolve(manifestPath);
     const rel = relative(repoRoot, resolvedManifest);
-    if (rel.startsWith("..")) return undefined;
+    // On Windows, path.relative returns the absolute target when the paths
+    // are on different drive letters. Never publish that as a manifest ref.
+    if (isAbsolute(rel) || rel.startsWith("..")) return undefined;
     return rel.split("\\").join("/");
   } catch {
     return undefined;

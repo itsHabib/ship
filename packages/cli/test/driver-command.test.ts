@@ -570,6 +570,11 @@ batches:
     expect(stderr.join("")).toMatch(/invalid --limit: nope/);
   });
 
+  test("list rejects zero --limit with exit 1", async () => {
+    expect(await runDriver(["driver", "list", "--limit", "0"])).toBe(1);
+    expect(stderr.join("")).toMatch(/invalid --limit: 0/);
+  });
+
   test("list rejects --limit above 200 cap with exit 1", async () => {
     expect(await runDriver(["driver", "list", "--limit", "99999999"])).toBe(1);
     expect(stderr.join("")).toMatch(/exceeds the maximum allowed value 200/);

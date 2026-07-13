@@ -219,7 +219,8 @@ batches: []
               createdAt: "2026-06-12T00:00:00.000Z",
               driverBatchId: "db_05",
               driverRunId: "drv_05",
-              errorMessage: "dispatch failed for /abs/repo/docs/task.md",
+              errorMessage:
+                "ENOENT open '/abs/repo/task.md'; key=/var/log/ship; win=C:\\Users\\agent\\task.md; wrapped=(D:\\data\\task.md); repeat=/var/log/ship and /var/log/ship",
               id: "ds_05",
               runtime: "local",
               specPath: "docs/task.md",
@@ -240,8 +241,11 @@ batches: []
       updatedAt: "2026-06-12T00:00:00.000Z",
     };
     const stream = buildDriverListEnvelope([run]).runs[0]?.batches[0]?.streams[0];
-    expect(stream?.errorMessage).toBe("dispatch failed for [path]");
-    expect(JSON.stringify(buildDriverListEnvelope([run]))).not.toMatch(/\/abs\/repo/);
+    expect(stream?.errorMessage).toBe(
+      "ENOENT open [path]; key=[path]; win=[path]; wrapped=([path]); repeat=[path] and [path]",
+    );
+    const serialized = JSON.stringify(buildDriverListEnvelope([run]));
+    expect(serialized).not.toMatch(/\/abs\/repo|\/var\/log|[A-Z]:\\\\/);
   });
 
   test("includes dispatch telemetry for non-pending streams", () => {
