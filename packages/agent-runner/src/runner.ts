@@ -8,6 +8,7 @@ import type { ArtifactRef, FailureCategory, ModelSelection } from "@ship/workflo
 
 import type { AgentDefinition, McpServerConfig } from "./agent-config.js";
 import type { AgentEvent } from "./event-projection.js";
+import type { SdkCauseSummary } from "./sdk-cause.js";
 
 /** Input required to start a single agent run. Constructed by `core` per workflow run. */
 export interface AgentRunInput {
@@ -172,6 +173,11 @@ export interface AgentRunResult {
   readonly classificationEvents?: readonly AgentEvent[];
   readonly failureCategory?: FailureCategory;
   readonly failureDetail?: string;
+  /**
+   * Bounded, redacted SDK cause fields (status/code/requestId/…) extracted
+   * at the runner catch site. Finalize folds these into `errorMessage`.
+   */
+  readonly sdkCause?: SdkCauseSummary;
   /** Provider-reported token usage (claude/codex only today). */
   readonly usage?: AgentRunUsage;
   /** Provider-reported USD cost when exposed (claude only today). */

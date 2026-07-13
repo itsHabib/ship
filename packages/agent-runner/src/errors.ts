@@ -3,6 +3,8 @@
  * subclasses live in their runner packages and extend `AgentRunFailedError`.
  */
 
+import type { SdkCauseSummary } from "./sdk-cause.js";
+
 /**
  * Thrown when a required API key env var is unset before any provider call.
  * The default message is provider-neutral; each provider adapter passes the
@@ -16,13 +18,30 @@ export class MissingApiKeyError extends Error {
   }
 }
 
+export type AgentRunFailedErrorOptions = ErrorOptions & {
+  readonly causeSummary?: SdkCauseSummary;
+};
+
 /**
  * Thrown when a provider cannot start or attach to a run. The original
  * error lives in `cause`. Post-run failures are NOT thrown — they surface
  * as `handle.result` resolving with `status: "failed"`.
+ *
+ * `causeSummary` carries a bounded, redacted extraction of discriminating
+ * SDK fields (status/code/requestId/…) for finalize to fold into the
+ * persisted `errorMessage` detail — the raw `cause` may hold non-enumerable
+ * fields that disappear once the process exits.
  */
 export class AgentRunFailedError extends Error {
   override readonly name: string = "AgentRunFailedError";
+  readonly causeSummary?: SdkCauseSummary;
+
+  constructor(message: string, options?: AgentRunFailedErrorOptions) {
+    super(message, options);
+    if (options?.causeSummary !== undefined) {
+      this.causeSummary = options.causeSummary;
+    }
+  }
 }
 
 function renderPrimitiveCause(cause: unknown): string | undefined {

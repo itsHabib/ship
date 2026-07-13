@@ -58,5 +58,14 @@ export {
   agentRunFailedError,
   MissingApiKeyError,
 } from "./errors.js";
+export type { AgentRunFailedErrorOptions } from "./errors.js";
+
+export {
+  causeSummaryFromThrown,
+  foldSdkCauseIntoDetail,
+  formatSdkCauseSuffix,
+  MAX_SDK_CAUSE_DETAIL_CHARS,
+} from "./sdk-cause.js";
+export type { SdkCauseSummary } from "./sdk-cause.js";
 
 export type { ArtifactRef, FailureCategory, ModelSelection } from "@ship/workflow";

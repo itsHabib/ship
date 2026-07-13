@@ -60,6 +60,7 @@ import {
   MissingCloudSpecError,
   WrongRunnerError,
 } from "./errors.js";
+import { extractSdkCause } from "./sdk-cause.js";
 
 const API_KEY_ENV = "CURSOR_API_KEY";
 const PROBE_TIMEOUT_MS = 10_000;
@@ -372,9 +373,21 @@ export class CloudCursorRunner implements AgentRunner {
       if (err instanceof IntegrationNotConnectedError) {
         throw new CursorCloudIntegrationError(err.provider, err.helpUrl, { cause: err });
       }
+      // Persist a bounded, redacted field summary alongside the throw so
+      // finalize can fold status/code/requestId into the phase errorMessage.
+      // Extraction runs here (not in core) so redaction happens before the
+      // value leaves the runner. Stderr dump above is unchanged.
+      const githubMcpUrl = process.env.GITHUB_MCP_URL;
+      const causeSummary = extractSdkCause(err, {
+        ...(githubMcpUrl !== undefined &&
+          githubMcpUrl !== "" && { githubMcpUrl }),
+      });
       throw new AgentRunFailedError(
         agent === undefined ? "Agent.create failed" : "agent.send failed after Agent.create",
-        { cause: err },
+        {
+          cause: err,
+          ...(causeSummary !== undefined && { causeSummary }),
+        },
       );
     }
   }
