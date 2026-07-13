@@ -67,6 +67,11 @@ export interface CursorRunOps {
   /** Hydrated row, or `null` if the id is unknown (does not throw). */
   get: (id: string) => CursorRunRef | null;
   /**
+   * Latest cursor run per workflow run id, keyed by `workflow_run_id`.
+   * One bounded `IN (...)` query — no per-row lookups. Empty input → empty map.
+   */
+  listLatestByWorkflowRunIds: (workflowRunIds: readonly string[]) => Map<string, CursorRunRef>;
+  /**
    * Cloud rows eligible for startup resume: `status IN ('running','pending')`,
    * `runtime = 'cloud'`, and a persisted SDK `run_id`.
    */
@@ -225,7 +230,31 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
     });
   }
 
-  return { get, listResumableCloud, record, updateStatus };
+  function listLatestByWorkflowRunIds(
+    workflowRunIds: readonly string[],
+  ): Map<string, CursorRunRef> {
+    const out = new Map<string, CursorRunRef>();
+    if (workflowRunIds.length === 0) return out;
+    const placeholders = workflowRunIds.map(() => "?").join(", ");
+    const sql = `SELECT ${CURSOR_RUN_COLUMNS} FROM cursor_runs c
+                 WHERE c.workflow_run_id IN (${placeholders})
+                   AND c.started_at = (
+                     SELECT MAX(c2.started_at) FROM cursor_runs c2
+                     WHERE c2.workflow_run_id = c.workflow_run_id
+                   )
+                   AND c.id = (
+                     SELECT MAX(c3.id) FROM cursor_runs c3
+                     WHERE c3.workflow_run_id = c.workflow_run_id
+                       AND c3.started_at = c.started_at
+                   )`;
+    const rows = db.prepare<unknown[], CursorRunRow>(sql).all(...workflowRunIds);
+    for (const row of rows) {
+      out.set(row.workflow_run_id, parseCursorRun(row));
+    }
+    return out;
+  }
+
+  return { get, listLatestByWorkflowRunIds, listResumableCloud, record, updateStatus };
 }
 
 function parseArtifactsJsonColumn(row: CursorRunRow): ArtifactRef[] | undefined {
