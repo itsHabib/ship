@@ -140,6 +140,7 @@ export function computeAssignments(manifest: DriverManifest, pool: PoolMember[])
   const skipped: AssignmentPlan["skipped"] = [];
   const defaultRuntime = manifest.default_runtime ?? "local";
 
+  const problems: string[] = [];
   let cursor = 0;
   manifest.batches.forEach((batch, batchPos) => {
     batch.streams.forEach((stream, streamPos) => {
@@ -147,14 +148,23 @@ export function computeAssignments(manifest: DriverManifest, pool: PoolMember[])
         skipped.push({ specPath: stream.spec_path, status: stream.status });
         return;
       }
-      const member = pool[cursor % pool.length];
+      // pool is non-empty (guarded above); the `?? ` narrows the
+      // noUncheckedIndexedAccess type, it is not a real runtime branch.
+      const member = pool[cursor % pool.length] ?? pool[0];
       if (member === undefined) return;
       cursor += 1;
-      assignments.push(buildAssignment(batchPos, streamPos, stream, member, defaultRuntime));
+      const assignment = buildAssignment(batchPos, streamPos, stream, member, defaultRuntime);
+      assignments.push(assignment);
+      const problem = validateAssignment(assignment, stream, manifest.repo_url);
+      if (problem !== undefined) problems.push(problem);
     });
   });
 
-  rejectIllegalCells(assignments);
+  if (problems.length > 0) {
+    throw new AssignError(
+      `cannot assign — the pool would produce an unrunnable manifest:\n  ${problems.join("\n  ")}`,
+    );
+  }
   return { assignments, skipped };
 }
 
@@ -182,19 +192,33 @@ function buildAssignment(
   return base;
 }
 
-function rejectIllegalCells(assignments: StreamAssignment[]): void {
-  const illegal = assignments
-    .filter((assignment) => !isLegalCell(assignment.provider, assignment.resolvedRuntime))
-    .map(
-      (assignment) =>
-        `${assignment.specPath}: ${assignment.resolvedRuntime}/${assignment.provider}`,
-    );
-  if (illegal.length === 0) {
-    return;
+/**
+ * Validate one assignment against everything import + the engine preflight
+ * enforce, so a successful assign always yields a runnable manifest (spec
+ * §4.3 all-or-nothing). Returns a problem string, or undefined when clean.
+ */
+function validateAssignment(
+  assignment: StreamAssignment,
+  stream: ManifestStream,
+  repoUrl: string | undefined,
+): string | undefined {
+  const cell = `${assignment.resolvedRuntime}/${assignment.provider}`;
+  if (!isLegalCell(assignment.provider, assignment.resolvedRuntime)) {
+    return `${assignment.specPath}: unwired dispatch cell ${cell}`;
   }
-  throw new AssignError(
-    `unwired dispatch cell(s) — fix the pool or the manifest runtime:\n  ${illegal.join("\n  ")}`,
-  );
+  // Branch preconditions mirrored from import (claude/cloud) and the engine
+  // preflight (any local stream): both require branch_name.
+  const needsBranch =
+    assignment.resolvedRuntime === "local" ||
+    (assignment.provider === "claude" && assignment.resolvedRuntime === "cloud");
+  if (needsBranch && stream.branch_name === undefined) {
+    return `${assignment.specPath}: ${cell} requires branch_name — set it or pick a cloud/cursor target`;
+  }
+  // Cloud streams need a manifest-level repo_url (engine preflight).
+  if (assignment.resolvedRuntime === "cloud" && repoUrl === undefined) {
+    return `${assignment.specPath}: ${cell} needs repo_url in the manifest frontmatter`;
+  }
+  return undefined;
 }
 
 /** True when `(provider, runtime)` is a legal cell of the dispatch matrix. */

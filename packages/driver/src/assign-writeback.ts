@@ -78,12 +78,16 @@ export function applyAssignmentToManifest(
 
   doc.set("assignment", { pool: pool.map(poolMemberToString) });
 
-  const rendered = doc.toString({ lineWidth: 0 }).trimEnd();
-  return `${bom}---\n${rendered}\n---${body}`;
+  // Preserve the source line-ending style: yaml renders LF, so convert the
+  // rewritten frontmatter + fences to CRLF when the input used it. The body
+  // keeps whatever endings splitManifest captured.
+  const eol = manifestText.includes("\r\n") ? "\r\n" : "\n";
+  const rendered = doc.toString({ lineWidth: 0 }).trimEnd().replace(/\n/g, eol);
+  return `${bom}---${eol}${rendered}${eol}---${body}`;
 }
 
 function splitManifest(text: string): SplitManifest {
-  const bom = text.charCodeAt(0) === 0xfeff ? "﻿" : "";
+  const bom = text.charCodeAt(0) === 0xfeff ? String.fromCharCode(0xfeff) : "";
   const stripped = bom === "" ? text : text.slice(1);
   const match = /^---\r?\n([\s\S]*?)\r?\n---((?:\r?\n[\s\S]*)?)$/.exec(stripped);
   if (match === null) {

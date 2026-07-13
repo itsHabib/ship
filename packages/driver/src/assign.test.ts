@@ -7,10 +7,17 @@ import { computeAssignments, isLegalCell, parseModelPool } from "./assign.js";
 import { AssignError } from "./errors.js";
 import { type DriverManifest, parseManifest } from "./manifest.js";
 
-function manifestText(streamsYaml: string, opts: { defaultRuntime?: string } = {}): string {
-  const defaultRuntimeLine =
-    opts.defaultRuntime === undefined ? "" : `default_runtime: ${opts.defaultRuntime}\n`;
-  return [
+interface ManifestOpts {
+  // Default "cloud" so bare cursor fixtures form valid cloud/cursor cells
+  // (cursor cloud needs repo_url, not branch_name — provided below).
+  defaultRuntime?: string;
+  repoUrl?: string | null;
+}
+
+function manifestText(streamsYaml: string, opts: ManifestOpts = {}): string {
+  const runtime = opts.defaultRuntime ?? "cloud";
+  const repoUrl = opts.repoUrl === undefined ? "https://github.com/itsHabib/ship" : opts.repoUrl;
+  const lines = [
     "---",
     "driver_version: 1",
     "generated_at: 2026-07-13T00:00:00Z",
@@ -19,17 +26,13 @@ function manifestText(streamsYaml: string, opts: { defaultRuntime?: string } = {
     "  project: ship",
     "  phase: assign-test",
     "repo: ship",
-    `${defaultRuntimeLine}batches:`,
-    streamsYaml,
-    "---",
-    "",
-  ].join("\n");
+  ];
+  if (repoUrl !== null) lines.push(`repo_url: ${repoUrl}`);
+  lines.push(`default_runtime: ${runtime}`, "batches:", streamsYaml, "---", "");
+  return lines.join("\n");
 }
 
-function parsedManifest(
-  streamsYaml: string,
-  opts: { defaultRuntime?: string } = {},
-): DriverManifest {
+function parsedManifest(streamsYaml: string, opts: ManifestOpts = {}): DriverManifest {
   const result = parseManifest(manifestText(streamsYaml, opts));
   if (!result.ok) {
     throw new Error(`fixture manifest failed to parse: ${result.errors[0]?.message ?? "unknown"}`);
@@ -204,6 +207,39 @@ describe("computeAssignments", () => {
       AssignError,
     );
   });
+
+  test("rejects a local target on a branchless stream (engine preflight rule)", () => {
+    const pool = parseModelPool("cursor:grok-4.5");
+    const manifest = parsedManifest(THREE_STREAMS_ONE_BATCH, { defaultRuntime: "local" });
+    expect(() => computeAssignments(manifest, pool)).toThrow(/requires branch_name/);
+  });
+
+  test("rejects claude/cloud on a branchless stream (import rule)", () => {
+    const pool = parseModelPool("claude:claude-opus-4-8");
+    // default cloud + claude provider + no branch_name -> import would reject.
+    expect(() => computeAssignments(parsedManifest(THREE_STREAMS_ONE_BATCH), pool)).toThrow(
+      /requires branch_name/,
+    );
+  });
+
+  test("accepts a local target when the stream carries branch_name", () => {
+    const withBranch = [
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        branch_name: feat-a",
+    ].join("\n");
+    const pool = parseModelPool("cursor:grok-4.5");
+    const plan = computeAssignments(parsedManifest(withBranch, { defaultRuntime: "local" }), pool);
+    expect(plan.assignments[0]?.resolvedRuntime).toBe("local");
+  });
+
+  test("rejects a cloud target when the manifest lacks repo_url", () => {
+    const pool = parseModelPool("cursor:grok-4.5");
+    const manifest = parsedManifest(THREE_STREAMS_ONE_BATCH, { repoUrl: null });
+    expect(() => computeAssignments(manifest, pool)).toThrow(/repo_url/);
+  });
 });
 
 describe("assignModelPoolToManifest", () => {
@@ -234,5 +270,13 @@ describe("assignModelPoolToManifest", () => {
     expect(() => assignModelPoolToManifest("not a manifest", "cursor:grok-4.5")).toThrow(
       AssignError,
     );
+  });
+
+  test("preserves CRLF line endings", () => {
+    const crlf = manifestText(THREE_STREAMS_ONE_BATCH).replace(/\n/g, "\r\n");
+    const result = assignModelPoolToManifest(crlf, "cursor:grok-4.5");
+    expect(result.text).toContain("\r\n");
+    expect(result.text).not.toMatch(/[^\r]\n/);
+    expect(parseManifest(result.text).ok).toBe(true);
   });
 });
