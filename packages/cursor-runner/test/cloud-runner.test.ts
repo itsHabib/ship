@@ -665,7 +665,9 @@ describe("CloudCursorRunner — env / pre-run errors", () => {
       // Regression: stderr dump from logCloudStartFailure is unchanged /
       // still present alongside the new persisted causeSummary path.
       const out = stderrSpyConcat(spy);
-      expect(out).toMatch(/Agent\.create failed|sdk-throw|bad request body/);
+      expect(out).toContain('"failureCategory":"sdk-throw"');
+      expect(out).toContain('"stage":"Agent.create"');
+      expect(out).toContain("bad request body");
     } finally {
       spy.mockRestore();
     }

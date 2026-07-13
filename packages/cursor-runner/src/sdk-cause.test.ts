@@ -4,10 +4,7 @@ import { describe, expect, test } from "vitest";
 
 import { extractSdkCause, GH_MCP_URL_REDACTION } from "./sdk-cause.js";
 
-function hiddenFieldError(
-  message: string,
-  fields: Record<string, unknown>,
-): Error {
+function hiddenFieldError(message: string, fields: Record<string, unknown>): Error {
   const err = new Error(message);
   for (const [key, value] of Object.entries(fields)) {
     Object.defineProperty(err, key, { value, enumerable: false, configurable: true });
@@ -84,7 +81,7 @@ describe("extractSdkCause", () => {
   });
 
   test("authorization_token values are redacted and the field is never carried", () => {
-    const err = Object.assign(new Error('auth authorization_token=ghp_leak failed'), {
+    const err = Object.assign(new Error("auth authorization_token=ghp_leak failed"), {
       authorization_token: "ghp_should_never_appear",
       endpoint: "https://api.example?authorization_token=ghp_in_url",
       status: 401,

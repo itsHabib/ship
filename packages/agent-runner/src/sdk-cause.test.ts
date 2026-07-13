@@ -7,6 +7,7 @@ import {
   causeSummaryFromThrown,
   foldSdkCauseIntoDetail,
   formatSdkCauseSuffix,
+  MAX_FOLDED_DETAIL_CHARS,
   MAX_SDK_CAUSE_DETAIL_CHARS,
   type SdkCauseSummary,
 } from "./sdk-cause.js";
@@ -61,6 +62,17 @@ describe("foldSdkCauseIntoDetail", () => {
 
   test("returns suffix alone when detail is empty", () => {
     expect(foldSdkCauseIntoDetail("", { status: 503, code: "upstream" })).toBe("HTTP 503 upstream");
+  });
+
+  test("re-bounds the combined detail so fold cannot bypass the 512-char invariant", () => {
+    const longBase = "b".repeat(500);
+    const folded = foldSdkCauseIntoDetail(longBase, {
+      code: "invalid_request_error",
+      requestId: "req_overflow",
+      status: 400,
+    });
+    expect(folded.length).toBe(MAX_FOLDED_DETAIL_CHARS);
+    expect(folded.endsWith("...")).toBe(true);
   });
 });
 
