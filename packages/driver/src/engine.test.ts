@@ -2193,6 +2193,256 @@ batches:
     );
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
   });
+
+  describe("stale-head re-validation at attempt start", () => {
+    const NEW_HEAD = `aaaa${"0".repeat(36)}`;
+
+    test("parks stream and does not dispatch when head advances between consumption and fresh address dispatch", async () => {
+      const { runId, streamId } = landedSeed();
+      const fake = createFakeShipPort([]);
+      // First viewPullRequest (loadAddressPr) returns HEAD_SHA; second
+      // (checkAddressAttemptHead inside dispatchAddress) returns NEW_HEAD.
+      let viewCount = 0;
+      const baseGh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      const gh = {
+        ...baseGh,
+        viewPullRequest(repo: string, prNumber: number) {
+          viewCount++;
+          if (viewCount >= 2) {
+            return Promise.resolve({
+              headRefOid: NEW_HEAD,
+              mergeCommit: null as null,
+              mergedAt: null as null,
+              state: "OPEN" as const,
+            });
+          }
+          return baseGh.viewPullRequest(repo, prNumber);
+        },
+      };
+
+      await expect(
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      ).rejects.toThrow(/consumed head does not match/);
+
+      const stream = firstStream(runId);
+      expect(stream?.status).toBe("failed");
+      expect(stream?.errorMessage).toMatch(/stale-head/);
+      // Consumption committed; the cycle was claimed.
+      expect(stream?.reviewCycles).toBe(1);
+      expect(store.getDriverRun(runId)?.status).toBe("awaiting_judgment");
+      expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    });
+
+    test("dispatches normally when head is unchanged at fresh address dispatch", async () => {
+      const { runId, streamId } = landedSeed();
+      const fake = createFakeShipPort([]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+
+      await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        findingsPath,
+        streamId,
+      });
+
+      expect(firstStream(runId)?.status).toBe("dispatched");
+      expect(fake.calls.some((c) => c.kind === "startShip")).toBe(true);
+    });
+
+    test("parks stream on tick re-dispatch when head has moved (covers recovery and retry paths)", async () => {
+      const { runId, streamId } = landedSeed();
+      // Initial address dispatch succeeds with matching head.
+      const fake = createFakeShipPort([]);
+      const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      await address({ clock: () => 0, gh: ghInitial, ship: fake.port, store }, runId, {
+        findingsPath,
+        streamId,
+      });
+      expect(firstStream(runId)?.status).toBe("dispatched");
+
+      // Simulate recovery reset: stream is back to pending (as if dispatching recovery
+      // found 0 candidates and reset, or decide retry reset it).
+      store.updateDriverStream(streamId, {
+        dispatchModel: null,
+        dispatchModelParams: null,
+        dispatchProvider: null,
+        effortDegraded: false,
+        status: "pending",
+        tierDegradeReason: null,
+      });
+      store.updateDriverRunStatus(runId, "running");
+
+      // Tick with head advanced: stale-head guard should park the stream.
+      const ghStale = createFakeGhPort({ 77: { state: "OPEN", headRefOid: NEW_HEAD } });
+      const driver = createDriverService({ clock: () => 0, gh: ghStale, ship: fake.port, store });
+      const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+
+      expect(result.status).toBe("awaiting_judgment");
+      const stream = firstStream(runId);
+      expect(stream?.status).toBe("failed");
+      expect(stream?.errorMessage).toMatch(/stale-head/);
+      // reviewCycles is preserved from the consumed artifact.
+      expect(stream?.reviewCycles).toBe(1);
+      // No new dispatch attempt was made.
+      const startCalls = fake.calls.filter((c) => c.kind === "startShip");
+      expect(startCalls).toHaveLength(1); // only the initial dispatch
+    });
+
+    test("parks stream on tick re-dispatch when the driver has no gh port", async () => {
+      const { runId, streamId } = landedSeed();
+      // Initial address dispatch consumes the artifact and sets reviewCycles.
+      const fake = createFakeShipPort([]);
+      const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      await address({ clock: () => 0, gh: ghInitial, ship: fake.port, store }, runId, {
+        findingsPath,
+        streamId,
+      });
+      expect(firstStream(runId)?.status).toBe("dispatched");
+
+      // Recovery reset back to pending.
+      store.updateDriverStream(streamId, {
+        dispatchModel: null,
+        dispatchModelParams: null,
+        dispatchProvider: null,
+        effortDegraded: false,
+        status: "pending",
+        tierDegradeReason: null,
+      });
+      store.updateDriverRunStatus(runId, "running");
+
+      // Tick with a gh-less driver: an address-cycle re-dispatch cannot
+      // re-validate the head, so the stream fails closed instead of bypassing.
+      const driver = createDriverService({ clock: () => 0, ship: fake.port, store });
+      const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+
+      expect(result.status).toBe("awaiting_judgment");
+      const stream = firstStream(runId);
+      expect(stream?.status).toBe("failed");
+      expect(stream?.errorMessage).toMatch(/no gh port/);
+      // reviewCycles is preserved from the consumed artifact.
+      expect(stream?.reviewCycles).toBe(1);
+      // No stale re-dispatch was attempted.
+      const startCalls = fake.calls.filter((c) => c.kind === "startShip");
+      expect(startCalls).toHaveLength(1); // only the initial dispatch
+    });
+
+    test("parks stream on tick re-dispatch when the PR number cannot be resolved", async () => {
+      const { runId, streamId } = landedSeed();
+      // Initial address dispatch consumes the artifact and sets reviewCycles.
+      const fake = createFakeShipPort([]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        findingsPath,
+        streamId,
+      });
+      expect(firstStream(runId)?.status).toBe("dispatched");
+
+      // Recovery reset back to pending, with a prUrl the guard cannot parse:
+      // a consumed artifact whose live head cannot be re-checked must not dispatch.
+      store.updateDriverStream(streamId, {
+        dispatchModel: null,
+        dispatchModelParams: null,
+        dispatchProvider: null,
+        effortDegraded: false,
+        prUrl: "not-a-pull-request-url",
+        status: "pending",
+        tierDegradeReason: null,
+      });
+      store.updateDriverRunStatus(runId, "running");
+
+      const driver = createDriverService({ clock: () => 0, gh, ship: fake.port, store });
+      const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+
+      expect(result.status).toBe("awaiting_judgment");
+      const stream = firstStream(runId);
+      expect(stream?.status).toBe("failed");
+      expect(stream?.errorMessage).toMatch(/cannot resolve PR number/);
+      // No stale re-dispatch was attempted.
+      const startCalls = fake.calls.filter((c) => c.kind === "startShip");
+      expect(startCalls).toHaveLength(1); // only the initial dispatch
+    });
+
+    test("head unchanged on tick re-dispatch proceeds normally", async () => {
+      const { runId, streamId } = landedSeed();
+      const digest = canonicalReviewFindingsSha256(parseReviewFindings(validFindingsArtifact()));
+      const synthesizedDoc = join(repoRoot, `address-${streamId}-cycle1-${digest.slice(0, 12)}.md`);
+      const fake = createFakeShipPort([
+        {
+          branchName: "feat-a",
+          docPath: synthesizedDoc,
+          prUrl: PR_URL,
+          repo: "ship",
+          workflowRunId: "wf_retry",
+        },
+      ]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        findingsPath,
+        streamId,
+      });
+
+      // Simulate recovery/retry reset.
+      store.updateDriverStream(streamId, {
+        dispatchModel: null,
+        dispatchModelParams: null,
+        dispatchProvider: null,
+        effortDegraded: false,
+        status: "pending",
+        tierDegradeReason: null,
+      });
+      store.updateDriverRunStatus(runId, "running");
+
+      const driver = createDriverService({ clock: () => 0, gh, ship: fake.port, store });
+      const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+
+      // Head unchanged → second dispatch succeeds → stream lands.
+      expect(result.status).toBe("blocked_on_merges");
+      expect(firstStream(runId)?.status).toBe("landed");
+    });
+
+    test("decide retry after stale-head park with head still moved parks again", async () => {
+      const { runId, streamId } = landedSeed();
+      const fakeInitial = createFakeShipPort([]);
+      const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      await address({ clock: () => 0, gh: ghInitial, ship: fakeInitial.port, store }, runId, {
+        findingsPath,
+        streamId,
+      });
+
+      // Reset to pending to simulate recovery/retry.
+      store.updateDriverStream(streamId, {
+        dispatchModel: null,
+        dispatchModelParams: null,
+        dispatchProvider: null,
+        effortDegraded: false,
+        status: "pending",
+        tierDegradeReason: null,
+      });
+      store.updateDriverRunStatus(runId, "running");
+
+      // Tick: stale head parks the stream.
+      const fakeRetry = createFakeShipPort([]);
+      const ghStale = createFakeGhPort({ 77: { state: "OPEN", headRefOid: NEW_HEAD } });
+      const driver = createDriverService({
+        clock: () => 0,
+        gh: ghStale,
+        ship: fakeRetry.port,
+        store,
+      });
+      await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+      expect(firstStream(runId)?.status).toBe("failed");
+      expect(store.getDriverRun(runId)?.status).toBe("awaiting_judgment");
+
+      // decide retry: stream back to pending.
+      driver.decide(runId, streamId, { kind: "retry" });
+      expect(firstStream(runId)?.status).toBe("pending");
+
+      // Another tick with head still moved → parks again.
+      const result2 = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+      expect(result2.status).toBe("awaiting_judgment");
+      expect(firstStream(runId)?.status).toBe("failed");
+      expect(firstStream(runId)?.errorMessage).toMatch(/stale-head/);
+      expect(fakeRetry.calls.some((c) => c.kind === "startShip")).toBe(false);
+    });
+  });
 });
 
 async function expectRefusal(
