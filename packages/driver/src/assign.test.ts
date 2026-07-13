@@ -272,6 +272,26 @@ describe("assignModelPoolToManifest", () => {
     );
   });
 
+  test("leaves terminal streams unstamped in the written manifest", () => {
+    const withDone = [
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        status: done",
+      "      - spec_path: docs/b.md",
+    ].join("\n");
+    const result = assignModelPoolToManifest(manifestText(withDone), "cursor:grok-4.5");
+    const reparsed = parseManifest(result.text);
+    expect(reparsed.ok).toBe(true);
+    if (!reparsed.ok) return;
+    const streams = reparsed.manifest.batches[0]?.streams ?? [];
+    expect(streams[0]?.provider).toBeUndefined();
+    expect(streams[0]?.model_id).toBeUndefined();
+    expect(streams[1]?.provider).toBe("cursor");
+    expect(streams[1]?.model_id).toBe("grok-4.5");
+  });
+
   test("preserves CRLF line endings", () => {
     const crlf = manifestText(THREE_STREAMS_ONE_BATCH).replace(/\n/g, "\r\n");
     const result = assignModelPoolToManifest(crlf, "cursor:grok-4.5");
