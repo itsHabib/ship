@@ -34,7 +34,7 @@ const baseCursorRun: CursorRunRef = {
 };
 
 describe("projectWorkflowObservability — local", () => {
-  test("actual runtime/provider/model come from cursor run; requested runtime stays absent", () => {
+  test("keeps requested runtime/provider/model separate from actual cursor facts", () => {
     const run = {
       id: "wf_01ARZ3NDEKTSV4RRFFQ69G5FAV",
       repo: "ship",
@@ -51,7 +51,12 @@ describe("projectWorkflowObservability — local", () => {
           workflowRunId: "wf_01ARZ3NDEKTSV4RRFFQ69G5FAV",
           kind: "implement" as const,
           status: "succeeded" as const,
-          inputJson: JSON.stringify({ docPath: "docs/x.md" }),
+          inputJson: JSON.stringify({
+            docPath: "docs/x.md",
+            runtime: "local",
+            provider: "cursor",
+            model: { id: "requested-model" },
+          }),
           startedAt: "2026-05-06T12:00:00.000Z",
           endedAt: "2026-05-06T12:30:00.000Z",
           cursorRunId: baseCursorRun.id,
@@ -65,7 +70,11 @@ describe("projectWorkflowObservability — local", () => {
       model: { id: "composer-2" },
     };
     const view = projectWorkflowObservability(run, cursorRun);
-    expect(view.requested).toBeUndefined();
+    expect(view.requested).toEqual({
+      runtime: "local",
+      provider: "cursor",
+      model: { id: "requested-model" },
+    });
     expect(view.actual).toEqual({
       runtime: "local",
       provider: "cursor",
@@ -129,6 +138,9 @@ describe("projectWorkflowObservability — cloud", () => {
           inputJson: JSON.stringify({
             cloud: { repos: [{ url: "https://github.com/o/r" }] },
             docPath: "docs/x.md",
+            runtime: "cloud",
+            provider: "cursor",
+            model: { id: "requested-cloud-model" },
           }),
           cursorRunId: baseCursorRun.id,
         },
@@ -148,7 +160,11 @@ describe("projectWorkflowObservability — cloud", () => {
       ],
     };
     const view = projectWorkflowObservability(run, cursorRun);
-    expect(view.requested).toEqual({ runtime: "cloud" });
+    expect(view.requested).toEqual({
+      runtime: "cloud",
+      provider: "cursor",
+      model: { id: "requested-cloud-model" },
+    });
     expect(view.actual?.runtime).toBe("cloud");
     expect(view.evidence).toEqual({
       availability: "available",
@@ -235,6 +251,14 @@ describe("sanitizeFailureDetail", () => {
     expect(sanitizeFailureDetail('open "/etc/passwd" failed')).toBe("open [path] failed");
     expect(sanitizeFailureDetail("token ghp_abc123xyz leaked")).toBe("token [token] leaked");
     expect(sanitizeFailureDetail("Bearer sk-live-abc")).toBe("Bearer [token]");
+    expect(sanitizeFailureDetail("failed at \\\\server\\share\\secret.txt\nnext line")).toBe(
+      "failed at [path]\nnext line",
+    );
+    expect(
+      sanitizeFailureDetail(
+        "AWS_SECRET_ACCESS_KEY=hunter2 username=alice GITHUB_TOKEN=ghs_deadbeef",
+      ),
+    ).toBe("AWS_SECRET_ACCESS_KEY=[redacted] username=[redacted] GITHUB_TOKEN=[redacted]");
   });
 
   test("redacts absolute paths on every line of a multiline message", () => {
@@ -271,6 +295,16 @@ describe("projectWorkflowObservability — redaction", () => {
         },
         {
           path: "relative/prompt.md",
+          sizeBytes: 10,
+          updatedAt: "2026-05-06T12:30:00.000Z",
+        },
+        {
+          path: "relative/../../secret.txt",
+          sizeBytes: 10,
+          updatedAt: "2026-05-06T12:30:00.000Z",
+        },
+        {
+          path: "relative\\..\\..\\windows-secret.txt",
           sizeBytes: 10,
           updatedAt: "2026-05-06T12:30:00.000Z",
         },

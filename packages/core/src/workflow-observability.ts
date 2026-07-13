@@ -14,6 +14,7 @@ import type {
   WorkflowRun,
 } from "@ship/workflow";
 
+import { agentProviderSchema, cursorRunRuntimeSchema, modelSelectionSchema } from "@ship/workflow";
 import { posix, win32 } from "node:path";
 
 interface RuntimeConfigFields {
@@ -68,14 +69,33 @@ function parseRequestedConfig(run: WorkflowRun): RuntimeConfigFields {
     return {};
   }
   if (parsed === null || typeof parsed !== "object") return {};
-  const record = parsed as { cloud?: unknown; room?: unknown };
-  if (record.cloud !== undefined && record.cloud !== null) {
-    return { runtime: "cloud" };
-  }
-  if (record.room !== undefined && record.room !== null) {
-    return { runtime: "rooms" };
-  }
-  return {};
+  const record = parsed as {
+    cloud?: unknown;
+    room?: unknown;
+    runtime?: unknown;
+    provider?: unknown;
+    model?: unknown;
+  };
+  const runtime = parseRequestedRuntime(record);
+  const provider = agentProviderSchema.safeParse(record.provider);
+  const model = modelSelectionSchema.safeParse(record.model);
+  return {
+    ...(runtime !== undefined && { runtime }),
+    ...(provider.success && { provider: provider.data }),
+    ...(model.success && { model: model.data }),
+  };
+}
+
+function parseRequestedRuntime(record: {
+  readonly runtime?: unknown;
+  readonly cloud?: unknown;
+  readonly room?: unknown;
+}): CursorRunRuntime | undefined {
+  const parsed = cursorRunRuntimeSchema.safeParse(record.runtime);
+  if (parsed.success) return parsed.data;
+  if (record.cloud !== undefined && record.cloud !== null) return "cloud";
+  if (record.room !== undefined && record.room !== null) return "rooms";
+  return undefined;
 }
 
 function extractActualConfig(cursorRun: CursorRunRef): RuntimeConfigFields {
@@ -96,11 +116,13 @@ function hasRuntimeConfigFields(fields: RuntimeConfigFields): boolean {
 }
 
 function timingFromCursorRun(cursorRun: CursorRunRef, run: WorkflowRun): ObservabilityTimingFields {
+  const phase = implementPhase(run);
   const timing: ObservabilityTimingFields = {
     startedAt: cursorRun.startedAt,
   };
-  if (cursorRun.endedAt !== undefined) {
-    timing.endedAt = cursorRun.endedAt;
+  const endedAt = cursorRun.endedAt ?? phase?.endedAt;
+  if (endedAt !== undefined) {
+    timing.endedAt = endedAt;
   }
   const durationMs = resolveDurationMs(cursorRun, run);
   if (durationMs !== undefined) {
@@ -129,11 +151,14 @@ function resolveDurationMs(cursorRun: CursorRunRef, run: WorkflowRun): number | 
   if (cursorRun.durationMs !== undefined) {
     return cursorRun.durationMs;
   }
-  const fromCursor = durationMsFromTimestamps(cursorRun.startedAt, cursorRun.endedAt);
+  const phase = implementPhase(run);
+  const fromCursor = durationMsFromTimestamps(
+    cursorRun.startedAt,
+    cursorRun.endedAt ?? phase?.endedAt,
+  );
   if (fromCursor !== undefined) {
     return fromCursor;
   }
-  const phase = implementPhase(run);
   return durationMsFromTimestamps(phase?.startedAt, phase?.endedAt);
 }
 
@@ -185,7 +210,7 @@ function sanitizeEvidenceRefs(
   if (artifacts === undefined || artifacts.length === 0) return undefined;
   const refs: ArtifactRef[] = [];
   for (const artifact of artifacts) {
-    if (isAbsolutePath(artifact.path)) continue;
+    if (!isSafeRelativePath(artifact.path)) continue;
     refs.push({
       path: artifact.path,
       sizeBytes: artifact.sizeBytes,
@@ -197,21 +222,30 @@ function sanitizeEvidenceRefs(
 
 export function sanitizeFailureDetail(message: string | undefined): string | undefined {
   if (message === undefined || message.length === 0) return undefined;
-  const quoted = message.replace(/(["'])(?:[A-Za-z]:\\|\/)[^"'\r\n]*\1/g, "[path]");
+  const quoted = message.replace(/(["'])(?:[A-Za-z]:\\|\\\\|\/)[^"'\r\n]*\1/g, "[path]");
   const redacted = quoted.replace(
-    /(^|[\s(,;=])(?:[A-Za-z]:\\|\/).*$/gm,
+    /(^|[\s(,;=])(?:[A-Za-z]:\\|\\\\|\/).*$/gm,
     (_match, prefix: string) => `${prefix}[path]`,
   );
   const tokenRedacted = redacted
-    .replace(/\b(?:ghp_|gho_|github_pat_)\w+/g, "[token]")
-    .replace(/\bBearer\s+[\w.-]+/gi, "Bearer [token]")
-    .replace(/\bCURSOR_API_KEY=[^\s]+/gi, "CURSOR_API_KEY=[redacted]")
-    .replace(/\bGITHUB_TOKEN=[^\s]+/gi, "GITHUB_TOKEN=[redacted]");
+    .replace(/\b(?:gh[pousr]_|github_pat_)\w+/g, "[token]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [token]")
+    .replace(
+      /\b([A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)=[^\s,;]+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/\b(user(?:name)?|account)=[^\s,;]+/gi, "$1=[redacted]");
   return tokenRedacted.length > 0 ? tokenRedacted : undefined;
 }
 
 function isAbsolutePath(value: string): boolean {
   return posix.isAbsolute(value) || win32.isAbsolute(value);
+}
+
+function isSafeRelativePath(value: string): boolean {
+  if (isAbsolutePath(value) || /^[A-Za-z]:/.test(value)) return false;
+  const normalized = posix.normalize(value.replaceAll("\\", "/"));
+  return normalized !== ".." && !normalized.startsWith("../");
 }
 
 /** Keys that must never appear in a public observability projection. */

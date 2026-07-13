@@ -94,6 +94,11 @@ describe("ShipService observability wiring", () => {
     const statusRow = await h.service.getRun(out.workflowRunId);
     expect(listedRow?.observability).toEqual(statusRow?.observability);
     expect(listedRow?.observability?.actual?.runtime).toBe("local");
+    expect(listedRow?.observability?.requested).toEqual({
+      runtime: "local",
+      provider: "cursor",
+      model: { id: "composer-2" },
+    });
     expect(listedRow?.observability?.durationMs).toBe(12_000);
   });
 
@@ -152,7 +157,7 @@ describe("ShipService observability wiring", () => {
     throwingHarness.store.close();
   });
 
-  test("cloud run requested runtime is cloud without inferring provider/model from actual", async () => {
+  test("cloud run preserves requested config separately from actual config", async () => {
     h.store.close();
     const cloudHarness = await createHarness();
     cloudHarness.cloudCursor.enqueue({
@@ -167,9 +172,12 @@ describe("ShipService observability wiring", () => {
       cloud: { repos: [{ url: "https://github.com/o/r" }] },
     });
     const view = await cloudHarness.service.getRun(out.workflowRunId);
-    expect(view?.observability?.requested).toEqual({ runtime: "cloud" });
+    expect(view?.observability?.requested).toEqual({
+      runtime: "cloud",
+      provider: "cursor",
+      model: { id: "composer-2" },
+    });
     expect(view?.observability?.actual?.runtime).toBe("cloud");
-    expect(view?.observability?.requested?.provider).toBeUndefined();
     cloudHarness.store.close();
   });
 });

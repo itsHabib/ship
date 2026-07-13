@@ -97,6 +97,7 @@ interface CursorRunRow {
 
 const CURSOR_RUN_COLUMNS =
   "id, workflow_run_id, agent_id, provider, run_id, runtime, model_json, status, started_at, ended_at, duration_ms, artifacts_dir, artifacts_json, created_at_ms";
+const MAX_LATEST_CURSOR_RUN_IDS = 200;
 
 /**
  * Constructs the `cursor_runs` ops. Caches static prepared statements
@@ -235,6 +236,11 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
   ): Map<string, CursorRunRef> {
     const out = new Map<string, CursorRunRef>();
     if (workflowRunIds.length === 0) return out;
+    if (workflowRunIds.length > MAX_LATEST_CURSOR_RUN_IDS) {
+      throw new RangeError(
+        `latest cursor-run lookup accepts at most ${String(MAX_LATEST_CURSOR_RUN_IDS)} workflow ids`,
+      );
+    }
     const placeholders = workflowRunIds.map(() => "?").join(", ");
     const sql = `SELECT ${CURSOR_RUN_COLUMNS} FROM cursor_runs c
                  WHERE c.workflow_run_id IN (${placeholders})

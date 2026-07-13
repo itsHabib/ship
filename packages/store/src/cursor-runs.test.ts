@@ -410,4 +410,9 @@ describe("cursor runs (via createStore)", () => {
   test("listLatestCursorRunsByWorkflowRunIds: empty input returns empty map", () => {
     expect(store.listLatestCursorRunsByWorkflowRunIds([])).toEqual(new Map());
   });
+
+  test("listLatestCursorRunsByWorkflowRunIds: rejects more than 200 ids", () => {
+    const ids = Array.from({ length: 201 }, (_, index) => `wf_${String(index)}`);
+    expect(() => store.listLatestCursorRunsByWorkflowRunIds(ids)).toThrow(RangeError);
+  });
 });

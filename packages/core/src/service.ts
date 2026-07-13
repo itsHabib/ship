@@ -987,14 +987,26 @@ function runScopedLogger(logger: Logger, fields: LogFields): Logger {
 
 // The implement phase's `input_json`, persisted for forensics. The cloud
 // spec is also read back on resume; rooms has no resume path.
-function buildImplementInputJson(input: ShipInput): string {
+function buildImplementInputJson(
+  input: ShipInput,
+  requested: {
+    readonly runtime: CursorRunRuntime;
+    readonly provider: AgentProvider;
+    readonly model: ModelSelection;
+  },
+): string {
+  const observability = {
+    runtime: requested.runtime,
+    provider: requested.provider,
+    model: requested.model,
+  };
   if (input.runtime === "cloud" && input.cloud !== undefined) {
-    return JSON.stringify({ cloud: input.cloud, docPath: input.docPath });
+    return JSON.stringify({ cloud: input.cloud, docPath: input.docPath, ...observability });
   }
   if (input.runtime === "rooms" && input.room !== undefined) {
-    return JSON.stringify({ room: input.room, docPath: input.docPath });
+    return JSON.stringify({ room: input.room, docPath: input.docPath, ...observability });
   }
-  return JSON.stringify({ docPath: input.docPath });
+  return JSON.stringify({ docPath: input.docPath, ...observability });
 }
 
 function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): PreparedRun {
@@ -1033,11 +1045,19 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
     worktree,
     policy: DEFAULT_WORKFLOW_POLICY,
   });
+  const requestedModel = resolveModelSelection(
+    ctx.input,
+    resolveBaseDefaultModel(ctx.config, ctx.provider),
+  );
   ctx.store.appendPhase({
     id: phaseId,
     workflowRunId,
     kind: "implement",
-    inputJson: buildImplementInputJson(ctx.input),
+    inputJson: buildImplementInputJson(ctx.input, {
+      model: requestedModel,
+      provider: ctx.provider,
+      runtime: ctx.resolvedCursorRuntime,
+    }),
   });
 
   return {
