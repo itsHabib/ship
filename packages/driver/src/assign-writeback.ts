@@ -15,7 +15,13 @@ import type { AssignmentPlan, DroppedMember, PoolMember, StreamAssignment } from
 import type { DriverManifest } from "./manifest.js";
 import type { ViabilityDeps } from "./viability.js";
 
-import { computeAssignments, parseModelPool, poolMemberToString, preflightPool } from "./assign.js";
+import {
+  assignableRuntimes,
+  computeAssignments,
+  parseModelPool,
+  poolMemberToString,
+  preflightPool,
+} from "./assign.js";
 import { AssignError } from "./errors.js";
 import { parseManifest } from "./manifest.js";
 
@@ -109,8 +115,7 @@ async function resolveEffectivePool(
   if (options.deps === undefined) {
     throw new AssignError("preflight requested but no viability deps were provided");
   }
-  const defaultRuntime = manifest.default_runtime ?? "local";
-  return preflightPool(pool, defaultRuntime, options.deps);
+  return preflightPool(pool, assignableRuntimes(manifest), options.deps);
 }
 
 /**

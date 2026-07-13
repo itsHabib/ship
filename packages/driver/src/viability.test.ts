@@ -114,6 +114,19 @@ describe("checkTargetViability — codex", () => {
   });
 });
 
+describe("checkTargetViability — unknown provider", () => {
+  test("yields a non-viable verdict rather than falling through to codex", async () => {
+    const bogus = {
+      modelId: "m",
+      provider: "mystery",
+      runtime: "local",
+    } as unknown as DispatchTarget;
+    // codex credential present — a fallthrough would wrongly call this viable.
+    const result = await checkTargetViability(bogus, deps({ env: { CODEX_API_KEY: "k" } }));
+    expect(result.viable).toBe(false);
+  });
+});
+
 describe("createViabilityDeps", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -154,6 +167,24 @@ describe("createViabilityDeps", () => {
     );
     const built = createViabilityDeps({ CURSOR_API_KEY: "secret" });
     await expect(built.listCursorModels()).rejects.toThrow(/unreachable/);
+  });
+
+  test("throws on an unexpected catalog shape", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ items: [] }))),
+    );
+    const built = createViabilityDeps({ CURSOR_API_KEY: "secret" });
+    await expect(built.listCursorModels()).rejects.toThrow(/unexpected shape/);
+  });
+
+  test("treats an empty catalog as zero models, not an error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ data: [] }))),
+    );
+    const built = createViabilityDeps({ CURSOR_API_KEY: "secret" });
+    await expect(built.listCursorModels()).resolves.toEqual([]);
   });
 
   test("honours the CURSOR_API_BASE_URL override", async () => {

@@ -59,6 +59,19 @@ const THREE_STREAMS_ONE_BATCH = [
   "      - spec_path: docs/c.md",
 ].join("\n");
 
+// default_runtime cloud, but stream b overrides to local — the mixed-runtime
+// case codex flagged. Both branched so claude cells pass import validation.
+const MIXED_RUNTIME_BRANCHED = [
+  "  - id: 1",
+  "    depends_on: []",
+  "    streams:",
+  "      - spec_path: docs/a.md",
+  "        branch_name: feat-a",
+  "      - spec_path: docs/b.md",
+  "        branch_name: feat-b",
+  "        runtime: local",
+].join("\n");
+
 describe("parseModelPool", () => {
   test("parses a single provider:model member", () => {
     expect(parseModelPool("cursor:grok-4.5")).toEqual([
@@ -388,5 +401,26 @@ describe("assignModelPoolToManifest", () => {
         preflight: true,
       }),
     ).rejects.toThrow(/unreachable/);
+  });
+
+  test("conservatively drops an unprefixed member unviable on any candidate runtime", async () => {
+    // default_runtime cloud (needs ANTHROPIC_API_KEY) vs stream b local (accepts
+    // AUTH_TOKEN); AUTH_TOKEN-only must fail on the cloud candidate, not pass.
+    await expect(
+      assignModelPoolToManifest(manifestText(MIXED_RUNTIME_BRANCHED), "claude:claude-opus-4-8", {
+        deps: stubDeps([], { ANTHROPIC_AUTH_TOKEN: "t" }),
+        preflight: true,
+      }),
+    ).rejects.toThrow(/claude\/cloud needs ANTHROPIC_API_KEY/);
+  });
+
+  test("keeps an unprefixed member viable on every candidate runtime", async () => {
+    const result = await assignModelPoolToManifest(
+      manifestText(MIXED_RUNTIME_BRANCHED),
+      "claude:claude-opus-4-8",
+      { deps: stubDeps([], { ANTHROPIC_API_KEY: "k" }), now: fixedNow, preflight: true },
+    );
+    expect(result.dropped).toEqual([]);
+    expect(result.assignments.map((a) => a.resolvedRuntime)).toEqual(["cloud", "local"]);
   });
 });

@@ -53,15 +53,26 @@ export async function checkTargetViability(
   target: DispatchTarget,
   deps: ViabilityDeps,
 ): Promise<ViabilityResult> {
-  if (target.provider === "cursor") {
-    const ids = await deps.listCursorModels();
-    if (ids.includes(target.modelId)) return VIABLE;
-    return { reason: `cursor model "${target.modelId}" is not in /v1/models`, viable: false };
+  switch (target.provider) {
+    case "cursor":
+      return checkCursorModel(target.modelId, deps);
+    case "claude":
+      return checkClaudeCredential(target.runtime, deps.env);
+    case "codex":
+      return checkCodexCredential(deps.env);
+    default: {
+      // Unreachable while AgentProvider is a closed union; a loud non-viable
+      // verdict beats silently routing a future provider to the codex check.
+      const provider: string = target.provider;
+      return { reason: `unknown provider "${provider}"`, viable: false };
+    }
   }
-  if (target.provider === "claude") {
-    return checkClaudeCredential(target.runtime, deps.env);
-  }
-  return checkCodexCredential(deps.env);
+}
+
+async function checkCursorModel(modelId: string, deps: ViabilityDeps): Promise<ViabilityResult> {
+  const ids = await deps.listCursorModels();
+  if (ids.includes(modelId)) return VIABLE;
+  return { reason: `cursor model "${modelId}" is not in /v1/models`, viable: false };
 }
 
 function checkClaudeCredential(runtime: Runtime, env: ViabilityDeps["env"]): ViabilityResult {
@@ -134,11 +145,16 @@ async function fetchCursorModels(env: Record<string, string | undefined>): Promi
 }
 
 // OpenAI-compatible catalog shape: { data: [{ id }] }. Kept in the adapter so a
-// response-shape drift changes here, never the helper contract (spec §5 R1).
+// response-shape drift changes here, never the helper contract (spec §5 R1). An
+// unexpected shape throws (hard, legible) rather than returning [] — an empty
+// list would drop every cursor member with a misleading "not in /v1/models".
 function parseModelIds(body: unknown): string[] {
-  if (typeof body !== "object" || body === null) return [];
+  const shapeError = new AssignError(
+    "cursor /v1/models returned an unexpected shape — expected { data: [...] } (use --no-preflight to skip)",
+  );
+  if (typeof body !== "object" || body === null) throw shapeError;
   const data = (body as Record<string, unknown>)["data"];
-  if (!Array.isArray(data)) return [];
+  if (!Array.isArray(data)) throw shapeError;
   return data.filter(isModelEntry).map((entry) => entry.id);
 }
 

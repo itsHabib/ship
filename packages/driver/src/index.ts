@@ -30,6 +30,7 @@ export type { ImportManifestResult } from "./import.js";
 export { renderDriverRun } from "./render.js";
 
 export {
+  assignableRuntimes,
   computeAssignments,
   isLegalCell,
   parseModelPool,
