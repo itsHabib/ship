@@ -289,7 +289,11 @@ export class CloudCursorRunner implements AgentRunner {
       });
       if (sdkRun.status === "running") return undefined;
       const waitResult = await sdkRun.wait();
-      return mapCloudRunResult(waitResult, this.#refreshRunInput(input));
+      const terminal = mapCloudRunResult(waitResult, this.#refreshRunInput(input));
+      // Mirror #finalizeOkWithArtifacts: a harvested orphan must carry its
+      // artifact refs, or listArtifacts stays empty for refresh-recovered runs.
+      const artifacts = await captureCloudArtifacts(agent, input.log);
+      return artifacts !== undefined ? { ...terminal, artifacts } : terminal;
     } catch (err) {
       const notFound = mapAgentNotFoundError(err, { agentId: input.agentId, runId: input.runId });
       if (notFound !== undefined) {

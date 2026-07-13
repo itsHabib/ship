@@ -2224,7 +2224,7 @@ async function refreshOneOrphanedCloudRun(
   if (runner.refreshRun === undefined) {
     ctx.logger.warn(
       { provider: row.provider, workflowRunId: row.workflowRunId },
-      "cloud runner does not support non-streaming refresh — leaving orphan for a streaming resume",
+      "cloud runner does not support non-streaming refresh — leaving orphan for a streaming resume (requires a co-located mcp-server sweep; CLI-only deployments will not self-resolve this row)",
     );
     return;
   }

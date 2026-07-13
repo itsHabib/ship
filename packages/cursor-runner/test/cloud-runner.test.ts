@@ -397,6 +397,36 @@ describe("CloudCursorRunner — refreshRun (non-streaming)", () => {
     expect(disposeAndAgent.disposeSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("terminal run: listArtifacts merged onto the refresh harvest result", async () => {
+    const artifact = {
+      path: "build/out.bin",
+      sizeBytes: 99,
+      updatedAt: "2026-05-29T10:00:00.000Z",
+    };
+    const { run, disposeAndAgent } = buildRefreshMock({
+      result: {
+        durationMs: 7000,
+        id: "run-test-cloud-0001",
+        result: "finished cloud-side",
+        status: "finished",
+      },
+      status: "finished",
+    });
+    vi.mocked(disposeAndAgent.agent.listArtifacts).mockResolvedValue([artifact]);
+    vi.mocked(Agent.resume).mockResolvedValue(disposeAndAgent.agent);
+    vi.mocked(Agent.getRun).mockResolvedValue(run);
+
+    const runner = new CloudCursorRunner();
+    const result = await runner.refreshRun({
+      agentId: "bc-test-cloud-0001",
+      runId: "run-test-cloud-0001",
+    });
+
+    expect(vi.mocked(disposeAndAgent.agent.listArtifacts)).toHaveBeenCalledTimes(1);
+    expect(result?.artifacts).toEqual([artifact]);
+    expect(disposeAndAgent.disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
   test("still-running run: returns undefined; wait + stream never called; agent disposed", async () => {
     const { run, streamSpy, waitSpy, disposeAndAgent } = buildRefreshMock({ status: "running" });
     vi.mocked(Agent.resume).mockResolvedValue(disposeAndAgent.agent);
