@@ -23,7 +23,7 @@ batches:
         runtime: local
         model: sonnet
         effort: extra
-        touches: [packages/driver/src/service.ts, packages/store/src/driver-runs.ts, packages/cli/src/commands/driver.ts, packages/cli/src/format.ts, packages/cli/test/driver-command.test.ts]
+        touches: [packages/driver/src/service.ts, packages/cli/src/commands/driver.ts, packages/cli/src/format.ts, packages/cli/test/driver-command.test.ts]
         status: pending
   - id: 2
     label: workflow observability contract after CLI/schema surface settles
@@ -37,7 +37,7 @@ batches:
         runtime: local
         model: sonnet
         effort: extra
-        touches: [packages/workflow/src/workflow.ts, packages/store/src/workflow-runs.ts, packages/core/src/service.ts, packages/cli/src/commands/list.ts, packages/cli/src/commands/status.ts, packages/cli/src/format.ts, packages/cli/test/list-command.test.ts, packages/cli/test/status-command.test.ts]
+        touches: [packages/store/src/cursor-runs.ts, packages/store/src/store.ts, packages/core/src/service.ts, packages/mcp/src/mcp.ts, packages/cli/src/commands/list.ts, packages/cli/src/commands/status.ts, packages/cli/src/format.ts, packages/cli/test/list-command.test.ts, packages/cli/test/status-command.test.ts]
         status: pending
 
 conflict_notes:
@@ -71,8 +71,8 @@ The overlap is conservative rather than proven textual collision. Two ordered lo
 
 ## Batches
 
-1. **Driver discovery contract — local, sonnet/extra.** Small service/CLI/store projection with strong mutation-sentinel and cross-process tests.
-2. **Workflow observability contract — local, sonnet/extra.** Runs after batch 1 because it shares the CLI formatter/schema surface; covers local/cloud/rooms fixtures and backward compatibility.
+1. **Driver discovery contract — local, sonnet/extra.** Small service/CLI projection with strong public-schema, mutation-sentinel, and cross-process tests. Extra effort is retained for the Windows/Linux two-process harness and negative no-mutation proof.
+2. **Workflow observability contract — local, sonnet/extra.** Runs after batch 1 because it shares the CLI formatter/schema surface; adds a bounded batched store projection and covers local/cloud/rooms fixtures, no-artifact-I/O proof, redaction, and backward compatibility. Extra effort is retained for the cross-runtime owner-model work and compatibility matrix.
 
 Both streams are local-runtime candidates: they are single-repo, test-driven TypeScript changes with no browser or external-service dependency. The specs and this manifest must merge to `origin/main` before dispatch so both worktrees inherit their contracts.
 
