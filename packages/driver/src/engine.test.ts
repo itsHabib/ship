@@ -1866,6 +1866,9 @@ batches:
       const run = await baseGetRun(workflowRunId);
       if (run === null) return null;
       eventTick += 1;
+      // No lastEventAt set: this exercises the `lastEventAt ?? updatedAt`
+      // fallback — updated_at keeps advancing, the run looks live, and only
+      // the runaway backstop (not the inactivity window) ends the tick.
       fake.runs.set(workflowRunId, {
         ...run,
         updatedAt: new Date(eventTick).toISOString(),

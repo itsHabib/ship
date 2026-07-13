@@ -190,8 +190,9 @@ describe("startEventPump", () => {
       store,
       workflowRunId: "wf_does_not_exist",
     });
-    // First tick: store.touchWorkflowRunUpdatedAt throws because the row
-    // doesn't exist. The pump must swallow + self-stop, not propagate.
+    // The startup heartbeat's touchWorkflowRunEvent throws (row doesn't
+    // exist) and self-stops the pump before the first timer tick fires.
+    // Either path must swallow + self-stop, not propagate.
     expect(() => {
       vi.advanceTimersByTime(1_000);
     }).not.toThrow();

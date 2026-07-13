@@ -1580,12 +1580,12 @@ function noteWorkflowRunProgress(
   ctx: TickContext,
   liveness: TickLiveness,
   workflowRunId: string,
-  updatedAt: string,
+  progressAt: string,
 ): void {
   const previous = liveness.lastSeenUpdatedAt.get(workflowRunId);
-  liveness.lastSeenUpdatedAt.set(workflowRunId, updatedAt);
+  liveness.lastSeenUpdatedAt.set(workflowRunId, progressAt);
   if (previous === undefined) return;
-  if (previous === updatedAt) return;
+  if (previous === progressAt) return;
   liveness.noteProgress(ctx.monotonicClock());
 }
 
