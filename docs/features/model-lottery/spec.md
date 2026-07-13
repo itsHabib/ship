@@ -171,17 +171,22 @@ local-only provider dies at the prep desk, not at dispatch. Validation **delegat
 `selectRunner` itself** (does the cell resolve, or throw the illegal-combination error) rather
 than a matrix copy baked into `assign` — the matrix is a moving target across the in-flight
 runner features, and delegation keeps it a single source of truth. The check is all-or-nothing:
-collect every invalid cell across the pool, report the complete list, mutate nothing.
+collect every invalid cell across the pool, report the complete list, mutate nothing. A stream
+without a per-stream `runtime` resolves its manifest-effective runtime for this check exactly
+as import/dispatch does: `stream.runtime → default_runtime → "local"`.
 
 ## 5. Preflight — cheap, advisory, shared shape with #201
 
 `assign --preflight` (default on, `--no-preflight` to skip): a **whole-pool filter phase that
-runs strictly before any assignment** — never mid-rotation. Per unique pool member, verify
-reachability: cursor ids against `GET /v1/models` (the proven check from the grok run);
-non-cursor members by credential presence in env — claude:
-`ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY`; codex: `CODEX_API_KEY || OPENAI_API_KEY`
-(mirroring each local runner's own requirement; presence-only, acknowledged weaker than a
-catalog probe). Failed members are dropped
+runs strictly before any assignment** — never mid-rotation. Per unique pool member — uniqueness
+keyed on the full resolved target `(runtime, provider, model_id)`, since viability is
+runtime-sensitive — verify reachability: cursor ids against `GET /v1/models` (the proven check
+from the grok run; runtime-agnostic, shared across members that differ only by runtime);
+non-cursor members by credential presence in env, **matched to the runner the resolved cell
+selects** — local/claude: `ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY`; cloud/claude:
+`ANTHROPIC_API_KEY` (the cloud runner's stricter requirement); codex:
+`CODEX_API_KEY || OPENAI_API_KEY` (presence-only, acknowledged weaker than a catalog probe).
+Failed members are dropped
 with a recorded note and the surviving **effective pool** — the actual input to round-robin —
 is recorded alongside it in the manifest's advisory block. Two-phase keeps assignment a pure
 function of (manifest, effective pool): no mid-walk rebalancing, no flap sensitivity, and a
@@ -212,20 +217,31 @@ open unchanged. (The runway rows predate the column; their `dispatch_model` alre
 truth.)
 
 **Tier map:** `mapTierToDispatch(provider, modelTier, effortTier, modelId?)` — `modelId`
-short-circuits model selection; effort resolves via the capability table. Its shape, so P1
-doesn't improvise: a flat `Record<string /* model_id */, ModelCapability>` in `tier-map.ts`
-where `ModelCapability = { effortValueByTier: Record<"extra" | "max", string>;
+short-circuits model selection; effort resolves via the capability table. The table is
+**provider-scoped, not global** — same catalog id under different providers takes different
+effort params (cursor's claude-family needs the full 5-param variant tuple; the claude runner
+takes a `reasoning` param). v1 ships cursor's table, `CURSOR_CAPABILITY_BY_MODEL_ID:
+Record<string /* model_id */, ModelCapability>` in `tier-map.ts`, where
+`ModelCapability = { effortValueByTier: Record<"extra" | "max", string>;
 ultracode: { value: string; reason: string }; params: (effortValue) => ModelParam[] }` —
 one row for grok-4.5 (medium/high, high+degrade, the `(effort, fast)` tuple) and one for the
 cursor claude-family (xhigh/max, max+degrade, the 5-param tuple, replacing
-`CURSOR_MODELS_WITH_EFFORT` + `CURSOR_EFFORT_VALUE_BY_TIER`). Ids absent from the table
-dispatch with no effort params + `effortDegraded` (§3.4); that degrade reason is a hardcoded
-string in the mapper, deliberately not a table field — the table describes models we know,
-not messages for models we don't.
+`CURSOR_MODELS_WITH_EFFORT` + `CURSOR_EFFORT_VALUE_BY_TIER`). The claude provider's effort
+knob is model-independent (`reasoning`), so it needs no table — a passthrough id there maps
+effort exactly as a tier-selected model does. Ids absent from a provider's table dispatch with
+no effort params + `effortDegraded` (§3.4); that degrade reason is a hardcoded string in the
+mapper, deliberately not a table field — the table describes models we know, not messages for
+models we don't.
 
 **CLI/MCP:** `driver assign` is the only new verb; pool syntax `[runtime/]provider:model`
 (§4.3); refuses manifests already bound to a live driver run (§4.2). `driver status` / list
 views render `model_id` where they render `modelTier` today. No `decide` changes.
+
+**Assignment record:** `assign` writes its preflight outcome into a named top-level advisory
+key, `assignment: { pool, effective_pool, dropped: [{ member, reason }], assigned_at }`, added
+to `driverManifestSchema`'s lenient advisory-passthrough set (P2) so the write-back survives
+the strict parser — without this the recorded effective pool would fail the next
+`importDriverRun` parse.
 
 **Skill:** `/work-driver-prep --model-pool cursor:grok-4.5,cursor:claude-opus-4-8,...` shells
 to `ship driver assign` after manifest generation. One sentence of prose.
@@ -245,7 +261,7 @@ This section is the coordination artifact — #201's review should read it (cros
 | Phase | Goal | Tasks | Gate | Scope |
 | --- | --- | --- | --- | --- |
 | **P1 — passthrough** | any catalog id expressible + attributable | manifest + store `model_id`; tier-map short-circuit + capability table; enum revert; render/status; tests (precedence, degrade, unknown-id dispatch error, attribution end-to-end) | local patch deleted, root checkout clean | ~300–450 wLOC |
-| **P2 — assign + prep flag** | pool spread without hand-stamping | `driver assign` verb (round-robin + write-back); `--preflight` viability helper; `/work-driver-prep --model-pool`; tests (pool>streams, streams>pool, dropped member, idempotence, live-run refusal) | — | ~250–400 wLOC (assumes #201 unlanded and includes the shared viability helper; subtract ~50 if #201 authored it first) |
+| **P2 — assign + prep flag** | pool spread without hand-stamping | `driver assign` verb (round-robin + write-back); `--preflight` viability helper; `/work-driver-prep --model-pool`; tests (pool>streams, streams>pool, dropped member, idempotence, live-run refusal, empty-pool-aborts, cell-validation-all-or-nothing, runtime-prefix-stamp, terminal-run-release) | — | ~250–400 wLOC (assumes #201 unlanded and includes the shared viability helper; subtract ~50 if #201 authored it first) |
 | **P3 — the experiment** | one real mixed-model batch | prep a real 3+ task phase with `--model-pool cursor:grok-4.5,cursor:claude-opus-4-8,cursor:composer-2.5`, drive to merge, per-stream ledger in the manifest | second `/provenance` dataset exists | run, not code |
 
 Closes `driver-model-id-passthrough` (P1) and `work-driver-prep-model-pool` (P2). The runway
