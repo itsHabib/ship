@@ -400,7 +400,7 @@ async function finalizeExit(input: FinalizeExitInput): Promise<DriverTickResult>
 function writeParkReceiptsAtJudgment(
   run: DriverRun,
   ambiguities: DispatchAmbiguity[],
-  ctx: Pick<TickContext, "clock">,
+  ctx: Pick<TickContext, "clock" | "logger">,
 ): void {
   const parkedStreamIds = new Set<string>();
   for (const request of [
@@ -413,7 +413,7 @@ function writeParkReceiptsAtJudgment(
     return;
   }
 
-  const streams = [];
+  const streams: ParkStreamInput[] = [];
   for (const batch of run.batches) {
     for (const stream of batch.streams) {
       if (!parkedStreamIds.has(stream.id)) {
@@ -435,7 +435,18 @@ function writeParkReceiptsAtJudgment(
   // NOT a per-driven-repo file (the driver drives many repos into one global
   // receipts stream). See resolveDefaultReceiptsPath.
   const receiptsPath = resolveDefaultReceiptsPath(process.env, platform(), homedir());
-  persistReceipts(receiptsPath, receipts);
+  // Park receipts are telemetry, not load-bearing state: the run is already
+  // stamped awaiting_judgment and escalations delivered. A write failure (fresh
+  // data-dir, a malformed existing receipts file that fails to parse on read,
+  // full disk) must NOT abort the tick — log and continue.
+  try {
+    persistReceipts(receiptsPath, receipts);
+  } catch (error) {
+    ctx.logger?.warn(
+      { driverRunId: run.id, err: String(error), receiptsPath },
+      "park receipts: persist failed; continuing (telemetry only)",
+    );
+  }
 }
 
 function toParkStreamInput(stream: DriverStream, batchIndex: number): ParkStreamInput {
