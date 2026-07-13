@@ -40,7 +40,8 @@ export function createCliService(opts: CliPathOpts): ServiceFactory {
  * `ShipService` instance as `shipFactory` (mirrors the mcp-server's
  * `createMcpDriverServiceFactory` shape). Orphan resume is not enabled at
  * construction — the driver engine's `run` tick invokes the ship's
- * `resumeOrphanedRuns` on demand, so read verbs never sweep.
+ * non-streaming `refreshOrphanedRuns` on demand, so read verbs never sweep and
+ * a short-lived CLI tick keeps no lingering SDK handles.
  */
 export function createCliDriverService(
   opts: CliPathOpts,

@@ -330,3 +330,43 @@ describe("FakeAgentRunner — attach", () => {
     expect(bytes.toString()).toBe("hello");
   });
 });
+
+describe("FakeAgentRunner — refreshRun", () => {
+  test("terminal script resolves the terminal result and records the call", async () => {
+    const runner = new FakeAgentRunner();
+    runner.enqueueRefresh(baseResult({ summary: "harvested" }));
+
+    const result = await runner.refreshRun!({ agentId: "bc-r", runId: "run-r" });
+
+    expect(result).toMatchObject({ status: "succeeded", summary: "harvested" });
+    expect(runner.refreshCalls).toHaveLength(1);
+    expect(runner.refreshCalls[0]?.input).toMatchObject({ agentId: "bc-r", runId: "run-r" });
+  });
+
+  test("stillRunning script resolves undefined", async () => {
+    const runner = new FakeAgentRunner();
+    runner.enqueueRefresh({ stillRunning: true });
+
+    await expect(runner.refreshRun!({ agentId: "bc-r", runId: "run-r" })).resolves.toBeUndefined();
+  });
+
+  test("notFound script rejects with AgentNotFoundError", async () => {
+    const runner = new FakeAgentRunner();
+    runner.enqueueRefresh({ notFound: true });
+
+    const promise = runner.refreshRun!({ agentId: "bc-missing", runId: "run-missing" });
+    await expect(promise).rejects.toBeInstanceOf(AgentNotFoundError);
+  });
+
+  test("defaultRefreshScript answers when no per-call script is enqueued", async () => {
+    const runner = new FakeAgentRunner({ defaultRefreshScript: { stillRunning: true } });
+    await expect(runner.refreshRun!({ agentId: "bc-r", runId: "run-r" })).resolves.toBeUndefined();
+  });
+
+  test("no script and no default rejects", async () => {
+    const runner = new FakeAgentRunner();
+    await expect(runner.refreshRun!({ agentId: "bc-r", runId: "run-r" })).rejects.toThrow(
+      /no script enqueued/,
+    );
+  });
+});

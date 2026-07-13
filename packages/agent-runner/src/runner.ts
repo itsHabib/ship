@@ -68,6 +68,19 @@ export interface AgentRunAttachInput {
   readonly log?: Logger;
 }
 
+/**
+ * Input for a one-shot, non-streaming terminal-state read of a cloud run
+ * (`refreshRun`). Unlike attach, there is no event stream, no `onEvent`, and
+ * no `signal` — the caller wants a single point-in-time answer, not a live
+ * re-attach. Used by the driver tick, which runs in a short-lived CLI process
+ * that must not hold sockets / pumps / cap timers open past its poll window.
+ */
+export interface AgentRunRefreshInput {
+  readonly agentId: string;
+  readonly runId: string;
+  readonly log?: Logger;
+}
+
 export interface CloudRunSpec {
   readonly repos: readonly [
     {
@@ -175,4 +188,16 @@ export interface AgentRunner {
    * Omitted on local and rooms runners.
    */
   probeRun?(args: AgentRunProbeArgs): Promise<AgentRunProbeResult | undefined>;
+  /**
+   * One-shot, non-streaming read of a cloud run's current terminal state.
+   * Resolves the terminal `AgentRunResult` when the run has finished / errored
+   * / been cancelled, or `undefined` when it is still running (or the read was
+   * transiently unreachable — the caller leaves the row for a later refresh).
+   * Rejects only for a definitively-gone run (`AgentNotFoundError`).
+   *
+   * Distinct from `attach`: no event stream, no heartbeat pump, no
+   * duration-cap timer — nothing that outlives the single read. Omitted on
+   * local and rooms runners (only cloud runs orphan across a process kill).
+   */
+  refreshRun?(input: AgentRunRefreshInput): Promise<AgentRunResult | undefined>;
 }

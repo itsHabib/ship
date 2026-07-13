@@ -87,7 +87,11 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
     markMerged: (driverRunId, streamId, facts) => markMergedFn(store, driverRunId, streamId, facts),
     render: (driverRunId) => renderDriverRun(store, driverRunId),
     run: async (ref, runOpts) => {
-      void ship.resumeOrphanedRuns?.().catch(() => undefined);
+      // Non-streaming orphan refresh: a short-lived CLI tick must not hold the
+      // process open on a streaming re-attach's pump / cap timer / SDK socket.
+      // Awaited (not fire-and-forget) so a harvested terminal orphan is visible
+      // to this tick's poll pass; still-running orphans are left untouched.
+      await ship.refreshOrphanedRuns?.();
       const resolved = resolveRunOpts(runOpts);
       const { driverRunId, warnings } = resolveRunRef(store, ref);
       const tick = await runTick(

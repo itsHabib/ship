@@ -215,6 +215,19 @@ export interface ShipService {
    * eagerly at service construction.
    */
   resumeOrphanedRuns(): Promise<void>;
+  /**
+   * Non-streaming, one-shot refresh of every orphaned cloud cursor run. Reads
+   * each run's current terminal state with a single `refreshRun` (no SDK event
+   * stream, no heartbeat pump, no duration-cap timer) and finalizes only the
+   * ones that have already reached a terminal state. A still-running orphan is
+   * left untouched — not cancelled, not streamed — for a later refresh once it
+   * is terminal. Staleness-guarded exactly like `resumeOrphanedRuns`.
+   *
+   * Built for the short-lived driver CLI tick, which cannot afford the
+   * streaming re-attach's lingering handles past `--max-wait 0`. The
+   * long-lived mcp-server keeps using `resumeOrphanedRuns` (stream-to-completion).
+   */
+  refreshOrphanedRuns(): Promise<void>;
   /** Returns the persisted cloud artifact manifest (DB only). */
   listArtifacts(workflowRunId: string): Promise<readonly ArtifactRef[]>;
   /** Downloads one cloud artifact to `<runsDir>/<wf>/artifacts/<path>`. */
@@ -551,6 +564,7 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
       await Promise.allSettled([...bgPending, ...resumeBgPending]);
     },
     resumeOrphanedRuns: () => resumeOrphanedRunsTracked(resumeCtx),
+    refreshOrphanedRuns: () => refreshOrphanedRuns(resumeCtx),
     resumeReady: () => initialResume,
     // Promise.resolve().then() defers the sync call into a microtask so any
     // throw from listArtifactsFromStore becomes a rejection, not a sync throw.
@@ -2132,6 +2146,180 @@ async function resumeOrphanedRuns(ctx: ResumeContext): Promise<void> {
     ...eligible.live.filter(({ row }) => staleIds.has(row.workflowRunId)).map(({ row }) => row),
   ];
   await Promise.allSettled(resumable.map((row) => resumeOneOrphanedCloudRun(ctx, row)));
+}
+
+// Non-streaming sibling of `resumeOrphanedRuns`: same candidate selection
+// (staleness guard on live parents, reconcile-only on terminal parents) but
+// each stale-live orphan is refreshed with a single `refreshRun` read instead
+// of a streaming re-attach. Terminal-parent rows still reconcile their cursor
+// row to the workflow's terminal without any SDK call.
+async function refreshOrphanedRuns(ctx: ResumeContext): Promise<void> {
+  if (ctx.config.cloudCursor === undefined && ctx.config.cloudClaude === undefined) return;
+  const rows = ctx.store.listResumableCloudCursorRuns();
+  if (rows.length === 0) return;
+
+  const nowMs = Date.parse(ctx.clock());
+  const eligible = collectOrphanResumeRows(ctx, rows);
+  const staleIds = new Set(
+    selectStaleOrphanResumeCandidates(
+      eligible.live.map(({ row, updatedAt }) => ({ workflowRunId: row.workflowRunId, updatedAt })),
+      nowMs,
+    ).map((candidate) => candidate.workflowRunId),
+  );
+
+  // Terminal-parent reconciliation is a synchronous store fix-up (no SDK call),
+  // so run it in a plain loop rather than through the Promise aggregator.
+  for (const row of eligible.terminalParent) {
+    reconcileTerminalParentOrphan(ctx, row);
+  }
+
+  const refreshable = eligible.live
+    .filter(({ row }) => staleIds.has(row.workflowRunId))
+    .map(({ row }) => row);
+  await Promise.allSettled(refreshable.map((row) => refreshOneOrphanedCloudRun(ctx, row)));
+}
+
+// Reconcile-only path for a cursor row whose parent workflow already reached a
+// terminal state (e.g. a cancel that bumped the workflow + phase rows but left
+// cursor_runs `running`). Mirrors `resumeOneOrphanedCloudRun`'s terminal-parent
+// branch without arming an attach; guarded by `activeRuns` so it never fights a
+// live sibling run.
+function reconcileTerminalParentOrphan(ctx: ResumeContext, row: ResumableCloudCursorRun): void {
+  if (ctx.activeRuns.has(row.workflowRunId)) return;
+  const workflowRun = ctx.store.getRun(row.workflowRunId);
+  if (workflowRun === null) return;
+  if (workflowRun.status === "pending" || workflowRun.status === "running") return;
+  closeOrphanedCursorRowToMatchTerminalWorkflow(ctx, row, workflowRun.status);
+}
+
+// Non-streaming refresh of a single orphaned cloud run. Reads the run's current
+// terminal state via `runner.refreshRun` and finalizes only when terminal; a
+// still-running run is left untouched for a later tick. No `activeRuns` handle,
+// no event pump, no duration cap, no abort/cancel — nothing outlives the read.
+async function refreshOneOrphanedCloudRun(
+  ctx: ResumeContext,
+  row: ResumableCloudCursorRun,
+): Promise<void> {
+  // Another process (or a concurrent streaming resume in the same host) already
+  // owns this run — leave it be.
+  if (ctx.activeRuns.has(row.workflowRunId)) return;
+
+  const workflowRun = ctx.store.getRun(row.workflowRunId);
+  if (workflowRun === null) return;
+  if (workflowRun.status !== "pending" && workflowRun.status !== "running") {
+    closeOrphanedCursorRowToMatchTerminalWorkflow(ctx, row, workflowRun.status);
+    return;
+  }
+
+  const phase = workflowRun.phases.find((p) => p.kind === "implement" && p.cursorRunId === row.id);
+  if (phase === undefined) return;
+
+  const runner = resumeCloudRunner(ctx.config, row.provider);
+  if (runner === undefined) {
+    await finalizeResumeFailure(ctx, row, phase.id, workflowRun.worktree, {
+      message: `no cloud runner wired for provider "${row.provider}" on refresh`,
+    });
+    return;
+  }
+  if (runner.refreshRun === undefined) {
+    ctx.logger.warn(
+      { provider: row.provider, workflowRunId: row.workflowRunId },
+      "cloud runner does not support non-streaming refresh — leaving orphan for a streaming resume",
+    );
+    return;
+  }
+
+  const resumeLog = ctx.logger.child({ phase: phase.id, workflowRunId: row.workflowRunId });
+  await applyRefreshResult({
+    ctx,
+    phaseId: phase.id,
+    result: await readRefreshResult(runner.refreshRun.bind(runner), row, resumeLog),
+    row,
+    worktree: workflowRun.worktree,
+  });
+}
+
+type RefreshOutcome =
+  | { readonly kind: "terminal"; readonly result: AgentRunResult }
+  | { readonly kind: "running" }
+  | { readonly kind: "gone" }
+  | { readonly kind: "error"; readonly err: unknown };
+
+// Bridges `refreshRun`'s resolve/reject into a tagged outcome so the caller
+// stays a flat switch. A definitively-gone agent (`AgentNotFoundError`) is
+// distinct from a transient error: the former terminalizes the row as a
+// resume-failure, the latter leaves it running for a later tick.
+async function readRefreshResult(
+  refreshRun: NonNullable<AgentRunner["refreshRun"]>,
+  row: ResumableCloudCursorRun,
+  log: Logger,
+): Promise<RefreshOutcome> {
+  try {
+    const result = await refreshRun({ agentId: row.agentId, runId: row.runId, log });
+    if (result === undefined) return { kind: "running" };
+    return { kind: "terminal", result };
+  } catch (err) {
+    if (err instanceof AgentNotFoundError) return { kind: "gone" };
+    return { err, kind: "error" };
+  }
+}
+
+interface ApplyRefreshResultArgs {
+  readonly ctx: ResumeContext;
+  readonly phaseId: string;
+  readonly result: RefreshOutcome;
+  readonly row: ResumableCloudCursorRun;
+  readonly worktree: WorktreeRef;
+}
+
+async function applyRefreshResult(args: ApplyRefreshResultArgs): Promise<void> {
+  const { ctx, phaseId, result, row, worktree } = args;
+  if (result.kind === "running") {
+    ctx.logger.debug(
+      { workflowRunId: row.workflowRunId },
+      "orphan refresh: run still in flight — leaving row untouched",
+    );
+    return;
+  }
+  if (result.kind === "gone") {
+    await finalizeResumeFailure(ctx, row, phaseId, worktree, {
+      message: `cloud agent ${row.agentId} no longer reachable on refresh`,
+    });
+    return;
+  }
+  if (result.kind === "error") {
+    const message = result.err instanceof Error ? result.err.message : String(result.err);
+    ctx.logger.error(
+      { err: message, workflowRunId: row.workflowRunId },
+      "orphan refresh read failed — row left running",
+    );
+    return;
+  }
+  await finalizeRefreshedTerminal(ctx, row, phaseId, worktree, result.result);
+}
+
+// Persist a refreshed terminal result. The refresh is a plain state read, so
+// there is no ndjson stream open to close and no cursor-run row was created by
+// this process — `finalizeSuccess` patches the existing row. Wrapped so a
+// concurrent cancel that flipped the workflow row is honored by finalizeSuccess's
+// own cancel guard.
+async function finalizeRefreshedTerminal(
+  ctx: ResumeContext,
+  row: ResumableCloudCursorRun,
+  phaseId: string,
+  worktree: WorktreeRef,
+  result: AgentRunResult,
+): Promise<void> {
+  const paths = resolveRunArtifactPaths(ctx.config.runsDir, row.workflowRunId);
+  await finalizeSuccess({
+    ctx: resumeCtxAsShipContext(ctx, row.workflowRunId, row.provider),
+    cursorRunId: row.id,
+    paths,
+    phaseId,
+    result,
+    worktree,
+    workflowRunId: row.workflowRunId,
+  });
 }
 
 interface OrphanResumeRows {
