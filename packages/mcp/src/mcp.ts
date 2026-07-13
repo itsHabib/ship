@@ -796,3 +796,50 @@ export type DriverLandInput = z.infer<typeof driverLandInputSchema>;
 
 export const driverLandOutputSchema = driverDecideOutputSchema;
 export type DriverLandOutput = z.infer<typeof driverLandOutputSchema>;
+
+export const driverImportInputSchema = z
+  .object({
+    manifestPath: z.string().min(1),
+  })
+  .strict();
+export type DriverImportInput = z.infer<typeof driverImportInputSchema>;
+
+export const driverImportOutputSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict();
+export type DriverImportOutput = z.infer<typeof driverImportOutputSchema>;
+
+export const driverCancelInputSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+  })
+  .strict();
+export type DriverCancelInput = z.infer<typeof driverCancelInputSchema>;
+
+export const driverCancelOutputSchema = driverDecideOutputSchema;
+export type DriverCancelOutput = z.infer<typeof driverCancelOutputSchema>;
+
+export const driverRenderInputSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+  })
+  .strict();
+export type DriverRenderInput = z.infer<typeof driverRenderInputSchema>;
+
+export const driverMarkMergedInputSchema = z
+  .object({
+    driverRunId: driverRunIdSchema,
+    streamId: driverStreamIdSchema,
+    prNumber: z.number().int().positive(),
+    sha: z.string().min(1),
+    mergedAt: z.string().min(1).optional(),
+    cycles: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export type DriverMarkMergedInput = z.infer<typeof driverMarkMergedInputSchema>;
+
+export const driverMarkMergedOutputSchema = driverDecideOutputSchema;
+export type DriverMarkMergedOutput = z.infer<typeof driverMarkMergedOutputSchema>;

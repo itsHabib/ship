@@ -293,4 +293,166 @@ batches:
     const out = parseToolJson(raw) as { status: string };
     expect(out.status).toBe("running");
   }, 15_000);
+
+  test("driver_import returns driverRunId JSON", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const raw = await h.client.callTool({
+      name: "driver_import",
+      arguments: { manifestPath: layout.manifestPath },
+    });
+    const out = parseToolJson(raw) as { driverRunId: string };
+    expect(out.driverRunId).toMatch(/^drv_/);
+  });
+
+  test("driver_import returns manifest warnings", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const manifestText = readFileSync(layout.manifestPath, "utf8");
+    writeFileSync(
+      layout.manifestPath,
+      manifestText.replace("repo: ship", "repo: ship\nbase_branch: main"),
+    );
+    const raw = await h.client.callTool({
+      name: "driver_import",
+      arguments: { manifestPath: layout.manifestPath },
+    });
+    const out = parseToolJson(raw) as { warnings?: string[] };
+    expect(out.warnings?.some((w) => w.includes('unknown field "base_branch"'))).toBe(true);
+  });
+
+  test("driver_import rejects a relative manifestPath", async () => {
+    const raw = await h.client.callTool({
+      name: "driver_import",
+      arguments: { manifestPath: "docs/driver.md" },
+    });
+    const { text } = expectToolError(raw);
+    expect(text).toMatch(/manifestPath must be absolute/);
+  });
+
+  test("driver_import maps a missing manifest file to invalid params", async () => {
+    const raw = await h.client.callTool({
+      name: "driver_import",
+      arguments: { manifestPath: join(h.repoRoot, "does-not-exist.driver.md") },
+    });
+    const { text } = expectToolError(raw);
+    expect(text).toMatch(/cannot read manifest/);
+  });
+
+  test("driver_cancel returns cancelled status", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const imported = h.driver.importManifest(layout.manifestPath);
+    const raw = await h.client.callTool({
+      name: "driver_cancel",
+      arguments: { driverRunId: imported.run.id },
+    });
+    const out = parseToolJson(raw) as { driverRunId: string; status: string };
+    expect(out.driverRunId).toBe(imported.run.id);
+    expect(out.status).toBe("cancelled");
+  });
+
+  test("driver_cancel maps unknown driverRunId to invalid params", async () => {
+    const raw = await h.client.callTool({
+      name: "driver_cancel",
+      arguments: { driverRunId: "drv_01ARZ3NDEKTSV4RRFFQ69G5FAV" },
+    });
+    const { text } = expectToolError(raw);
+    expect(text).toMatch(/not found/i);
+  });
+
+  test("driver_render returns manifest text", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const imported = h.driver.importManifest(layout.manifestPath);
+    const raw = await h.client.callTool({
+      name: "driver_render",
+      arguments: { driverRunId: imported.run.id },
+    });
+    const r = raw as { content?: { type: string; text?: string }[] };
+    const text = r.content?.[0]?.text ?? "";
+    expect(text).toContain("driver_version:");
+    expect(text).toContain("feat-a");
+  });
+
+  test("driver_render maps unknown driverRunId to invalid params", async () => {
+    const raw = await h.client.callTool({
+      name: "driver_render",
+      arguments: { driverRunId: "drv_01ARZ3NDEKTSV4RRFFQ69G5FAV" },
+    });
+    const { text } = expectToolError(raw);
+    expect(text).toMatch(/not found/i);
+  });
+
+  test("driver_mark_merged records merge facts", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const imported = h.driver.importManifest(layout.manifestPath);
+    const tick = await h.driver.run(
+      { driverRunId: imported.run.id },
+      { maxWaitMs: 5_000, pollIntervalMs: 1_000 },
+    );
+    const streamId = tick.streams[0]?.streamId;
+    if (streamId === undefined) throw new Error("expected stream");
+    const landed = await h.driver.run(
+      { driverRunId: imported.run.id },
+      { maxWaitMs: 5_000, pollIntervalMs: 1_000 },
+    );
+    expect(landed.status).toBe("blocked_on_merges");
+    const raw = await h.client.callTool({
+      name: "driver_mark_merged",
+      arguments: {
+        driverRunId: imported.run.id,
+        streamId,
+        prNumber: 42,
+        sha: "abc123def456",
+      },
+    });
+    const out = parseToolJson(raw) as { status: string };
+    expect(out.status).toBe("done");
+  }, 15_000);
+
+  test("driver_mark_merged maps engine errors to invalid params", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    const imported = h.driver.importManifest(layout.manifestPath);
+    const raw = await h.client.callTool({
+      name: "driver_mark_merged",
+      arguments: {
+        driverRunId: imported.run.id,
+        streamId: "ds_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        prNumber: 1,
+        sha: "abc",
+      },
+    });
+    const { text } = expectToolError(raw);
+    expect(text.length).toBeGreaterThan(0);
+  });
+
+  test("L2: import → run tick → status over MCP only", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+      delayMsBetweenEvents: 60_000,
+    });
+    const importRaw = await h.client.callTool({
+      name: "driver_import",
+      arguments: { manifestPath: layout.manifestPath },
+    });
+    const imported = parseToolJson(importRaw) as { driverRunId: string };
+    const runRaw = await h.client.callTool({
+      name: "driver_run",
+      arguments: { driverRunId: imported.driverRunId },
+    });
+    const tick = parseToolJson(runRaw) as { status: string; streams: { status: string }[] };
+    expect(tick.status).toBe("running");
+    expect(tick.streams.some((s) => s.status === "dispatched")).toBe(true);
+    const statusRaw = await h.client.callTool({
+      name: "driver_status",
+      arguments: { driverRunId: imported.driverRunId },
+    });
+    const status = parseToolJson(statusRaw) as { driverRunId: string; status: string };
+    expect(status.driverRunId).toBe(imported.driverRunId);
+    expect(status.status).toBe("running");
+  });
 });
