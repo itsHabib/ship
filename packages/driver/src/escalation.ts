@@ -27,7 +27,6 @@ import {
   buildDispatchAmbiguityRequests,
   buildFailureTriageRequests,
   consecutiveDispatchFailures,
-  hasTrippedDispatchBreaker,
 } from "./judgment.js";
 import { DEFAULT_DISPATCH_FAILURE_THRESHOLD } from "./types.js";
 
@@ -206,13 +205,9 @@ export function writeDispatchFailingEscalations(deps: EscalationDeps, run: Drive
   const createdAt = nowIso(deps);
   const ids: string[] = [];
   for (const stream of allStreams(run)) {
-    if (!hasTrippedDispatchBreaker(stream, threshold)) continue;
-    const payload = buildDispatchFailingPayload(
-      run,
-      stream.id,
-      consecutiveDispatchFailures(stream),
-      createdAt,
-    );
+    const failures = consecutiveDispatchFailures(stream);
+    if (stream.status !== "failed" || failures < threshold) continue;
+    const payload = buildDispatchFailingPayload(run, stream.id, failures, createdAt);
     const id = insertEscalationRow(deps, {
       class: "dispatch-failing",
       driverRunId: run.id,
@@ -323,6 +318,23 @@ export function resolveAllStreamParkedEscalations(
   for (const row of rows) {
     if (row.streamId === undefined) continue;
     resolveStreamParkedEscalation(store, driverRunId, row.streamId, resolution);
+  }
+}
+
+/** Resolve every open dispatch-failing row for a run (e.g. run-level abort). */
+export function resolveAllDispatchFailingEscalations(
+  store: Store,
+  driverRunId: string,
+  resolution: string,
+): void {
+  const rows = store.listEscalations({
+    class: "dispatch-failing",
+    driverRunId,
+    unresolvedOnly: true,
+  });
+  for (const row of rows) {
+    if (row.streamId === undefined) continue;
+    resolveDispatchFailingEscalation(store, driverRunId, row.streamId, resolution);
   }
 }
 

@@ -20,6 +20,7 @@ import type {
 
 import { CancelError, DecideError } from "./errors.js";
 import {
+  resolveAllDispatchFailingEscalations,
   resolveAllRunEscalations,
   resolveAllStreamParkedEscalations,
   resolveDispatchFailingEscalation,
@@ -393,6 +394,7 @@ export function decide(
 
 function applyAbortDecision(store: Store, driverRunId: string, _streamId: string): DriverRun {
   resolveAllStreamParkedEscalations(store, driverRunId, "decide:abort");
+  resolveAllDispatchFailingEscalations(store, driverRunId, "decide:abort");
   return store.updateDriverRunStatus(driverRunId, "failed");
 }
 
@@ -461,6 +463,7 @@ function applySkipDecision(
   }
   store.updateDriverStream(streamId, { errorMessage: reason, status: "skipped" });
   resolveStreamParkedEscalation(store, driverRunId, streamId, "decide:skip");
+  resolveDispatchFailingEscalation(store, driverRunId, streamId, "decide:skip");
   return resumeAfterDecision(store, driverRunId);
 }
 

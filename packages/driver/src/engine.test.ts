@@ -318,6 +318,51 @@ batches:
     store.close();
   });
 
+  test("decide skip on a tripped stream resolves the dispatch-failing row", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const { port } = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf1" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf2" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const runId = driver.importManifest(manifestPath).run.id;
+
+    await failThenRetry(driver, store, runId);
+    await failThenRetry(driver, store, runId);
+    const tripped = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+    const streamId = tripped.awaiting[0]!.streamId;
+
+    driver.decide(runId, streamId, { kind: "skip", reason: "deterministically doomed" });
+    // Both the parked row and the breaker row must close with the decision.
+    expect(store.listEscalations({ driverRunId: runId, unresolvedOnly: true })).toHaveLength(0);
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("skipped");
+    store.close();
+  });
+
+  test("decide abort on a run with a tripped stream resolves the dispatch-failing row", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const { port } = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf1" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf2" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const runId = driver.importManifest(manifestPath).run.id;
+
+    await failThenRetry(driver, store, runId);
+    await failThenRetry(driver, store, runId);
+    const tripped = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+    const streamId = tripped.awaiting[0]!.streamId;
+
+    driver.decide(runId, streamId, { kind: "abort", reason: "abandoning the doc" });
+    expect(store.listEscalations({ driverRunId: runId, unresolvedOnly: true })).toHaveLength(0);
+    expect(store.getDriverRun(runId)?.status).toBe("failed");
+    store.close();
+  });
+
   test("awaiting_judgment writes stream-parked escalation before notify", async () => {
     const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const notifyCalls: string[] = [];
