@@ -1,5 +1,6 @@
 /** Judgment, decide, recovery table, and eligibility tests. */
 
+import type { DriverStream, StreamAttempt } from "@ship/store";
 import type { WorkflowRun } from "@ship/workflow";
 
 import {
@@ -14,10 +15,13 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { CancelError, DecideError } from "./errors.js";
 import {
   cancelRun,
+  consecutiveDispatchFailures,
   decide,
   type DispatchAmbiguity,
+  hasTrippedDispatchBreaker,
   isBatchEligible,
   isBlockedOnMerges,
+  markLatestAttemptResetBoundary,
   markMerged,
   recoverDispatchingStreams,
   rollBatchStatus,
@@ -680,6 +684,77 @@ describe("judgment", () => {
 
     expect(isBatchEligible(run.batches[1]!, run.batches)).toBe(false);
     expect(isBlockedOnMerges(run)).toBe(true);
+  });
+});
+
+describe("dispatch-failure breaker counting", () => {
+  const failed = (): StreamAttempt => ({
+    dispatchedAt: "2026-06-12T00:00:00.000Z",
+    failureCategory: "sdk-throw",
+    terminal: true,
+  });
+  const succeeded = (): StreamAttempt => ({
+    dispatchedAt: "2026-06-12T00:00:00.000Z",
+    terminal: true,
+    workflowRunId: "wf_ok",
+  });
+  const cancelled = (): StreamAttempt => ({
+    dispatchedAt: "2026-06-12T00:00:00.000Z",
+    terminal: true,
+  });
+
+  const streamWith = (attempts: StreamAttempt[], status: DriverStream["status"]): DriverStream =>
+    ({
+      attempts,
+      createdAt: "2026-06-12T00:00:00.000Z",
+      driverBatchId: "db",
+      driverRunId: "dr",
+      id: "ds",
+      runtime: "local",
+      specPath: "a.md",
+      status,
+      streamIndex: 0,
+      touches: [],
+      updatedAt: "2026-06-12T00:00:00.000Z",
+    }) as DriverStream;
+
+  test("counts a trailing run of failed dispatch attempts", () => {
+    expect(consecutiveDispatchFailures(streamWith([failed(), failed(), failed()], "failed"))).toBe(
+      3,
+    );
+  });
+
+  test("a success resets the count", () => {
+    expect(
+      consecutiveDispatchFailures(streamWith([failed(), failed(), succeeded()], "landed")),
+    ).toBe(0);
+  });
+
+  test("a cancellation (terminal, no category) does not count as a failure", () => {
+    expect(consecutiveDispatchFailures(streamWith([failed(), cancelled()], "failed"))).toBe(0);
+  });
+
+  test("counts only the trailing run after an intervening success", () => {
+    const attempts = [failed(), succeeded(), failed(), failed()];
+    expect(consecutiveDispatchFailures(streamWith(attempts, "failed"))).toBe(2);
+  });
+
+  test("a reset boundary stops the backward scan (post-trip retry override)", () => {
+    const boundary = markLatestAttemptResetBoundary([failed(), failed(), failed()]);
+    // A fresh failure after the human retry override: only that one counts.
+    const after = [...boundary, failed()];
+    expect(consecutiveDispatchFailures(streamWith(after, "failed"))).toBe(1);
+  });
+
+  test("hasTrippedDispatchBreaker requires the failed status and the threshold", () => {
+    const three = [failed(), failed(), failed()];
+    expect(hasTrippedDispatchBreaker(streamWith(three, "failed"), 3)).toBe(true);
+    expect(hasTrippedDispatchBreaker(streamWith(three, "dispatched"), 3)).toBe(false);
+    expect(hasTrippedDispatchBreaker(streamWith([failed(), failed()], "failed"), 3)).toBe(false);
+  });
+
+  test("markLatestAttemptResetBoundary is a no-op on empty attempts", () => {
+    expect(markLatestAttemptResetBoundary([])).toEqual([]);
   });
 });
 

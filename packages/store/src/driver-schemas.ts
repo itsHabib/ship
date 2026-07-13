@@ -43,6 +43,10 @@ export const streamAttemptSchema = z
     dispatchedAt: z.string().datetime({ offset: true }),
     docPath: z.string().optional(),
     failureCategory: z.string().optional(),
+    // Marks a human `decide retry` that cleared a tripped dispatch breaker: the
+    // consecutive-failure count restarts strictly after this attempt. Stored on
+    // the existing `attempts` JSON blob — no column, no migration.
+    resetBoundary: z.boolean().optional(),
     terminal: z.boolean(),
     workflowRunId: z.string().optional(),
   })

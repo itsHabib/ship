@@ -47,7 +47,19 @@ export interface NotifyConfig {
 /** Escalation tier and class overrides in driver config. */
 export interface EscalationConfig {
   tiers?: Partial<Record<EscalationClass, EscalationTier>>;
+  /**
+   * Consecutive same-stream dispatch-failure count that trips the breaker (park
+   * + one `dispatch-failing` row). Default {@link DEFAULT_DISPATCH_FAILURE_THRESHOLD}.
+   */
+  dispatchFailureThreshold?: number;
 }
+
+/**
+ * Default consecutive dispatch-failure count that trips the breaker. Mirrors the
+ * review-cycle cap (3): one transient-tolerant retry before parking a stream
+ * that keeps failing to dispatch.
+ */
+export const DEFAULT_DISPATCH_FAILURE_THRESHOLD = 3;
 
 export type EscalationTier = "page" | "queue";
 
@@ -55,6 +67,7 @@ export type EscalationClass =
   | "triage-uncertain"
   | "auth-rejection"
   | "cycle-exhausted"
+  | "dispatch-failing"
   | "product-direction"
   | "sensitive-path"
   | "spend-ceiling"

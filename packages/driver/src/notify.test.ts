@@ -301,6 +301,13 @@ describe("notify hook", () => {
     );
   });
 
+  test("dispatch-failing defaults to queue tier", () => {
+    expect(resolveEscalationTier("dispatch-failing")).toBe("queue");
+    expect(
+      resolveEscalationTier("dispatch-failing", { tiers: { "dispatch-failing": "page" } }),
+    ).toBe("page");
+  });
+
   test("default notify timeout constant", () => {
     expect(DEFAULT_NOTIFY_TIMEOUT_MS).toBe(30_000);
   });
