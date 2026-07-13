@@ -15,7 +15,7 @@ import {
   PreconditionError,
   TickLiveError,
 } from "@ship/driver";
-import { WorkflowRunNotFoundError } from "@ship/store";
+import { DriverRunNotFoundError, WorkflowRunNotFoundError } from "@ship/store";
 import { describe, expect, test } from "vitest";
 
 import { isUserError, mapErrorToMcpError } from "./errors.js";
@@ -30,6 +30,10 @@ describe("isUserError", () => {
 
   test("WorkflowRunNotFoundError (cancel/getRun on unknown id) is a user error", () => {
     expect(isUserError(new WorkflowRunNotFoundError("wf_unknown"))).toBe(true);
+  });
+
+  test("DriverRunNotFoundError (render on unknown id) is a user error", () => {
+    expect(isUserError(new DriverRunNotFoundError("drv_unknown"))).toBe(true);
   });
 
   test("driver engine errors map to user errors", () => {
@@ -70,6 +74,11 @@ describe("mapErrorToMcpError", () => {
 
   test("WorkflowRunNotFoundError maps to InvalidParams", () => {
     const out = mapErrorToMcpError(new WorkflowRunNotFoundError("wf_unknown"));
+    expect(out.code).toBe(ErrorCode.InvalidParams);
+  });
+
+  test("DriverRunNotFoundError maps to InvalidParams", () => {
+    const out = mapErrorToMcpError(new DriverRunNotFoundError("drv_unknown"));
     expect(out.code).toBe(ErrorCode.InvalidParams);
   });
 

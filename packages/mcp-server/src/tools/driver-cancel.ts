@@ -14,7 +14,7 @@ export function registerDriverCancelTool(server: McpServer, factory: DriverServi
   server.registerTool(
     "driver_cancel",
     {
-      description: "Cancel an in-flight driver run; idempotent on terminal runs.",
+      description: "Cancel an in-flight driver run.",
       inputSchema: driverCancelInputSchema.shape,
     },
     async (args) => {
