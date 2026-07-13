@@ -86,6 +86,14 @@ export type { AddressRefusalCode } from "./errors.js";
 
 export { createDriverService } from "./service.js";
 export type { CreateDriverServiceOpts, DriverService } from "./service.js";
+export type {
+  DriverListAttemptView,
+  DriverListBatchView,
+  DriverListEnvelope,
+  DriverListRunView,
+  DriverListStreamView,
+} from "./list-view.js";
+export { buildDriverListEnvelope, DRIVER_LIST_ENVELOPE_VERSION } from "./list-view.js";
 
 export {
   address,

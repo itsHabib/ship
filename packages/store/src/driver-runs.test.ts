@@ -220,6 +220,16 @@ describe("driver runs (via createStore)", () => {
     expect(filtered.map((run) => run.id)).toEqual([runId]);
   });
 
+  test("listDriverRuns does not mutate hydrated rows", () => {
+    const runId = seedRun();
+    const beforeUpdated = store.getDriverRun(runId)?.updatedAt;
+    const beforeStatus = store.getDriverRun(runId)?.status;
+    store.listDriverRuns({});
+    const after = store.getDriverRun(runId);
+    expect(after?.updatedAt).toBe(beforeUpdated);
+    expect(after?.status).toBe(beforeStatus);
+  });
+
   test("hydrated streams preserve manifest order via stream_index", () => {
     const runId = newDriverRunId();
     const batchId = newDriverBatchId();

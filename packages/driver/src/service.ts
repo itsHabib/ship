@@ -24,6 +24,7 @@ import { DecideError, DriverRunNotFoundEngineError } from "./errors.js";
 import { importManifest as importManifestFn } from "./import.js";
 import { cancelRun, decide as decideFn, markMerged as markMergedFn } from "./judgment.js";
 import { land as landFn } from "./land.js";
+import { buildDriverListEnvelope, type DriverListEnvelope } from "./list-view.js";
 import { createNotifyPort, type NotifyExec } from "./notify.js";
 import { renderDriverRun } from "./render.js";
 
@@ -43,6 +44,11 @@ export interface DriverService {
     status?: DriverRunStatus[];
     limit?: number;
   }): DriverRun[];
+  listDriverRunsView(filter?: {
+    repo?: string;
+    status?: DriverRunStatus[];
+    limit?: number;
+  }): DriverListEnvelope;
 }
 
 export interface CreateDriverServiceOpts {
@@ -78,6 +84,7 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
     getDriverRun: (id) => store.getDriverRun(id),
     importManifest: (manifestPath) => importManifestFn(store, manifestPath),
     listDriverRuns: (filter) => store.listDriverRuns(filter ?? {}),
+    listDriverRunsView: (filter) => buildDriverListEnvelope(store.listDriverRuns(filter ?? {})),
     land: async (driverRunId, landOpts) => {
       if (gh === undefined) {
         throw new DecideError("land requires a GitHub port — wire gh in createDriverService");
@@ -162,3 +169,11 @@ function resolveRunRef(store: Store, ref: DriverRunRef): ResolvedRunRef {
 }
 
 export type { ImportManifestResult, ListDriverRunsFilter };
+export type {
+  DriverListAttemptView,
+  DriverListBatchView,
+  DriverListEnvelope,
+  DriverListRunView,
+  DriverListStreamView,
+} from "./list-view.js";
+export { buildDriverListEnvelope, DRIVER_LIST_ENVELOPE_VERSION } from "./list-view.js";
