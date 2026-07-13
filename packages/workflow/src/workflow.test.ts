@@ -363,6 +363,27 @@ describe("workflowPolicySchema", () => {
       workflowPolicySchema.safeParse({ ...DEFAULT_WORKFLOW_POLICY, baseRef: "" }).success,
     ).toBe(false);
   });
+
+  test("accepts a historical policy blob with no inactivityTimeoutMs (migration-free)", () => {
+    // Rows written before this field existed carry only the three original
+    // keys; they must still hydrate. `inactivityTimeoutMs` is optional, so the
+    // consumer applies a default when it is absent.
+    const legacy = { baseRef: "main", maxRunDurationMs: 1, agentTimeoutMs: 1 };
+    const parsed = workflowPolicySchema.safeParse(legacy);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.inactivityTimeoutMs).toBeUndefined();
+  });
+
+  test("rejects zero / fractional inactivityTimeoutMs (positive int when present)", () => {
+    expect(
+      workflowPolicySchema.safeParse({ ...DEFAULT_WORKFLOW_POLICY, inactivityTimeoutMs: 0 })
+        .success,
+    ).toBe(false);
+    expect(
+      workflowPolicySchema.safeParse({ ...DEFAULT_WORKFLOW_POLICY, inactivityTimeoutMs: 1.5 })
+        .success,
+    ).toBe(false);
+  });
 });
 
 describe("phaseSchema", () => {
@@ -428,9 +449,18 @@ describe("DEFAULT_WORKFLOW_POLICY", () => {
   test("matches the spec default", () => {
     expect(DEFAULT_WORKFLOW_POLICY).toEqual({
       baseRef: "main",
-      maxRunDurationMs: 30 * 60 * 1000,
+      inactivityTimeoutMs: 30 * 60 * 1000,
+      maxRunDurationMs: 90 * 60 * 1000,
       agentTimeoutMs: 30 * 60 * 1000,
     });
+  });
+
+  test("inactivity cap is the primary signal; maxRunDurationMs is a strictly larger backstop", () => {
+    // The whole point of the liveness rework: the wall-clock backstop is a
+    // generous ceiling above the inactivity window, not the primary cap.
+    const { inactivityTimeoutMs, maxRunDurationMs } = DEFAULT_WORKFLOW_POLICY;
+    expect(inactivityTimeoutMs).toBeDefined();
+    expect(maxRunDurationMs).toBeGreaterThan(inactivityTimeoutMs ?? 0);
   });
 
   test("validates against workflowPolicySchema", () => {

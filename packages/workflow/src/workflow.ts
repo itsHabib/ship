@@ -199,16 +199,30 @@ export type TerminalCursorRunRef = z.infer<typeof terminalCursorRunRefSchema>;
  * Per-run policy knobs.
  *
  * Fields:
- * - `baseRef`           — git ref the worktree branches from.
- * - `maxRunDurationMs`  — Ship-level cap; when a run outlives it, Ship
- *                         finalizes the workflow `failed` with
- *                         `failureCategory: "timeout-near-cap"` and fires a
- *                         best-effort (not guaranteed) cancel at the SDK run.
- * - `agentTimeoutMs`    — SDK-level timeout passed through to `@cursor/sdk`.
+ * - `baseRef`             — git ref the worktree branches from.
+ * - `inactivityTimeoutMs` — primary liveness cap: how long a run may go with
+ *                           *no agent events* before Ship cancels it as a
+ *                           stall (`failureCategory:
+ *                           "agent-collapse-on-running-tool"`). An
+ *                           actively-emitting agent resets this on every
+ *                           event, so wall-clock alone never cancels a healthy
+ *                           run. Optional so historical `policy_json` blobs
+ *                           (written before this field existed) still hydrate;
+ *                           `runWithDurationCap` falls back to a default when
+ *                           it is absent.
+ * - `maxRunDurationMs`    — absolute wall-clock backstop measured on a
+ *                           monotonic clock (suspend gaps don't count). Bounds
+ *                           a runaway-but-chatty agent that would otherwise
+ *                           keep resetting the inactivity watchdog forever;
+ *                           expiry here finalizes `failed` with
+ *                           `failureCategory: "timeout-near-cap"` and fires a
+ *                           best-effort (not guaranteed) cancel at the SDK run.
+ * - `agentTimeoutMs`      — SDK-level timeout passed through to `@cursor/sdk`.
  */
 export const workflowPolicySchema = z
   .object({
     baseRef: z.string().min(1),
+    inactivityTimeoutMs: z.number().int().positive().optional(),
     maxRunDurationMs: z.number().int().positive(),
     agentTimeoutMs: z.number().int().positive(),
   })
@@ -286,12 +300,19 @@ export type WorkflowRun = z.infer<typeof workflowRunSchema>;
 
 /**
  * Fallback policy used by `core` when neither config nor a per-call override
- * supplies one. 30 min is the spike-validated upper bound for a feature-sized
- * task doc.
+ * supplies one.
+ *
+ * `inactivityTimeoutMs` (30 min) is the primary cap: 30 min of *zero* agent
+ * events is a strong stall signal, while a healthy agent emits far more often
+ * and never trips it regardless of total wall-clock. `maxRunDurationMs` is the
+ * absolute backstop at 3× that (90 min) — it only bites a chatty-but-runaway
+ * agent that keeps resetting the inactivity watchdog. `agentTimeoutMs` stays
+ * at the historical 30 min spike-validated bound passed through to the SDK.
  */
 export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
   baseRef: "main",
-  maxRunDurationMs: 30 * 60 * 1000,
+  inactivityTimeoutMs: 30 * 60 * 1000,
+  maxRunDurationMs: 90 * 60 * 1000,
   agentTimeoutMs: 30 * 60 * 1000,
 };
 
