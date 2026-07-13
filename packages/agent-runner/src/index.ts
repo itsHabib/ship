@@ -64,6 +64,7 @@ export {
   causeSummaryFromThrown,
   foldSdkCauseIntoDetail,
   formatSdkCauseSuffix,
+  MAX_FOLDED_DETAIL_CHARS,
   MAX_SDK_CAUSE_DETAIL_CHARS,
 } from "./sdk-cause.js";
 export type { SdkCauseSummary } from "./sdk-cause.js";

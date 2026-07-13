@@ -49,11 +49,10 @@ function redactText(text: string, githubMcpUrl: string | undefined): string {
 
 function asFiniteStatus(val: unknown): number | undefined {
   if (typeof val === "number" && Number.isFinite(val)) return val;
-  if (typeof val === "string" && val.trim() !== "") {
-    const n = Number(val);
-    if (Number.isFinite(n)) return n;
-  }
-  return undefined;
+  if (typeof val !== "string" || val.trim() === "") return undefined;
+  const n = Number(val);
+  if (!Number.isFinite(n)) return undefined;
+  return n;
 }
 
 function asNonEmptyString(
@@ -81,11 +80,7 @@ function extractFromObject(
     githubMcpUrl,
     maxChars,
   );
-  const endpoint = asNonEmptyString(
-    firstOwn(obj, ["endpoint", "url"]),
-    githubMcpUrl,
-    maxChars,
-  );
+  const endpoint = asNonEmptyString(firstOwn(obj, ["endpoint", "url"]), githubMcpUrl, maxChars);
   // `message` is non-enumerable on Error but still an own property.
   const message = asNonEmptyString(readOwn(obj, "message"), githubMcpUrl, maxChars);
 
@@ -127,6 +122,31 @@ function isEmptySummary(summary: SdkCauseSummary): boolean {
   );
 }
 
+function extractPrimitiveCause(
+  err: unknown,
+  githubMcpUrl: string | undefined,
+  maxChars: number,
+): SdkCauseSummary | undefined {
+  if (typeof err !== "string" || err.trim() === "") return undefined;
+  const message = asNonEmptyString(err, githubMcpUrl, maxChars);
+  if (message === undefined) return undefined;
+  return { message };
+}
+
+function extractFromCauseChain(
+  err: object,
+  githubMcpUrl: string | undefined,
+  maxChars: number,
+  outer: SdkCauseSummary,
+): SdkCauseSummary | undefined {
+  const nested = readOwn(err, "cause");
+  if (nested === null || typeof nested !== "object") return undefined;
+  const nestedSummary = extractFromObject(nested, githubMcpUrl, maxChars);
+  if (hasDiscriminators(nestedSummary)) return nestedSummary;
+  if (!isEmptySummary(nestedSummary) && isEmptySummary(outer)) return nestedSummary;
+  return undefined;
+}
+
 /**
  * Pull a small fixed set of discriminating fields off a caught SDK error.
  * Returns `undefined` when nothing useful is present (no fabricated fields).
@@ -135,32 +155,19 @@ export function extractSdkCause(
   err: unknown,
   options: ExtractSdkCauseOptions = {},
 ): SdkCauseSummary | undefined {
+  const maxChars = options.maxChars ?? MAX_SDK_CAUSE_DETAIL_CHARS;
+  const githubMcpUrl = options.githubMcpUrl;
   if (err === null || typeof err !== "object") {
-    if (typeof err === "string" && err.trim() !== "") {
-      const message = asNonEmptyString(
-        err,
-        options.githubMcpUrl,
-        options.maxChars ?? MAX_SDK_CAUSE_DETAIL_CHARS,
-      );
-      if (message === undefined) return undefined;
-      return { message };
-    }
-    return undefined;
+    return extractPrimitiveCause(err, githubMcpUrl, maxChars);
   }
 
-  const maxChars = options.maxChars ?? MAX_SDK_CAUSE_DETAIL_CHARS;
-  const summary = extractFromObject(err, options.githubMcpUrl, maxChars);
+  const summary = extractFromObject(err, githubMcpUrl, maxChars);
   if (hasDiscriminators(summary)) return summary;
 
   // One-level cause walk — wrappers often carry only a message while the
   // discriminating fields live on `.cause` (still an own-property read).
-  const nested = readOwn(err, "cause");
-  if (nested !== null && typeof nested === "object") {
-    const nestedSummary = extractFromObject(nested, options.githubMcpUrl, maxChars);
-    if (hasDiscriminators(nestedSummary)) return nestedSummary;
-    if (!isEmptySummary(nestedSummary) && isEmptySummary(summary)) return nestedSummary;
-  }
-
+  const fromCause = extractFromCauseChain(err, githubMcpUrl, maxChars, summary);
+  if (fromCause !== undefined) return fromCause;
   if (isEmptySummary(summary)) return undefined;
   return summary;
 }
