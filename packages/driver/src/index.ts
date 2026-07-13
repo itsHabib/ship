@@ -29,6 +29,11 @@ export type { ImportManifestResult } from "./import.js";
 
 export { renderDriverRun } from "./render.js";
 
+export { computeAssignments, isLegalCell, parseModelPool, poolMemberToString } from "./assign.js";
+export type { AssignmentPlan, PoolMember, StreamAssignment } from "./assign.js";
+export { applyAssignmentToManifest, assignModelPoolToManifest } from "./assign-writeback.js";
+export type { AssignResult } from "./assign-writeback.js";
+
 export { mapTierToDispatch } from "./tier-map.js";
 
 export {
@@ -76,6 +81,7 @@ export {
 
 export {
   AddressError,
+  AssignError,
   CancelError,
   DecideError,
   DriverRunNotFoundEngineError,
