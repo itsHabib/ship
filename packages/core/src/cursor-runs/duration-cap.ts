@@ -329,10 +329,13 @@ class LocalCap {
       { inactivityMs: this.c.inactivityMs, silenceMs, startResolved: this.handle !== undefined },
       "policy.inactivityTimeoutMs exceeded (no agent events); cancelling run as a stall",
     );
+    // Stamp the actual run duration at fire time, not the backstop window —
+    // this value lands in result.json / cursor_runs.durationMs diagnostics.
     this.settleExpired(
-      capExceededResult(this.c.elapsedMs + this.c.windowMs, undefined, {
+      capExceededResult(this.c.elapsedMs + (nowMono - this.c.startedMono), undefined, {
         failureCategory: INACTIVITY_STALL_CATEGORY,
       }),
+      this.c.inactivityMs,
     );
   }
 
@@ -384,12 +387,13 @@ class LocalCap {
 
   // Shared settle for both timers. A fire before the handle exists rejects
   // (the start call hung); after it, resolve the synthetic terminal and cancel
-  // the live run best-effort. Idempotent via `settled`.
-  private settleExpired(result: AgentRunResult): void {
+  // the live run best-effort. Idempotent via `settled`. `triggerMs` names the
+  // window that actually fired (inactivity vs backstop) for the error message.
+  private settleExpired(result: AgentRunResult, triggerMs?: number): void {
     if (this.settled) return;
     this.settled = true;
     if (this.handle === undefined) {
-      this.rejectExpiry(new CursorRunStartTimedOutError(this.c.windowMs));
+      this.rejectExpiry(new CursorRunStartTimedOutError(triggerMs ?? this.c.windowMs));
       return;
     }
     this.resolveExpiry(result);
