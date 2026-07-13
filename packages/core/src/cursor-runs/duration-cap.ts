@@ -26,6 +26,7 @@ import type {
   AgentRunResult,
 } from "@ship/agent-runner";
 import type { Logger } from "@ship/logger";
+import type { FailureCategory } from "@ship/workflow";
 
 import { CursorRunStartTimedOutError } from "../errors.js";
 
@@ -76,6 +77,15 @@ export const DISCONTINUITY_THRESHOLD_MS = 60_000;
 /** Attach retry cadence for broken-seed probe schedule (midpoint of 30–60s). */
 export const ATTACH_PROBE_RETRY_MS = 45_000;
 
+/**
+ * Fallback inactivity window when `policy.inactivityTimeoutMs` is absent
+ * (a historical `policy_json` blob written before the field existed). Matches
+ * `DEFAULT_WORKFLOW_POLICY.inactivityTimeoutMs`: 30 min of *zero* agent events
+ * is a strong stall signal, while a healthy agent emits far more often and
+ * never trips it regardless of total wall-clock.
+ */
+export const DEFAULT_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
+
 export type DurationCapKind = "fresh" | "attach";
 
 export interface DurationCapSignals {
@@ -99,8 +109,20 @@ export interface DurationCapRunArgs {
    * outlives the already-finalized run.
    */
   readonly onHandle: (handle: AgentRunHandle) => void;
-  /** `policy.maxRunDurationMs` for this run. */
+  /**
+   * `policy.maxRunDurationMs` for this run — the absolute wall-clock backstop
+   * (measured monotonically). The primary liveness cap is
+   * `inactivityTimeoutMs`; this only bounds a chatty-but-runaway agent.
+   */
   readonly maxRunDurationMs: number;
+  /**
+   * `policy.inactivityTimeoutMs` — the primary liveness cap for local runs:
+   * how long the run may go with *no agent events* before it is cancelled as a
+   * stall. Reset on every `onProviderStreamEvent`. Absent → the local path
+   * falls back to `DEFAULT_INACTIVITY_TIMEOUT_MS`. Ignored on the remote path,
+   * which drives liveness off server-anchored probes / stream age instead.
+   */
+  readonly inactivityTimeoutMs?: number;
   /**
    * Wall time the run consumed before this await began. Zero for fresh
    * dispatches; positive on resume, so a restart doesn't re-grant the
@@ -154,77 +176,34 @@ function hasRemoteSignals(args: DurationCapRunArgs): boolean {
   return args.signals?.probeRun !== undefined || args.signals?.getLiveness !== undefined;
 }
 
+// The stall verdict a fired inactivity watchdog carries. Reusing the
+// running-tool collapse category (rather than minting a new literal) keeps the
+// classifier's tombstone set stable while still reflecting a stall: a run that
+// goes silent has almost always wedged on a never-completing tool_call, the
+// exact failure `agent-collapse-on-running-tool` names (cross-ref
+// `classify-failure.ts` `lastRunningToolCall`).
+const INACTIVITY_STALL_CATEGORY: FailureCategory = "agent-collapse-on-running-tool";
+
 async function runLocalDurationCap(args: DurationCapRunArgs): Promise<AgentRunResult> {
   const elapsedMs = args.elapsedMs ?? 0;
   const windowMs = capWindowMs(args.maxRunDurationMs, elapsedMs);
+  const inactivityMs = args.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
   const monotonicNow = args.monotonicClock ?? defaultMonotonicClock;
   const startedMono = monotonicNow();
-  let handle: AgentRunHandle | undefined;
-  let expired = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let rearms = 0;
-  let armedAtMono = 0;
-  let armedDelayMs = 0;
+  const cap = new LocalCap({ args, elapsedMs, inactivityMs, monotonicNow, startedMono, windowMs });
+  args.onCapReady?.(cap.hooks);
 
   try {
-    const capExpiry = new Promise<AgentRunResult>((resolve, reject) => {
-      const onCapTimer = (): void => {
-        const nowMono = monotonicNow();
-        const realElapsed = nowMono - startedMono;
-        const windowRemainingMs = windowMs - realElapsed;
-
-        if (windowRemainingMs > 0 && nowMono - armedAtMono >= armedDelayMs) {
-          armedAtMono = nowMono;
-          armedDelayMs = Math.min(windowRemainingMs, MAX_TIMER_DELAY_MS);
-          timer = setTimeout(onCapTimer, armedDelayMs);
-          return;
-        }
-
-        if (windowRemainingMs > 0 && rearms < MAX_CAP_REARMS) {
-          rearms += 1;
-          armedAtMono = nowMono;
-          armedDelayMs = Math.min(windowRemainingMs, MAX_TIMER_DELAY_MS);
-          args.log?.warn(
-            { realElapsed, rearms, windowMs, windowRemainingMs },
-            "cap timer fired before real elapsed reached the window (host suspend / clock jump); re-arming",
-          );
-          timer = setTimeout(onCapTimer, armedDelayMs);
-          return;
-        }
-
-        expired = true;
-        args.log?.warn(
-          {
-            elapsedMs,
-            maxRunDurationMs: args.maxRunDurationMs,
-            realElapsed,
-            rearms,
-            startResolved: handle !== undefined,
-            windowMs,
-          },
-          "policy.maxRunDurationMs exceeded; cancelling run",
-        );
-        if (handle === undefined) {
-          reject(new CursorRunStartTimedOutError(windowMs));
-          return;
-        }
-        resolve(capExceededResult(elapsedMs + windowMs));
-        cancelBestEffort(handle);
-      };
-      armedAtMono = monotonicNow();
-      armedDelayMs = Math.min(windowMs, MAX_TIMER_DELAY_MS);
-      timer = setTimeout(onCapTimer, armedDelayMs);
-    });
-    void capExpiry.catch(() => {
+    void cap.expiry.catch(() => {
       /* swallow late loser rejection */
     });
 
     const terminal = args.start().then((h) => {
-      if (expired) {
+      if (cap.settled) {
         cancelBestEffort(h);
         return capExceededResult(elapsedMs + windowMs);
       }
-      handle = h;
+      cap.attachHandle(h);
       args.onHandle(h);
       return h.result;
     });
@@ -232,9 +211,184 @@ async function runLocalDurationCap(args: DurationCapRunArgs): Promise<AgentRunRe
       /* swallow late loser rejection */
     });
 
-    return await Promise.race([terminal, capExpiry]);
+    return await Promise.race([terminal, cap.expiry]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    cap.dispose();
+  }
+}
+
+interface LocalCapArgs {
+  readonly args: DurationCapRunArgs;
+  readonly elapsedMs: number;
+  readonly inactivityMs: number;
+  readonly monotonicNow: () => number;
+  readonly startedMono: number;
+  readonly windowMs: number;
+}
+
+/**
+ * Local-run cap: an inactivity watchdog (primary) plus a wall-clock backstop,
+ * both measured on the injected monotonic clock so a host suspend / clock jump
+ * re-arms rather than false-cancelling.
+ *
+ * - Watchdog: reset on every `onProviderStreamEvent`; fires after
+ *   `inactivityMs` of real (monotonic) silence and settles a stall verdict.
+ * - Backstop: fires after `windowMs` of real elapsed and settles a
+ *   `timeout-near-cap` verdict — the runaway-but-chatty ceiling.
+ *
+ * A fire before the handle exists rejects `CursorRunStartTimedOutError`
+ * instead (the SDK start call is what hung); after it, the handle is cancelled
+ * best-effort and a synthetic `failed` terminal resolves.
+ */
+class LocalCap {
+  readonly expiry: Promise<AgentRunResult>;
+  readonly hooks: DurationCapHandle;
+  settled = false;
+
+  private readonly c: LocalCapArgs;
+  private handle: AgentRunHandle | undefined;
+  private resolveExpiry!: (result: AgentRunResult) => void;
+  private rejectExpiry!: (err: unknown) => void;
+
+  // Backstop timer state — mirrors the standalone re-validation loop.
+  private backstopTimer: ReturnType<typeof setTimeout> | undefined;
+  private backstopArmedAtMono: number;
+  private backstopArmedDelayMs: number;
+  private backstopRearms = 0;
+
+  // Watchdog timer state — armed off the last-event monotonic stamp.
+  private watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastEventMono: number;
+  private watchdogRearms = 0;
+
+  constructor(c: LocalCapArgs) {
+    this.c = c;
+    this.backstopArmedAtMono = c.startedMono;
+    this.backstopArmedDelayMs = Math.min(c.windowMs, MAX_TIMER_DELAY_MS);
+    this.lastEventMono = c.startedMono;
+    this.expiry = new Promise<AgentRunResult>((resolve, reject) => {
+      this.resolveExpiry = resolve;
+      this.rejectExpiry = reject;
+    });
+    this.hooks = {
+      onDiscontinuitySample: () => undefined,
+      onProviderStreamEvent: () => {
+        this.noteActivity();
+      },
+    };
+    this.backstopTimer = setTimeout(() => {
+      this.onBackstopFire();
+    }, this.backstopArmedDelayMs);
+    this.armWatchdog(c.inactivityMs);
+  }
+
+  attachHandle(handle: AgentRunHandle): void {
+    this.handle = handle;
+  }
+
+  dispose(): void {
+    this.settled = true;
+    if (this.backstopTimer !== undefined) clearTimeout(this.backstopTimer);
+    if (this.watchdogTimer !== undefined) clearTimeout(this.watchdogTimer);
+  }
+
+  // Every agent event resets the watchdog: an actively-emitting run never
+  // trips the inactivity cap regardless of total wall-clock.
+  private noteActivity(): void {
+    if (this.settled) return;
+    this.lastEventMono = this.c.monotonicNow();
+    this.watchdogRearms = 0;
+    this.armWatchdog(this.c.inactivityMs);
+  }
+
+  private armWatchdog(delayMs: number): void {
+    if (this.watchdogTimer !== undefined) clearTimeout(this.watchdogTimer);
+    this.watchdogTimer = setTimeout(() => {
+      this.onWatchdogFire();
+    }, Math.min(delayMs, MAX_TIMER_DELAY_MS));
+  }
+
+  // Inactivity watchdog fire. Re-validate against real (monotonic) silence:
+  // a timer that fired early (suspend / clock jump woke it before the window
+  // truly elapsed) re-arms for the remainder rather than cancelling a run
+  // whose events simply haven't resumed yet.
+  private onWatchdogFire(): void {
+    if (this.settled) return;
+    const nowMono = this.c.monotonicNow();
+    const silenceMs = nowMono - this.lastEventMono;
+    const remainingMs = this.c.inactivityMs - silenceMs;
+    if (remainingMs > 0 && this.watchdogRearms < MAX_CAP_REARMS) {
+      this.watchdogRearms += 1;
+      this.armWatchdog(remainingMs);
+      return;
+    }
+    this.c.args.log?.warn(
+      { inactivityMs: this.c.inactivityMs, silenceMs, startResolved: this.handle !== undefined },
+      "policy.inactivityTimeoutMs exceeded (no agent events); cancelling run as a stall",
+    );
+    this.settleExpired(capExceededResult(this.c.elapsedMs + this.c.windowMs, undefined, {
+      failureCategory: INACTIVITY_STALL_CATEGORY,
+    }));
+  }
+
+  // Wall-clock backstop fire. Preserves the monotonic re-validation loop: a
+  // served fire that hasn't reached the window re-arms silently (a clamped
+  // segment of a huge cap), a genuine misfire re-arms and spends the rearm
+  // budget, and only a real window-reach (or an exhausted budget) expires.
+  private onBackstopFire(): void {
+    if (this.settled) return;
+    const nowMono = this.c.monotonicNow();
+    const realElapsed = nowMono - this.c.startedMono;
+    const windowRemainingMs = this.c.windowMs - realElapsed;
+
+    if (windowRemainingMs > 0 && nowMono - this.backstopArmedAtMono >= this.backstopArmedDelayMs) {
+      this.rearmBackstop(nowMono, windowRemainingMs);
+      return;
+    }
+    if (windowRemainingMs > 0 && this.backstopRearms < MAX_CAP_REARMS) {
+      this.backstopRearms += 1;
+      this.rearmBackstop(nowMono, windowRemainingMs);
+      this.c.args.log?.warn(
+        { realElapsed, rearms: this.backstopRearms, windowRemainingMs, windowMs: this.c.windowMs },
+        "cap timer fired before real elapsed reached the window (host suspend / clock jump); re-arming",
+      );
+      return;
+    }
+
+    this.c.args.log?.warn(
+      {
+        elapsedMs: this.c.elapsedMs,
+        maxRunDurationMs: this.c.args.maxRunDurationMs,
+        realElapsed,
+        rearms: this.backstopRearms,
+        startResolved: this.handle !== undefined,
+        windowMs: this.c.windowMs,
+      },
+      "policy.maxRunDurationMs exceeded; cancelling run",
+    );
+    this.settleExpired(capExceededResult(this.c.elapsedMs + this.c.windowMs));
+  }
+
+  private rearmBackstop(nowMono: number, windowRemainingMs: number): void {
+    this.backstopArmedAtMono = nowMono;
+    this.backstopArmedDelayMs = Math.min(windowRemainingMs, MAX_TIMER_DELAY_MS);
+    this.backstopTimer = setTimeout(() => {
+      this.onBackstopFire();
+    }, this.backstopArmedDelayMs);
+  }
+
+  // Shared settle for both timers. A fire before the handle exists rejects
+  // (the start call hung); after it, resolve the synthetic terminal and cancel
+  // the live run best-effort. Idempotent via `settled`.
+  private settleExpired(result: AgentRunResult): void {
+    if (this.settled) return;
+    this.settled = true;
+    if (this.handle === undefined) {
+      this.rejectExpiry(new CursorRunStartTimedOutError(this.c.windowMs));
+      return;
+    }
+    this.resolveExpiry(result);
+    cancelBestEffort(this.handle);
   }
 }
 
@@ -709,13 +863,40 @@ function cancelBestEffort(handle: AgentRunHandle): void {
   });
 }
 
-function capExceededResult(durationMs: number, floorCapMs?: number): AgentRunResult {
+interface CapExceededOverrides {
+  /**
+   * Pre-set classification for a stall (inactivity-watchdog) expiry. When
+   * present, `finalizeSuccess` honors it verbatim instead of running the
+   * duration-based classifier — a silent run has no `durationMs >= cap`
+   * signal for the classifier to land `timeout-near-cap` on, so the category
+   * must be stamped here. Omitted for a backstop expiry, whose
+   * `durationMs >= cap` classifies `timeout-near-cap` on its own.
+   */
+  readonly failureCategory?: FailureCategory;
+}
+
+function capExceededResult(
+  durationMs: number,
+  floorCapMs?: number,
+  overrides?: CapExceededOverrides,
+): AgentRunResult {
   const reported = floorCapMs !== undefined ? Math.max(durationMs, floorCapMs) : durationMs;
+  const category = overrides?.failureCategory;
+  if (category === undefined) {
+    return {
+      branches: [],
+      durationMs: reported,
+      errorMessage:
+        "run exceeded policy.maxRunDurationMs; ship requested an SDK-run cancel (best-effort)",
+      status: "failed",
+    };
+  }
   return {
     branches: [],
     durationMs: reported,
     errorMessage:
-      "run exceeded policy.maxRunDurationMs; ship requested an SDK-run cancel (best-effort)",
+      "run exceeded policy.inactivityTimeoutMs (no agent events); ship requested an SDK-run cancel (best-effort)",
+    failureCategory: category,
     status: "failed",
   };
 }

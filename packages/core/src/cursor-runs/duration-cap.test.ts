@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { CursorRunStartTimedOutError } from "../errors.js";
 import {
+  DEFAULT_INACTIVITY_TIMEOUT_MS,
   type DurationCapHandle,
   type DurationCapRunArgs,
   MAX_CAP_REARMS,
@@ -20,13 +21,26 @@ import {
 
 const CAP_MS = 30 * 60 * 1000;
 
+// A backstop that dwarfs the inactivity window, so the local-path tests below
+// that assert the WALL-CLOCK backstop (`timeout-near-cap`) aren't pre-empted
+// by the inactivity watchdog. Watchdog-specific tests set their own small
+// `inactivityTimeoutMs` explicitly.
+const NO_INACTIVITY_CAP_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+
 // vitest fake timers advance `Date` but not `performance.now`, so tests drive
 // the cap's monotonic clock off `Date.now()` — it moves in step with
 // `advanceTimersByTimeAsync`, exactly as the production monotonic clock would
 // on a machine whose clock isn't jumping. Individual tests override
 // `monotonicClock` to simulate a suspend / jump (timer fires, monotonic doesn't).
+//
+// `inactivityTimeoutMs` defaults to a decade here so the pre-existing backstop
+// suite keeps measuring the wall-clock cap; the watchdog cases pass their own.
 function runCap(args: DurationCapRunArgs): Promise<AgentRunResult> {
-  return runWithDurationCap({ monotonicClock: () => Date.now(), ...args });
+  return runWithDurationCap({
+    inactivityTimeoutMs: NO_INACTIVITY_CAP_MS,
+    monotonicClock: () => Date.now(),
+    ...args,
+  });
 }
 
 const succeededResult: AgentRunResult = {
@@ -291,13 +305,14 @@ describe("runWithDurationCap", () => {
       start: () => Promise.resolve(handle),
     });
     // A naive (unclamped) delay would have been coerced to 1ms by Node and
-    // fired here — assert it did NOT.
+    // fired here — assert it did NOT. Two timers are armed: the backstop and
+    // the always-on inactivity watchdog (itself clamped, far from firing here).
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2);
     // The clamped ceiling fires, but real (monotonic) elapsed hasn't reached the
     // cap, so it re-arms for the remainder rather than expiring early.
     await vi.advanceTimersByTimeAsync(MAX_TIMER_DELAY_MS);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2);
     // Advancing the remainder reaches the real cap → synthetic terminal, whose
     // duration reflects the configured cap, not the clamp.
     await vi.advanceTimersByTimeAsync(hugeCap - MAX_TIMER_DELAY_MS - 10_000);
@@ -327,7 +342,8 @@ describe("runWithDurationCap", () => {
       ([, msg]) => typeof msg === "string" && msg.includes("host suspend"),
     );
     expect(suspendWarnings).toEqual([]);
-    expect(vi.getTimerCount()).toBe(1); // still armed for the third segment
+    // Backstop armed for the third segment + the always-on inactivity watchdog.
+    expect(vi.getTimerCount()).toBe(2);
     // The final segment reaches the real window → synthetic timeout terminal.
     await vi.advanceTimersByTimeAsync(MAX_TIMER_DELAY_MS);
     const out = await pending;
@@ -371,7 +387,8 @@ describe("runWithDurationCap", () => {
     });
     await vi.advanceTimersByTimeAsync(CAP_MS);
     expect(cancel).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(1); // re-armed, not resolved
+    // Backstop re-armed (not resolved) + the always-on inactivity watchdog.
+    expect(vi.getTimerCount()).toBe(2);
     // Now let real (monotonic) time reach the window; the re-armed timer expires.
     mono = CAP_MS;
     await vi.advanceTimersByTimeAsync(CAP_MS);

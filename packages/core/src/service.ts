@@ -83,7 +83,7 @@ import {
   startCapDiscontinuitySampler,
   wireCapStreamFold,
 } from "./cursor-runs/duration-cap-wire.js";
-import { runWithDurationCap } from "./cursor-runs/duration-cap.js";
+import { DEFAULT_INACTIVITY_TIMEOUT_MS, runWithDurationCap } from "./cursor-runs/duration-cap.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
 import { selectStaleOrphanResumeCandidates } from "./cursor-runs/orphan-resume.js";
 import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
@@ -1102,14 +1102,23 @@ async function runToTerminal(
     const result = await runWithDurationCap({
       log: runLog,
       maxRunDurationMs: resolveMaxRunDurationMs(ctx.store, prep.workflowRunId),
+      // Local runs drive the inactivity watchdog off `onEvent`; the backstop is
+      // `maxRunDurationMs`. Remote runs ignore it (they track liveness via
+      // server-anchored probes / stream age) so it's only wired locally.
+      ...(!remoteCap && {
+        inactivityTimeoutMs: resolveInactivityTimeoutMs(ctx.store, prep.workflowRunId),
+      }),
+      // `onCapReady` captures the cap's event hook for BOTH runtimes: local uses
+      // it for the inactivity watchdog (fed by `onEvent` → `wireCapStreamFold`),
+      // remote additionally starts the discontinuity sampler.
+      onCapReady: (handle) => {
+        capHandle = handle;
+        if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
+          stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle: handle });
+        }
+      },
       ...(remoteCap && {
         kind: "fresh" as const,
-        onCapReady: (handle) => {
-          capHandle = handle;
-          if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
-            stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle: handle });
-          }
-        },
         signals: buildRemoteCapSignals({
           getHandle: () => capHandleRef,
           provider: ctx.provider,
@@ -1415,6 +1424,18 @@ interface ClassifiedFailure {
 function resolveMaxRunDurationMs(store: Store, workflowRunId: string): number {
   return (
     store.getRun(workflowRunId)?.policy.maxRunDurationMs ?? DEFAULT_WORKFLOW_POLICY.maxRunDurationMs
+  );
+}
+
+// Inactivity window from policy, falling back to the default when the run's
+// stored policy omits it (a historical `policy_json` blob written before the
+// field existed). `?? DEFAULT` twice: the run row may be missing entirely, and
+// even a present row may carry a legacy policy without the optional field.
+function resolveInactivityTimeoutMs(store: Store, workflowRunId: string): number {
+  return (
+    store.getRun(workflowRunId)?.policy.inactivityTimeoutMs ??
+    DEFAULT_WORKFLOW_POLICY.inactivityTimeoutMs ??
+    DEFAULT_INACTIVITY_TIMEOUT_MS
   );
 }
 
