@@ -396,6 +396,8 @@ function buildLandOpts(opts: LandCommandOpts): LandOpts {
   return landOpts;
 }
 
+const DRIVER_LIST_MAX_LIMIT = 200;
+
 function buildDriverListFilter(opts: ListOpts): {
   repo?: string;
   status?: DriverRunStatus[];
@@ -419,6 +421,11 @@ function buildDriverListFilter(opts: ListOpts): {
     const parsed = Number(opts.limit);
     if (!Number.isInteger(parsed) || parsed <= 0) {
       throw new InvalidArgumentError(`invalid --limit: ${opts.limit}`);
+    }
+    if (parsed > DRIVER_LIST_MAX_LIMIT) {
+      throw new InvalidArgumentError(
+        `limit ${opts.limit} exceeds the maximum allowed value ${String(DRIVER_LIST_MAX_LIMIT)}`,
+      );
     }
     filter.limit = parsed;
   }

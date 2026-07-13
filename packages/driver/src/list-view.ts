@@ -192,7 +192,8 @@ function optionalStreamProgressFields(
   if (stream.mergedAt !== undefined) fields.mergedAt = stream.mergedAt;
   if (stream.cycles !== undefined) fields.cycles = stream.cycles;
   if (stream.reviewCycles !== undefined) fields.reviewCycles = stream.reviewCycles;
-  if (stream.errorMessage !== undefined) fields.errorMessage = stream.errorMessage;
+  const errorMessage = sanitizeErrorMessage(stream.errorMessage);
+  if (errorMessage !== undefined) fields.errorMessage = errorMessage;
   return fields;
 }
 
@@ -237,6 +238,20 @@ function buildDriverListAttemptView(attempt: StreamAttempt): DriverListAttemptVi
 
 function hashSourceJson(sourceJson: string): string {
   return createHash("sha256").update(sourceJson, "utf8").digest("hex");
+}
+
+function sanitizeErrorMessage(message: string | undefined): string | undefined {
+  if (message === undefined) return undefined;
+  let redacted = message;
+  let changed = false;
+  for (const segment of message.split(/\s+/)) {
+    if (segment.startsWith("/") || /^[A-Za-z]:\\/.test(segment)) {
+      redacted = redacted.replace(segment, "[path]");
+      changed = true;
+    }
+  }
+  if (!changed) return message;
+  return redacted;
 }
 
 function resolveSafeManifestRef(manifestPath: string): string | undefined {

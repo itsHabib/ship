@@ -204,6 +204,46 @@ batches: []
     expect(stream?.dispatchModel).toBeUndefined();
   });
 
+  test("redacts absolute paths from errorMessage", () => {
+    const run: DriverRun = {
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          driverRunId: "drv_05",
+          id: "db_05",
+          status: "failed",
+          streams: [
+            {
+              attempts: [],
+              createdAt: "2026-06-12T00:00:00.000Z",
+              driverBatchId: "db_05",
+              driverRunId: "drv_05",
+              errorMessage: "dispatch failed for /abs/repo/docs/task.md",
+              id: "ds_05",
+              runtime: "local",
+              specPath: "docs/task.md",
+              status: "failed",
+              streamIndex: 0,
+              touches: [],
+              updatedAt: "2026-06-12T00:00:00.000Z",
+            },
+          ],
+        },
+      ],
+      createdAt: "2026-06-12T00:00:00.000Z",
+      id: "drv_05",
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "failed",
+      updatedAt: "2026-06-12T00:00:00.000Z",
+    };
+    const stream = buildDriverListEnvelope([run]).runs[0]?.batches[0]?.streams[0];
+    expect(stream?.errorMessage).toBe("dispatch failed for [path]");
+    expect(JSON.stringify(buildDriverListEnvelope([run]))).not.toMatch(/\/abs\/repo/);
+  });
+
   test("includes dispatch telemetry for non-pending streams", () => {
     const run: DriverRun = {
       batches: [

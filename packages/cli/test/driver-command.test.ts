@@ -572,7 +572,18 @@ batches:
 
   test("list rejects --limit above 200 cap with exit 1", async () => {
     expect(await runDriver(["driver", "list", "--limit", "99999999"])).toBe(1);
-    expect(stderr.join("")).toMatch(/exceeds the maximum allowed value/);
+    expect(stderr.join("")).toMatch(/exceeds the maximum allowed value 200/);
+  });
+
+  test("list --json writes only JSON to stdout", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    await runDriver(["driver", "import", layout.manifestPath]);
+    stdout.length = 0;
+    stderr.length = 0;
+    expect(await runDriver(["driver", "list", "--json"])).toBe(0);
+    expect(stderr.join("")).toBe("");
+    const parsed = JSON.parse(stdout.join("").trim()) as { v: number };
+    expect(parsed.v).toBe(1);
   });
 
   test("list does not trigger ship dispatch or orphan resume", async () => {
