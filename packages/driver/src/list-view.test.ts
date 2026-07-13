@@ -251,7 +251,7 @@ batches: []
       batches: [
         {
           batchIndex: 1,
-          dependsOn: [],
+          dependsOn: [1],
           driverRunId: "drv_04",
           id: "db_04",
           status: "running",
@@ -260,6 +260,7 @@ batches: []
               attempts: [],
               createdAt: "2026-06-12T00:00:00.000Z",
               dispatchModel: "gpt-4",
+              dispatchModelParams: [{ id: "thinking", value: "high" }],
               dispatchProvider: "cursor",
               driverBatchId: "db_04",
               driverRunId: "drv_04",
@@ -268,7 +269,7 @@ batches: []
               specPath: "docs/task.md",
               status: "dispatched",
               streamIndex: 0,
-              touches: [],
+              touches: ["src/driver.ts"],
               updatedAt: "2026-06-12T00:00:00.000Z",
             },
           ],
@@ -282,8 +283,15 @@ batches: []
       status: "running",
       updatedAt: "2026-06-12T00:00:00.000Z",
     };
-    const stream = buildDriverListEnvelope([run]).runs[0]?.batches[0]?.streams[0];
-    expect(stream?.dispatchProvider).toBe("cursor");
-    expect(stream?.dispatchModel).toBe("gpt-4");
+    const batch = buildDriverListEnvelope([run]).runs[0]!.batches[0]!;
+    const stream = batch.streams[0]!;
+    const sourceBatch = run.batches[0]!;
+    const sourceStream = sourceBatch.streams[0]!;
+    expect(stream.dispatchProvider).toBe("cursor");
+    expect(stream.dispatchModel).toBe("gpt-4");
+    expect(batch.dependsOn).not.toBe(sourceBatch.dependsOn);
+    expect(stream.touches).not.toBe(sourceStream.touches);
+    expect(stream.dispatchModelParams).not.toBe(sourceStream.dispatchModelParams);
+    expect(stream.dispatchModelParams![0]).not.toBe(sourceStream.dispatchModelParams![0]);
   });
 });

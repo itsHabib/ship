@@ -114,7 +114,7 @@ function buildDriverListBatchView(batch: DriverBatch): DriverListBatchView {
   const view: DriverListBatchView = {
     batchId: batch.id,
     batchIndex: batch.batchIndex,
-    dependsOn: batch.dependsOn,
+    dependsOn: [...batch.dependsOn],
     status: batch.status,
     streams: batch.streams.map(buildDriverListStreamView),
   };
@@ -132,7 +132,7 @@ function buildDriverListStreamView(stream: DriverStream): DriverListStreamView {
     status: stream.status,
     streamId: stream.id,
     streamIndex: stream.streamIndex,
-    touches: stream.touches,
+    touches: [...stream.touches],
     updatedAt: stream.updatedAt,
     ...optionalStreamIdentityFields(stream),
     ...optionalStreamRequestedFields(stream),
@@ -219,7 +219,7 @@ function liveDispatchFields(
   if (stream.dispatchProvider !== undefined) fields.dispatchProvider = stream.dispatchProvider;
   if (stream.dispatchModel !== undefined) fields.dispatchModel = stream.dispatchModel;
   if (stream.dispatchModelParams !== undefined) {
-    fields.dispatchModelParams = stream.dispatchModelParams;
+    fields.dispatchModelParams = stream.dispatchModelParams.map((param) => ({ ...param }));
   }
   if (stream.effortDegraded === true) fields.effortDegraded = true;
   if (stream.tierDegradeReason !== undefined) fields.tierDegradeReason = stream.tierDegradeReason;
