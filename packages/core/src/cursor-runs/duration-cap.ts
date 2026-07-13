@@ -303,9 +303,12 @@ class LocalCap {
 
   private armWatchdog(delayMs: number): void {
     if (this.watchdogTimer !== undefined) clearTimeout(this.watchdogTimer);
-    this.watchdogTimer = setTimeout(() => {
-      this.onWatchdogFire();
-    }, Math.min(delayMs, MAX_TIMER_DELAY_MS));
+    this.watchdogTimer = setTimeout(
+      () => {
+        this.onWatchdogFire();
+      },
+      Math.min(delayMs, MAX_TIMER_DELAY_MS),
+    );
   }
 
   // Inactivity watchdog fire. Re-validate against real (monotonic) silence:
@@ -326,9 +329,11 @@ class LocalCap {
       { inactivityMs: this.c.inactivityMs, silenceMs, startResolved: this.handle !== undefined },
       "policy.inactivityTimeoutMs exceeded (no agent events); cancelling run as a stall",
     );
-    this.settleExpired(capExceededResult(this.c.elapsedMs + this.c.windowMs, undefined, {
-      failureCategory: INACTIVITY_STALL_CATEGORY,
-    }));
+    this.settleExpired(
+      capExceededResult(this.c.elapsedMs + this.c.windowMs, undefined, {
+        failureCategory: INACTIVITY_STALL_CATEGORY,
+      }),
+    );
   }
 
   // Wall-clock backstop fire. Preserves the monotonic re-validation loop: a

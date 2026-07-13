@@ -19,14 +19,16 @@ import { createTestClock } from "../src/index.js";
 const RUNS_DIR = "/state/runs";
 const WORKDIR = "/work/wt/cap";
 const REPO_URL = "https://github.com/owner/repo";
-const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
+const CAP_MS = DEFAULT_WORKFLOW_POLICY.maxRunDurationMs;
 
-// One assistant event behind an hour-long (faked) delay: the run streams
-// nothing and never reaches terminal on its own.
+// One assistant event behind a delay that outlasts the whole cap window: the
+// run streams nothing and never reaches terminal on its own, so the only exit
+// from `running` is the cap guard. Derived from the cap (not a fixed hour) so
+// it stays longer than the backstop even as `maxRunDurationMs` changes.
 function neverTerminatingScript(): FakeCursorScript {
   return {
-    delayMsBetweenEvents: HOUR_MS,
+    delayMsBetweenEvents: 2 * CAP_MS,
     events: [
       {
         type: "assistant",
@@ -181,10 +183,15 @@ test("resumed cloud run only gets the remaining cap budget, not a fresh window",
   const cloudCursor = new FakeCursorRunner();
   cloudCursor.enqueueAttach(neverTerminatingScript());
 
-  // Restart 20 minutes into a 30-minute cap: the resumed run has only
-  // ~10 minutes of budget left.
+  // Restart deep into the cap, leaving only a 10-minute budget. The restart
+  // offset is derived from the cap (`CAP_MS - 10min`), so the resume math
+  // holds whatever `maxRunDurationMs` is — a fresh window would have granted
+  // the full cap, but the resumed run only gets the ~10 minutes that remain.
+  const REMAINING_BUDGET_MS = 10 * MINUTE_MS;
+  const restartOffsetMs = CAP_MS - REMAINING_BUDGET_MS;
+  const restartClock = new Date(Date.parse(T0) + restartOffsetMs).toISOString();
   const restarted = createShipService({
-    clock: createTestClock("2026-06-10T00:20:00.000Z"),
+    clock: createTestClock(restartClock),
     config: {
       cloudCursor,
       cursor: new FakeCursorRunner(),
@@ -204,12 +211,12 @@ test("resumed cloud run only gets the remaining cap budget, not a fresh window",
   );
 
   // Just short of the ~10-minute remaining budget: still live.
-  await vi.advanceTimersByTimeAsync(9 * MINUTE_MS);
+  await vi.advanceTimersByTimeAsync(REMAINING_BUDGET_MS - MINUTE_MS);
   expect((await restarted.getRun(WORKFLOW_RUN_ID))?.status).toBe("running");
 
   // Crossing the remaining window (with a second of margin for the test
-  // clocks' per-call step) flips the run, far before the full 30-minute
-  // cap a fresh window would have granted.
+  // clocks' per-call step) flips the run, far before the full cap a fresh
+  // window would have granted.
   await vi.advanceTimersByTimeAsync(MINUTE_MS + 1000);
   await restarted.drainBackground();
 

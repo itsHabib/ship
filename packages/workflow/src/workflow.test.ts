@@ -376,7 +376,8 @@ describe("workflowPolicySchema", () => {
 
   test("rejects zero / fractional inactivityTimeoutMs (positive int when present)", () => {
     expect(
-      workflowPolicySchema.safeParse({ ...DEFAULT_WORKFLOW_POLICY, inactivityTimeoutMs: 0 }).success,
+      workflowPolicySchema.safeParse({ ...DEFAULT_WORKFLOW_POLICY, inactivityTimeoutMs: 0 })
+        .success,
     ).toBe(false);
     expect(
       workflowPolicySchema.safeParse({ ...DEFAULT_WORKFLOW_POLICY, inactivityTimeoutMs: 1.5 })
