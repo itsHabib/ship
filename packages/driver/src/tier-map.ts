@@ -155,6 +155,9 @@ function cursorEffortVariantParams(effort: string): NonNullable<ShipInput["model
 }
 
 function grokEffortVariantParams(effort: string): NonNullable<ShipInput["modelParams"]> {
+  // `fast` is pinned off: ship tasks are long-running, so grok's fast mode
+  // (the analog of the cursor `fable` tier) never fits a dispatch. A future
+  // `grok-4.5-fast`-style capability row would flip this.
   return [
     { id: "effort", value: effort },
     { id: "fast", value: "false" },
@@ -219,18 +222,27 @@ function unknownProviderDegrade(
   effortTier: EffortTier | undefined,
   modelId: string | undefined,
 ): TierDispatchResult {
-  // A verbatim id still passes through (spec §3.3) — only tier mapping is
-  // missing for this provider; effort has no known knob so it degrades.
-  const parts: string[] = [`no tier mapping for provider "${provider}"; using engine default`];
-  const degrade: TierDegrade = {
-    modelDegraded: modelId === undefined && modelTier !== undefined,
-    effortDegraded: effortTier !== undefined,
-    reason: parts.join("; "),
-  };
-  if (modelId === undefined) {
-    return { degrade };
+  // A verbatim id passes through unchanged (spec §3.3). An unknown provider
+  // has no tier map and no effort knob, so a model_id-only run degrades
+  // nothing — return the passthrough model with no degrade rather than a
+  // misleading "using engine default" that would surface as degraded status.
+  const modelDegraded = modelId === undefined && modelTier !== undefined;
+  const effortDegraded = effortTier !== undefined;
+  const model = modelId;
+
+  if (!modelDegraded && !effortDegraded) {
+    return model === undefined ? {} : { model };
   }
-  return { degrade, model: modelId };
+
+  const parts: string[] = [];
+  if (modelDegraded) {
+    parts.push(`no tier mapping for provider "${provider}"; using engine default`);
+  }
+  if (effortDegraded) {
+    parts.push(`no effort mapping for provider "${provider}"; effort tier dropped`);
+  }
+  const degrade: TierDegrade = { modelDegraded, effortDegraded, reason: parts.join("; ") };
+  return model === undefined ? { degrade } : { degrade, model };
 }
 
 function reasoningParam(value: string): ModelParam {

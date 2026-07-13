@@ -76,12 +76,13 @@ describe("mapTierToDispatch", () => {
     expect(mapped.degrade?.reason).toContain("multi-agent");
   });
 
-  test("unknown provider passthrough degrades without model override", () => {
+  test("unknown provider tier + effort degrades both with recorded reasons", () => {
     expect(mapTierToDispatch("codex", "opus", "max")).toEqual({
       degrade: {
         modelDegraded: true,
         effortDegraded: true,
-        reason: 'no tier mapping for provider "codex"; using engine default',
+        reason:
+          'no tier mapping for provider "codex"; using engine default; no effort mapping for provider "codex"; effort tier dropped',
       },
     });
   });
@@ -151,13 +152,21 @@ describe("mapTierToDispatch", () => {
       });
     });
 
-    test("unknown provider passes model_id through, degrading only effort", () => {
+    test("unknown provider model_id-only passes through with NO degrade", () => {
+      // Nothing is downgraded: the id dispatches verbatim, no tier to map,
+      // no effort to apply. Must not surface as degraded status.
+      expect(mapTierToDispatch("codex", undefined, undefined, "gpt-5.2-codex")).toEqual({
+        model: "gpt-5.2-codex",
+      });
+    });
+
+    test("unknown provider model_id + effort passes model through, degrading only effort", () => {
       expect(mapTierToDispatch("codex", undefined, "max", "gpt-5.2-codex")).toEqual({
         model: "gpt-5.2-codex",
         degrade: {
           modelDegraded: false,
           effortDegraded: true,
-          reason: 'no tier mapping for provider "codex"; using engine default',
+          reason: 'no effort mapping for provider "codex"; effort tier dropped',
         },
       });
     });
