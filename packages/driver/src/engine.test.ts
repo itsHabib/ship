@@ -1300,6 +1300,158 @@ describe("buildShipInputForTest", () => {
     });
     expect(input).not.toHaveProperty("startingRef");
   });
+
+  test("honors manifest base_branch as the cloud startingRef on a fresh dispatch", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    const sourceJson = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-07-12T00:00:00Z",
+      "generated_by: test",
+      "source:",
+      "  project: ship",
+      "  phase: base-branch",
+      "repo: ship",
+      "repo_url: https://github.com/example/ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        runtime: cloud",
+      "        base_branch: release-2.0",
+      "---",
+      "",
+    ].join("\n");
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              id: streamId,
+              runtime: "cloud",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: join(repoRoot, "driver.md"),
+      repo: "ship",
+      sourceJson,
+      status: "pending",
+    });
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream).toBeDefined();
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId,
+        ship: createFakeShipPort([]).port,
+        store,
+      },
+      stream!,
+      "docs/a.md",
+    );
+    expect(input).toMatchObject({
+      runtime: "cloud",
+      startingRef: "release-2.0",
+      cloud: {
+        repos: [{ url: "https://github.com/example/ship", startingRef: "release-2.0" }],
+      },
+    });
+  });
+
+  test("continuation ref wins over manifest base_branch", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    const sourceJson = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-07-12T00:00:00Z",
+      "generated_by: test",
+      "source:",
+      "  project: ship",
+      "  phase: base-branch-continuation",
+      "repo: ship",
+      "repo_url: https://github.com/example/ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        branch_name: feat-continue",
+      "        runtime: cloud",
+      "        base_branch: release-2.0",
+      "---",
+      "",
+    ].join("\n");
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              branch: "feat-continue",
+              id: streamId,
+              runtime: "cloud",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: join(repoRoot, "driver.md"),
+      repo: "ship",
+      sourceJson,
+      status: "pending",
+    });
+
+    store.updateDriverStream(streamId, { workOnCurrentBranch: true });
+    const persisted = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId,
+        ship: createFakeShipPort([]).port,
+        store,
+      },
+      persisted!,
+      "docs/a.md",
+    );
+    expect(input.cloud?.repos[0]?.startingRef).toBe("feat-continue");
+  });
 });
 
 describe("flipStreamToCloud", () => {

@@ -27,6 +27,12 @@ export const manifestStreamSchema = z
     task_id: z.string().optional(),
     task_slug: z.string().optional(),
     branch_name: z.string().optional(),
+    // Task ids a collapsed stream stands in for; persisted so land-time can
+    // close every rolled-up dossier task.
+    rolls_up: z.array(z.string()).optional(),
+    // Cloud starting ref for this stream's dispatch. Local dispatch ignores it
+    // (worktrees carry their own base); ship only persists/forwards the value.
+    base_branch: z.string().optional(),
     runtime: runtimeSchema.optional(),
     model: modelTierSchema.optional(),
     effort: effortTierSchema.optional(),

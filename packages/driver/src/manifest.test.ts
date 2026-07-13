@@ -687,6 +687,36 @@ describe("parseManifest unknown-key warnings", () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it("parses stream rolls_up and base_branch as typed keys (no warnings)", () => {
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-06-10T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/x.md",
+      "        rolls_up: [tsk_A, tsk_B]",
+      "        base_branch: release-2.0",
+      "---",
+    ].join("\n");
+    const result = parseManifest(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.warnings).toEqual([]);
+    const stream = result.manifest.batches[0]?.streams[0];
+    expect(stream?.rolls_up).toEqual(["tsk_A", "tsk_B"]);
+    expect(stream?.base_branch).toBe("release-2.0");
+  });
+
   it("warns on each unknown key at top level, batch, and stream", () => {
     const text = [
       "---",
@@ -704,7 +734,7 @@ describe("parseManifest unknown-key warnings", () => {
       "    excluded_from_driver: true",
       "    streams:",
       "      - spec_path: docs/x.md",
-      "        rolls_up: tsk_01",
+      "        prep_note: needs-review",
       "---",
     ].join("\n");
     const result = parseManifest(text);
@@ -715,7 +745,7 @@ describe("parseManifest unknown-key warnings", () => {
     expect(result.warnings).toHaveLength(3);
     expect(result.warnings.some((warning) => warning.includes("base_branch"))).toBe(true);
     expect(result.warnings.some((warning) => warning.includes("excluded_from_driver"))).toBe(true);
-    expect(result.warnings.some((warning) => warning.includes("rolls_up"))).toBe(true);
+    expect(result.warnings.some((warning) => warning.includes("prep_note"))).toBe(true);
   });
 });
 
