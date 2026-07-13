@@ -3,9 +3,10 @@
 **Status:** draft / design review — no implementation in this PR.
 **Owner:** @itsHabib
 **Date:** 2026-07-13
-**Related:** friction F4 (2026-07-13 runway run, P1), `docs/features/dispatch-fallback/spec.md`
-(PR #201 — shares the dispatch-target vocabulary, see §7), the runway phase-1 experiment readout
-(workbench `docs/features/runway-1-local-controller/driver.md`), dossier tasks
+**Related:** friction F4 (2026-07-13 runway run, P1), the dispatch-fallback TDD
+([PR #201](https://github.com/itsHabib/ship/pull/201), unmerged — shares the dispatch-target
+vocabulary, see §7), the runway phase-1 experiment readout (the `workbench` repo,
+`docs/features/runway-1-local-controller/driver.md`), dossier tasks
 `driver-model-id-passthrough` + `work-driver-prep-model-pool`.
 
 > **Reviewers — focus areas:** §3.1 (precedence when both `model` tier and `model_id` are set),
@@ -146,7 +147,9 @@ round-robin is the whole algorithm.
 `importDriverRun` freezes the manifest into store rows; editing `driver.md` or re-running
 `assign` afterwards does **not** change what an already-imported run dispatches. `assign` is a
 pre-import tool, full stop — the verb refuses (with a pointer) when the manifest already maps
-to a live driver run. Post-import target changes are the engine's territory: today that's
+to a driver run in a **non-terminal status**; a terminal run (`done` / `failed` / `cancelled`)
+releases its manifest — re-assigning to prep a re-experiment is legitimate and prints a notice
+naming the prior run. Post-import target changes are the engine's territory: today that's
 `decide skip` + re-prep; PR #201's fallback chains (and its natural `decide retry --target`
 follow-on) are the designed path. This keeps one truth per phase of the lifecycle instead of a
 false recovery knob.
@@ -164,21 +167,29 @@ full §7 dispatch target. Either way, `assign` validates every resulting
 `(runtime, provider)` cell against the wired `selectRunner` matrix and **fails loudly at
 assign time** on an unwired combination (an authoring error, deterministic, same class as
 import preflight in #201) — the silent footgun of `default_runtime: cloud` meeting a
-local-only provider dies at the prep desk, not at dispatch.
+local-only provider dies at the prep desk, not at dispatch. Validation **delegates to
+`selectRunner` itself** (does the cell resolve, or throw the illegal-combination error) rather
+than a matrix copy baked into `assign` — the matrix is a moving target across the in-flight
+runner features, and delegation keeps it a single source of truth. The check is all-or-nothing:
+collect every invalid cell across the pool, report the complete list, mutate nothing.
 
 ## 5. Preflight — cheap, advisory, shared shape with #201
 
 `assign --preflight` (default on, `--no-preflight` to skip): a **whole-pool filter phase that
 runs strictly before any assignment** — never mid-rotation. Per unique pool member, verify
 reachability: cursor ids against `GET /v1/models` (the proven check from the grok run);
-non-cursor members by credential presence in env (`ANTHROPIC_*`; codex gets the same
-presence-only check, acknowledged weaker than a catalog probe). Failed members are dropped
+non-cursor members by credential presence in env — claude:
+`ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY`; codex: `CODEX_API_KEY || OPENAI_API_KEY`
+(mirroring each local runner's own requirement; presence-only, acknowledged weaker than a
+catalog probe). Failed members are dropped
 with a recorded note and the surviving **effective pool** — the actual input to round-robin —
 is recorded alongside it in the manifest's advisory block. Two-phase keeps assignment a pure
 function of (manifest, effective pool): no mid-walk rebalancing, no flap sensitivity, and a
 rerun after a member recovers is just a different effective pool, visible in the diff.
-Preflight never blocks the batch. It is a warning-grade check inside an existing verb —
-explicitly not a new doctor subcommand.
+Preflight never blocks the batch — with one boundary: an **empty effective pool** (every
+member dropped) fails `assign` before any write-back; a zero-member rotation has nothing
+deterministic to stamp, and a half-written manifest would be worse than the loud stop. It is a
+warning-grade check inside an existing verb — explicitly not a new doctor subcommand.
 
 This is the same check PR #201 §4.4 runs at hop time (skip-unviable-target-with-recorded-
 reason). One mechanism, two call sites: a `checkTargetViability(target) → { viable } | {
@@ -208,7 +219,9 @@ ultracode: { value: string; reason: string }; params: (effortValue) => ModelPara
 one row for grok-4.5 (medium/high, high+degrade, the `(effort, fast)` tuple) and one for the
 cursor claude-family (xhigh/max, max+degrade, the 5-param tuple, replacing
 `CURSOR_MODELS_WITH_EFFORT` + `CURSOR_EFFORT_VALUE_BY_TIER`). Ids absent from the table
-dispatch with no effort params + `effortDegraded` (§3.4).
+dispatch with no effort params + `effortDegraded` (§3.4); that degrade reason is a hardcoded
+string in the mapper, deliberately not a table field — the table describes models we know,
+not messages for models we don't.
 
 **CLI/MCP:** `driver assign` is the only new verb; pool syntax `[runtime/]provider:model`
 (§4.3); refuses manifests already bound to a live driver run (§4.2). `driver status` / list
