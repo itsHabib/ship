@@ -366,6 +366,14 @@ describe("assignModelPoolToManifest", () => {
     });
   });
 
+  test("rejects preflight requested without viability deps", async () => {
+    await expect(
+      assignModelPoolToManifest(manifestText(THREE_STREAMS_ONE_BATCH), "cursor:grok-4.5", {
+        preflight: true,
+      }),
+    ).rejects.toThrow(/no viability deps/);
+  });
+
   test("aborts before write-back when preflight empties the pool", async () => {
     await expect(
       assignModelPoolToManifest(

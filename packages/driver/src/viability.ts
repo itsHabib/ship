@@ -114,7 +114,9 @@ export function createViabilityDeps(env: Record<string, string | undefined>): Vi
 
 async function fetchCursorModels(env: Record<string, string | undefined>): Promise<string[]> {
   const apiKey = env["CURSOR_API_KEY"];
-  if (apiKey === undefined || apiKey === "") {
+  // Trim like `hasValue`: a whitespace-only key would otherwise slip past this
+  // guard and send `Bearer   ` for a 401, not the clean "not set" message.
+  if (apiKey === undefined || apiKey.trim() === "") {
     throw new AssignError(
       "CURSOR_API_KEY is not set — cannot preflight cursor models (use --no-preflight to skip)",
     );

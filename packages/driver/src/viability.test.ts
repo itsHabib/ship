@@ -160,6 +160,11 @@ describe("createViabilityDeps", () => {
     await expect(built.listCursorModels()).rejects.toThrow(/CURSOR_API_KEY/);
   });
 
+  test("throws a legible error when CURSOR_API_KEY is whitespace-only", async () => {
+    const built = createViabilityDeps({ CURSOR_API_KEY: "  " });
+    await expect(built.listCursorModels()).rejects.toThrow(/CURSOR_API_KEY/);
+  });
+
   test("throws on a non-2xx catalog response", async () => {
     vi.stubGlobal(
       "fetch",

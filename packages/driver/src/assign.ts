@@ -310,6 +310,8 @@ function firstFailingReason(
   verdicts: Map<string, ViabilityResult>,
 ): string | undefined {
   for (const target of targets) {
+    // Every target's key was inserted into `verdicts` above, so the `??` branch
+    // is unreachable by construction — it only satisfies the Map lookup's type.
     const verdict = verdicts.get(targetKey(target)) ?? unresolvedVerdict();
     if (!verdict.viable) return verdict.reason;
   }
