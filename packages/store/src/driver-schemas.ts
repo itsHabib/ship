@@ -82,6 +82,9 @@ export const driverStreamSchema = z
     rollsUp: z.array(z.string()).optional(),
     touches: z.array(z.string()),
     modelTier: driverModelTierSchema.optional(),
+    // Requested verbatim provider catalog id; wins over modelTier for model
+    // selection. dispatchModel records what actually went out.
+    modelId: z.string().min(1).optional(),
     effortTier: driverEffortTierSchema.optional(),
     provider: agentProviderSchema.optional(),
     dispatchProvider: agentProviderSchema.optional(),

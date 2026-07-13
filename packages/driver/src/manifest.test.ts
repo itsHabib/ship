@@ -146,6 +146,57 @@ describe("parseManifest valid manifests", () => {
     expect(streams[1]?.model).toBeUndefined();
   });
 
+  it("parses model_id and default_model_id passthrough fields", () => {
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-07-13T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "default_model_id: composer-2.5",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        model_id: grok-4.5",
+      "      - spec_path: docs/b.md",
+      "---",
+    ].join("\n");
+    const result = parseManifest(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.default_model_id).toBe("composer-2.5");
+    const streams = result.manifest.batches[0]?.streams ?? [];
+    expect(streams[0]?.model_id).toBe("grok-4.5");
+    expect(streams[1]?.model_id).toBeUndefined();
+  });
+
+  it("rejects an empty model_id string", () => {
+    const text = [
+      "---",
+      "driver_version: 1",
+      "generated_at: 2026-07-13T00:00:00Z",
+      "generated_by: work-driver-prep",
+      "source:",
+      "  project: ship",
+      "  phase: test",
+      "repo: ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      '        model_id: ""',
+      "---",
+    ].join("\n");
+    const result = parseManifest(text);
+    expect(result.ok).toBe(false);
+  });
+
   it("accepts bare-scalar and mapping advisory blocks", () => {
     expectOk(minimalManifest('runtime_notes: "batch 1 uses mixed runtimes"'));
     expectOk(minimalManifest("conflict_notes:\n  summary: none"));

@@ -74,6 +74,7 @@ function optionalStreamIdentityFields(stream: DriverStream): Partial<DriverStrea
 function optionalStreamTierFields(stream: DriverStream): Partial<DriverStreamView> {
   const fields: Partial<DriverStreamView> = {};
   if (stream.modelTier !== undefined) fields.modelTier = stream.modelTier;
+  if (stream.modelId !== undefined) fields.modelId = stream.modelId;
   if (stream.effortTier !== undefined) fields.effortTier = stream.effortTier;
   if (stream.provider !== undefined) fields.provider = stream.provider;
   if (stream.dispatchProvider !== undefined) fields.dispatchProvider = stream.dispatchProvider;

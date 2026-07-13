@@ -89,4 +89,77 @@ describe("mapTierToDispatch", () => {
   test("empty tiers yield empty mapping", () => {
     expect(mapTierToDispatch("cursor")).toEqual({});
   });
+
+  describe("model_id passthrough", () => {
+    test("cursor model_id alone dispatches verbatim without params", () => {
+      expect(mapTierToDispatch("cursor", undefined, undefined, "grok-4.5")).toEqual({
+        model: "grok-4.5",
+      });
+    });
+
+    test("cursor model_id wins over model tier for selection", () => {
+      // opus tier would map to claude-opus-4-8; the id overrides it.
+      expect(mapTierToDispatch("cursor", "opus", undefined, "grok-4.5")).toEqual({
+        model: "grok-4.5",
+      });
+    });
+
+    test("cursor grok-4.5 + max maps to grok's high via its own variant tuple", () => {
+      expect(mapTierToDispatch("cursor", undefined, "max", "grok-4.5")).toEqual({
+        model: "grok-4.5",
+        modelParams: [
+          { id: "effort", value: "high" },
+          { id: "fast", value: "false" },
+        ],
+      });
+    });
+
+    test("cursor grok-4.5 + extra maps to grok's medium", () => {
+      const mapped = mapTierToDispatch("cursor", undefined, "extra", "grok-4.5");
+      expect(mapped.model).toBe("grok-4.5");
+      expect(mapped.modelParams).toContainEqual({ id: "effort", value: "medium" });
+      expect(mapped.degrade).toBeUndefined();
+    });
+
+    test("cursor grok-4.5 + ultracode degrades to grok's high ceiling", () => {
+      const mapped = mapTierToDispatch("cursor", undefined, "ultracode", "grok-4.5");
+      expect(mapped.model).toBe("grok-4.5");
+      expect(mapped.modelParams).toContainEqual({ id: "effort", value: "high" });
+      expect(mapped.degrade?.effortDegraded).toBe(true);
+      expect(mapped.degrade?.reason).toContain("grok-4.5");
+    });
+
+    test("cursor unknown model_id + effort passes model through, degrades effort", () => {
+      const mapped = mapTierToDispatch("cursor", undefined, "max", "some-future-model");
+      expect(mapped.model).toBe("some-future-model");
+      expect(mapped.modelParams).toBeUndefined();
+      expect(mapped.degrade?.effortDegraded).toBe(true);
+      expect(mapped.degrade?.reason).toContain("no reasoning-effort analog");
+    });
+
+    test("claude model_id passes through verbatim with reasoning param", () => {
+      expect(mapTierToDispatch("claude", undefined, "max", "claude-opus-4-8")).toEqual({
+        model: "claude-opus-4-8",
+        modelParams: [{ id: "reasoning", value: "high" }],
+      });
+    });
+
+    test("claude model_id wins over model tier", () => {
+      // fable tier would map to claude-sonnet-4-6; the id overrides it.
+      expect(mapTierToDispatch("claude", "fable", undefined, "claude-opus-4-8")).toEqual({
+        model: "claude-opus-4-8",
+      });
+    });
+
+    test("unknown provider passes model_id through, degrading only effort", () => {
+      expect(mapTierToDispatch("codex", undefined, "max", "gpt-5.2-codex")).toEqual({
+        model: "gpt-5.2-codex",
+        degrade: {
+          modelDegraded: false,
+          effortDegraded: true,
+          reason: 'no tier mapping for provider "codex"; using engine default',
+        },
+      });
+    });
+  });
 });

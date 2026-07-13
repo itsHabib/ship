@@ -76,6 +76,7 @@ type ManifestBatchStatus = "pending" | "running" | "in_progress" | "done" | "fai
 
 export interface ResolvedStreamTier {
   modelTier?: ModelTier;
+  modelId?: string;
   effortTier?: EffortTier;
 }
 
@@ -88,11 +89,14 @@ export function resolveStreamTier(
   stream: ManifestStream,
   defaultModel?: ModelTier,
   defaultEffort?: EffortTier,
+  defaultModelId?: string,
 ): ResolvedStreamTier {
   const resolved: ResolvedStreamTier = {};
   const modelTier = stream.model ?? defaultModel;
+  const modelId = stream.model_id ?? defaultModelId;
   const effortTier = stream.effort ?? defaultEffort;
   if (modelTier !== undefined) resolved.modelTier = modelTier;
+  if (modelId !== undefined) resolved.modelId = modelId;
   if (effortTier !== undefined) resolved.effortTier = effortTier;
   return resolved;
 }
@@ -111,6 +115,7 @@ export function resolveStreamProvider(
 /** Format tier + dispatch mapping for status diagnostics. */
 export function formatStreamTierDiagnostic(stream: {
   modelTier?: ModelTier;
+  modelId?: string;
   effortTier?: EffortTier;
   provider?: AgentProvider;
   dispatchProvider?: string;
@@ -122,6 +127,7 @@ export function formatStreamTierDiagnostic(stream: {
   const requested = formatRequestedTier(stream.modelTier, stream.effortTier);
   if (
     requested === undefined &&
+    stream.modelId === undefined &&
     stream.provider === undefined &&
     stream.dispatchModel === undefined
   ) {
@@ -130,10 +136,16 @@ export function formatStreamTierDiagnostic(stream: {
 
   const parts: string[] = [];
   appendRequestedTierPart(parts, requested);
+  appendRequestedModelIdPart(parts, stream.modelId);
   appendRequestedProviderPart(parts, stream.provider);
   appendDispatchPart(parts, stream);
   appendDegradeParts(parts, stream);
   return parts.join(" ");
+}
+
+function appendRequestedModelIdPart(parts: string[], modelId?: string): void {
+  if (modelId === undefined) return;
+  parts.push(`model_id=${modelId}`);
 }
 
 function appendRequestedProviderPart(parts: string[], provider?: AgentProvider): void {

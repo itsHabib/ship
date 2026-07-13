@@ -180,6 +180,47 @@ describe("driver runs (via createStore)", () => {
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.provider).toBe("claude");
   });
 
+  test("model_id column round-trips through insert and read", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              id: streamId,
+              modelId: "grok-4.5",
+              provider: "cursor",
+              runtime: "cloud",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: "/tmp/modelid.md",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "pending",
+    });
+
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.modelId).toBe("grok-4.5");
+  });
+
+  test("model_id absent stays undefined on the hydrated stream", () => {
+    const runId = seedRun();
+    expect(firstStreamOf(runId)?.modelId).toBeUndefined();
+  });
+
   test("updateDriverStream throws DriverStreamNotFoundError for unknown id", () => {
     expect(() => store.updateDriverStream(newDriverStreamId(), { status: "failed" })).toThrow(
       DriverStreamNotFoundError,

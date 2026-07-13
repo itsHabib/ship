@@ -37,6 +37,7 @@ export interface InsertDriverStreamInput {
   cycles?: number;
   errorMessage?: string;
   modelTier?: DriverStream["modelTier"];
+  modelId?: DriverStream["modelId"];
   effortTier?: DriverStream["effortTier"];
   provider?: DriverStream["provider"];
 }

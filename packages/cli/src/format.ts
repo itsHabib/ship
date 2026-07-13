@@ -268,6 +268,7 @@ function requestedTierFields(stream: DriverStream): StreamTierDiagnosticInput {
   return {
     ...(stream.provider !== undefined && { provider: stream.provider }),
     ...(stream.modelTier !== undefined && { modelTier: stream.modelTier }),
+    ...(stream.modelId !== undefined && { modelId: stream.modelId }),
     ...(stream.effortTier !== undefined && { effortTier: stream.effortTier }),
   };
 }

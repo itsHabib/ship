@@ -35,6 +35,10 @@ export const manifestStreamSchema = z
     base_branch: z.string().optional(),
     runtime: runtimeSchema.optional(),
     model: modelTierSchema.optional(),
+    // Verbatim provider catalog id. Wins over `model` for model selection;
+    // never gated against a catalog — an invalid id fails at dispatch with
+    // the provider's error (model-lottery spec §3.1–3.2).
+    model_id: z.string().min(1).optional(),
     effort: effortTierSchema.optional(),
     provider: manifestProviderSchema.optional(),
     touches: z.array(z.string()).optional().default([]),
@@ -80,6 +84,7 @@ export const driverManifestSchema = z
     branch_prefix: z.string().optional(),
     default_runtime: runtimeSchema.optional(),
     default_model: modelTierSchema.optional(),
+    default_model_id: z.string().min(1).optional(),
     default_effort: effortTierSchema.optional(),
     default_provider: manifestProviderSchema.optional(),
     batches: z.array(manifestBatchSchema),
