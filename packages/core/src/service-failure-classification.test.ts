@@ -5,6 +5,7 @@
 
 import type { Logger } from "@ship/logger";
 
+import { AgentRunFailedError } from "@ship/agent-runner";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createStore, StoreContentionError } from "@ship/store";
 import { DEFAULT_WORKFLOW_POLICY } from "@ship/workflow";
@@ -112,6 +113,71 @@ describe("ShipService failure classification wiring", () => {
     expect(row?.phases[0]?.failureCategory).toBe("sdk-throw");
     expect(row?.phases[0]?.errorMessage).toMatch(/^sdk-throw; /);
     expect(row?.phases[0]?.errorMessage).toMatch(/no script enqueued/i);
+  });
+
+  test("finalizeFailure folds AgentRunFailedError.causeSummary into errorMessage", async () => {
+    const origRun = h.cursor.run.bind(h.cursor);
+    h.cursor.run = () =>
+      Promise.reject(
+        new AgentRunFailedError("agent.send failed after Agent.create", {
+          causeSummary: {
+            code: "invalid_request_error",
+            requestId: "req_fold_1",
+            status: 400,
+          },
+        }),
+      );
+
+    try {
+      const out = await h.service.ship({
+        docPath: "docs.md",
+        repo: "ship",
+        workdir: WORKDIR,
+      });
+      expect(out.status).toBe("failed");
+      const row = h.store.getRun(out.workflowRunId);
+      expect(row?.phases[0]?.failureCategory).toBe("sdk-throw");
+      expect(row?.phases[0]?.errorMessage).toBe(
+        "sdk-throw; agent.send failed after Agent.create (HTTP 400 invalid_request_error, request_id req_fold_1)",
+      );
+
+      const view = await h.service.getRun(out.workflowRunId);
+      expect(view?.failureCategory).toBe("sdk-throw");
+      expect(view?.phases[0]?.errorMessage).toContain("HTTP 400 invalid_request_error");
+      expect(view?.phases[0]?.errorMessage).toContain("request_id req_fold_1");
+    } finally {
+      h.cursor.run = origRun;
+    }
+  });
+
+  test("finalizeSuccess folds AgentRunResult.sdkCause into errorMessage", async () => {
+    h.cursor.enqueue({
+      events: [],
+      result: {
+        branches: [],
+        durationMs: 50,
+        failureCategory: "sdk-throw",
+        failureDetail: "agent.send failed after Agent.create",
+        sdkCause: {
+          code: "invalid_request_error",
+          requestId: "req_result_1",
+          status: 400,
+        },
+        status: "failed",
+      },
+    });
+
+    const out = await h.service.ship({
+      docPath: "docs.md",
+      repo: "ship",
+      workdir: WORKDIR,
+    });
+    expect(out.status).toBe("failed");
+    const row = h.store.getRun(out.workflowRunId);
+    expect(row?.phases[0]?.failureCategory).toBe("sdk-throw");
+    expect(row?.phases[0]?.errorMessage).toBe(
+      "sdk-throw; agent.send failed after Agent.create (HTTP 400 invalid_request_error, request_id req_result_1)",
+    );
   });
 
   test("finalizeFailure with StoreContentionError persists contention category", async () => {

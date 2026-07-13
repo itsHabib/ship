@@ -640,6 +640,54 @@ describe("CloudCursorRunner — env / pre-run errors", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("Agent.create SDK reject attaches redacted causeSummary and still dumps stderr", async () => {
+    const sdkErr = Object.assign(new Error("bad request body"), {
+      code: "invalid_request_error",
+      requestId: "req_cloud_1",
+      status: 400,
+    });
+    vi.mocked(Agent.create).mockRejectedValue(sdkErr);
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const runner = new CloudCursorRunner();
+      const promise = runner.run(cloudBaseInput({ log: cloudTestLogger() }));
+      await expect(promise).rejects.toBeInstanceOf(AgentRunFailedError);
+      const err = await promise.catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        causeSummary: {
+          code: "invalid_request_error",
+          message: "bad request body",
+          requestId: "req_cloud_1",
+          status: 400,
+        },
+        message: "Agent.create failed",
+      });
+      // Regression: stderr dump from logCloudStartFailure is unchanged /
+      // still present alongside the new persisted causeSummary path.
+      const out = stderrSpyConcat(spy);
+      expect(out).toMatch(/Agent\.create failed|sdk-throw|bad request body/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("agent.send throw causeSummary reads non-enumerable SDK fields", async () => {
+    const { run } = makeMockRun({});
+    const sendErr = new Error("rate limited");
+    Object.defineProperty(sendErr, "status", { value: 429, enumerable: false });
+    Object.defineProperty(sendErr, "code", { value: "rate_limit", enumerable: false });
+    const { agent } = makeMockAgent({ run, sendThrows: sendErr });
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const runner = new CloudCursorRunner();
+    const err = await runner.run(cloudBaseInput()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentRunFailedError);
+    expect(err).toMatchObject({
+      causeSummary: { status: 429, code: "rate_limit", message: "rate limited" },
+      message: "agent.send failed after Agent.create",
+    });
+  });
+
   test("disposal failure during the agent.send catch path is swallowed; original SDK error wins", async () => {
     const { run } = makeMockRun({});
     const sendErr = new Error("primary");

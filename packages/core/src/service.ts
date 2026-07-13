@@ -39,7 +39,11 @@ import type {
   WorktreeRef,
 } from "@ship/workflow";
 
-import { AgentNotFoundError } from "@ship/agent-runner";
+import {
+  AgentNotFoundError,
+  causeSummaryFromThrown,
+  foldSdkCauseIntoDetail,
+} from "@ship/agent-runner";
 import {
   buildFailureDetail,
   classifyFailure,
@@ -1496,7 +1500,7 @@ function classifyFailedRun(
 ): ClassifiedFailure {
   if (result.failureCategory !== undefined) {
     const category = result.failureCategory;
-    const detail = result.failureDetail ?? "";
+    const detail = foldSdkCauseIntoDetail(result.failureDetail ?? "", result.sdkCause);
     return {
       category,
       detail,
@@ -1514,16 +1518,19 @@ function classifyFailedRun(
       sdkTerminalStatus: result.sdkTerminalStatus,
     }),
   });
-  const detail = buildFailureDetail({
-    category,
-    durationMs: result.durationMs,
-    events,
-    maxRunDurationMs,
-    ...(result.sdkTerminalStatus !== undefined && {
-      sdkTerminalStatus: result.sdkTerminalStatus,
+  const detail = foldSdkCauseIntoDetail(
+    buildFailureDetail({
+      category,
+      durationMs: result.durationMs,
+      events,
+      maxRunDurationMs,
+      ...(result.sdkTerminalStatus !== undefined && {
+        sdkTerminalStatus: result.sdkTerminalStatus,
+      }),
+      ...(result.errorMessage !== undefined && { rawErrorMessage: result.errorMessage }),
     }),
-    ...(result.errorMessage !== undefined && { rawErrorMessage: result.errorMessage }),
-  });
+    result.sdkCause,
+  );
   return {
     category,
     detail,
@@ -1557,12 +1564,15 @@ function classifyThrownFailure(err: unknown): ClassifiedFailure {
     thrownError: isSdkThrow(err),
   });
   const rawMessage = errorMessageFromUnknown(err);
-  const detail = buildFailureDetail({
-    category,
-    events: [],
-    thrownErr: err,
-    ...(rawMessage !== undefined && { rawErrorMessage: rawMessage }),
-  });
+  const detail = foldSdkCauseIntoDetail(
+    buildFailureDetail({
+      category,
+      events: [],
+      thrownErr: err,
+      ...(rawMessage !== undefined && { rawErrorMessage: rawMessage }),
+    }),
+    causeSummaryFromThrown(err),
+  );
   return {
     category,
     detail,

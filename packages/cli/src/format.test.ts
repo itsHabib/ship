@@ -358,6 +358,26 @@ describe("formatDiagnoseRun", () => {
     expect(text).toContain("watchUrl:  https://cursor.com/agents/agent-1");
   });
 
+  test("renders enriched sdk-throw errorMessage with HTTP status/code line", () => {
+    const enriched: GetWorkflowRunOutput = {
+      ...SAMPLE_DIAGNOSE_RUN,
+      failureCategory: "sdk-throw",
+      phases: SAMPLE_DIAGNOSE_RUN.phases[0]
+        ? [
+            {
+              ...SAMPLE_DIAGNOSE_RUN.phases[0],
+              errorMessage:
+                "sdk-throw; agent.send failed after Agent.create (HTTP 400 invalid_request_error, request_id req_abc)",
+            },
+          ]
+        : [],
+    };
+    const text = formatDiagnoseRun(enriched, false);
+    expect(text).toContain("category:  sdk-throw");
+    expect(text).toContain("HTTP 400 invalid_request_error");
+    expect(text).toContain("request_id req_abc");
+  });
+
   test("non-failed run prints a nothing-to-diagnose note", () => {
     const text = formatDiagnoseRun(SAMPLE_RUN, false);
     expect(text).toContain("status:    succeeded");

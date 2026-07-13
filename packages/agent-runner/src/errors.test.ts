@@ -44,6 +44,17 @@ describe("AgentRunFailedError", () => {
     expect(wrapped.cause).toBe(sdkError);
   });
 
+  test("carries a structured causeSummary when provided", () => {
+    const wrapped = new AgentRunFailedError("agent.send failed after Agent.create", {
+      causeSummary: { status: 400, code: "invalid_request_error", requestId: "req_1" },
+    });
+    expect(wrapped.causeSummary).toEqual({
+      status: 400,
+      code: "invalid_request_error",
+      requestId: "req_1",
+    });
+  });
+
   test("agentRunFailedError folds cause message into .message", () => {
     const sdkError = new Error("database is locked");
     const wrapped = agentRunFailedError("run.wait() rejected after a clean stream", sdkError);
@@ -69,6 +80,7 @@ describe("AgentRunFailedError", () => {
   test("works without a cause (plain message-only construction)", () => {
     const err = new AgentRunFailedError("something broke");
     expect(err.cause).toBeUndefined();
+    expect(err.causeSummary).toBeUndefined();
   });
 });
 

@@ -56,6 +56,9 @@ export {
 } from "./errors.js";
 export { AgentRunFailedError } from "./errors.js";
 
+export { extractSdkCause, GH_MCP_URL_REDACTION } from "./sdk-cause.js";
+export type { ExtractSdkCauseOptions } from "./sdk-cause.js";
+
 export type { ArtifactRef } from "@ship/workflow";
 
 export type { SDKMessage } from "@cursor/sdk";
