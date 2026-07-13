@@ -6,6 +6,7 @@
 
 import {
   AddressError,
+  AssignError,
   CancelError,
   DecideError,
   DriverRunNotFoundEngineError,
@@ -26,6 +27,7 @@ const DRIVER_ENGINE_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] 
   DecideError,
   CancelError,
   AddressError,
+  AssignError,
   DriverRunNotFoundEngineError,
   DriverRunNotFoundError,
   ImportManifestError,

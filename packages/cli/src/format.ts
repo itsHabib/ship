@@ -8,12 +8,12 @@ import type {
   ShipOutput,
   WorkflowRunListItem,
 } from "@ship/core";
-import type { DriverListEnvelope, DriverTickResult } from "@ship/driver";
+import type { AssignResult, DriverListEnvelope, DriverTickResult } from "@ship/driver";
 import type { DriverRun, DriverStream } from "@ship/store";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
 import { formatPruneAge } from "@ship/core";
-import { formatStreamTierDiagnostic } from "@ship/driver";
+import { formatStreamTierDiagnostic, poolMemberToString } from "@ship/driver";
 
 /** Renders a `ShipOutput` for the `ship ship` subcommand. */
 export function formatShipOutput(out: ShipOutput, json: boolean): string {
@@ -156,6 +156,18 @@ export function formatDriverImportOutput(driverRunId: string, warnings?: string[
     payload.warnings = warnings;
   }
   return JSON.stringify(payload);
+}
+
+/** Renders the assignment table for `ship driver assign`. */
+export function formatDriverAssignOutput(result: AssignResult): string {
+  const poolLabel = result.pool.map(poolMemberToString).join(", ");
+  const count = String(result.assignments.length);
+  const header = `assigned ${count} stream(s) from pool [${poolLabel}]`;
+  const rows = result.assignments.map(
+    (a) => `  ${a.specPath} -> ${a.resolvedRuntime}/${a.provider}:${a.modelId}`,
+  );
+  const skips = result.skipped.map((skip) => `  ${skip.specPath} -> skipped (${skip.status})`);
+  return [header, ...rows, ...skips].join("\n");
 }
 
 /** Renders a `DriverTickResult` for `ship driver run`. */

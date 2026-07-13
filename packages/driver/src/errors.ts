@@ -52,6 +52,17 @@ export class CancelError extends Error {
   }
 }
 
+/** Malformed pool spec or an unwired dispatch cell at `driver assign` time. */
+export class AssignError extends Error {
+  override readonly name = "AssignError";
+  readonly detail: string;
+
+  constructor(message: string) {
+    super(message);
+    this.detail = message;
+  }
+}
+
 /** One structured refusal reason for `driver address` (never a silent no-op). */
 export type AddressRefusalCode =
   | "no-pr"

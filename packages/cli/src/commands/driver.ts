@@ -7,9 +7,9 @@ import type { DriverRunStatus } from "@ship/store";
 import type { Command } from "commander";
 
 import { parsePruneDuration, PruneDurationError } from "@ship/core";
-import { DriverRunNotFoundEngineError } from "@ship/driver";
+import { assignModelPoolToManifest, DriverRunNotFoundEngineError } from "@ship/driver";
 import { DRIVER_RUN_ID_PATTERN } from "@ship/mcp";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 
 import type { DriverServiceFactory } from "../service.js";
@@ -18,6 +18,7 @@ import { driverTickExitCode, toDriverCliExitCode } from "../driver-errors.js";
 import { detectManifestDrift } from "../driver-manifest.js";
 import { cliExit, InvalidArgumentError } from "../errors.js";
 import {
+  formatDriverAssignOutput,
   formatDriverDecideOutput,
   formatDriverImportOutput,
   formatDriverListOutput,
@@ -94,6 +95,19 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
       runDriverAction(() => {
         const result = factory().importManifest(resolvePath(manifestPath));
         process.stdout.write(`${formatDriverImportOutput(result.run.id, result.warnings)}\n`);
+      });
+    });
+
+  driver
+    .command("assign <manifestPath>")
+    .description("round-robin a model pool over a manifest's streams (pre-import)")
+    .requiredOption("--pool <spec>", "comma-separated [runtime/]provider:model members")
+    .action((manifestPath: string, rawOpts: { pool: string }) => {
+      runDriverAction(() => {
+        const path = resolvePath(manifestPath);
+        const result = assignModelPoolToManifest(readFileSync(path, "utf8"), rawOpts.pool);
+        writeFileSync(path, result.text);
+        process.stdout.write(`${formatDriverAssignOutput(result)}\n`);
       });
     });
 
