@@ -1434,7 +1434,11 @@ async function pollOneStream(params: PollOneStreamParams): Promise<void> {
 
   const wfRun = await ship.getRun(wfId);
   if (wfRun === null) return;
-  noteWorkflowRunProgress(ctx, liveness, wfId, wfRun.updatedAt);
+  // `last_event_at` reflects real remote activity; `updated_at` is also bumped
+  // by the event pump's freshness timer, so reading it here would make a silent
+  // hung cloud run look perpetually live (#157 give-up neutered). Fall back to
+  // `updated_at` for local runs / pre-migration rows that carry no event anchor.
+  noteWorkflowRunProgress(ctx, liveness, wfId, wfRun.lastEventAt ?? wfRun.updatedAt);
   if (!isTerminal(wfRun.status)) return;
 
   if (wfRun.status === "succeeded") {

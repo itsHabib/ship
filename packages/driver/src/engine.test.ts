@@ -1744,6 +1744,114 @@ batches:
     store.close();
   });
 
+  test("silent remote run gives up even while the pump keeps updated_at fresh", async () => {
+    // Reproduces the #157 blind spot: the event pump's 30s timer bumps
+    // updated_at every poll (freshness), but no real event arrives, so
+    // last_event_at stays frozen. The tick must read last_event_at and give
+    // up — reading updated_at would see perpetual "progress" and never stop.
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    let monoMs = 0;
+    let pumpTick = 0;
+    const frozenEventAt = "2026-06-26T00:00:00.000Z";
+
+    const fake = createFakeShipPort(
+      [{ docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_silent" }],
+      () => monoMs,
+    );
+    const baseGetRun = fake.port.getRun.bind(fake.port);
+    fake.port.getRun = async (workflowRunId) => {
+      const run = await baseGetRun(workflowRunId);
+      if (run === null) return null;
+      // Pump timer keeps advancing updated_at; the run emits nothing, so
+      // last_event_at is stuck at its dispatch-time anchor.
+      pumpTick += 1;
+      fake.runs.set(workflowRunId, {
+        ...run,
+        updatedAt: new Date(pumpTick).toISOString(),
+        lastEventAt: frozenEventAt,
+      });
+      return fake.runs.get(workflowRunId) ?? null;
+    };
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({
+      monotonicClock: () => monoMs,
+      rng: () => 0.5,
+      ship: fake.port,
+      sleep: (ms) => {
+        monoMs += ms;
+        return Promise.resolve();
+      },
+      store,
+    });
+    const imported = driver.importManifest(manifestPath);
+
+    const result = await driver.run(
+      { driverRunId: imported.run.id },
+      { batch: 1, maxWaitMs: 5000, pollIntervalMs: 1000, runawayBackstopMs: 60_000 },
+    );
+
+    // Gave up on the inactivity window (well under the runaway backstop),
+    // proving the tick keyed off last_event_at, not the pump-fed updated_at.
+    expect(result.status).toBe("running");
+    expect(monoMs).toBeGreaterThanOrEqual(5000);
+    expect(monoMs).toBeLessThan(60_000);
+    expect(store.getDriverRun(imported.run.id)?.batches[0]?.streams[0]?.status).toBe("dispatched");
+    store.close();
+  });
+
+  test("actively-emitting remote run keeps registering progress via last_event_at", async () => {
+    // Complement of the silent case: last_event_at advances every poll (real
+    // events), so the run stays live past the inactivity window and only the
+    // runaway backstop bounds it — the progress signal is being registered.
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    let monoMs = 0;
+    let eventTick = 0;
+
+    const fake = createFakeShipPort(
+      [{ docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_active" }],
+      () => monoMs,
+    );
+    const baseGetRun = fake.port.getRun.bind(fake.port);
+    fake.port.getRun = async (workflowRunId) => {
+      const run = await baseGetRun(workflowRunId);
+      if (run === null) return null;
+      eventTick += 1;
+      fake.runs.set(workflowRunId, {
+        ...run,
+        // updated_at stuck; last_event_at moves — the driver must track the
+        // event signal, not updated_at, to register this as progress.
+        updatedAt: "2026-06-26T00:00:00.000Z",
+        lastEventAt: new Date(eventTick).toISOString(),
+      });
+      return fake.runs.get(workflowRunId) ?? null;
+    };
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({
+      monotonicClock: () => monoMs,
+      rng: () => 0.5,
+      ship: fake.port,
+      sleep: (ms) => {
+        monoMs += ms;
+        return Promise.resolve();
+      },
+      store,
+    });
+    const imported = driver.importManifest(manifestPath);
+
+    const result = await driver.run(
+      { driverRunId: imported.run.id },
+      { batch: 1, maxWaitMs: 5000, pollIntervalMs: 1000, runawayBackstopMs: 8000 },
+    );
+
+    // Survived the inactivity window (moving last_event_at reset it each poll)
+    // and only the runaway backstop stopped it.
+    expect(result.status).toBe("running");
+    expect(monoMs).toBeGreaterThanOrEqual(8000);
+    store.close();
+  });
+
   test("gives up via runaway backstop when tick exceeds hard ceiling", async () => {
     const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     let monoMs = 0;

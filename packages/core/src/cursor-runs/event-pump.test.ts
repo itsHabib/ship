@@ -115,6 +115,52 @@ describe("startEventPump", () => {
     expect(store.getRun("wf_test_001")?.updatedAt).toBe(afterTick);
   });
 
+  test("initial heartbeat anchors last_event_at at startup", () => {
+    expect(store.getRun("wf_test_001")?.lastEventAt).toBeUndefined();
+    const pump = startEventPump({
+      intervalMs: 60_000,
+      store,
+      workflowRunId: "wf_test_001",
+    });
+    // The baseline heartbeat at start gives the driver a non-NULL anchor even
+    // before any real event, so a zero-event remote run doesn't fall back to
+    // the pump-fed updated_at.
+    expect(store.getRun("wf_test_001")?.lastEventAt).toBeDefined();
+    pump.stop();
+  });
+
+  test("timer bumps updated_at but NOT last_event_at (silent run doesn't fake progress)", () => {
+    const pump = startEventPump({
+      intervalMs: 5_000,
+      store,
+      workflowRunId: "wf_test_001",
+    });
+    const anchoredEventAt = store.getRun("wf_test_001")?.lastEventAt;
+    const afterStartUpdatedAt = store.getRun("wf_test_001")?.updatedAt;
+    expect(anchoredEventAt).toBeDefined();
+
+    // Two timer ticks — updated_at must advance (freshness), last_event_at
+    // must stay frozen at the startup anchor (no real events arrived).
+    vi.advanceTimersByTime(5_000);
+    vi.advanceTimersByTime(5_000);
+    expect(store.getRun("wf_test_001")?.updatedAt).not.toBe(afterStartUpdatedAt);
+    expect(store.getRun("wf_test_001")?.lastEventAt).toBe(anchoredEventAt);
+
+    pump.stop();
+  });
+
+  test("heartbeat() moves last_event_at (a real event advances the progress signal)", () => {
+    const pump = startEventPump({
+      intervalMs: 60_000,
+      store,
+      workflowRunId: "wf_test_001",
+    });
+    const anchoredEventAt = store.getRun("wf_test_001")?.lastEventAt;
+    pump.heartbeat();
+    expect(store.getRun("wf_test_001")?.lastEventAt).not.toBe(anchoredEventAt);
+    pump.stop();
+  });
+
   test("defaults to 30s interval", () => {
     expect(DEFAULT_EVENT_PUMP_INTERVAL_MS).toBe(30_000);
   });

@@ -279,7 +279,13 @@ export type Phase = z.infer<typeof phaseSchema>;
  * - `worktree`   — projection of the Tower worktree this run executes in.
  * - `policy`     — per-run policy, often `DEFAULT_WORKFLOW_POLICY`.
  * - `createdAt`  — set when the row is first persisted.
- * - `updatedAt`  — refreshed on every status transition / phase append.
+ * - `updatedAt`  — refreshed on every status transition / phase append, plus
+ *                  the event pump's freshness timer (staleness consumers).
+ * - `lastEventAt` — last real agent event for a remote run; moves only on an
+ *                  event, never on the pump timer. The driver tick reads this
+ *                  (falling back to `updatedAt`) so pump liveness can't mask a
+ *                  silent hung cloud run. Absent for local runs / pre-existing
+ *                  rows / a remote run before its first event.
  * - `phases`     — chronological list of phases; V1 always has 0 or 1.
  */
 export const workflowRunSchema = z
@@ -293,6 +299,7 @@ export const workflowRunSchema = z
     policy: workflowPolicySchema,
     createdAt: isoDateTime,
     updatedAt: isoDateTime,
+    lastEventAt: isoDateTime.optional(),
     phases: z.array(phaseSchema),
   })
   .strict();
