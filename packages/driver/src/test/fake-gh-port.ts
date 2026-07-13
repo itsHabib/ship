@@ -31,8 +31,6 @@ export interface FakeGhPort extends DriverGhPort {
   mergeCalls: { repo: string; prNumber: number; admin: boolean }[];
   viewCalls: { repo: string; prNumber: number }[];
   markReadyCalls: { repo: string; prNumber: number }[];
-  /** Mutate the in-memory PR state between calls (e.g., advance headRefOid). */
-  setPrState: (prNumber: number, state: FakeGhPrState) => void;
 }
 
 export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): FakeGhPort {
@@ -48,9 +46,6 @@ export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): F
     markReadyCalls,
     mergeCalls,
     viewCalls,
-    setPrState(prNumber: number, state: FakeGhPrState): void {
-      prs.set(prNumber, state);
-    },
     mergePullRequest(_repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void> {
       mergeCalls.push({ admin: opts?.admin === true, prNumber, repo: _repo });
       const current = prs.get(prNumber);

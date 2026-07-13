@@ -654,9 +654,10 @@ async function checkTickAddressHead(ctx: DispatchContext, stream: DriverStream):
  * head has moved, in which case the stream is already marked failed so the
  * caller can return early without dispatching.
  *
- * Skips silently when the stream has no consumed review artifact (not an
- * address cycle), when the store has no artifact row, or when the stream lacks
- * a parseable PR number.
+ * Skips silently only when the stream has no consumed review artifact (not an
+ * address cycle, or the store has no artifact row). Once a consumed head
+ * exists, an unresolvable repo URL or PR number fails the stream closed — a
+ * consumed artifact whose live head cannot be re-checked must never dispatch.
  */
 async function checkAddressAttemptHead(
   store: Store,
@@ -669,14 +670,27 @@ async function checkAddressAttemptHead(
   if (cycle === undefined || cycle === 0) return true;
   const consumedHead = store.getConsumedArtifactHeadSha(runId, stream.id, cycle);
   if (consumedHead === undefined) return true;
-  if (repoUrl === undefined) return true;
+  if (repoUrl === undefined) {
+    return failStreamHeadCheck(store, stream.id, "cannot resolve repo URL for re-validation");
+  }
   const prNumber = prNumberFromUrl(stream.prUrl);
-  if (prNumber === undefined) return true;
+  if (prNumber === undefined) {
+    return failStreamHeadCheck(store, stream.id, "cannot resolve PR number for re-validation");
+  }
   const view = await gh.viewPullRequest(toGhRepo(repoUrl), prNumber);
   const liveHead = view.headRefOid.toLowerCase();
   if (consumedHead.toLowerCase() === liveHead) return true;
-  store.updateDriverStream(stream.id, {
-    errorMessage: `stale-head: findings head ${consumedHead} does not match live head ${liveHead}`,
+  return failStreamHeadCheck(
+    store,
+    stream.id,
+    `findings head ${consumedHead} does not match live head ${liveHead}`,
+  );
+}
+
+/** Park a stream that failed the stale-head re-validation; always returns false. */
+function failStreamHeadCheck(store: Store, streamId: string, reason: string): false {
+  store.updateDriverStream(streamId, {
+    errorMessage: `stale-head: ${reason}`,
     status: "failed",
   });
   return false;

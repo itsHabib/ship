@@ -2324,6 +2324,42 @@ batches:
       expect(startCalls).toHaveLength(1); // only the initial dispatch
     });
 
+    test("parks stream on tick re-dispatch when the PR number cannot be resolved", async () => {
+      const { runId, streamId } = landedSeed();
+      // Initial address dispatch consumes the artifact and sets reviewCycles.
+      const fake = createFakeShipPort([]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        findingsPath,
+        streamId,
+      });
+      expect(firstStream(runId)?.status).toBe("dispatched");
+
+      // Recovery reset back to pending, with a prUrl the guard cannot parse:
+      // a consumed artifact whose live head cannot be re-checked must not dispatch.
+      store.updateDriverStream(streamId, {
+        dispatchModel: null,
+        dispatchModelParams: null,
+        dispatchProvider: null,
+        effortDegraded: false,
+        prUrl: "not-a-pull-request-url",
+        status: "pending",
+        tierDegradeReason: null,
+      });
+      store.updateDriverRunStatus(runId, "running");
+
+      const driver = createDriverService({ clock: () => 0, gh, ship: fake.port, store });
+      const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+
+      expect(result.status).toBe("awaiting_judgment");
+      const stream = firstStream(runId);
+      expect(stream?.status).toBe("failed");
+      expect(stream?.errorMessage).toMatch(/cannot resolve PR number/);
+      // No stale re-dispatch was attempted.
+      const startCalls = fake.calls.filter((c) => c.kind === "startShip");
+      expect(startCalls).toHaveLength(1); // only the initial dispatch
+    });
+
     test("head unchanged on tick re-dispatch proceeds normally", async () => {
       const { runId, streamId } = landedSeed();
       const digest = canonicalReviewFindingsSha256(parseReviewFindings(validFindingsArtifact()));
