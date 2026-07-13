@@ -31,6 +31,19 @@ import { createFakeShipPort } from "./test/fake-ship-port.js";
 
 const noopProgress = (): void => undefined;
 
+/**
+ * Restore `SHIP_RECEIPTS_PATH` to a captured prior value, deleting it (static
+ * key, so no dynamic-delete) when it was unset — coercing to the string
+ * `"undefined"` would defeat the setup file's `=== undefined` guard.
+ */
+function restoreReceiptsPath(prior: string | undefined): void {
+  if (prior === undefined) {
+    delete process.env["SHIP_RECEIPTS_PATH"];
+    return;
+  }
+  process.env["SHIP_RECEIPTS_PATH"] = prior;
+}
+
 describe("driver engine", () => {
   let tmpDir: string;
   let repoRoot: string;
@@ -427,7 +440,13 @@ batches:
 
   test("awaiting_judgment writes exactly one parked receipt; re-tick is idempotent", async () => {
     const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
-    const receiptsPath = join(repoRoot, "receipts.jsonl");
+    // This test ASSERTS on receipt contents, so it pins SHIP_RECEIPTS_PATH to a
+    // fresh file under its own temp dir — isolated from the file-wide safety-net
+    // path so the "exactly one" count is deterministic and not polluted by other
+    // parking tests. Restored in the finally so the safety net covers the rest.
+    const receiptsPath = join(tmpDir, "park-receipts.jsonl");
+    const priorReceiptsPath = process.env["SHIP_RECEIPTS_PATH"];
+    process.env["SHIP_RECEIPTS_PATH"] = receiptsPath;
     const { port } = createFakeShipPort([
       {
         docPath: docA,
@@ -439,32 +458,36 @@ batches:
     ]);
 
     const store = createStore({ dbPath: ":memory:" });
-    const driver = createDriverService({ ship: port, store });
-    const imported = driver.importManifest(manifestPath);
+    try {
+      const driver = createDriverService({ ship: port, store });
+      const imported = driver.importManifest(manifestPath);
 
-    const first = await driver.run(
-      { driverRunId: imported.run.id },
-      { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
-    );
-    expect(first.status).toBe("awaiting_judgment");
+      const first = await driver.run(
+        { driverRunId: imported.run.id },
+        { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+      );
+      expect(first.status).toBe("awaiting_judgment");
 
-    const afterFirst = parseReceiptsJsonl(readFileSync(receiptsPath, "utf8"));
-    const parkedFirst = afterFirst.filter((receipt) => receipt.outcome === "parked");
-    expect(parkedFirst).toHaveLength(1);
-    expect(parkedFirst[0]?.source).toBe("driver");
-    expect(parkedFirst[0]?.repo).toBe("ship");
-    expect(parkedFirst[0]?.key).toBe("feat-a");
-    expect(parkedFirst[0]?.doc_path).toBe("docs/tasks/a.md");
+      const afterFirst = parseReceiptsJsonl(readFileSync(receiptsPath, "utf8"));
+      const parkedFirst = afterFirst.filter((receipt) => receipt.outcome === "parked");
+      expect(parkedFirst).toHaveLength(1);
+      expect(parkedFirst[0]?.source).toBe("driver");
+      expect(parkedFirst[0]?.repo).toBe("ship");
+      expect(parkedFirst[0]?.key).toBe("feat-a");
+      expect(parkedFirst[0]?.doc_path).toBe("docs/tasks/a.md");
 
-    const second = await driver.run(
-      { driverRunId: imported.run.id },
-      { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
-    );
-    expect(second.status).toBe("awaiting_judgment");
+      const second = await driver.run(
+        { driverRunId: imported.run.id },
+        { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+      );
+      expect(second.status).toBe("awaiting_judgment");
 
-    const afterSecond = parseReceiptsJsonl(readFileSync(receiptsPath, "utf8"));
-    expect(afterSecond.filter((receipt) => receipt.outcome === "parked")).toHaveLength(1);
-    store.close();
+      const afterSecond = parseReceiptsJsonl(readFileSync(receiptsPath, "utf8"));
+      expect(afterSecond.filter((receipt) => receipt.outcome === "parked")).toHaveLength(1);
+    } finally {
+      restoreReceiptsPath(priorReceiptsPath);
+      store.close();
+    }
   });
 
   test("queue-tier stream-parked never spawns notify", async () => {

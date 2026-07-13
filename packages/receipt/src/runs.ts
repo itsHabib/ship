@@ -119,6 +119,24 @@ export function resolveDefaultRunsDir(
   return join(configHome(env, platform, home), "ship", "runs");
 }
 
+/**
+ * Resolve the canonical ship data-dir receipts file: `SHIP_RECEIPTS_PATH`
+ * override, else `<XDG_CONFIG_HOME | APPDATA | ~/.config>/ship/receipts.jsonl`.
+ * This is the ONE global file the driver appends park receipts to and that
+ * flare tails — not a per-driven-repo file. Mirrors `resolveDefaultRunsDir`.
+ */
+export function resolveDefaultReceiptsPath(
+  env: NodeJS.ProcessEnv,
+  platform: string,
+  home: string,
+): string {
+  const override = env["SHIP_RECEIPTS_PATH"];
+  if (override !== undefined && override !== "") {
+    return override;
+  }
+  return join(configHome(env, platform, home), "ship", "receipts.jsonl");
+}
+
 function configHome(env: NodeJS.ProcessEnv, platform: string, home: string): string {
   const xdg = env["XDG_CONFIG_HOME"];
   // Match the ship CLI: only an ABSOLUTE XDG_CONFIG_HOME is honored; a relative

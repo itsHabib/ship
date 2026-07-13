@@ -13,10 +13,12 @@ import {
   type ParkStreamInput,
   persistReceipts,
   prNumberFromUrl,
+  resolveDefaultReceiptsPath,
 } from "@ship/receipt";
 import { ReviewArtifactAddressRacedError, ReviewArtifactDuplicateError } from "@ship/store";
 import { isTerminal } from "@ship/workflow";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import type { DriverGhPort, GhPullRequestView } from "./gh-port.js";
@@ -429,7 +431,10 @@ function writeParkReceiptsAtJudgment(
     repo: run.repo,
     streams,
   });
-  const receiptsPath = join(resolveRepoRoot(run.manifestPath), "receipts.jsonl");
+  // Park receipts go to the ONE canonical ship data-dir file that flare tails —
+  // NOT a per-driven-repo file (the driver drives many repos into one global
+  // receipts stream). See resolveDefaultReceiptsPath.
+  const receiptsPath = resolveDefaultReceiptsPath(process.env, platform(), homedir());
   persistReceipts(receiptsPath, receipts);
 }
 

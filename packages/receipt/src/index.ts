@@ -14,6 +14,7 @@ export { CYCLE_CAP, manifestToReceipts } from "./manifest.js";
 export {
   loadShipRunReceipts,
   prNumberFromUrl,
+  resolveDefaultReceiptsPath,
   resolveDefaultRunsDir,
   runResultToReceipt,
 } from "./runs.js";
