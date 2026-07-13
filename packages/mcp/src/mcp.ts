@@ -7,7 +7,9 @@
 import {
   agentProviderSchema,
   artifactRefSchema,
+  cursorRunRuntimeSchema,
   failureCategorySchema,
+  modelSelectionSchema,
   terminalCursorRunRefSchema,
   terminalWorkflowStatusSchema,
   workflowRunSchema,
@@ -15,6 +17,8 @@ import {
   worktreeRefSchema,
 } from "@ship/workflow";
 import { z } from "zod";
+
+const isoDateTime = z.string().datetime({ offset: true });
 
 // Canonical-ULID pattern: 26 chars of Crockford base32, with the first char
 // constrained to 0-7 (it encodes only 3 bits of the 48-bit timestamp).
@@ -307,6 +311,70 @@ export const shipStartOutputSchema = z
 export type ShipStartOutput = z.infer<typeof shipStartOutputSchema>;
 
 // =====================================================================
+// workflow observability (read projection — not persisted)
+// =====================================================================
+
+/** Runtime/provider/model facts for requested or actual execution configuration. */
+const observabilityRuntimeConfigSchema = z
+  .object({
+    runtime: cursorRunRuntimeSchema.optional(),
+    provider: agentProviderSchema.optional(),
+    model: modelSelectionSchema.optional(),
+  })
+  .strict();
+
+export const observabilityEvidenceAvailabilitySchema = z.enum([
+  "available",
+  "unavailable",
+  "unknown",
+]);
+export type ObservabilityEvidenceAvailability = z.infer<
+  typeof observabilityEvidenceAvailabilitySchema
+>;
+
+/** Relative artifact reference beneath Ship-owned run storage. */
+const observabilityEvidenceRefSchema = artifactRefSchema;
+
+const observabilityEvidenceSchema = z
+  .object({
+    availability: observabilityEvidenceAvailabilitySchema,
+    reason: z.string().min(1).optional(),
+    refs: z.array(observabilityEvidenceRefSchema).optional(),
+  })
+  .strict();
+
+const observabilityFailureSchema = z
+  .object({
+    category: failureCategorySchema.optional(),
+    detail: z.string().min(1).optional(),
+  })
+  .strict();
+
+/**
+ * Non-persisted owner projection shared by `list_workflow_runs` and
+ * `get_workflow_run`. Normalizes requested vs actual execution facts,
+ * timing, failure, and evidence availability without filesystem reads.
+ */
+export const workflowObservabilityViewSchema = z
+  .object({
+    requested: observabilityRuntimeConfigSchema.optional(),
+    actual: observabilityRuntimeConfigSchema.optional(),
+    startedAt: isoDateTime.optional(),
+    endedAt: isoDateTime.optional(),
+    durationMs: z.number().int().nonnegative().optional(),
+    failure: observabilityFailureSchema.optional(),
+    evidence: observabilityEvidenceSchema.optional(),
+  })
+  .strict();
+export type WorkflowObservabilityView = z.infer<typeof workflowObservabilityViewSchema>;
+
+/** One list row — persisted `WorkflowRun` plus optional observability projection. */
+export const workflowRunListItemSchema = workflowRunSchema.extend({
+  observability: workflowObservabilityViewSchema.optional(),
+});
+export type WorkflowRunListItem = z.infer<typeof workflowRunListItemSchema>;
+
+// =====================================================================
 // get_workflow_run
 // =====================================================================
 
@@ -356,6 +424,8 @@ export const getWorkflowRunOutputSchema = workflowRunSchema
     branches: z.array(runBranchRefSchema).optional(),
     /** Canonical failure classification hoisted from the implement phase row (failed runs only). */
     failureCategory: failureCategorySchema.optional(),
+    /** Store-backed observability projection (no artifact I/O). */
+    observability: workflowObservabilityViewSchema.optional(),
   })
   .superRefine((val, ctx) => {
     // Enforce the documented invariant, not just describe it: the category is
@@ -395,7 +465,7 @@ export type ListWorkflowRunsInput = z.infer<typeof listWorkflowRunsInputSchema>;
  */
 export const listWorkflowRunsOutputSchema = z
   .object({
-    runs: z.array(workflowRunSchema),
+    runs: z.array(workflowRunListItemSchema),
   })
   .strict();
 export type ListWorkflowRunsOutput = z.infer<typeof listWorkflowRunsOutputSchema>;

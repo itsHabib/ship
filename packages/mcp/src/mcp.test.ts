@@ -22,6 +22,7 @@ import {
   shipInputSchema,
   shipOutputSchema,
   shipStartOutputSchema,
+  workflowObservabilityViewSchema,
 } from "./mcp.js";
 
 const WF_ID = "wf_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -632,6 +633,21 @@ describe("getWorkflowRunOutputSchema", () => {
       ).toBe(false);
     }
   });
+
+  test("accepts optional observability projection on hydrated runs", () => {
+    const withObservability = {
+      ...validWorkflowRun,
+      observability: {
+        actual: { runtime: "local" as const, provider: "cursor" as const },
+        durationMs: 1200,
+        evidence: {
+          availability: "unavailable" as const,
+          reason: "no-persisted-artifact-manifest",
+        },
+      },
+    };
+    expect(getWorkflowRunOutputSchema.parse(withObservability)).toEqual(withObservability);
+  });
 });
 
 describe("listWorkflowRunsInputSchema", () => {
@@ -683,6 +699,37 @@ describe("listWorkflowRunsOutputSchema", () => {
 
   test("rejects unknown keys", () => {
     expect(listWorkflowRunsOutputSchema.safeParse({ runs: [], extra: 1 }).success).toBe(false);
+  });
+
+  test("legacy fixture without observability still parses", () => {
+    expect(listWorkflowRunsOutputSchema.parse({ runs: [validWorkflowRun] })).toEqual({
+      runs: [validWorkflowRun],
+    });
+  });
+
+  test("accepts list rows with observability projection", () => {
+    const row = {
+      ...validWorkflowRun,
+      observability: {
+        requested: { runtime: "cloud" as const },
+        actual: { runtime: "cloud" as const, provider: "cursor" as const },
+      },
+    };
+    expect(listWorkflowRunsOutputSchema.parse({ runs: [row] })).toEqual({ runs: [row] });
+  });
+});
+
+describe("workflowObservabilityViewSchema", () => {
+  test("accepts minimal unknown evidence state without zero-filled duration", () => {
+    const view = workflowObservabilityViewSchema.parse({
+      evidence: { availability: "unknown", reason: "no-cursor-run" },
+    });
+    expect(view.durationMs).toBeUndefined();
+  });
+
+  test("rejects unknown keys and absolute-path-like forbidden fields", () => {
+    expect(workflowObservabilityViewSchema.safeParse({ artifactsDir: "/tmp" }).success).toBe(false);
+    expect(workflowObservabilityViewSchema.safeParse({ extra: 1 }).success).toBe(false);
   });
 });
 

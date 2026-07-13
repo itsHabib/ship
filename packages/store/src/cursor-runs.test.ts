@@ -368,4 +368,51 @@ describe("cursor runs (via createStore)", () => {
       expect(store.listResumableCloudCursorRuns()).toEqual([]);
     });
   });
+
+  test("listLatestCursorRunsByWorkflowRunIds: returns latest row per workflow in one query", () => {
+    const runA = seedRun();
+    const runB = seedRun();
+    const olderA = newCursorRunId();
+    const newerA = newCursorRunId();
+    currentNow = "2026-05-08T00:00:00.000Z";
+    store.recordCursorRun({
+      agentId: "agent_a_old",
+      artifactsDir: "/runs/a-old",
+      id: olderA,
+      runtime: "local",
+      workflowRunId: runA,
+    });
+    currentNow = "2026-05-08T00:00:10.000Z";
+    store.recordCursorRun({
+      agentId: "agent_a_new",
+      artifactsDir: "/runs/a-new",
+      id: newerA,
+      runtime: "cloud",
+      workflowRunId: runA,
+    });
+    const onlyB = newCursorRunId();
+    store.recordCursorRun({
+      agentId: "agent_b",
+      artifactsDir: "/runs/b",
+      id: onlyB,
+      runtime: "rooms",
+      workflowRunId: runB,
+    });
+
+    const latest = store.listLatestCursorRunsByWorkflowRunIds([runA, runB, "wf_missing"]);
+    expect(latest.size).toBe(2);
+    expect(latest.get(runA)?.id).toBe(newerA);
+    expect(latest.get(runA)?.runtime).toBe("cloud");
+    expect(latest.get(runB)?.id).toBe(onlyB);
+    expect(latest.has("wf_missing")).toBe(false);
+  });
+
+  test("listLatestCursorRunsByWorkflowRunIds: empty input returns empty map", () => {
+    expect(store.listLatestCursorRunsByWorkflowRunIds([])).toEqual(new Map());
+  });
+
+  test("listLatestCursorRunsByWorkflowRunIds: rejects more than 200 ids", () => {
+    const ids = Array.from({ length: 201 }, (_, index) => `wf_${String(index)}`);
+    expect(() => store.listLatestCursorRunsByWorkflowRunIds(ids)).toThrow(RangeError);
+  });
 });

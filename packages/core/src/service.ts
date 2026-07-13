@@ -22,6 +22,7 @@ import type {
   ShipInput,
   ShipOutput,
   ShipStartOutput,
+  WorkflowRunListItem,
 } from "@ship/mcp";
 import type { ListRunsFilter, ResumableCloudCursorRun, Store } from "@ship/store";
 import type {
@@ -103,6 +104,7 @@ import {
 } from "./errors.js";
 import { executePruneRuns, type PruneRunsInput, type PruneRunsOutput } from "./prune/prune.js";
 import { resolveValidatedDoc, resolveValidatedDocForCloud } from "./validate.js";
+import { projectWorkflowObservability } from "./workflow-observability.js";
 
 /** Construction-time configuration for the service. */
 export interface ShipServiceConfig {
@@ -190,7 +192,7 @@ export interface ShipService {
   // `getRun` for terminal state. CLI keeps using `ship` (blocking).
   startShip(input: ShipInput): Promise<ShipStartOutput>;
   getRun(workflowRunId: string): Promise<GetWorkflowRunOutput | null>;
-  listRuns(filter: ListRunsFilter): Promise<WorkflowRun[]>;
+  listRuns(filter: ListRunsFilter): Promise<WorkflowRunListItem[]>;
   cancelRun(workflowRunId: string): Promise<{ workflowRunId: string; status: WorkflowStatus }>;
   // Awaits every in-flight `startShip` background continuation to fully
   // settle (success, failure, or safety-net stderr log). Use this before
@@ -402,13 +404,40 @@ function enrichCloudAgentFields(
   return enriched;
 }
 
+function attachWorkflowObservability(
+  store: Store,
+  run: WorkflowRun,
+): GetWorkflowRunOutput | WorkflowRunListItem {
+  const latest = store.listLatestCursorRunsByWorkflowRunIds([run.id]);
+  const cursorRun = latest.get(run.id) ?? null;
+  return {
+    ...run,
+    observability: projectWorkflowObservability(run, cursorRun),
+  };
+}
+
+function attachWorkflowObservabilityBatch(
+  store: Store,
+  runs: readonly WorkflowRun[],
+): WorkflowRunListItem[] {
+  const ids = runs.map((run) => run.id);
+  const latestByRunId = store.listLatestCursorRunsByWorkflowRunIds(ids);
+  return runs.map((run) => {
+    const cursorRun = latestByRunId.get(run.id) ?? null;
+    return {
+      ...run,
+      observability: projectWorkflowObservability(run, cursorRun),
+    };
+  });
+}
+
 /** MCP `get_workflow_run` view: domain run plus derived cloud watch + failure diagnostics. */
 async function enrichWorkflowRunView(
   deps: { readonly store: Store; readonly fs: ShipFs; readonly runsDir: string },
   run: WorkflowRun | null,
 ): Promise<GetWorkflowRunOutput | null> {
   if (run === null) return null;
-  let view: GetWorkflowRunOutput = { ...run };
+  let view: GetWorkflowRunOutput = attachWorkflowObservability(deps.store, run);
   const latestCloud = resolveLatestCloudAgentRun(deps.store, run);
   if (latestCloud !== undefined) {
     view = enrichCloudAgentFields(view, latestCloud);
@@ -543,7 +572,8 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     ship: (input) => runShip(makeCtx(input)),
     startShip: (input) => runShipStart(makeCtx(input), bgPending),
     getRun: (id) => enrichWorkflowRunView({ store, fs, runsDir: config.runsDir }, store.getRun(id)),
-    listRuns: (filter) => Promise.resolve(store.listRuns(filter)),
+    listRuns: (filter) =>
+      Promise.resolve(attachWorkflowObservabilityBatch(store, store.listRuns(filter))),
     cancelRun: (id) => {
       try {
         const active = activeRuns.get(id);
@@ -957,14 +987,26 @@ function runScopedLogger(logger: Logger, fields: LogFields): Logger {
 
 // The implement phase's `input_json`, persisted for forensics. The cloud
 // spec is also read back on resume; rooms has no resume path.
-function buildImplementInputJson(input: ShipInput): string {
+function buildImplementInputJson(
+  input: ShipInput,
+  requested: {
+    readonly runtime: CursorRunRuntime;
+    readonly provider: AgentProvider;
+    readonly model: ModelSelection;
+  },
+): string {
+  const observability = {
+    runtime: requested.runtime,
+    provider: requested.provider,
+    model: requested.model,
+  };
   if (input.runtime === "cloud" && input.cloud !== undefined) {
-    return JSON.stringify({ cloud: input.cloud, docPath: input.docPath });
+    return JSON.stringify({ cloud: input.cloud, docPath: input.docPath, ...observability });
   }
   if (input.runtime === "rooms" && input.room !== undefined) {
-    return JSON.stringify({ room: input.room, docPath: input.docPath });
+    return JSON.stringify({ room: input.room, docPath: input.docPath, ...observability });
   }
-  return JSON.stringify({ docPath: input.docPath });
+  return JSON.stringify({ docPath: input.docPath, ...observability });
 }
 
 function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): PreparedRun {
@@ -1003,11 +1045,19 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
     worktree,
     policy: DEFAULT_WORKFLOW_POLICY,
   });
+  const requestedModel = resolveModelSelection(
+    ctx.input,
+    resolveBaseDefaultModel(ctx.config, ctx.provider),
+  );
   ctx.store.appendPhase({
     id: phaseId,
     workflowRunId,
     kind: "implement",
-    inputJson: buildImplementInputJson(ctx.input),
+    inputJson: buildImplementInputJson(ctx.input, {
+      model: requestedModel,
+      provider: ctx.provider,
+      runtime: ctx.resolvedCursorRuntime,
+    }),
   });
 
   return {

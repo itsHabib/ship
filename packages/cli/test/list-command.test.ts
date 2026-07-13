@@ -42,6 +42,29 @@ test("list --json emits { runs: [...] }", async () => {
   expect(parsed.runs).toHaveLength(2);
 });
 
+test("list and status observability subviews match for the same run", async () => {
+  h.harness.cursor.enqueue({
+    events: [],
+    result: { status: "succeeded", durationMs: 321, branches: [] },
+  });
+  const out = await h.service.ship({
+    workdir: TEST_WORKDIR,
+    repo: "ship",
+    docPath: "docs.md",
+  });
+  h.stdout.length = 0;
+  await runArgv(h.program, ["list", "--json"]);
+  const listed = JSON.parse(h.stdout.join("").trim()) as {
+    runs: { id: string; observability?: unknown }[];
+  };
+  h.stdout.length = 0;
+  await runArgv(h.program, ["status", out.workflowRunId, "--json"]);
+  const status = JSON.parse(h.stdout.join("").trim()) as { observability?: unknown };
+  const listRow = listed.runs.find((row) => row.id === out.workflowRunId);
+  expect(listRow?.observability).toEqual(status.observability);
+  expect(listRow?.observability).toBeDefined();
+});
+
 test("--repo + repeated --status + --limit reach the service", async () => {
   await shipN(1);
   h.stdout.length = 0;
