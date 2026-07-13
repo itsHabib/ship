@@ -3,6 +3,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     globals: false,
+    // Never write park receipts to the real ship data-dir file when a test
+    // parks a run. See packages/receipt/test/receipts-isolation.ts.
+    setupFiles: ["./test/receipts-isolation.ts"],
     include: ["src/**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/dist/**"],
     coverage: {

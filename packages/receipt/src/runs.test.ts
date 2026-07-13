@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   loadShipRunReceipts,
   plausibleDispatch,
+  resolveDefaultReceiptsPath,
   resolveDefaultRunsDir,
   runResultToReceipt,
 } from "./runs.js";
@@ -177,6 +178,30 @@ describe("resolveDefaultRunsDir", () => {
   it("falls back to ~/.config on posix", () => {
     expect(resolveDefaultRunsDir({}, "darwin", "/home/u")).toBe(
       join("/home/u", ".config", "ship", "runs"),
+    );
+  });
+});
+
+describe("resolveDefaultReceiptsPath", () => {
+  it("honors the SHIP_RECEIPTS_PATH override", () => {
+    expect(
+      resolveDefaultReceiptsPath(
+        { SHIP_RECEIPTS_PATH: "/custom/receipts.jsonl" },
+        "linux",
+        "/home/u",
+      ),
+    ).toBe("/custom/receipts.jsonl");
+  });
+
+  it("uses APPDATA on win32", () => {
+    expect(
+      resolveDefaultReceiptsPath({ APPDATA: "C:\\AppData\\Roaming" }, "win32", "C:\\Users\\u"),
+    ).toBe(join("C:\\AppData\\Roaming", "ship", "receipts.jsonl"));
+  });
+
+  it("falls back to ~/.config on posix", () => {
+    expect(resolveDefaultReceiptsPath({}, "linux", "/home/u")).toBe(
+      join("/home/u", ".config", "ship", "receipts.jsonl"),
     );
   });
 });

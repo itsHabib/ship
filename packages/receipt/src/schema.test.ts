@@ -17,6 +17,12 @@ describe("buildReceipt", () => {
     expect(() => buildReceipt({ key: "k", source: "driver", outcome: "bogus" })).toThrow();
   });
 
+  it("accepts the parked outcome on the current schema version", () => {
+    const receipt = buildReceipt({ key: "k", source: "driver", outcome: "parked" });
+    expect(receipt.outcome).toBe("parked");
+    expect(receipt.schema_version).toBe(RECEIPT_SCHEMA_VERSION);
+  });
+
   it("throws on a missing key", () => {
     expect(() => buildReceipt({ source: "driver", outcome: "merged" })).toThrow();
   });

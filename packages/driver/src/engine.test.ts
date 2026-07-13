@@ -1,7 +1,9 @@
 /** Engine tick loop tests — fake clock, fake port, in-memory store. */
 
+import type { LogFields, Logger } from "@ship/logger";
 import type { DriverStream } from "@ship/store";
 
+import { parseReceiptsJsonl } from "@ship/receipt";
 import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +31,34 @@ import { createFakeGhPort } from "./test/fake-gh-port.js";
 import { createFakeShipPort } from "./test/fake-ship-port.js";
 
 const noopProgress = (): void => undefined;
+
+/**
+ * Restore `SHIP_RECEIPTS_PATH` to a captured prior value, deleting it (static
+ * key, so no dynamic-delete) when it was unset — coercing to the string
+ * `"undefined"` would defeat the setup file's `=== undefined` guard.
+ */
+function restoreReceiptsPath(prior: string | undefined): void {
+  if (prior === undefined) {
+    delete process.env["SHIP_RECEIPTS_PATH"];
+    return;
+  }
+  process.env["SHIP_RECEIPTS_PATH"] = prior;
+}
+
+/** A minimal logger that records the messages passed to `warn`/`error`. */
+function makeCapturingLogger(sink: string[]): Logger {
+  const record = (_fields: LogFields, msg: string): void => {
+    sink.push(msg);
+  };
+  const logger: Logger = {
+    debug: () => undefined,
+    info: () => undefined,
+    warn: record,
+    error: record,
+    child: () => logger,
+  };
+  return logger;
+}
 
 describe("driver engine", () => {
   let tmpDir: string;
@@ -422,6 +452,141 @@ batches:
     });
     expect(resolved).toHaveLength(0);
     store.close();
+  });
+
+  test("awaiting_judgment writes exactly one parked receipt; re-tick is idempotent", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    // This test ASSERTS on receipt contents, so it pins SHIP_RECEIPTS_PATH to a
+    // fresh file under its own temp dir — isolated from the file-wide safety-net
+    // path so the "exactly one" count is deterministic and not polluted by other
+    // parking tests. Restored in the finally so the safety net covers the rest.
+    const receiptsPath = join(tmpDir, "park-receipts.jsonl");
+    const priorReceiptsPath = process.env["SHIP_RECEIPTS_PATH"];
+    process.env["SHIP_RECEIPTS_PATH"] = receiptsPath;
+    const { port } = createFakeShipPort([
+      {
+        docPath: docA,
+        failureCategory: "timeout-near-cap",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_fail",
+      },
+    ]);
+
+    const store = createStore({ dbPath: ":memory:" });
+    try {
+      const driver = createDriverService({ ship: port, store });
+      const imported = driver.importManifest(manifestPath);
+
+      const first = await driver.run(
+        { driverRunId: imported.run.id },
+        { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+      );
+      expect(first.status).toBe("awaiting_judgment");
+
+      const afterFirst = parseReceiptsJsonl(readFileSync(receiptsPath, "utf8"));
+      const parkedFirst = afterFirst.filter((receipt) => receipt.outcome === "parked");
+      expect(parkedFirst).toHaveLength(1);
+      expect(parkedFirst[0]?.source).toBe("driver");
+      expect(parkedFirst[0]?.repo).toBe("ship");
+      // Key is prefixed with the driver run id so a later run of the same task
+      // is not deduped away by flare (key+outcome) as a duplicate park.
+      expect(parkedFirst[0]?.key).toBe(`${imported.run.id}:feat-a`);
+      expect(parkedFirst[0]?.doc_path).toBe("docs/tasks/a.md");
+
+      const second = await driver.run(
+        { driverRunId: imported.run.id },
+        { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+      );
+      expect(second.status).toBe("awaiting_judgment");
+
+      const afterSecond = parseReceiptsJsonl(readFileSync(receiptsPath, "utf8"));
+      expect(afterSecond.filter((receipt) => receipt.outcome === "parked")).toHaveLength(1);
+    } finally {
+      restoreReceiptsPath(priorReceiptsPath);
+      store.close();
+    }
+  });
+
+  test("awaiting_judgment appends the park at EOF, preserving an existing prefix", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    // flare tails this file by offset, so the park MUST land after any existing
+    // rows — a pre-seeded prefix must stay byte-identical.
+    const receiptsPath = join(tmpDir, "park-append.jsonl");
+    writeFileSync(
+      receiptsPath,
+      `${JSON.stringify({ schema_version: 1, key: "prior", source: "driver", outcome: "merged", repo: "ship", merged_at: "2999-01-01T00:00:00.000Z" })}\n`,
+    );
+    const prefixBefore = readFileSync(receiptsPath, "utf8");
+    const priorReceiptsPath = process.env["SHIP_RECEIPTS_PATH"];
+    process.env["SHIP_RECEIPTS_PATH"] = receiptsPath;
+    const { port } = createFakeShipPort([
+      {
+        docPath: docA,
+        failureCategory: "timeout-near-cap",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_fail",
+      },
+    ]);
+
+    const store = createStore({ dbPath: ":memory:" });
+    try {
+      const driver = createDriverService({ ship: port, store });
+      const imported = driver.importManifest(manifestPath);
+      await driver.run(
+        { driverRunId: imported.run.id },
+        { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+      );
+
+      const text = readFileSync(receiptsPath, "utf8");
+      expect(text.startsWith(prefixBefore)).toBe(true);
+      const rows = parseReceiptsJsonl(text);
+      expect(rows[0]?.key).toBe("prior");
+      expect(rows.at(-1)?.outcome).toBe("parked");
+    } finally {
+      restoreReceiptsPath(priorReceiptsPath);
+      store.close();
+    }
+  });
+
+  test("a park-write failure does not abort the awaiting_judgment tick", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    // Point the receipts path THROUGH a regular file, so mkdirSync/writeFileSync
+    // throw (a path component is a file) — proving park telemetry is best-effort
+    // and never load-bearing for the tick.
+    const blocker = join(tmpDir, "blocker-file");
+    writeFileSync(blocker, "not a directory\n");
+    const receiptsPath = join(blocker, "ship", "receipts.jsonl");
+    const priorReceiptsPath = process.env["SHIP_RECEIPTS_PATH"];
+    process.env["SHIP_RECEIPTS_PATH"] = receiptsPath;
+    const warnings: string[] = [];
+    const logger = makeCapturingLogger(warnings);
+    const { port } = createFakeShipPort([
+      {
+        docPath: docA,
+        failureCategory: "timeout-near-cap",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_fail",
+      },
+    ]);
+
+    const store = createStore({ dbPath: ":memory:" });
+    try {
+      const driver = createDriverService({ logger, ship: port, store });
+      const imported = driver.importManifest(manifestPath);
+      const result = await driver.run(
+        { driverRunId: imported.run.id },
+        { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+      );
+      // The run is still correctly parked despite the failed receipt write.
+      expect(result.status).toBe("awaiting_judgment");
+      expect(warnings.some((msg) => msg.includes("park receipts"))).toBe(true);
+    } finally {
+      restoreReceiptsPath(priorReceiptsPath);
+      store.close();
+    }
   });
 
   test("queue-tier stream-parked never spawns notify", async () => {
