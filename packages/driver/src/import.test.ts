@@ -277,6 +277,41 @@ describe("importManifest tier threading", () => {
     expect(streams[1]?.effortTier).toBe("extra");
     rmSync(dir, { force: true, recursive: true });
   });
+
+  it("persists model_id (stream field and default) onto stream rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-import-modelid-"));
+    const path = join(dir, "driver.md");
+    writeFileSync(
+      path,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-07-13T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: modelid-test",
+        "repo: ship",
+        "default_model_id: composer-2.5",
+        "batches:",
+        "  - id: 1",
+        "    depends_on: []",
+        "    streams:",
+        "      - spec_path: docs/a.md",
+        "        model_id: grok-4.5",
+        "      - spec_path: docs/b.md",
+        "---",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { run } = importManifest(store, path);
+    const streams = run.batches[0]?.streams ?? [];
+    // Stream field wins; the second stream inherits the run default.
+    expect(streams[0]?.modelId).toBe("grok-4.5");
+    expect(streams[1]?.modelId).toBe("composer-2.5");
+    rmSync(dir, { force: true, recursive: true });
+  });
 });
 
 describe("importManifest provider threading", () => {

@@ -1,9 +1,10 @@
 /**
  * Policy table: manifest model/effort tiers → `ShipInput` fields per provider.
  *
- * The driver performs no inference — callers supply tiers; this module maps
- * them to concrete runner knobs. Unknown provider cells degrade to engine
- * defaults with a recorded reason.
+ * The driver performs no inference — callers supply tiers (and optionally a
+ * verbatim `modelId`, which wins over the tier for model selection); this
+ * module maps them to concrete runner knobs. Unknown provider cells degrade
+ * to engine defaults with a recorded reason.
  */
 
 import type { ShipInput } from "@ship/core";
@@ -29,12 +30,39 @@ const CURSOR_MODEL_BY_TIER: Record<
   opus: { model: "claude-opus-4-8" },
 };
 
-// Cursor models exposing a reasoning-effort parameter; composer ids don't.
-const CURSOR_MODELS_WITH_EFFORT = new Set(["claude-opus-4-8"]);
+// Per-model-id effort capability (model-lottery spec §3.4): how a known
+// cursor id expresses reasoning effort, keyed by the id that dispatches —
+// tier-mapped and passthrough ids hit the same row. Ids absent from the
+// table dispatch with no effort params + a recorded degrade; adding a model
+// is one row here, only needed when effort control for it is wanted.
+interface ModelCapability {
+  effortValueByTier: Record<Exclude<EffortTier, "ultracode">, string>;
+  ultracode: { value: string; reason: string };
+  params: (effortValue: string) => NonNullable<ShipInput["modelParams"]>;
+}
 
-const CURSOR_EFFORT_VALUE_BY_TIER: Record<Exclude<EffortTier, "ultracode">, string> = {
-  extra: "xhigh",
-  max: "max",
+const CURSOR_CAPABILITY_BY_MODEL_ID: Record<string, ModelCapability> = {
+  "claude-opus-4-8": {
+    effortValueByTier: { extra: "xhigh", max: "max" },
+    params: cursorEffortVariantParams,
+    ultracode: {
+      reason:
+        'cursor has no multi-agent analog for effort tier "ultracode"; dispatching at max effort',
+      value: "max",
+    },
+  },
+  // Verified against GET /v1/models 2026-07-12; variant tuple is
+  // (effort: low|medium|high, fast). No max/xhigh analog — manifest tiers
+  // map to grok's nearest values.
+  "grok-4.5": {
+    effortValueByTier: { extra: "medium", max: "high" },
+    params: grokEffortVariantParams,
+    ultracode: {
+      reason:
+        'cursor has no multi-agent analog for effort tier "ultracode"; dispatching grok-4.5 at high effort',
+      value: "high",
+    },
+  },
 };
 
 const CLAUDE_MODEL_BY_TIER: Record<ModelTier, string> = {
@@ -53,27 +81,30 @@ export function mapTierToDispatch(
   provider: AgentProvider,
   modelTier?: ModelTier,
   effortTier?: EffortTier,
+  modelId?: string,
 ): TierDispatchResult {
-  if (modelTier === undefined && effortTier === undefined) {
+  if (modelTier === undefined && effortTier === undefined && modelId === undefined) {
     return {};
   }
   if (provider === "cursor") {
-    return mapCursorTier(modelTier, effortTier);
+    return mapCursorTier(modelTier, effortTier, modelId);
   }
   if (provider === "claude") {
-    return mapClaudeTier(modelTier, effortTier);
+    return mapClaudeTier(modelTier, effortTier, modelId);
   }
-  return unknownProviderDegrade(provider, modelTier, effortTier);
+  return unknownProviderDegrade(provider, modelTier, effortTier, modelId);
 }
 
 function mapCursorTier(
   modelTier: ModelTier | undefined,
   effortTier: EffortTier | undefined,
+  modelId: string | undefined,
 ): TierDispatchResult {
-  let model: string | undefined;
+  // modelId wins for model selection (spec §3.1): verbatim, no tier params.
+  let model: string | undefined = modelId;
   let modelParams: NonNullable<ShipInput["modelParams"]> | undefined;
 
-  if (modelTier !== undefined) {
+  if (model === undefined && modelTier !== undefined) {
     const mapped = CURSOR_MODEL_BY_TIER[modelTier];
     model = mapped.model;
     modelParams = mapped.modelParams;
@@ -83,18 +114,22 @@ function mapCursorTier(
     return buildDispatchResult(model, modelParams);
   }
 
-  if (model === undefined || !CURSOR_MODELS_WITH_EFFORT.has(model)) {
+  const capability = model === undefined ? undefined : CURSOR_CAPABILITY_BY_MODEL_ID[model];
+  if (capability === undefined) {
     return buildDispatchResult(model, modelParams, {
       effortDegraded: true,
       reason: cursorEffortDegradeReason(model, effortTier),
     });
   }
 
-  const value = effortTier === "ultracode" ? "max" : CURSOR_EFFORT_VALUE_BY_TIER[effortTier];
+  const value =
+    effortTier === "ultracode"
+      ? capability.ultracode.value
+      : capability.effortValueByTier[effortTier];
   // Cursor variant matching is exact on the FULL param tuple: a lone effort
   // param matches no listed variant and agent.send rejects it as
   // invalid_model. Emit every parameter of the target variant.
-  modelParams = cursorEffortVariantParams(value);
+  modelParams = capability.params(value);
 
   if (effortTier !== "ultracode") {
     return buildDispatchResult(model, modelParams);
@@ -102,8 +137,7 @@ function mapCursorTier(
 
   return buildDispatchResult(model, modelParams, {
     effortDegraded: true,
-    reason:
-      'cursor has no multi-agent analog for effort tier "ultracode"; dispatching at max effort',
+    reason: capability.ultracode.reason,
   });
 }
 
@@ -115,6 +149,16 @@ function cursorEffortVariantParams(effort: string): NonNullable<ShipInput["model
     { id: "cyber", value: "false" },
     { id: "thinking", value: "false" },
     { id: "context", value: "300k" },
+    { id: "effort", value: effort },
+    { id: "fast", value: "false" },
+  ];
+}
+
+function grokEffortVariantParams(effort: string): NonNullable<ShipInput["modelParams"]> {
+  // `fast` is pinned off: ship tasks are long-running, so grok's fast mode
+  // (the analog of the cursor `fable` tier) never fits a dispatch. A future
+  // `grok-4.5-fast`-style capability row would flip this.
+  return [
     { id: "effort", value: effort },
     { id: "fast", value: "false" },
   ];
@@ -133,14 +177,18 @@ function cursorEffortDegradeReason(model: string | undefined, effortTier: Effort
 function mapClaudeTier(
   modelTier: ModelTier | undefined,
   effortTier: EffortTier | undefined,
+  modelId: string | undefined,
 ): TierDispatchResult {
   const degradeParts: string[] = [];
   const degrade: TierDegrade = {};
 
-  let model: string | undefined;
+  // modelId wins for model selection (spec §3.1); no cross-provider
+  // translation — an id the claude runner doesn't know fails at dispatch
+  // with the provider's error (spec §3.3).
+  let model: string | undefined = modelId;
   let modelParams: NonNullable<ShipInput["modelParams"]> | undefined;
 
-  if (modelTier !== undefined) {
+  if (model === undefined && modelTier !== undefined) {
     model = CLAUDE_MODEL_BY_TIER[modelTier];
   }
 
@@ -172,14 +220,29 @@ function unknownProviderDegrade(
   provider: AgentProvider,
   modelTier: ModelTier | undefined,
   effortTier: EffortTier | undefined,
+  modelId: string | undefined,
 ): TierDispatchResult {
-  const parts: string[] = [`no tier mapping for provider "${provider}"; using engine default`];
-  const degrade: TierDegrade = {
-    modelDegraded: modelTier !== undefined,
-    effortDegraded: effortTier !== undefined,
-    reason: parts.join("; "),
-  };
-  return { degrade };
+  // A verbatim id passes through unchanged (spec §3.3). An unknown provider
+  // has no tier map and no effort knob, so a model_id-only run degrades
+  // nothing — return the passthrough model with no degrade rather than a
+  // misleading "using engine default" that would surface as degraded status.
+  const modelDegraded = modelId === undefined && modelTier !== undefined;
+  const effortDegraded = effortTier !== undefined;
+  const model = modelId;
+
+  if (!modelDegraded && !effortDegraded) {
+    return model === undefined ? {} : { model };
+  }
+
+  const parts: string[] = [];
+  if (modelDegraded) {
+    parts.push(`no tier mapping for provider "${provider}"; using engine default`);
+  }
+  if (effortDegraded) {
+    parts.push(`no effort mapping for provider "${provider}"; effort tier dropped`);
+  }
+  const degrade: TierDegrade = { modelDegraded, effortDegraded, reason: parts.join("; ") };
+  return model === undefined ? { degrade } : { degrade, model };
 }
 
 function reasoningParam(value: string): ModelParam {

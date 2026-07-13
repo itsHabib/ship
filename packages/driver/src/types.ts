@@ -132,6 +132,7 @@ export interface DriverStreamView {
   workflowRunId?: string;
   prUrl?: string;
   modelTier?: ModelTier;
+  modelId?: string;
   effortTier?: EffortTier;
   provider?: AgentProvider;
   dispatchProvider?: AgentProvider;

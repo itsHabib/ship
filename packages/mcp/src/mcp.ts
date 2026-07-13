@@ -562,6 +562,7 @@ const driverStreamViewSchema = z
     workflowRunId: workflowRunIdSchema.optional(),
     prUrl: z.string().optional(),
     modelTier: driverModelTierSchema.optional(),
+    modelId: z.string().min(1).optional(),
     effortTier: driverEffortTierSchema.optional(),
     provider: agentProviderSchema.optional(),
     dispatchProvider: agentProviderSchema.optional(),

@@ -54,6 +54,7 @@ export interface DriverStreamRow {
   review_cycles: number | null;
   error_message: string | null;
   model_tier: string | null;
+  model_id: string | null;
   effort_tier: string | null;
   provider: string | null;
   dispatch_provider: string | null;
@@ -86,6 +87,7 @@ interface InsertStreamRowInput {
   cycles?: number;
   errorMessage?: string;
   modelTier?: DriverStream["modelTier"];
+  modelId?: DriverStream["modelId"];
   effortTier?: DriverStream["effortTier"];
   provider?: DriverStream["provider"];
   createdAt: string;
@@ -104,7 +106,7 @@ export interface DriverStreamOps {
 }
 
 const STREAM_COLUMNS =
-  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, created_at, updated_at";
+  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, model_id, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, created_at, updated_at";
 
 function sqlNull<T>(value: T | undefined): T | null {
   return value ?? null;
@@ -123,10 +125,10 @@ export function createDriverStreamOps(
     `INSERT INTO driver_streams (
        id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch,
        runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url,
-       merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, provider,
-       dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded,
+       merge_commit, merged_at, cycles, error_message, model_tier, model_id, effort_tier,
+       provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded,
        tier_degrade_reason, work_on_current_branch, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], DriverStreamRow>(
     `SELECT ${STREAM_COLUMNS} FROM driver_streams WHERE id = ?`,
@@ -160,6 +162,7 @@ export function createDriverStreamOps(
       sqlNull(input.cycles),
       sqlNull(input.errorMessage),
       sqlNull(input.modelTier),
+      sqlNull(input.modelId),
       sqlNull(input.effortTier),
       sqlNull(input.provider),
       null,
@@ -306,6 +309,7 @@ function optionalStreamFields(row: DriverStreamRow): Record<string, string | num
     ["errorMessage", row.error_message],
     ["mergeCommit", row.merge_commit],
     ["mergedAt", row.merged_at],
+    ["modelId", row.model_id],
     ["modelTier", row.model_tier],
     ["prNumber", row.pr_number],
     ["prUrl", row.pr_url],

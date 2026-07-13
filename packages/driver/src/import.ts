@@ -77,6 +77,7 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
     buildBatchInput(batch, {
       defaultEffort: manifest.default_effort,
       defaultModel: manifest.default_model,
+      defaultModelId: manifest.default_model_id,
       defaultProvider: manifest.default_provider,
       defaultRuntime: manifest.default_runtime,
     }),
@@ -177,6 +178,7 @@ function deriveRunStatus(batchStatuses: DriverBatchStatus[]): DriverRun["status"
 interface ManifestStreamDefaults {
   defaultRuntime: ManifestStream["runtime"] | undefined;
   defaultModel: ManifestStream["model"] | undefined;
+  defaultModelId: ManifestStream["model_id"] | undefined;
   defaultEffort: ManifestStream["effort"] | undefined;
   defaultProvider: AgentProvider | undefined;
 }
@@ -253,6 +255,7 @@ function buildStreamInput(
   mergedAt?: string;
   cycles?: number;
   modelTier?: ReturnType<typeof resolveStreamTier>["modelTier"];
+  modelId?: ReturnType<typeof resolveStreamTier>["modelId"];
   effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
   provider?: ReturnType<typeof resolveStreamProvider>["provider"];
 } {
@@ -273,6 +276,7 @@ function buildStreamInput(
     mergedAt?: string;
     cycles?: number;
     modelTier?: ReturnType<typeof resolveStreamTier>["modelTier"];
+    modelId?: ReturnType<typeof resolveStreamTier>["modelId"];
     effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
     provider?: ReturnType<typeof resolveStreamProvider>["provider"];
   } = {
@@ -283,7 +287,12 @@ function buildStreamInput(
     status: manifestStatusToStore(stream.status),
     streamIndex,
     touches: stream.touches,
-    ...resolveStreamTier(stream, defaults.defaultModel, defaults.defaultEffort),
+    ...resolveStreamTier(
+      stream,
+      defaults.defaultModel,
+      defaults.defaultEffort,
+      defaults.defaultModelId,
+    ),
     ...resolveStreamProvider(stream, defaults.defaultProvider),
     ...optionalStreamInputFields(stream),
   };

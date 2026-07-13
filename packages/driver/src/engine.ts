@@ -604,7 +604,12 @@ async function dispatchStream(
   };
   const attempts = [...stream.attempts, attempt];
   const provider = stream.provider ?? DEFAULT_DISPATCH_PROVIDER;
-  const tierMapping = mapTierToDispatch(provider, stream.modelTier, stream.effortTier);
+  const tierMapping = mapTierToDispatch(
+    provider,
+    stream.modelTier,
+    stream.effortTier,
+    stream.modelId,
+  );
 
   ctx.store.updateDriverStream(stream.id, {
     attempts,
@@ -1093,7 +1098,12 @@ function consumePreparedAddress(params: {
     terminal: false,
   };
   const provider = stream.provider ?? DEFAULT_DISPATCH_PROVIDER;
-  const tierMapping = mapTierToDispatch(provider, stream.modelTier, stream.effortTier);
+  const tierMapping = mapTierToDispatch(
+    provider,
+    stream.modelTier,
+    stream.effortTier,
+    stream.modelId,
+  );
   const dispatchPatch = tierDispatchPatch(provider, tierMapping);
   try {
     store.consumeReviewArtifactAndPrepareDispatch({
@@ -1371,7 +1381,12 @@ export function buildShipInputForTest(
   continuation?: CloudContinuation,
 ): ShipInput {
   const provider = stream.provider ?? DEFAULT_DISPATCH_PROVIDER;
-  const tierMapping = mapTierToDispatch(provider, stream.modelTier, stream.effortTier);
+  const tierMapping = mapTierToDispatch(
+    provider,
+    stream.modelTier,
+    stream.effortTier,
+    stream.modelId,
+  );
   return buildShipInput({
     ctx,
     docPath,

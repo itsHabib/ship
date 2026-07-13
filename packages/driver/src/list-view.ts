@@ -61,6 +61,7 @@ export interface DriverListStreamView {
   updatedAt: string;
   provider?: DriverStream["provider"];
   modelTier?: DriverStream["modelTier"];
+  modelId?: DriverStream["modelId"];
   effortTier?: DriverStream["effortTier"];
   dispatchProvider?: DriverStream["dispatchProvider"];
   dispatchModel?: string;
@@ -153,10 +154,12 @@ function optionalStreamIdentityFields(
 
 function optionalStreamRequestedFields(
   stream: DriverStream,
-): Pick<DriverListStreamView, "provider" | "modelTier" | "effortTier"> {
-  const fields: Pick<DriverListStreamView, "provider" | "modelTier" | "effortTier"> = {};
+): Pick<DriverListStreamView, "provider" | "modelTier" | "modelId" | "effortTier"> {
+  const fields: Pick<DriverListStreamView, "provider" | "modelTier" | "modelId" | "effortTier"> =
+    {};
   if (stream.provider !== undefined) fields.provider = stream.provider;
   if (stream.modelTier !== undefined) fields.modelTier = stream.modelTier;
+  if (stream.modelId !== undefined) fields.modelId = stream.modelId;
   if (stream.effortTier !== undefined) fields.effortTier = stream.effortTier;
   return fields;
 }
