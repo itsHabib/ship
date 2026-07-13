@@ -22,6 +22,7 @@ import type {
   ShipInput,
   ShipOutput,
   ShipStartOutput,
+  WorkflowRunListItem,
 } from "@ship/mcp";
 import type { ListRunsFilter, ResumableCloudCursorRun, Store } from "@ship/store";
 import type {
@@ -83,7 +84,7 @@ import {
   startCapDiscontinuitySampler,
   wireCapStreamFold,
 } from "./cursor-runs/duration-cap-wire.js";
-import { runWithDurationCap } from "./cursor-runs/duration-cap.js";
+import { DEFAULT_INACTIVITY_TIMEOUT_MS, runWithDurationCap } from "./cursor-runs/duration-cap.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
 import { selectStaleOrphanResumeCandidates } from "./cursor-runs/orphan-resume.js";
 import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
@@ -103,6 +104,7 @@ import {
 } from "./errors.js";
 import { executePruneRuns, type PruneRunsInput, type PruneRunsOutput } from "./prune/prune.js";
 import { resolveValidatedDoc, resolveValidatedDocForCloud } from "./validate.js";
+import { projectWorkflowObservability } from "./workflow-observability.js";
 
 /** Construction-time configuration for the service. */
 export interface ShipServiceConfig {
@@ -190,7 +192,7 @@ export interface ShipService {
   // `getRun` for terminal state. CLI keeps using `ship` (blocking).
   startShip(input: ShipInput): Promise<ShipStartOutput>;
   getRun(workflowRunId: string): Promise<GetWorkflowRunOutput | null>;
-  listRuns(filter: ListRunsFilter): Promise<WorkflowRun[]>;
+  listRuns(filter: ListRunsFilter): Promise<WorkflowRunListItem[]>;
   cancelRun(workflowRunId: string): Promise<{ workflowRunId: string; status: WorkflowStatus }>;
   // Awaits every in-flight `startShip` background continuation to fully
   // settle (success, failure, or safety-net stderr log). Use this before
@@ -402,13 +404,40 @@ function enrichCloudAgentFields(
   return enriched;
 }
 
+function attachWorkflowObservability(
+  store: Store,
+  run: WorkflowRun,
+): GetWorkflowRunOutput | WorkflowRunListItem {
+  const latest = store.listLatestCursorRunsByWorkflowRunIds([run.id]);
+  const cursorRun = latest.get(run.id) ?? null;
+  return {
+    ...run,
+    observability: projectWorkflowObservability(run, cursorRun),
+  };
+}
+
+function attachWorkflowObservabilityBatch(
+  store: Store,
+  runs: readonly WorkflowRun[],
+): WorkflowRunListItem[] {
+  const ids = runs.map((run) => run.id);
+  const latestByRunId = store.listLatestCursorRunsByWorkflowRunIds(ids);
+  return runs.map((run) => {
+    const cursorRun = latestByRunId.get(run.id) ?? null;
+    return {
+      ...run,
+      observability: projectWorkflowObservability(run, cursorRun),
+    };
+  });
+}
+
 /** MCP `get_workflow_run` view: domain run plus derived cloud watch + failure diagnostics. */
 async function enrichWorkflowRunView(
   deps: { readonly store: Store; readonly fs: ShipFs; readonly runsDir: string },
   run: WorkflowRun | null,
 ): Promise<GetWorkflowRunOutput | null> {
   if (run === null) return null;
-  let view: GetWorkflowRunOutput = { ...run };
+  let view: GetWorkflowRunOutput = attachWorkflowObservability(deps.store, run);
   const latestCloud = resolveLatestCloudAgentRun(deps.store, run);
   if (latestCloud !== undefined) {
     view = enrichCloudAgentFields(view, latestCloud);
@@ -543,7 +572,8 @@ export function createShipService(deps: ShipServiceDeps): ShipService {
     ship: (input) => runShip(makeCtx(input)),
     startShip: (input) => runShipStart(makeCtx(input), bgPending),
     getRun: (id) => enrichWorkflowRunView({ store, fs, runsDir: config.runsDir }, store.getRun(id)),
-    listRuns: (filter) => Promise.resolve(store.listRuns(filter)),
+    listRuns: (filter) =>
+      Promise.resolve(attachWorkflowObservabilityBatch(store, store.listRuns(filter))),
     cancelRun: (id) => {
       try {
         const active = activeRuns.get(id);
@@ -957,14 +987,26 @@ function runScopedLogger(logger: Logger, fields: LogFields): Logger {
 
 // The implement phase's `input_json`, persisted for forensics. The cloud
 // spec is also read back on resume; rooms has no resume path.
-function buildImplementInputJson(input: ShipInput): string {
+function buildImplementInputJson(
+  input: ShipInput,
+  requested: {
+    readonly runtime: CursorRunRuntime;
+    readonly provider: AgentProvider;
+    readonly model: ModelSelection;
+  },
+): string {
+  const observability = {
+    runtime: requested.runtime,
+    provider: requested.provider,
+    model: requested.model,
+  };
   if (input.runtime === "cloud" && input.cloud !== undefined) {
-    return JSON.stringify({ cloud: input.cloud, docPath: input.docPath });
+    return JSON.stringify({ cloud: input.cloud, docPath: input.docPath, ...observability });
   }
   if (input.runtime === "rooms" && input.room !== undefined) {
-    return JSON.stringify({ room: input.room, docPath: input.docPath });
+    return JSON.stringify({ room: input.room, docPath: input.docPath, ...observability });
   }
-  return JSON.stringify({ docPath: input.docPath });
+  return JSON.stringify({ docPath: input.docPath, ...observability });
 }
 
 function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): PreparedRun {
@@ -1003,11 +1045,19 @@ function persistInitialState(ctx: ShipContext, validated: ValidatedDoc): Prepare
     worktree,
     policy: DEFAULT_WORKFLOW_POLICY,
   });
+  const requestedModel = resolveModelSelection(
+    ctx.input,
+    resolveBaseDefaultModel(ctx.config, ctx.provider),
+  );
   ctx.store.appendPhase({
     id: phaseId,
     workflowRunId,
     kind: "implement",
-    inputJson: buildImplementInputJson(ctx.input),
+    inputJson: buildImplementInputJson(ctx.input, {
+      model: requestedModel,
+      provider: ctx.provider,
+      runtime: ctx.resolvedCursorRuntime,
+    }),
   });
 
   return {
@@ -1102,14 +1152,23 @@ async function runToTerminal(
     const result = await runWithDurationCap({
       log: runLog,
       maxRunDurationMs: resolveMaxRunDurationMs(ctx.store, prep.workflowRunId),
+      // Local runs drive the inactivity watchdog off `onEvent`; the backstop is
+      // `maxRunDurationMs`. Remote runs ignore it (they track liveness via
+      // server-anchored probes / stream age) so it's only wired locally.
+      ...(!remoteCap && {
+        inactivityTimeoutMs: resolveInactivityTimeoutMs(ctx.store, prep.workflowRunId),
+      }),
+      // `onCapReady` captures the cap's event hook for BOTH runtimes: local uses
+      // it for the inactivity watchdog (fed by `onEvent` → `wireCapStreamFold`),
+      // remote additionally starts the discontinuity sampler.
+      onCapReady: (handle) => {
+        capHandle = handle;
+        if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
+          stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle: handle });
+        }
+      },
       ...(remoteCap && {
         kind: "fresh" as const,
-        onCapReady: (handle) => {
-          capHandle = handle;
-          if (ctx.resolvedCursorRuntime === "cloud" || ctx.resolvedCursorRuntime === "rooms") {
-            stopDiscontinuitySampler = startCapDiscontinuitySampler({ capHandle: handle });
-          }
-        },
         signals: buildRemoteCapSignals({
           getHandle: () => capHandleRef,
           provider: ctx.provider,
@@ -1415,6 +1474,18 @@ interface ClassifiedFailure {
 function resolveMaxRunDurationMs(store: Store, workflowRunId: string): number {
   return (
     store.getRun(workflowRunId)?.policy.maxRunDurationMs ?? DEFAULT_WORKFLOW_POLICY.maxRunDurationMs
+  );
+}
+
+// Inactivity window from policy, falling back to the default when the run's
+// stored policy omits it (a historical `policy_json` blob written before the
+// field existed). `?? DEFAULT` twice: the run row may be missing entirely, and
+// even a present row may carry a legacy policy without the optional field.
+function resolveInactivityTimeoutMs(store: Store, workflowRunId: string): number {
+  return (
+    store.getRun(workflowRunId)?.policy.inactivityTimeoutMs ??
+    DEFAULT_WORKFLOW_POLICY.inactivityTimeoutMs ??
+    DEFAULT_INACTIVITY_TIMEOUT_MS
   );
 }
 

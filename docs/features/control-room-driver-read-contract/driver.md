@@ -14,7 +14,7 @@ batches:
   - id: 1
     label: driver discovery contract
     depends_on: []
-    status: pending
+    status: done
     streams:
       - task_id: tsk_01KXCY4CK4MB41XDFQR35FCKZ5
         task_slug: control-room-driver-list-contract
@@ -24,11 +24,14 @@ batches:
         model: sonnet
         effort: extra
         touches: [packages/driver/src/service.ts, packages/cli/src/commands/driver.ts, packages/cli/src/format.ts, packages/cli/test/driver-command.test.ts]
-        status: pending
+        status: done
+        pr_number: 193
+        merge_commit: 66d1f49bd526632d03873ad887243eb3199ae3da
+        merged_at: 2026-07-13T08:16:08Z
   - id: 2
     label: workflow observability contract after CLI/schema surface settles
     depends_on: [1]
-    status: pending
+    status: done
     streams:
       - task_id: tsk_01KXCYSQ6BACMN4E8PY6XJ8PQW
         task_slug: control-room-workflow-observability-contract
@@ -38,7 +41,10 @@ batches:
         model: sonnet
         effort: extra
         touches: [packages/store/src/cursor-runs.ts, packages/store/src/store.ts, packages/core/src/service.ts, packages/mcp/src/mcp.ts, packages/cli/src/commands/list.ts, packages/cli/src/commands/status.ts, packages/cli/src/format.ts, packages/cli/test/list-command.test.ts, packages/cli/test/status-command.test.ts]
-        status: pending
+        status: done
+        pr_number: 194
+        merge_commit: e76a8dd40514e8ac0ecc483b7bbe64085aecc6ec
+        merged_at: 2026-07-13T09:03:37Z
 
 conflict_notes:
   - kind: file_overlap
@@ -81,3 +87,10 @@ Both streams are local-runtime candidates: they are single-repo, test-driven Typ
 `/work-driver docs/features/control-room-driver-read-contract/driver.md`
 
 For operator-paced execution, run the same command with `--batch 1`, merge it, then `--batch 2`.
+
+## Execution result
+
+- Driver run `drv_01KXD516QZ6506S8RV7R83SAPB` completed both serialized batches.
+- Batch 1 merged as PR #193 at `66d1f49bd526632d03873ad887243eb3199ae3da`.
+- Batch 2 merged as PR #194 at `e76a8dd40514e8ac0ecc483b7bbe64085aecc6ec`.
+- Both batches passed local `make check`, Ubuntu/Windows CI, canonical review reconciliation, and coordinator GO.

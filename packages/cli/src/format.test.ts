@@ -219,6 +219,21 @@ describe("formatWorkflowRunList", () => {
     const text = formatWorkflowRunList([SAMPLE_RUN], true);
     expect(JSON.parse(text)).toEqual({ runs: [SAMPLE_RUN] });
   });
+
+  test("--json passes through observability on list rows", () => {
+    const row = {
+      ...SAMPLE_RUN,
+      observability: {
+        actual: { runtime: "local" as const, provider: "cursor" as const },
+        evidence: {
+          availability: "unavailable" as const,
+          reason: "no-persisted-artifact-manifest",
+        },
+      },
+    };
+    const text = formatWorkflowRunList([row], true);
+    expect(JSON.parse(text)).toEqual({ runs: [row] });
+  });
 });
 
 describe("formatCancelOutput", () => {

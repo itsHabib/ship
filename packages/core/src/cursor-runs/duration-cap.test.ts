@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { CursorRunStartTimedOutError } from "../errors.js";
 import {
+  DEFAULT_INACTIVITY_TIMEOUT_MS,
   type DurationCapHandle,
   type DurationCapRunArgs,
   MAX_CAP_REARMS,
@@ -20,13 +21,26 @@ import {
 
 const CAP_MS = 30 * 60 * 1000;
 
+// A backstop that dwarfs the inactivity window, so the local-path tests below
+// that assert the WALL-CLOCK backstop (`timeout-near-cap`) aren't pre-empted
+// by the inactivity watchdog. Watchdog-specific tests set their own small
+// `inactivityTimeoutMs` explicitly.
+const NO_INACTIVITY_CAP_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+
 // vitest fake timers advance `Date` but not `performance.now`, so tests drive
 // the cap's monotonic clock off `Date.now()` — it moves in step with
 // `advanceTimersByTimeAsync`, exactly as the production monotonic clock would
 // on a machine whose clock isn't jumping. Individual tests override
 // `monotonicClock` to simulate a suspend / jump (timer fires, monotonic doesn't).
+//
+// `inactivityTimeoutMs` defaults to a decade here so the pre-existing backstop
+// suite keeps measuring the wall-clock cap; the watchdog cases pass their own.
 function runCap(args: DurationCapRunArgs): Promise<AgentRunResult> {
-  return runWithDurationCap({ monotonicClock: () => Date.now(), ...args });
+  return runWithDurationCap({
+    inactivityTimeoutMs: NO_INACTIVITY_CAP_MS,
+    monotonicClock: () => Date.now(),
+    ...args,
+  });
 }
 
 const succeededResult: AgentRunResult = {
@@ -291,13 +305,14 @@ describe("runWithDurationCap", () => {
       start: () => Promise.resolve(handle),
     });
     // A naive (unclamped) delay would have been coerced to 1ms by Node and
-    // fired here — assert it did NOT.
+    // fired here — assert it did NOT. Two timers are armed: the backstop and
+    // the always-on inactivity watchdog (itself clamped, far from firing here).
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2);
     // The clamped ceiling fires, but real (monotonic) elapsed hasn't reached the
     // cap, so it re-arms for the remainder rather than expiring early.
     await vi.advanceTimersByTimeAsync(MAX_TIMER_DELAY_MS);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2);
     // Advancing the remainder reaches the real cap → synthetic terminal, whose
     // duration reflects the configured cap, not the clamp.
     await vi.advanceTimersByTimeAsync(hugeCap - MAX_TIMER_DELAY_MS - 10_000);
@@ -327,7 +342,8 @@ describe("runWithDurationCap", () => {
       ([, msg]) => typeof msg === "string" && msg.includes("host suspend"),
     );
     expect(suspendWarnings).toEqual([]);
-    expect(vi.getTimerCount()).toBe(1); // still armed for the third segment
+    // Backstop armed for the third segment + the always-on inactivity watchdog.
+    expect(vi.getTimerCount()).toBe(2);
     // The final segment reaches the real window → synthetic timeout terminal.
     await vi.advanceTimersByTimeAsync(MAX_TIMER_DELAY_MS);
     const out = await pending;
@@ -371,7 +387,8 @@ describe("runWithDurationCap", () => {
     });
     await vi.advanceTimersByTimeAsync(CAP_MS);
     expect(cancel).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(1); // re-armed, not resolved
+    // Backstop re-armed (not resolved) + the always-on inactivity watchdog.
+    expect(vi.getTimerCount()).toBe(2);
     // Now let real (monotonic) time reach the window; the re-armed timer expires.
     mono = CAP_MS;
     await vi.advanceTimersByTimeAsync(CAP_MS);
@@ -399,6 +416,172 @@ describe("runWithDurationCap", () => {
     await vi.advanceTimersByTimeAsync(CAP_MS);
     const out = await pending;
     expect(out.status).toBe("failed");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Inactivity watchdog (the liveness rework) ──────────────────────────────
+  // These pass their own (small) `inactivityTimeoutMs` rather than the decade
+  // default `runCap` injects, so they exercise the watchdog rather than the
+  // wall-clock backstop. The backstop is set far above the inactivity window so
+  // it can't pre-empt the watchdog verdict.
+
+  const INACTIVITY_MS = 5 * 60 * 1000;
+  const BIG_BACKSTOP_MS = 24 * 60 * 60 * 1000; // dwarfs the inactivity window
+
+  // Feed a stream event into the cap's hook, captured via `onCapReady` exactly
+  // as `service.ts` wires it (onEvent → wireCapStreamFold → onProviderStreamEvent).
+  function withCapHooks(): {
+    readonly onCapReady: (h: DurationCapHandle) => void;
+    emit: () => void;
+  } {
+    let hooks: DurationCapHandle | undefined;
+    return {
+      onCapReady: (h) => {
+        hooks = h;
+      },
+      emit: () => hooks?.onProviderStreamEvent(Date.now()),
+    };
+  }
+
+  test("an actively-emitting run is never cancelled on wall-clock alone (below the backstop)", async () => {
+    const cap = withCapHooks();
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      inactivityTimeoutMs: INACTIVITY_MS,
+      maxRunDurationMs: BIG_BACKSTOP_MS,
+      monotonicClock: () => Date.now(),
+      onCapReady: cap.onCapReady,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // Emit an event every 4 min for 40 min — well past a single inactivity
+    // window, but each event resets the watchdog before it can fire. Total
+    // wall-clock (40 min) also far exceeds today's old 30-min fixed cap.
+    for (let i = 0; i < 10; i += 1) {
+      await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+      cap.emit();
+    }
+    expect(cancel).not.toHaveBeenCalled();
+    // Both timers still armed (backstop + watchdog); the run lives on.
+    expect(vi.getTimerCount()).toBe(2);
+    // Clean up the still-pending race so vitest doesn't flag a dangling timer.
+    vi.clearAllTimers();
+    void pending.catch(() => undefined);
+  });
+
+  test("a run silent for inactivityTimeoutMs is cancelled and classified as a stall", async () => {
+    const cap = withCapHooks();
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      inactivityTimeoutMs: INACTIVITY_MS,
+      maxRunDurationMs: BIG_BACKSTOP_MS,
+      monotonicClock: () => Date.now(),
+      onCapReady: cap.onCapReady,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // One event, then silence. Just under the window: still alive.
+    cap.emit();
+    await vi.advanceTimersByTimeAsync(INACTIVITY_MS - 1);
+    expect(cancel).not.toHaveBeenCalled();
+    // Cross the window: the watchdog fires long before the 24h backstop.
+    await vi.advanceTimersByTimeAsync(1);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    // Stamped verbatim by the cap so `classifyFailedRun` reports a stall rather
+    // than the duration-based `timeout-near-cap` (a silent run never reached the
+    // backstop, so there's no `durationMs >= cap` signal to classify on).
+    expect(out.failureCategory).toBe("agent-collapse-on-running-tool");
+    expect(out.errorMessage).toContain("inactivityTimeoutMs");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("a simulated suspension (clock jump, no events, then events resume) does NOT cancel", async () => {
+    let mono = 0;
+    const cap = withCapHooks();
+    const { cancel, handle } = fakeHandle(pendingForever());
+    const pending = runWithDurationCap({
+      inactivityTimeoutMs: INACTIVITY_MS,
+      maxRunDurationMs: BIG_BACKSTOP_MS,
+      // Monotonic clock frozen across the suspend: the event-loop timer fires
+      // (wall jumped) but no real run time elapsed, so the watchdog re-arms
+      // rather than declaring a stall.
+      monotonicClock: () => mono,
+      onCapReady: cap.onCapReady,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    cap.emit();
+    // The host sleeps: wall clock jumps a full inactivity window, monotonic
+    // stays put. The watchdog timer fires but sees zero real silence → re-arm.
+    await vi.advanceTimersByTimeAsync(INACTIVITY_MS);
+    expect(cancel).not.toHaveBeenCalled();
+    // Events resume on wake; monotonic starts moving again from the wake point.
+    mono = 1;
+    cap.emit();
+    await vi.advanceTimersByTimeAsync(INACTIVITY_MS - 1);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(2);
+    vi.clearAllTimers();
+    void pending.catch(() => undefined);
+  });
+
+  test("a chatty-runaway run (events forever) is still bounded by the wall-clock backstop", async () => {
+    const cap = withCapHooks();
+    const { cancel, handle } = fakeHandle(pendingForever());
+    // A small backstop so the test terminates quickly; the inactivity window is
+    // larger, so only the backstop can end this run.
+    const backstopMs = 10 * 60 * 1000;
+    const pending = runWithDurationCap({
+      inactivityTimeoutMs: 60 * 60 * 1000, // never reached — events are constant
+      maxRunDurationMs: backstopMs,
+      monotonicClock: () => Date.now(),
+      onCapReady: cap.onCapReady,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // Emit every 30s across the whole backstop window: the watchdog is
+    // perpetually reset, so the backstop is the only thing that can bite.
+    const step = 30 * 1000;
+    for (let elapsed = 0; elapsed < backstopMs; elapsed += step) {
+      await vi.advanceTimersByTimeAsync(step);
+      cap.emit();
+    }
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    // Backstop expiry → the classifier's own duration-based `timeout-near-cap`
+    // (no pre-stamped category on a backstop result).
+    expect(out.failureCategory).toBeUndefined();
+    expect(out.errorMessage).toContain("maxRunDurationMs");
+    expect(out.durationMs).toBe(backstopMs);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("an absent inactivityTimeoutMs falls back to DEFAULT_INACTIVITY_TIMEOUT_MS", async () => {
+    const cap = withCapHooks();
+    const { cancel, handle } = fakeHandle(pendingForever());
+    // No `inactivityTimeoutMs` (a legacy policy blob), backstop far above the
+    // default window: the watchdog must still fire at the default, proving the
+    // fallback is wired.
+    const pending = runWithDurationCap({
+      maxRunDurationMs: BIG_BACKSTOP_MS,
+      monotonicClock: () => Date.now(),
+      onCapReady: cap.onCapReady,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    cap.emit();
+    await vi.advanceTimersByTimeAsync(DEFAULT_INACTIVITY_TIMEOUT_MS - 1);
+    expect(cancel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    const out = await pending;
+    expect(out.status).toBe("failed");
+    expect(out.failureCategory).toBe("agent-collapse-on-running-tool");
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 });

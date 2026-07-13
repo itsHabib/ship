@@ -2,7 +2,12 @@
 // (default) and `--json` variant; pretty mode is plain ASCII (no ANSI
 // colors in V1) so test snapshots are stable across terminals.
 
-import type { GetWorkflowRunOutput, PruneRunsOutput, ShipOutput } from "@ship/core";
+import type {
+  GetWorkflowRunOutput,
+  PruneRunsOutput,
+  ShipOutput,
+  WorkflowRunListItem,
+} from "@ship/core";
 import type { DriverListEnvelope, DriverTickResult } from "@ship/driver";
 import type { DriverRun, DriverStream } from "@ship/store";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
@@ -84,8 +89,8 @@ export function formatDiagnoseRun(run: GetWorkflowRunOutput, json: boolean): str
   return lines.join("\n");
 }
 
-/** Renders a hydrated `WorkflowRun` for the `ship status` subcommand. */
-export function formatWorkflowRun(run: WorkflowRun, json: boolean): string {
+/** Renders a hydrated workflow run for the `ship status` subcommand. */
+export function formatWorkflowRun(run: WorkflowRun | GetWorkflowRunOutput, json: boolean): string {
   if (json) return jsonStringify(run);
   const lines = [
     `id:        ${run.id}`,
@@ -106,8 +111,8 @@ export function formatWorkflowRun(run: WorkflowRun, json: boolean): string {
   return lines.join("\n");
 }
 
-/** Renders a list of `WorkflowRun` rows for the `ship list` subcommand. */
-export function formatWorkflowRunList(runs: readonly WorkflowRun[], json: boolean): string {
+/** Renders a list of workflow run rows for the `ship list` subcommand. */
+export function formatWorkflowRunList(runs: readonly WorkflowRunListItem[], json: boolean): string {
   if (json) return jsonStringify({ runs });
   const header = `${pad("ID", 32)}  ${pad("STATUS", 10)}  ${pad("REPO", 24)}  ${pad("CREATED", 25)}  UPDATED`;
   if (runs.length === 0) return header;
