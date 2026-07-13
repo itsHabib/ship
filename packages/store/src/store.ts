@@ -124,6 +124,13 @@ export interface Store {
   listResumableCloudCursorRuns: () => ResumableCloudCursorRun[];
   /** Bump `workflow_runs.updated_at` without changing status. */
   touchWorkflowRunUpdatedAt: (workflowRunId: string) => void;
+  /**
+   * Bump `updated_at` AND `last_event_at` — records a real remote agent event.
+   * `last_event_at` is the driver tick's progress signal; the pump timer uses
+   * `touchWorkflowRunUpdatedAt` and never moves it, so a silent run can't mask
+   * itself as live.
+   */
+  touchWorkflowRunEvent: (workflowRunId: string) => void;
   /** Hydrated workflow run plus phases, or `null` if unknown. Does not throw. */
   getRun: (id: string) => WorkflowRun | null;
   /**
@@ -306,6 +313,11 @@ export function createStore(opts: CreateStoreOptions): Store {
       touchWorkflowRunUpdatedAt: (workflowRunId) => {
         withStoreContentionGuard(() => {
           workflowRunOps.touchUpdatedAt(workflowRunId);
+        });
+      },
+      touchWorkflowRunEvent: (workflowRunId) => {
+        withStoreContentionGuard(() => {
+          workflowRunOps.touchEvent(workflowRunId);
         });
       },
       updateCursorRunStatus: (id, patch) =>
