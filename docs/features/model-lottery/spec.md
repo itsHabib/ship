@@ -57,9 +57,9 @@ fallback-chain entries use (§7). A **pool member** is the `(provider, model_id)
 
 Per-stream (and run-level `default_model_id`) optional string field, verbatim provider catalog
 id. When both `model` (tier) and `model_id` are present, **`model_id` wins for model selection**
-and the tier contributes nothing — one knob decides, no blending. Import records no error:
-prep tooling legitimately stamps `model_id` over a manifest that already carried a default tier.
-`effort` remains an independent tier and maps per §3.4.
+and the tier contributes nothing — one knob decides *model selection*; `effort` remains an
+independent tier and maps per §3.4. Import records no error: prep tooling legitimately stamps
+`model_id` over a manifest that already carried a default tier.
 
 **Alternative rejected:** an `x-model` escape hatch *inside* the tier map (a config-level
 tier→id override). It moves policy into config, can't vary per stream, and the runway experiment
@@ -77,7 +77,8 @@ cell is dropped: cross-provider translation is exactly what `model_id` makes unn
 `model_id` is schema-validated as a non-empty string only. Ship does not gate it against a
 catalog: cursor's list is live (`GET /v1/models` — ids appear and retire weekly), and a stale
 local allowlist would reject valid ids (the exact F4 failure mode, reinvented). An invalid id
-fails at dispatch with the provider's error (cursor: `[invalid_model]`), which the existing
+fails at dispatch with the provider's error (cursor: `[invalid_model]`; other providers: their
+native unknown-model error), which the existing
 failure path classifies and surfaces on the stream — a legible dispatch error, not a schema
 rejection. Preflight (§5) is the cheap advisory layer that catches typos *before* dispatch when
 the seat wants it.
@@ -113,16 +114,26 @@ comparison readout need zero archaeology. Receipts carry the same pair.
 
 ## 4. Key decisions — assignment (phase 2)
 
-### 4.1 `ship driver assign --pool <provider:model,...> <manifest>`
+### 4.1 `ship driver assign --pool <[runtime/]provider:model,...> <manifest>`
 
-A code-level verb, not skill prose: reads the manifest, walks **streams in manifest order**
-(batch order, then stream order), stamps `provider` + `model_id` round-robin from the pool,
-writes the manifest back (frontmatter edit, same write-back seam the engine already uses for
-status). Deterministic: same manifest + same pool → same assignment, byte-for-byte. No seeds,
-no weights, no balancing heuristics. Prints the assignment table it produced.
+A code-level verb, not skill prose: reads the manifest, resolves the **effective pool** (§5's
+preflight filter runs first, as a whole-pool phase), then walks **streams in manifest order**
+with **one global round-robin counter across the whole manifest** — batch order, then stream
+order, no per-batch reset. Per-batch reset is rejected explicitly: a serial phase of three
+1-stream batches with a 3-member pool would hand every stream to the pool's first member,
+which is the exact opposite of the experiment's purpose. Each visited stream is stamped with
+the member's `provider` + `model_id` (+ `runtime` when the member carries one); the manifest is
+written back (frontmatter edit, same write-back seam the engine uses for status) and the
+assignment table printed.
+
+Determinism, precisely: **same manifest + same effective pool → same assignment,
+byte-for-byte.** Preflight can shrink the pool across machines/days (a dead credential, a
+retired id) — that is environment, not nondeterminism; the effective pool is recorded in the
+manifest's advisory block (§5) so any assignment is reproducible from what's on disk. No seeds,
+no weights, no balancing heuristics.
 
 Already-terminal streams (`done` / `skipped`) are not restamped; pending/todo streams are. The
-verb is idempotent for a given pool and re-runnable after manifest edits.
+verb is idempotent for a given effective pool and re-runnable after manifest edits.
 
 **Alternative rejected:** assignment logic in the `/work-driver-prep` skill prose. The skill
 becomes a thin caller (`--model-pool` flag shells to the verb); if the skill text needs more
@@ -130,21 +141,43 @@ than one sentence to describe the rotation, the boundary is wrong. **Also reject
 buckets / weighted draws — nothing in the experiment design needs them, and the operator said
 round-robin is the whole algorithm.
 
-### 4.2 Seat override is policy, not engine code
+### 4.2 `assign` is prep-time only; the engine snapshots at import
 
-The driver seat may re-stamp any stream's assignment at runtime (dead credential, unavailable
-model, its own judgment) by editing the manifest / re-running `assign` on a narrower pool.
-The engine encodes no override rules; it just dispatches what the stream says and records what
-actually went out (§3.5). This is the same policy/mechanism split as tier selection.
+`importDriverRun` freezes the manifest into store rows; editing `driver.md` or re-running
+`assign` afterwards does **not** change what an already-imported run dispatches. `assign` is a
+pre-import tool, full stop — the verb refuses (with a pointer) when the manifest already maps
+to a live driver run. Post-import target changes are the engine's territory: today that's
+`decide skip` + re-prep; PR #201's fallback chains (and its natural `decide retry --target`
+follow-on) are the designed path. This keeps one truth per phase of the lifecycle instead of a
+false recovery knob.
+
+Seat override stays policy, not engine code: before import the seat edits the manifest or
+re-runs `assign` on a narrower pool; the engine just dispatches what the stream rows say and
+records what actually went out (§3.5).
+
+### 4.3 Mixed-provider pools and runtime
+
+A pool member is `(provider, model_id)` with an **optional runtime prefix**
+(`local/claude:claude-opus-4-8`). When the prefix is absent, the stream keeps its
+manifest-effective runtime; when present, `assign` stamps `runtime` too — the member is then a
+full §7 dispatch target. Either way, `assign` validates every resulting
+`(runtime, provider)` cell against the wired `selectRunner` matrix and **fails loudly at
+assign time** on an unwired combination (an authoring error, deterministic, same class as
+import preflight in #201) — the silent footgun of `default_runtime: cloud` meeting a
+local-only provider dies at the prep desk, not at dispatch.
 
 ## 5. Preflight — cheap, advisory, shared shape with #201
 
-`assign --preflight` (default on, `--no-preflight` to skip): per unique pool member, verify
-reachability — cursor ids against `GET /v1/models` (the proven check from the grok run);
-non-cursor members by credential presence in env (`ANTHROPIC_*`, codex equivalent). A failed
-member is **dropped with a recorded note** in the manifest's advisory block and round-robin
-continues over the survivors. Preflight never blocks the batch and never mutates anything but
-the assignment it was already computing. It is a warning-grade check inside an existing verb —
+`assign --preflight` (default on, `--no-preflight` to skip): a **whole-pool filter phase that
+runs strictly before any assignment** — never mid-rotation. Per unique pool member, verify
+reachability: cursor ids against `GET /v1/models` (the proven check from the grok run);
+non-cursor members by credential presence in env (`ANTHROPIC_*`; codex gets the same
+presence-only check, acknowledged weaker than a catalog probe). Failed members are dropped
+with a recorded note and the surviving **effective pool** — the actual input to round-robin —
+is recorded alongside it in the manifest's advisory block. Two-phase keeps assignment a pure
+function of (manifest, effective pool): no mid-walk rebalancing, no flap sensitivity, and a
+rerun after a member recovers is just a different effective pool, visible in the diff.
+Preflight never blocks the batch. It is a warning-grade check inside an existing verb —
 explicitly not a new doctor subcommand.
 
 This is the same check PR #201 §4.4 runs at hop time (skip-unviable-target-with-recorded-
@@ -156,7 +189,10 @@ created.
 ## 6. Data model & API contract
 
 **Manifest** (`packages/driver/src/manifest.ts`): per-stream `model_id: z.string().min(1).optional()`,
-run-level `default_model_id` (inheritance mirrors `default_model`); tier enum reverts to
+run-level `default_model_id` (inheritance mirrors `default_model`: stream field > run default >
+none). `default_model_id` serves hand-written single-model manifests (the runway manifest is
+exactly this shape); `assign` ignores it and stamps per-stream on every non-terminal stream —
+the defaults are for authors, the stamps are for pools. Tier enum reverts to
 `opus|sonnet|fable`. Tier-only manifests parse and dispatch byte-identically.
 
 **Store** (`packages/store/src/driver-schemas.ts` + `driver-streams.ts`): additive nullable
@@ -165,10 +201,18 @@ open unchanged. (The runway rows predate the column; their `dispatch_model` alre
 truth.)
 
 **Tier map:** `mapTierToDispatch(provider, modelTier, effortTier, modelId?)` — `modelId`
-short-circuits model selection; effort resolves via the capability table (§3.4).
+short-circuits model selection; effort resolves via the capability table. Its shape, so P1
+doesn't improvise: a flat `Record<string /* model_id */, ModelCapability>` in `tier-map.ts`
+where `ModelCapability = { effortValueByTier: Record<"extra" | "max", string>;
+ultracode: { value: string; reason: string }; params: (effortValue) => ModelParam[] }` —
+one row for grok-4.5 (medium/high, high+degrade, the `(effort, fast)` tuple) and one for the
+cursor claude-family (xhigh/max, max+degrade, the 5-param tuple, replacing
+`CURSOR_MODELS_WITH_EFFORT` + `CURSOR_EFFORT_VALUE_BY_TIER`). Ids absent from the table
+dispatch with no effort params + `effortDegraded` (§3.4).
 
-**CLI/MCP:** `driver assign` is the only new verb. `driver status` / list views render
-`model_id` where they render `modelTier` today. No `decide` changes.
+**CLI/MCP:** `driver assign` is the only new verb; pool syntax `[runtime/]provider:model`
+(§4.3); refuses manifests already bound to a live driver run (§4.2). `driver status` / list
+views render `model_id` where they render `modelTier` today. No `decide` changes.
 
 **Skill:** `/work-driver-prep --model-pool cursor:grok-4.5,cursor:claude-opus-4-8,...` shells
 to `ship driver assign` after manifest generation. One sentence of prose.
@@ -188,7 +232,7 @@ This section is the coordination artifact — #201's review should read it (cros
 | Phase | Goal | Tasks | Gate | Scope |
 | --- | --- | --- | --- | --- |
 | **P1 — passthrough** | any catalog id expressible + attributable | manifest + store `model_id`; tier-map short-circuit + capability table; enum revert; render/status; tests (precedence, degrade, unknown-id dispatch error, attribution end-to-end) | local patch deleted, root checkout clean | ~300–450 wLOC |
-| **P2 — assign + prep flag** | pool spread without hand-stamping | `driver assign` verb (round-robin + write-back); `--preflight` viability helper; `/work-driver-prep --model-pool`; tests (pool>streams, streams>pool, dropped member, idempotence) | — | ~250–400 wLOC |
+| **P2 — assign + prep flag** | pool spread without hand-stamping | `driver assign` verb (round-robin + write-back); `--preflight` viability helper; `/work-driver-prep --model-pool`; tests (pool>streams, streams>pool, dropped member, idempotence, live-run refusal) | — | ~250–400 wLOC (assumes #201 unlanded and includes the shared viability helper; subtract ~50 if #201 authored it first) |
 | **P3 — the experiment** | one real mixed-model batch | prep a real 3+ task phase with `--model-pool cursor:grok-4.5,cursor:claude-opus-4-8,cursor:composer-2.5`, drive to merge, per-stream ledger in the manifest | second `/provenance` dataset exists | run, not code |
 
 Closes `driver-model-id-passthrough` (P1) and `work-driver-prep-model-pool` (P2). The runway
@@ -199,11 +243,11 @@ queries become a `driver_streams` group-by, not archaeology.
 
 ## 9. Open questions
 
-1. **`default_model_id` inheritance vs explicitness** — is a run-level default worth having, or
-   should pool assignment always stamp per-stream (the only real consumer)? Leaning: keep it for
-   symmetry with `default_model`; costs one line.
-2. **Codex preflight** — credential-presence is weaker than cursor's catalog check. Good enough
-   for warning-grade, or should codex members skip preflight entirely with a note?
-3. **Should `assign` also stamp `runtime`?** Current answer: no — pools are `(provider, model)`;
-   runtime stays the manifest author's call (`default_runtime`). #201's chains are where runtime
-   variation lives.
+Cycle-1 review (claude, codex) resolved the original three: `default_model_id` stays with its
+inheritance + `assign`-ignores-it rule pinned (§6); codex preflight is presence-only,
+acknowledged weaker (§5); runtime stamping is decided in §4.3 (optional member prefix + wired-
+cell validation at assign time). Remaining:
+
+1. **`assign` write-back vs manifest comments** — the frontmatter round-trip preserves YAML
+   structure but not comments adjacent to rewritten stream entries. Acceptable for generated
+   manifests; hand-annotated ones may lose a comment line. Punt unless a reviewer objects.
