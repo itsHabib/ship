@@ -3,6 +3,7 @@
  */
 
 import type { AddressOpts, Decision, DriverRunRef, LandOpts, MergeFacts } from "@ship/driver";
+import type { DriverRunStatus } from "@ship/store";
 import type { Command } from "commander";
 
 import { parsePruneDuration, PruneDurationError } from "@ship/core";
@@ -19,6 +20,7 @@ import { cliExit, InvalidArgumentError } from "../errors.js";
 import {
   formatDriverDecideOutput,
   formatDriverImportOutput,
+  formatDriverListOutput,
   formatDriverRunOutput,
   formatDriverStatusOutput,
 } from "../format.js";
@@ -65,6 +67,22 @@ interface RenderOpts {
 interface StatusOpts {
   json?: boolean;
 }
+
+interface ListOpts {
+  repo?: string;
+  status?: string[];
+  limit?: string;
+  json?: boolean;
+}
+
+const DRIVER_RUN_STATUSES: ReadonlySet<string> = new Set([
+  "pending",
+  "running",
+  "awaiting_judgment",
+  "done",
+  "failed",
+  "cancelled",
+]);
 
 export function registerDriverCommand(program: Command, factory: DriverServiceFactory): void {
   const driver = program.command("driver").description("work-driver manifest engine");
@@ -204,6 +222,25 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
           return;
         }
         process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+      });
+    });
+
+  driver
+    .command("list")
+    .description("list durable driver runs (most recent first)")
+    .option("--repo <name>", "filter by repo")
+    .option(
+      "--status <status>",
+      "filter by status (repeat for multiple)",
+      (value: string, prior: string[] | undefined): string[] => [...(prior ?? []), value],
+    )
+    .option("--limit <n>", "max rows (server cap is 200)")
+    .option("--json", "emit machine-readable JSON")
+    .action((rawOpts: ListOpts) => {
+      runDriverAction(() => {
+        const filter = buildDriverListFilter(rawOpts);
+        const envelope = factory().listDriverRunsView(filter);
+        process.stdout.write(`${formatDriverListOutput(envelope, rawOpts.json === true)}\n`);
       });
     });
 
@@ -357,4 +394,33 @@ function buildLandOpts(opts: LandCommandOpts): LandOpts {
   }
   if (opts.admin === true) landOpts.admin = true;
   return landOpts;
+}
+
+function buildDriverListFilter(opts: ListOpts): {
+  repo?: string;
+  status?: DriverRunStatus[];
+  limit?: number;
+} {
+  const filter: {
+    repo?: string;
+    status?: DriverRunStatus[];
+    limit?: number;
+  } = {};
+  if (opts.repo !== undefined) filter.repo = opts.repo;
+  if (opts.status !== undefined && opts.status.length > 0) {
+    for (const status of opts.status) {
+      if (!DRIVER_RUN_STATUSES.has(status)) {
+        throw new InvalidArgumentError(`invalid --status: ${status}`);
+      }
+    }
+    filter.status = opts.status as DriverRunStatus[];
+  }
+  if (opts.limit !== undefined) {
+    const parsed = Number(opts.limit);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new InvalidArgumentError(`invalid --limit: ${opts.limit}`);
+    }
+    filter.limit = parsed;
+  }
+  return filter;
 }

@@ -220,6 +220,25 @@ describe("driver runs (via createStore)", () => {
     expect(filtered.map((run) => run.id)).toEqual([runId]);
   });
 
+  test("listDriverRuns does not mutate SQLite rows (total_changes sentinel)", () => {
+    store.close();
+    const dir = mkdtempSync(join(tmpdir(), "ship-driver-list-mutation-"));
+    const dbPath = join(dir, "state.db");
+    try {
+      store = createStore({ clock: () => currentNow, dbPath });
+      seedRun();
+      const db = new Database(dbPath);
+      const before = db.prepare("SELECT total_changes() AS n").pluck().get() as number;
+      store.listDriverRuns({});
+      const after = db.prepare("SELECT total_changes() AS n").pluck().get() as number;
+      db.close();
+      expect(after).toBe(before);
+    } finally {
+      store.close();
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
   test("hydrated streams preserve manifest order via stream_index", () => {
     const runId = newDriverRunId();
     const batchId = newDriverBatchId();

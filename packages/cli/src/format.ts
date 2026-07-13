@@ -3,7 +3,7 @@
 // colors in V1) so test snapshots are stable across terminals.
 
 import type { GetWorkflowRunOutput, PruneRunsOutput, ShipOutput } from "@ship/core";
-import type { DriverTickResult } from "@ship/driver";
+import type { DriverListEnvelope, DriverTickResult } from "@ship/driver";
 import type { DriverRun, DriverStream } from "@ship/store";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
@@ -214,6 +214,18 @@ export function buildDriverStatusView(run: DriverRun, manifestModified: boolean)
   if (run.phase !== undefined) view.phase = run.phase;
   if (manifestModified) view.manifestModified = true;
   return view;
+}
+
+/** Renders a list of driver runs for `ship driver list`. */
+export function formatDriverListOutput(envelope: DriverListEnvelope, json: boolean): string {
+  if (json) return jsonStringify(envelope);
+  const header = `${pad("DRIVER RUN ID", 32)}  ${pad("STATUS", 18)}  ${pad("REPO", 24)}  ${pad("CREATED", 25)}  UPDATED`;
+  if (envelope.runs.length === 0) return header;
+  const rows = envelope.runs.map(
+    (run) =>
+      `${pad(run.driverRunId, 32)}  ${pad(run.status, 18)}  ${pad(run.repo, 24)}  ${pad(run.createdAt, 25)}  ${run.updatedAt}`,
+  );
+  return [header, ...rows].join("\n");
 }
 
 /** Renders `ship driver status` output. */
