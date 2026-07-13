@@ -550,6 +550,9 @@ export function extractRepoUrl(run: DriverRun): string | undefined {
  * `extractRepoUrl`) and matches by `spec_path`, the stable stream identity
  * across the manifest/store boundary. Absent when the manifest no longer
  * parses, has no matching stream, or the stream set no `base_branch`.
+ *
+ * Assumes `spec_path` is unique across batches (prep-side invariant, not yet
+ * validated at parse time); with a duplicate, the first batch's stream wins.
  */
 export function extractStreamBaseBranch(run: DriverRun, specPath: string): string | undefined {
   const parsed = parseManifest(run.sourceJson);
