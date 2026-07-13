@@ -25,6 +25,7 @@ export interface InsertDriverStreamInput {
   specPath: string;
   branch?: string;
   runtime: string;
+  rollsUp?: string[];
   touches: string[];
   status: DriverStream["status"];
   workflowRunId?: string;

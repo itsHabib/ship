@@ -544,6 +544,26 @@ export function extractRepoUrl(run: DriverRun): string | undefined {
   return parsed.manifest.repo_url;
 }
 
+/**
+ * The `base_branch` a manifest stream requested — the cloud starting ref for
+ * its dispatch. Re-parses the source manifest (store-free, mirroring
+ * `extractRepoUrl`) and matches by `spec_path`, the stable stream identity
+ * across the manifest/store boundary. Absent when the manifest no longer
+ * parses, has no matching stream, or the stream set no `base_branch`.
+ *
+ * Assumes `spec_path` is unique across batches (prep-side invariant, not yet
+ * validated at parse time); with a duplicate, the first batch's stream wins.
+ */
+export function extractStreamBaseBranch(run: DriverRun, specPath: string): string | undefined {
+  const parsed = parseManifest(run.sourceJson);
+  if (!parsed.ok) return undefined;
+  for (const batch of parsed.manifest.batches) {
+    const match = batch.streams.find((stream) => stream.spec_path === specPath);
+    if (match !== undefined) return match.base_branch;
+  }
+  return undefined;
+}
+
 export function batchHasPendingDispatchable(batch: DriverBatch, batches: DriverBatch[]): boolean {
   if (!isBatchEligible(batch, batches)) return false;
   return batch.streams.some((s) => s.status === "pending");

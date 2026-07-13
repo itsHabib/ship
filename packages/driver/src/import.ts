@@ -199,6 +199,7 @@ function buildBatchInput(
     specPath: string;
     branch?: string;
     runtime: string;
+    rollsUp?: string[];
     touches: string[];
     status: ReturnType<typeof manifestStatusToStore>;
     attempts: [];
@@ -243,6 +244,7 @@ function buildStreamInput(
   specPath: string;
   branch?: string;
   runtime: string;
+  rollsUp?: string[];
   touches: string[];
   status: ReturnType<typeof manifestStatusToStore>;
   attempts: [];
@@ -265,6 +267,7 @@ function buildStreamInput(
     taskId?: string;
     taskSlug?: string;
     branch?: string;
+    rollsUp?: string[];
     prNumber?: number;
     mergeCommit?: string;
     mergedAt?: string;
@@ -282,13 +285,30 @@ function buildStreamInput(
     touches: stream.touches,
     ...resolveStreamTier(stream, defaults.defaultModel, defaults.defaultEffort),
     ...resolveStreamProvider(stream, defaults.defaultProvider),
+    ...optionalStreamInputFields(stream),
   };
-  if (stream.task_id !== undefined) candidate.taskId = stream.task_id;
-  if (stream.task_slug !== undefined) candidate.taskSlug = stream.task_slug;
-  if (stream.branch_name !== undefined) candidate.branch = stream.branch_name;
-  if (stream.pr_number !== undefined) candidate.prNumber = stream.pr_number;
-  if (stream.merge_commit !== undefined) candidate.mergeCommit = stream.merge_commit;
-  if (stream.merged_at !== undefined) candidate.mergedAt = stream.merged_at;
-  if (stream.cycles !== undefined) candidate.cycles = stream.cycles;
   return candidate;
+}
+
+/** The optional stream fields carried verbatim from manifest to store input. */
+function optionalStreamInputFields(stream: ManifestStream): {
+  taskId?: string;
+  taskSlug?: string;
+  branch?: string;
+  rollsUp?: string[];
+  prNumber?: number;
+  mergeCommit?: string;
+  mergedAt?: string;
+  cycles?: number;
+} {
+  return {
+    ...(stream.task_id !== undefined ? { taskId: stream.task_id } : {}),
+    ...(stream.task_slug !== undefined ? { taskSlug: stream.task_slug } : {}),
+    ...(stream.branch_name !== undefined ? { branch: stream.branch_name } : {}),
+    ...(stream.rolls_up !== undefined ? { rollsUp: stream.rolls_up } : {}),
+    ...(stream.pr_number !== undefined ? { prNumber: stream.pr_number } : {}),
+    ...(stream.merge_commit !== undefined ? { mergeCommit: stream.merge_commit } : {}),
+    ...(stream.merged_at !== undefined ? { mergedAt: stream.merged_at } : {}),
+    ...(stream.cycles !== undefined ? { cycles: stream.cycles } : {}),
+  };
 }

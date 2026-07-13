@@ -48,6 +48,7 @@ import {
   buildUnmergedViews,
   everyStreamTerminalDoneOrSkipped,
   extractRepoUrl,
+  extractStreamBaseBranch,
   hasInFlightStreams,
   isBatchEligible,
   isBlockedOnMerges,
@@ -772,19 +773,23 @@ function buildCloudShipInput(
     throw new PreconditionError(`cloud stream ${stream.id} requires repo_url in manifest`);
   }
   const cloudContinuation = resolveCloudContinuation(stream, continuation);
+  // Continuation (flip-cloud / address) pins the ref to the stream's branch and
+  // always wins; a fresh dispatch with no continuation honors the manifest
+  // `base_branch` as the cloud starting ref.
+  const run = loadRun(ctx.store, ctx.runId);
+  const startingRef =
+    cloudContinuation.startingRef ?? extractStreamBaseBranch(run, stream.specPath);
   // A persisted prUrl means the PR already exists (an `address` re-dispatch, or
   // any retry of one): never auto-create a second PR, and carry the prUrl so the
   // claude runner's prompt switches to push-to-existing-branch. Fresh + flip-cloud
   // streams have no prUrl and keep the auto-create-on-omitted-or-true default.
   const prExists = stream.prUrl !== undefined;
-  const repoEntry = buildCloudRepoEntry(stream, repoUrl, cloudContinuation.startingRef, prExists);
+  const repoEntry = buildCloudRepoEntry(stream, repoUrl, startingRef, prExists);
   return {
     docPath,
-    repo: loadRun(ctx.store, ctx.runId).repo,
+    repo: run.repo,
     runtime: "cloud",
-    ...(cloudContinuation.startingRef !== undefined
-      ? { startingRef: cloudContinuation.startingRef }
-      : {}),
+    ...(startingRef !== undefined ? { startingRef } : {}),
     cloud: {
       autoCreatePR: !prExists,
       env: { type: "cloud" },

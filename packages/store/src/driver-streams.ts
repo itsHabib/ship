@@ -41,6 +41,7 @@ export interface DriverStreamRow {
   spec_path: string;
   branch: string | null;
   runtime: string;
+  rolls_up: string | null;
   touches: string;
   status: string;
   workflow_run_id: string | null;
@@ -73,6 +74,7 @@ interface InsertStreamRowInput {
   specPath: string;
   branch?: string;
   runtime: string;
+  rollsUp?: string[];
   touches: string[];
   status: DriverStreamStatus;
   workflowRunId?: string;
@@ -102,7 +104,7 @@ export interface DriverStreamOps {
 }
 
 const STREAM_COLUMNS =
-  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, created_at, updated_at";
+  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, created_at, updated_at";
 
 function sqlNull<T>(value: T | undefined): T | null {
   return value ?? null;
@@ -120,11 +122,11 @@ export function createDriverStreamOps(
   const insertStmt = db.prepare(
     `INSERT INTO driver_streams (
        id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch,
-       runtime, touches, status, workflow_run_id, attempts, pr_number, pr_url,
+       runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url,
        merge_commit, merged_at, cycles, error_message, model_tier, effort_tier, provider,
        dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded,
        tier_degrade_reason, work_on_current_branch, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], DriverStreamRow>(
     `SELECT ${STREAM_COLUMNS} FROM driver_streams WHERE id = ?`,
@@ -146,6 +148,7 @@ export function createDriverStreamOps(
       input.specPath,
       sqlNull(input.branch),
       input.runtime,
+      input.rollsUp === undefined ? null : JSON.stringify(input.rollsUp),
       JSON.stringify(input.touches),
       input.status,
       sqlNull(input.workflowRunId),
@@ -252,11 +255,13 @@ function parseStreamRow(row: DriverStreamRow): DriverStream {
   let touches: unknown;
   let attempts: unknown;
   let dispatchModelParams: unknown;
+  let rollsUp: unknown;
   try {
     touches = JSON.parse(row.touches);
     attempts = JSON.parse(row.attempts);
     dispatchModelParams =
       row.dispatch_model_params === null ? undefined : JSON.parse(row.dispatch_model_params);
+    rollsUp = row.rolls_up === null ? undefined : JSON.parse(row.rolls_up);
   } catch (err: unknown) {
     throw new StoreSchemaError(`driver_streams id=${row.id} has malformed JSON column`, {
       cause: err,
@@ -276,6 +281,7 @@ function parseStreamRow(row: DriverStreamRow): DriverStream {
     updatedAt: row.updated_at,
     ...optionalStreamFields(row),
     ...(dispatchModelParams !== undefined ? { dispatchModelParams } : {}),
+    ...(rollsUp !== undefined ? { rollsUp } : {}),
   };
 
   const result = driverStreamSchema.safeParse(candidate);

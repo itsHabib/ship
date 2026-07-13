@@ -160,6 +160,47 @@ describe("importManifest", () => {
     rmSync(dir, { force: true, recursive: true });
   });
 
+  it("round-trips rolls_up from a manifest stream to the parsed store row", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-import-rollsup-"));
+    const path = join(dir, "driver.md");
+    writeFileSync(
+      path,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-07-12T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: rolls-up-test",
+        "repo: ship",
+        "batches:",
+        "  - id: 1",
+        "    depends_on: []",
+        "    streams:",
+        "      - spec_path: docs/a.md",
+        "        branch_name: feat-a",
+        "        rolls_up: [tsk_A, tsk_B]",
+        "      - spec_path: docs/b.md",
+        "        branch_name: feat-b",
+        "---",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { run } = importManifest(store, path);
+    const streams = run.batches[0]?.streams ?? [];
+    expect(streams[0]?.rollsUp).toEqual(["tsk_A", "tsk_B"]);
+    // No rolls_up on the manifest stream reads back absent, not empty.
+    expect(streams[1]?.rollsUp).toBeUndefined();
+
+    // Reload through a fresh hydration to prove the value survives the real
+    // column round-trip, not just the insert-time object.
+    const reloaded = store.getDriverRun(run.id);
+    expect(reloaded?.batches[0]?.streams[0]?.rollsUp).toEqual(["tsk_A", "tsk_B"]);
+    rmSync(dir, { force: true, recursive: true });
+  });
+
   it("re-import of manifest with unknown keys still returns warnings", () => {
     const dir = mkdtempSync(join(tmpdir(), "ship-import-rewarn-"));
     const path = join(dir, "driver.md");

@@ -73,6 +73,9 @@ export const driverStreamSchema = z
     streamIndex: z.number().int().min(0),
     taskId: z.string().optional(),
     taskSlug: z.string().optional(),
+    // Task ids a collapsed stream stands in for; the engine closes all of them
+    // at land time. Absent (not empty) when the stream rolls up nothing.
+    rollsUp: z.array(z.string()).optional(),
     touches: z.array(z.string()),
     modelTier: driverModelTierSchema.optional(),
     effortTier: driverEffortTierSchema.optional(),
