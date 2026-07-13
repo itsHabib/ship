@@ -1109,7 +1109,6 @@ async function dispatchAddress(params: {
   const staleHead = await findStaleAddressHead(gh, store, refreshed, flipped);
   if (staleHead !== undefined) {
     parkStaleAddressHead(store, driverRunId, streamId, staleHead);
-    store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
     throw new PreconditionError(`address dispatch refused for stream ${streamId}: ${staleHead}`);
   }
   const dispatched = await dispatchStartShip({
