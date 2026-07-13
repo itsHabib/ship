@@ -210,8 +210,9 @@ Extend `AddressRefusalCode` with:
 
 Existing `findings-unreadable` remains for missing, unreadable, empty, or
 over-limit files — including a 1 MiB cap enforced at the file-read boundary
-before JSON parsing. Every refusal occurs before dispatch and leaves stream/cycle
-state unchanged.
+before JSON parsing. Initial validation refusals occur before dispatch and leave
+stream/cycle state unchanged. Stale-head re-validation at prepared-attempt start
+parks the stream for judgment without dispatching when the live PR head moved.
 
 ## Validation
 
