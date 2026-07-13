@@ -45,7 +45,7 @@ Text mode should remain useful to an operator without becoming a second semantic
 - A two-process SQLite harness writes/imports with one process and lists with another, proving the command reads durable state rather than process-local state.
 - A deterministic mutation sentinel reads SQLite `total_changes()` on the same connection immediately before and after service listing and asserts equality; CLI harness spies separately prove no tick/orphan-resume/dispatch call occurs.
 - The two-process harness runs on both Windows and Linux CI against a closed writer/open reader sequence, avoiding platform-specific concurrent-WAL assumptions.
-- `pnpm check` passes on Windows and Linux CI.
+- `make check` passes on Windows and Linux CI.
 
 ## Risks
 
@@ -66,4 +66,4 @@ Text mode should remain useful to an operator without becoming a second semantic
 1. Lock the dedicated JSON envelope and allowed-key projection in tests, including unknown/omitted fields and explicit exclusion of `sourceJson`/absolute paths.
 2. Reuse the existing store/service list filter and `createdAt DESC, id DESC` order without adding CLI project/phase flags.
 3. Register `ship driver list`, validate flags, and add dedicated JSON/text formatters with stdout/stderr framing tests.
-4. Add cross-process and no-mutation coverage, then run the focused packages and full `pnpm check`.
+4. Add cross-process and no-mutation coverage, then run focused package tests and the full `make check` gate.

@@ -48,7 +48,7 @@ The owner projection must preserve the distinction between requested configurati
 - Tests prove absent producer telemetry remains absent/typed unknown and is never copied from requested configuration or filled with zero.
 - A store spy asserts one bounded batched cursor-run lookup for an N-row list (no N+1). A `ShipFs` stub that throws on every read proves the shared observability projector and list command complete without artifact I/O; point-status comparison isolates the projection before legacy diagnostic enrichment.
 - Allowed-key/redaction tests prove `artifactsDir`, absolute paths, usernames, tokens, and environment values never enter the observability object.
-- `pnpm check` passes on Windows and Linux CI.
+- `make check` passes on Windows and Linux CI.
 
 ## Risks
 
@@ -69,4 +69,4 @@ The owner projection must preserve the distinction between requested configurati
 1. Inventory durable workflow/cursor-run facts and lock a shared optional `WorkflowObservabilityView` with legacy fixtures; leave `WorkflowRun` unchanged.
 2. Add one bounded store query for latest cursor-run facts by workflow ID and populate the projection for local, cloud, and rooms with typed absence and no filesystem reads.
 3. Attach the same projection to list and status JSON while preserving all existing keys and legacy point-detail enrichment.
-4. Add cross-runtime equality, batched-read, permissive-consumer, backward-compatibility, redaction, and throwing-`ShipFs` tests; run focused packages and full `pnpm check`.
+4. Add cross-runtime equality, batched-read, permissive-consumer, backward-compatibility, redaction, and throwing-`ShipFs` tests; run focused packages and the full `make check` gate.
