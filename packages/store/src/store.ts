@@ -156,6 +156,12 @@ export interface Store {
   updateDriverStream: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
   /** Atomically consume a review artifact and prepare its address dispatch. */
   consumeReviewArtifactAndPrepareDispatch: (input: ConsumeReviewArtifactInput) => void;
+  /** Consumed artifact head SHA for a stream address cycle, or `null` when absent. */
+  getReviewArtifactHeadSha: (
+    driverRunId: string,
+    streamId: string,
+    addressCycle: number,
+  ) => string | null;
   /** Insert an escalation row; rejects when an open row exists for the dedup key. */
   insertEscalation: (input: InsertEscalationInput) => Escalation;
   /** Hydrated escalation row, or `null` if unknown. Does not throw. */
@@ -244,6 +250,10 @@ export function createStore(opts: CreateStoreOptions): Store {
           reviewArtifactOps.consumeAndPrepareDispatch(input);
         });
       },
+      getReviewArtifactHeadSha: (driverRunId, streamId, addressCycle) =>
+        withStoreContentionGuard(() =>
+          reviewArtifactOps.getHeadSha(driverRunId, streamId, addressCycle),
+        ),
       getEscalation: (id) => withStoreContentionGuard(() => escalationOps.get(id)),
       getOpenEscalation: (key) => withStoreContentionGuard(() => escalationOps.getOpenByKey(key)),
       insertEscalation: (input) => withStoreContentionGuard(() => escalationOps.insert(input)),

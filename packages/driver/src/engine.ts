@@ -167,6 +167,7 @@ interface DispatchContext {
   clock: () => number;
   cloudInFlight: number;
   localInFlight: number;
+  gh?: DriverGhPort;
   onProgress: () => void;
   opts: ResolvedRunOpts;
   repoRoot: string;
@@ -511,7 +512,7 @@ function buildDispatchContext(
   ctx: TickContext,
   onProgress: () => void,
 ): DispatchContext {
-  return {
+  const base: DispatchContext = {
     clock: ctx.clock,
     cloudInFlight: countInFlight(run, "cloud"),
     localInFlight: countInFlight(run, "local"),
@@ -523,6 +524,8 @@ function buildDispatchContext(
     ship: ctx.ship,
     store: ctx.store,
   };
+  if (ctx.gh === undefined) return base;
+  return { ...base, gh: ctx.gh };
 }
 
 async function dispatchEligible(ctx: DispatchContext): Promise<void> {
@@ -590,6 +593,13 @@ async function dispatchStream(
   stream: DriverStream,
   opts: DispatchStreamOpts = {},
 ): Promise<boolean> {
+  const run = loadRun(ctx.store, ctx.runId);
+  const staleHead = await findStaleAddressHead(ctx.gh, ctx.store, run, stream);
+  if (staleHead !== undefined) {
+    parkStaleAddressHead(ctx.store, ctx.runId, stream.id, staleHead);
+    return false;
+  }
+
   const docPath = opts.docPath ?? resolveDispatchDocPath(ctx.repoRoot, stream);
   const attempt: StreamAttempt = {
     dispatchedAt: new Date(ctx.clock()).toISOString(),
@@ -932,7 +942,7 @@ export async function address(
   });
   return dispatchAddress({
     branch,
-    deps: { clock, ship, store },
+    deps: { clock, gh, ship, store },
     docPath,
     driverRunId,
     streamId: stream.id,
@@ -1055,14 +1065,14 @@ function consumePreparedAddress(params: {
 
 async function dispatchAddress(params: {
   branch: string;
-  deps: { store: Store; ship: DriverShipPort; clock: () => number };
+  deps: { store: Store; ship: DriverShipPort; gh: DriverGhPort; clock: () => number };
   docPath: string;
   driverRunId: string;
   streamId: string;
   tierMapping: TierDispatchResult;
 }): Promise<DriverRun> {
   const { branch, deps, docPath, driverRunId, streamId, tierMapping } = params;
-  const { store, ship, clock } = deps;
+  const { store, ship, gh, clock } = deps;
   const refreshed = store.getDriverRun(driverRunId);
   if (refreshed === null) {
     throw new DriverRunNotFoundEngineError(driverRunId);
@@ -1096,6 +1106,12 @@ async function dispatchAddress(params: {
     stream: flipped,
     tierMapping,
   });
+  const staleHead = await findStaleAddressHead(gh, store, refreshed, flipped);
+  if (staleHead !== undefined) {
+    parkStaleAddressHead(store, driverRunId, streamId, staleHead);
+    store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
+    throw new PreconditionError(`address dispatch refused for stream ${streamId}: ${staleHead}`);
+  }
   const dispatched = await dispatchStartShip({
     baseAttempts: flipped.attempts,
     input,
@@ -1391,6 +1407,41 @@ async function handleSucceededPoll(
  */
 function isAddressRedispatch(stream: DriverStream): boolean {
   return stream.prUrl !== undefined && (stream.reviewCycles ?? 0) > 0;
+}
+
+async function findStaleAddressHead(
+  gh: DriverGhPort | undefined,
+  store: Store,
+  run: DriverRun,
+  stream: DriverStream,
+): Promise<string | undefined> {
+  if (!isAddressRedispatch(stream)) return undefined;
+  const addressCycle = stream.reviewCycles ?? 0;
+  if (addressCycle === 0) return undefined;
+
+  const headSha = store.getReviewArtifactHeadSha(run.id, stream.id, addressCycle);
+  if (headSha === null) return undefined;
+
+  if (gh === undefined) {
+    return "findings-stale-head: gh port not configured for address attempt re-validation";
+  }
+
+  const pr = await loadAddressPr(gh, run, stream);
+  if (headSha === pr.view.headRefOid.toLowerCase()) return undefined;
+  return `findings-stale-head: findings head ${headSha} does not match live head ${pr.view.headRefOid}`;
+}
+
+function parkStaleAddressHead(
+  store: Store,
+  driverRunId: string,
+  streamId: string,
+  message: string,
+): void {
+  store.updateDriverStream(streamId, {
+    errorMessage: message,
+    status: "failed",
+  });
+  store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
 }
 
 async function flipCloudDraftReady(

@@ -75,7 +75,7 @@ The parser additionally enforces:
 - `completed` and `missing` are disjoint and their union equals `requested`;
   members absent from `requested` therefore refuse rather than becoming extras;
 - every finding source reviewer appears in `panel.completed`;
-- a 1 MiB input cap; at most 100 findings, 32 sources per finding, and 16 panel
+- at most 100 findings, 32 sources per finding, and 16 panel
   members; ids/reviewer/producer values at most 128 bytes, summaries 512 bytes,
   evidence 32 KiB, URLs 2048 bytes, and file paths 1024 bytes.
 
@@ -87,6 +87,11 @@ The engine validates the artifact against live state before any write:
 4. artifact id and canonical content SHA-256 digest have not been consumed;
 5. the normal landed/cloud/cycle guards still pass.
 
+Before starting any prepared address-cycle attempt — including crash-recovery or
+`decide retry` re-dispatch — the engine re-verifies live `headRefOid` against
+the consumed artifact's `head_sha`; on mismatch it parks for judgment and never
+dispatches.
+
 On success Ship writes the synthesized address document, then atomically records
 the consumed artifact, advances the stream to the next address cycle, persists
 `workOnCurrentBranch: true`, appends the address attempt, and sets the stream to
@@ -95,7 +100,19 @@ existing continuation path. A failed dispatch is recovered through `decide retry
 which reuses the recorded address document; the same artifact is never submitted
 again.
 
-## Contract decisions
+## Tradeoffs
+
+- **Versioned boundary vs markdown fallback.** A markdown shim would preserve an
+  untestable path; a versioned JSON boundary refuses unknown input and keeps the
+  contract auditable.
+- **Semantic replay identity vs byte identity.** Canonical SHA-256 over a fixed
+  projection catches producer retries that regenerate envelope ids or reorder sets
+  without requiring byte-identical files.
+- **Consumption and dispatch preparation in one transaction.** Splitting the store
+  write from stream update creates either a duplicate-dispatch or crash-window
+  failure mode; one SQLite transaction keeps the boundary atomic.
+
+## Engineering decisions
 
 1. **Ship validates transport and routing facts, not finding truth.** It checks
    sources exist and agree with panel metadata; it does not decide whether a bot
@@ -182,7 +199,7 @@ refusals.
 
 ## Refusals
 
-Extend `AddressErrorCode` with:
+Extend `AddressRefusalCode` with:
 
 - `findings-invalid` — malformed JSON or schema/consistency failure;
 - `findings-subject-mismatch` — repo or PR number differs;
@@ -192,10 +209,11 @@ Extend `AddressErrorCode` with:
   current review cycle after validation.
 
 Existing `findings-unreadable` remains for missing, unreadable, empty, or
-over-limit files. Every refusal occurs before dispatch and leaves stream/cycle
+over-limit files — including a 1 MiB cap enforced at the file-read boundary
+before JSON parsing. Every refusal occurs before dispatch and leaves stream/cycle
 state unchanged.
 
-## Property and example validation
+## Validation
 
 Example tests pin every refusal code and one successful address flow.
 
@@ -223,7 +241,8 @@ a printed seed/counterexample:
 6. **Transaction recovery:** store reopen preserves consumption, resulting cycle,
    and the prepared address attempt. A fake start port that throws after the
    transaction commits simulates crash-before-start; a reopened engine then runs
-   existing dispatch recovery and re-dispatches the recorded doc. Store tests
+   existing dispatch recovery and re-dispatches the recorded doc when the live
+   PR head still matches the consumed artifact. Store tests
    install a temporary SQLite `BEFORE UPDATE` trigger that raises after the
    artifact insert; the transaction must roll back both rows without a production
    test hook. A filesystem-port write failure proves no consume/dispatch occurs;

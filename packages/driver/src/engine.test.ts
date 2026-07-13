@@ -1974,6 +1974,106 @@ batches:
     expect(store.getDriverRun(runId)?.status).toBe("awaiting_judgment");
   });
 
+  test("decide retry with moved PR head parks without dispatch", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const failingPort = { ...fake.port, startShip: () => Promise.reject(new Error("boom")) };
+    const gh = createFakeGhPort({ 77: { headRefOid: HEAD_SHA, state: "OPEN" } });
+
+    await expect(
+      address({ clock: () => 0, gh, ship: failingPort, store }, runId, {
+        findingsPath,
+        streamId,
+      }),
+    ).rejects.toThrow(/address dispatch failed/);
+
+    createDriverService({ gh, ship: fake.port, store }).decide(runId, streamId, { kind: "retry" });
+
+    const movedHead = "2".repeat(40);
+    const ghMoved = createFakeGhPort({ 77: { headRefOid: movedHead, state: "OPEN" } });
+    const result = await createDriverService({ gh: ghMoved, ship: fake.port, store }).run(
+      { driverRunId: runId },
+      { maxWaitMs: 0 },
+    );
+
+    expect(result.status).toBe("awaiting_judgment");
+    expect(firstStream(runId)?.status).toBe("failed");
+    expect(firstStream(runId)?.errorMessage).toContain("findings-stale-head");
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test("crash recovery re-dispatch with moved PR head parks without dispatch", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const artifact = parseReviewFindings(validFindingsArtifact());
+    const canonicalSha256 = canonicalReviewFindingsSha256(artifact);
+    const docPath = join(repoRoot, `address-${streamId}-cycle1-${canonicalSha256.slice(0, 12)}.md`);
+    writeFileSync(docPath, "# prepared address doc\n");
+    store.consumeReviewArtifactAndPrepareDispatch({
+      addressCycle: 1,
+      artifactId: artifact.artifact_id,
+      attempts: [{ dispatchedAt: "2026-07-10T00:00:00Z", docPath, terminal: false }],
+      canonicalSha256,
+      dispatchProvider: "cursor",
+      docPath,
+      driverRunId: runId,
+      expectedReviewCycle: 0,
+      headSha: HEAD_SHA,
+      prNumber: 77,
+      repo: "example/ship",
+      streamId,
+    });
+    expect(firstStream(runId)?.status).toBe("dispatching");
+
+    const ambiguities: DispatchAmbiguity[] = [];
+    await recoverDispatchingStreams(store, fake.port, store.getDriverRun(runId)!, ambiguities);
+    expect(firstStream(runId)?.status).toBe("pending");
+
+    const movedHead = "1".repeat(40);
+    const ghMoved = createFakeGhPort({ 77: { headRefOid: movedHead, state: "OPEN" } });
+    const result = await createDriverService({ gh: ghMoved, ship: fake.port, store }).run(
+      { driverRunId: runId },
+      { maxWaitMs: 0 },
+    );
+
+    expect(result.status).toBe("awaiting_judgment");
+    expect(firstStream(runId)?.status).toBe("failed");
+    expect(firstStream(runId)?.errorMessage).toContain("findings-stale-head");
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test("decide retry with matching head re-dispatches the prepared address doc", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    let shouldFail = true;
+    const port = {
+      ...fake.port,
+      startShip: (input: Parameters<typeof fake.port.startShip>[0]) => {
+        if (shouldFail) return Promise.reject(new Error("boom"));
+        return fake.port.startShip(input);
+      },
+    };
+    const gh = createFakeGhPort({ 77: { headRefOid: HEAD_SHA, state: "OPEN" } });
+
+    await expect(
+      address({ clock: () => 0, gh, ship: port, store }, runId, { findingsPath, streamId }),
+    ).rejects.toThrow(/address dispatch failed/);
+
+    const synthesizedDoc = firstStream(runId)?.attempts.at(-1)?.docPath;
+    createDriverService({ gh, ship: port, store }).decide(runId, streamId, { kind: "retry" });
+
+    shouldFail = false;
+    await createDriverService({ gh, ship: port, store }).run(
+      { driverRunId: runId },
+      { maxWaitMs: 0 },
+    );
+
+    const start = fake.calls.find((call) => call.kind === "startShip");
+    expect(start?.input).toMatchObject({ docPath: synthesizedDoc });
+    expect(firstStream(runId)?.status).not.toBe("failed");
+    expect(store.getDriverRun(runId)?.status).not.toBe("awaiting_judgment");
+  });
+
   test("a decide-retry re-dispatch resolves the findings doc and branch from the row alone", async () => {
     const { runId, streamId } = landedSeed();
     const fake = createFakeShipPort([]);
