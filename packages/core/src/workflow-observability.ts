@@ -199,7 +199,7 @@ export function sanitizeFailureDetail(message: string | undefined): string | und
   if (message === undefined || message.length === 0) return undefined;
   const quoted = message.replace(/(["'])(?:[A-Za-z]:\\|\/)[^"'\r\n]*\1/g, "[path]");
   const redacted = quoted.replace(
-    /(^|[\s(,;=])(?:[A-Za-z]:\\|\/).*$/g,
+    /(^|[\s(,;=])(?:[A-Za-z]:\\|\/).*$/gm,
     (_match, prefix: string) => `${prefix}[path]`,
   );
   const tokenRedacted = redacted

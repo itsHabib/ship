@@ -236,6 +236,14 @@ describe("sanitizeFailureDetail", () => {
     expect(sanitizeFailureDetail("token ghp_abc123xyz leaked")).toBe("token [token] leaked");
     expect(sanitizeFailureDetail("Bearer sk-live-abc")).toBe("Bearer [token]");
   });
+
+  test("redacts absolute paths on every line of a multiline message", () => {
+    const msg = "Error reading /etc/secret on line 1\nAlso failed at /home/user/data on line 2";
+    const result = sanitizeFailureDetail(msg);
+    expect(result).not.toContain("/etc/secret");
+    expect(result).not.toContain("/home/user/data");
+    expect(result).toBe("Error reading [path]\nAlso failed at [path]");
+  });
 });
 
 describe("projectWorkflowObservability — redaction", () => {
