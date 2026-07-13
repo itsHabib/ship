@@ -243,8 +243,11 @@ function hashSourceJson(sourceJson: string): string {
 function sanitizeErrorMessage(message: string | undefined): string | undefined {
   if (message === undefined) return undefined;
   const quoted = message.replace(/(["'])(?:[A-Za-z]:\\|\/)[^"'\r\n]*\1/g, "[path]");
+  // An unquoted path has no reliable terminator because spaces are legal in
+  // both POSIX and Windows paths. Fail closed: retain the safe prefix and
+  // redact the rest of the one-line diagnostic once an absolute marker starts.
   return quoted.replace(
-    /(^|[\s(,;=])(?:[A-Za-z]:\\|\/)[^\s"',;)]*/g,
+    /(^|[\s(,;=])(?:[A-Za-z]:\\|\/).*$/g,
     (_match, prefix: string) => `${prefix}[path]`,
   );
 }

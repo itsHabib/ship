@@ -220,7 +220,7 @@ batches: []
               driverBatchId: "db_05",
               driverRunId: "drv_05",
               errorMessage:
-                "ENOENT open '/abs/repo/task.md'; key=/var/log/ship; win=C:\\Users\\agent\\task.md; wrapped=(D:\\data\\task.md); repeat=/var/log/ship and /var/log/ship",
+                "ENOENT open '/abs/repo/task.md'; failed for C:\\Program Files\\Ship\\task.md then /var/log/ship",
               id: "ds_05",
               runtime: "local",
               specPath: "docs/task.md",
@@ -241,9 +241,7 @@ batches: []
       updatedAt: "2026-06-12T00:00:00.000Z",
     };
     const stream = buildDriverListEnvelope([run]).runs[0]?.batches[0]?.streams[0];
-    expect(stream?.errorMessage).toBe(
-      "ENOENT open [path]; key=[path]; win=[path]; wrapped=([path]); repeat=[path] and [path]",
-    );
+    expect(stream?.errorMessage).toBe("ENOENT open [path]; failed for [path]");
     const serialized = JSON.stringify(buildDriverListEnvelope([run]));
     expect(serialized).not.toMatch(/\/abs\/repo|\/var\/log|[A-Z]:\\\\/);
   });
