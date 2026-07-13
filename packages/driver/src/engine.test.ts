@@ -2,6 +2,7 @@
 
 import type { DriverStream } from "@ship/store";
 
+import { parseReceiptsJsonl } from "@ship/receipt";
 import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -421,6 +422,48 @@ batches:
       unresolvedOnly: true,
     });
     expect(resolved).toHaveLength(0);
+    store.close();
+  });
+
+  test("awaiting_judgment writes exactly one parked receipt; re-tick is idempotent", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const receiptsPath = join(repoRoot, "receipts.jsonl");
+    const { port } = createFakeShipPort([
+      {
+        docPath: docA,
+        failureCategory: "timeout-near-cap",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_fail",
+      },
+    ]);
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const imported = driver.importManifest(manifestPath);
+
+    const first = await driver.run(
+      { driverRunId: imported.run.id },
+      { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+    );
+    expect(first.status).toBe("awaiting_judgment");
+
+    const afterFirst = parseReceiptsJsonl(readFileSync(receiptsPath, "utf8"));
+    const parkedFirst = afterFirst.filter((receipt) => receipt.outcome === "parked");
+    expect(parkedFirst).toHaveLength(1);
+    expect(parkedFirst[0]?.source).toBe("driver");
+    expect(parkedFirst[0]?.repo).toBe("ship");
+    expect(parkedFirst[0]?.key).toBe("feat-a");
+    expect(parkedFirst[0]?.doc_path).toBe("docs/tasks/a.md");
+
+    const second = await driver.run(
+      { driverRunId: imported.run.id },
+      { batch: 1, maxWaitMs: 0, pollIntervalMs: 1000 },
+    );
+    expect(second.status).toBe("awaiting_judgment");
+
+    const afterSecond = parseReceiptsJsonl(readFileSync(receiptsPath, "utf8"));
+    expect(afterSecond.filter((receipt) => receipt.outcome === "parked")).toHaveLength(1);
     store.close();
   });
 

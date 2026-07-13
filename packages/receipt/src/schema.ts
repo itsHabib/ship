@@ -34,6 +34,7 @@ export const receiptOutcomeSchema = z.enum([
   "succeeded",
   "failed",
   "cancelled",
+  "parked",
   "pending",
   "unknown",
 ]);

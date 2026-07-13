@@ -8,7 +8,12 @@ import type { Store } from "@ship/store";
 import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/store";
 import type { AgentProvider, FailureCategory } from "@ship/workflow";
 
-import { prNumberFromUrl } from "@ship/receipt";
+import {
+  buildParkReceipts,
+  type ParkStreamInput,
+  persistReceipts,
+  prNumberFromUrl,
+} from "@ship/receipt";
 import { ReviewArtifactAddressRacedError, ReviewArtifactDuplicateError } from "@ship/store";
 import { isTerminal } from "@ship/workflow";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -379,6 +384,7 @@ async function finalizeExit(input: FinalizeExitInput): Promise<DriverTickResult>
   if (status === "awaiting_judgment") {
     ctx.store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
     await writeAndDeliverEscalations(buildEscalationDeps(ctx, opts), run, ambiguities);
+    writeParkReceiptsAtJudgment(run, ambiguities, ctx);
   }
   if (status === "done") {
     const current = ctx.store.getDriverRun(driverRunId) ?? run;
@@ -387,6 +393,59 @@ async function finalizeExit(input: FinalizeExitInput): Promise<DriverTickResult>
   }
   const refreshed = ctx.store.getDriverRun(driverRunId) ?? run;
   return buildResult(refreshed, ambiguities, status);
+}
+
+function writeParkReceiptsAtJudgment(
+  run: DriverRun,
+  ambiguities: DispatchAmbiguity[],
+  ctx: Pick<TickContext, "clock">,
+): void {
+  const parkedStreamIds = new Set<string>();
+  for (const request of [
+    ...buildFailureTriageRequests(run),
+    ...buildDispatchAmbiguityRequests(run, ambiguities),
+  ]) {
+    parkedStreamIds.add(request.streamId);
+  }
+  if (parkedStreamIds.size === 0) {
+    return;
+  }
+
+  const streams = [];
+  for (const batch of run.batches) {
+    for (const stream of batch.streams) {
+      if (!parkedStreamIds.has(stream.id)) {
+        continue;
+      }
+      streams.push(toParkStreamInput(stream, batch.batchIndex));
+    }
+  }
+
+  const receipts = buildParkReceipts({
+    driverRunId: run.id,
+    generatedAt: new Date(ctx.clock()).toISOString(),
+    phase: run.phase,
+    project: run.project,
+    repo: run.repo,
+    streams,
+  });
+  const receiptsPath = join(resolveRepoRoot(run.manifestPath), "receipts.jsonl");
+  persistReceipts(receiptsPath, receipts);
+}
+
+function toParkStreamInput(stream: DriverStream, batchIndex: number): ParkStreamInput {
+  const runtime = stream.runtime === "rooms" ? undefined : stream.runtime;
+  return {
+    batchIndex,
+    branch: stream.branch,
+    prNumber: stream.prNumber,
+    runtime,
+    specPath: stream.specPath,
+    streamIndex: stream.streamIndex,
+    taskId: stream.taskId,
+    taskSlug: stream.taskSlug,
+    workflowRunId: stream.workflowRunId,
+  };
 }
 
 function loadRun(store: Store, driverRunId: string): DriverRun {
