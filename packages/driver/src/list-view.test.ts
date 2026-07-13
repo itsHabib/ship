@@ -109,11 +109,11 @@ batches: []
               driverRunId: "drv_01",
               id: "ds_01",
               runtime: "local",
-              specPath: "docs/task.md",
+              specPath: "/abs/path/docs/task.md",
               status: "failed",
               streamIndex: 0,
               taskSlug: "task-a",
-              touches: ["src/a.ts"],
+              touches: ["src/a.ts", "C:\\secret\\a.ts"],
               updatedAt: "2026-06-12T00:00:00.000Z",
             },
           ],
@@ -132,12 +132,15 @@ batches: []
 
     const envelope = buildDriverListEnvelope([run]);
     assertNoForbiddenKeys(envelope);
-    const projected = envelope.runs[0];
-    expect(projected?.sourceHash).toBe(
+    const projected = envelope.runs[0]!;
+    const stream = projected.batches[0]!.streams[0]!;
+    expect(projected.sourceHash).toBe(
       createHash("sha256").update(sourceJson, "utf8").digest("hex"),
     );
-    expect(projected?.manifestRef).toBe("docs/driver.md");
-    expect(projected?.batches[0]?.streams[0]?.attempts[0]).toEqual({
+    expect(projected.manifestRef).toBe("docs/driver.md");
+    expect(stream.specPath).toBe("[path]");
+    expect(stream.touches).toEqual(["src/a.ts", "[path]"]);
+    expect(stream.attempts[0]).toEqual({
       dispatchedAt: "2026-06-12T00:00:00.000Z",
       failureCategory: "logic",
       terminal: true,

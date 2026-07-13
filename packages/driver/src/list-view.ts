@@ -13,7 +13,7 @@ import type {
 } from "@ship/store";
 
 import { createHash } from "node:crypto";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, posix, relative, resolve, win32 } from "node:path";
 
 import { resolveRepoRoot } from "./engine.js";
 
@@ -128,11 +128,11 @@ function buildDriverListStreamView(stream: DriverStream): DriverListStreamView {
     attempts: stream.attempts.map(buildDriverListAttemptView),
     createdAt: stream.createdAt,
     runtime: stream.runtime,
-    specPath: stream.specPath,
+    specPath: sanitizePathReference(stream.specPath),
     status: stream.status,
     streamId: stream.id,
     streamIndex: stream.streamIndex,
-    touches: [...stream.touches],
+    touches: stream.touches.map(sanitizePathReference),
     updatedAt: stream.updatedAt,
     ...optionalStreamIdentityFields(stream),
     ...optionalStreamRequestedFields(stream),
@@ -250,6 +250,10 @@ function sanitizeErrorMessage(message: string | undefined): string | undefined {
     /(^|[\s(,;=])(?:[A-Za-z]:\\|\/).*$/g,
     (_match, prefix: string) => `${prefix}[path]`,
   );
+}
+
+function sanitizePathReference(value: string): string {
+  return posix.isAbsolute(value) || win32.isAbsolute(value) ? "[path]" : value;
 }
 
 function resolveSafeManifestRef(manifestPath: string): string | undefined {

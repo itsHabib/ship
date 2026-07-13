@@ -180,7 +180,7 @@ describe("driver service listDriverRunsView", () => {
     const { port, calls } = createFakeShipPort([]);
     const driver = createDriverService({ ship: port, store });
     driver.listDriverRunsView();
-    expect(calls.some((call) => call.kind === "resumeOrphanedRuns")).toBe(false);
+    expect(calls).toEqual([]);
     store.close();
   });
 
