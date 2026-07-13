@@ -71,6 +71,12 @@ export interface WorkflowRunOps {
   markRunStarted: (workflowRunId: string, phaseId: string, startedAt: string) => void;
   /** Bump `updated_at` without changing `status`; throws if the id is unknown. */
   touchUpdatedAt: (workflowRunId: string) => void;
+  /**
+   * Bump both `updated_at` and `last_event_at` to now — a real agent event.
+   * `last_event_at` is the driver tick's progress signal; unlike the pump
+   * timer's `touchUpdatedAt`, only a genuine event moves it. Throws if unknown.
+   */
+  touchEvent: (workflowRunId: string) => void;
   /** All workflow rows (id, status, updated_at) for prune selection. */
   listForPrune: () => WorkflowRunPruneRow[];
   /** Delete a workflow run; cascades phases + cursor_runs. Idempotent on unknown id. */
@@ -87,10 +93,11 @@ interface WorkflowRunRow {
   policy_json: string;
   created_at: string;
   updated_at: string;
+  last_event_at: string | null;
 }
 
 const WORKFLOW_RUN_COLUMNS =
-  "id, repo, doc_path, status, base_ref, worktree_json, policy_json, created_at, updated_at";
+  "id, repo, doc_path, status, base_ref, worktree_json, policy_json, created_at, updated_at, last_event_at";
 
 interface WorkflowRunStmts {
   insert: Statement;
@@ -112,6 +119,7 @@ interface WorkflowRunStmts {
   markRunRunning: Statement;
   markPhaseRunning: Statement;
   touchUpdatedAt: Statement;
+  touchEvent: Statement;
   deleteById: Statement;
   listForPrune: Statement<[], WorkflowRunPruneRow>;
 }
@@ -156,6 +164,9 @@ export function createWorkflowRunOps(
       `UPDATE workflow_runs SET status = 'running', updated_at = ? WHERE id = ?`,
     ),
     touchUpdatedAt: db.prepare(`UPDATE workflow_runs SET updated_at = ? WHERE id = ?`),
+    touchEvent: db.prepare(
+      `UPDATE workflow_runs SET updated_at = ?, last_event_at = ? WHERE id = ?`,
+    ),
     deleteById: db.prepare(`DELETE FROM workflow_runs WHERE id = ?`),
     listForPrune: db.prepare<[], WorkflowRunPruneRow>(
       `SELECT id, status, updated_at AS updatedAt FROM workflow_runs`,
@@ -177,6 +188,9 @@ export function createWorkflowRunOps(
     },
     touchUpdatedAt: (workflowRunId) => {
       touchRunUpdatedAt(deps, workflowRunId);
+    },
+    touchEvent: (workflowRunId) => {
+      touchRunEvent(deps, workflowRunId);
     },
     updateStatus: (id, status) => updateRunStatus(deps, id, status),
     listForPrune: () => deps.stmts.listForPrune.all(),
@@ -233,6 +247,14 @@ function updateRunStatus(deps: WorkflowRunDeps, id: string, status: WorkflowStat
 
 function touchRunUpdatedAt(deps: WorkflowRunDeps, id: string): void {
   const result = deps.stmts.touchUpdatedAt.run(deps.clock(), id);
+  if (result.changes === 0) {
+    throw new WorkflowRunNotFoundError(id);
+  }
+}
+
+function touchRunEvent(deps: WorkflowRunDeps, id: string): void {
+  const now = deps.clock();
+  const result = deps.stmts.touchEvent.run(now, now, id);
   if (result.changes === 0) {
     throw new WorkflowRunNotFoundError(id);
   }
@@ -378,6 +400,10 @@ function parseRun(row: WorkflowRunRow, runPhases: WorkflowRun["phases"]): Workfl
     repo: row.repo,
     status: row.status,
     updatedAt: row.updated_at,
+    // NULL (local runs, pre-migration rows, a remote run before its first
+    // event) is omitted rather than passed through — the schema field is
+    // optional, and `undefined` reads as "no remote-event anchor yet".
+    ...(row.last_event_at !== null && { lastEventAt: row.last_event_at }),
     worktree,
   };
   const result = workflowRunSchema.safeParse(candidate);

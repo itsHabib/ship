@@ -340,11 +340,37 @@ describe("workflow runs (via createStore)", () => {
       expect(after?.updatedAt).not.toBe(before);
       // Status untouched — this is a pure freshness bump.
       expect(after?.status).toBe(created.status);
+      // The freshness timer must never move last_event_at — that's the
+      // driver's progress signal, reserved for real events (migration 0017).
+      expect(after?.lastEventAt).toBeUndefined();
     });
 
     test("unknown id throws WorkflowRunNotFoundError", () => {
       expect(() => {
         store.touchWorkflowRunUpdatedAt(newWorkflowRunId());
+      }).toThrow(WorkflowRunNotFoundError);
+    });
+  });
+
+  describe("touchWorkflowRunEvent", () => {
+    test("bumps updated_at AND last_event_at on an existing row", () => {
+      const input = makeInput();
+      const created = store.createWorkflowRun(input);
+      // A fresh row carries no event anchor.
+      expect(created.lastEventAt).toBeUndefined();
+
+      currentNow = "2026-05-08T00:00:30.000Z";
+      store.touchWorkflowRunEvent(input.id);
+
+      const after = store.getRun(input.id);
+      expect(after?.updatedAt).toBe(currentNow);
+      expect(after?.lastEventAt).toBe(currentNow);
+      expect(after?.status).toBe(created.status);
+    });
+
+    test("unknown id throws WorkflowRunNotFoundError", () => {
+      expect(() => {
+        store.touchWorkflowRunEvent(newWorkflowRunId());
       }).toThrow(WorkflowRunNotFoundError);
     });
   });
