@@ -29,10 +29,24 @@ export type { ImportManifestResult } from "./import.js";
 
 export { renderDriverRun } from "./render.js";
 
-export { computeAssignments, isLegalCell, parseModelPool, poolMemberToString } from "./assign.js";
-export type { AssignmentPlan, PoolMember, StreamAssignment } from "./assign.js";
+export {
+  computeAssignments,
+  isLegalCell,
+  parseModelPool,
+  poolMemberToString,
+  preflightPool,
+} from "./assign.js";
+export type {
+  AssignmentPlan,
+  DroppedMember,
+  PoolMember,
+  PreflightResult,
+  StreamAssignment,
+} from "./assign.js";
 export { applyAssignmentToManifest, assignModelPoolToManifest } from "./assign-writeback.js";
-export type { AssignResult } from "./assign-writeback.js";
+export type { AssignOptions, AssignResult } from "./assign-writeback.js";
+export { checkTargetViability, createViabilityDeps } from "./viability.js";
+export type { DispatchTarget, ViabilityDeps, ViabilityResult } from "./viability.js";
 
 export { mapTierToDispatch } from "./tier-map.js";
 

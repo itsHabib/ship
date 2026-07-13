@@ -12,8 +12,10 @@
 import type { AgentProvider } from "@ship/workflow";
 
 import type { DriverManifest, ManifestStream } from "./manifest.js";
+import type { DispatchTarget, ViabilityDeps, ViabilityResult } from "./viability.js";
 
 import { AssignError } from "./errors.js";
+import { checkTargetViability } from "./viability.js";
 
 type Runtime = NonNullable<ManifestStream["runtime"]>;
 
@@ -230,4 +232,69 @@ export function isLegalCell(provider: AgentProvider, runtime: Runtime): boolean 
 export function poolMemberToString(member: PoolMember): string {
   const prefix = member.runtime === undefined ? "" : `${member.runtime}/`;
   return `${prefix}${member.provider}:${member.modelId}`;
+}
+
+/** A pool member dropped by preflight, with the reason it was dropped. */
+export interface DroppedMember {
+  member: PoolMember;
+  reason: string;
+}
+
+/** Preflight outcome: surviving members and dropped ones, in original order. */
+export interface PreflightResult {
+  effective: PoolMember[];
+  dropped: DroppedMember[];
+}
+
+/**
+ * Filter `pool` to its viable members (spec §5). Resolve each member to a
+ * `(runtime, provider, model_id)` target — the member's runtime prefix, else
+ * `defaultRuntime` — check each unique target once, and partition into
+ * effective / dropped preserving pool order. A rejecting `deps.listCursorModels`
+ * propagates: an unreachable catalog aborts assign rather than silently
+ * dropping every cursor member.
+ */
+export async function preflightPool(
+  pool: PoolMember[],
+  defaultRuntime: Runtime,
+  deps: ViabilityDeps,
+): Promise<PreflightResult> {
+  const pairs = pool.map((member) => ({ member, target: resolveTarget(member, defaultRuntime) }));
+  const targetByKey = new Map<string, DispatchTarget>();
+  for (const { target } of pairs) targetByKey.set(targetKey(target), target);
+
+  const verdicts = new Map<string, ViabilityResult>();
+  await Promise.all(
+    [...targetByKey].map(async ([key, target]) => {
+      verdicts.set(key, await checkTargetViability(target, deps));
+    }),
+  );
+
+  const effective: PoolMember[] = [];
+  const dropped: DroppedMember[] = [];
+  for (const { member, target } of pairs) {
+    const verdict = verdicts.get(targetKey(target)) ?? unresolvedVerdict();
+    if (verdict.viable) {
+      effective.push(member);
+      continue;
+    }
+    dropped.push({ member, reason: verdict.reason });
+  }
+  return { dropped, effective };
+}
+
+function resolveTarget(member: PoolMember, defaultRuntime: Runtime): DispatchTarget {
+  return {
+    modelId: member.modelId,
+    provider: member.provider,
+    runtime: member.runtime ?? defaultRuntime,
+  };
+}
+
+function targetKey(target: DispatchTarget): string {
+  return `${target.runtime}/${target.provider}:${target.modelId}`;
+}
+
+function unresolvedVerdict(): ViabilityResult {
+  return { reason: "preflight produced no verdict", viable: false };
 }

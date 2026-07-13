@@ -2,12 +2,23 @@
  * `ship driver <subverb>` — brain-facing driver surface (spec §6).
  */
 
-import type { AddressOpts, Decision, DriverRunRef, LandOpts, MergeFacts } from "@ship/driver";
+import type {
+  AddressOpts,
+  AssignOptions,
+  Decision,
+  DriverRunRef,
+  LandOpts,
+  MergeFacts,
+} from "@ship/driver";
 import type { DriverRunStatus } from "@ship/store";
 import type { Command } from "commander";
 
 import { parsePruneDuration, PruneDurationError } from "@ship/core";
-import { assignModelPoolToManifest, DriverRunNotFoundEngineError } from "@ship/driver";
+import {
+  assignModelPoolToManifest,
+  createViabilityDeps,
+  DriverRunNotFoundEngineError,
+} from "@ship/driver";
 import { DRIVER_RUN_ID_PATTERN } from "@ship/mcp";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -102,10 +113,22 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     .command("assign <manifestPath>")
     .description("round-robin a model pool over a manifest's streams (pre-import)")
     .requiredOption("--pool <spec>", "comma-separated [runtime/]provider:model members")
-    .action((manifestPath: string, rawOpts: { pool: string }) => {
-      runDriverAction(() => {
+    .option("--no-preflight", "skip the model/credential viability probe")
+    .action(async (manifestPath: string, rawOpts: { pool: string; preflight: boolean }) => {
+      await runDriverActionAsync(async () => {
         const path = resolvePath(manifestPath);
-        const result = assignModelPoolToManifest(readFileSync(path, "utf8"), rawOpts.pool);
+        const options: AssignOptions = {
+          now: () => new Date().toISOString(),
+          preflight: rawOpts.preflight,
+        };
+        if (rawOpts.preflight) {
+          options.deps = createViabilityDeps(process.env);
+        }
+        const result = await assignModelPoolToManifest(
+          readFileSync(path, "utf8"),
+          rawOpts.pool,
+          options,
+        );
         writeFileSync(path, result.text);
         process.stdout.write(`${formatDriverAssignOutput(result)}\n`);
       });

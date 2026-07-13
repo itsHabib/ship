@@ -2,10 +2,20 @@
 
 import { describe, expect, test } from "vitest";
 
+import type { ViabilityDeps } from "./viability.js";
+
 import { assignModelPoolToManifest } from "./assign-writeback.js";
 import { computeAssignments, isLegalCell, parseModelPool } from "./assign.js";
 import { AssignError } from "./errors.js";
 import { type DriverManifest, parseManifest } from "./manifest.js";
+
+const NOW = "2026-07-13T00:00:00.000Z";
+const fixedNow = (): string => NOW;
+
+// A catalog that lists `models`; every cursor id outside it is dropped.
+function stubDeps(models: string[], env: ViabilityDeps["env"] = {}): ViabilityDeps {
+  return { env, listCursorModels: () => Promise.resolve(models) };
+}
 
 interface ManifestOpts {
   // Default "cloud" so bare cursor fixtures form valid cloud/cursor cells
@@ -243,9 +253,11 @@ describe("computeAssignments", () => {
 });
 
 describe("assignModelPoolToManifest", () => {
-  test("stamps provider + model_id and records the pool, re-parsing cleanly", () => {
+  test("stamps provider + model_id and records the pool, re-parsing cleanly", async () => {
     const text = manifestText(THREE_STREAMS_ONE_BATCH);
-    const result = assignModelPoolToManifest(text, "cursor:grok-4.5,cursor:composer-2.5");
+    const result = await assignModelPoolToManifest(text, "cursor:grok-4.5,cursor:composer-2.5", {
+      now: fixedNow,
+    });
     const reparsed = parseManifest(result.text);
     expect(reparsed.ok).toBe(true);
     if (!reparsed.ok) return;
@@ -255,24 +267,35 @@ describe("assignModelPoolToManifest", () => {
     expect(streams[1]?.model_id).toBe("composer-2.5");
     expect(streams[2]?.model_id).toBe("grok-4.5");
     expect(reparsed.manifest.assignment).toEqual({
+      assigned_at: NOW,
+      dropped: [],
+      effective_pool: ["cursor:grok-4.5", "cursor:composer-2.5"],
       pool: ["cursor:grok-4.5", "cursor:composer-2.5"],
     });
   });
 
-  test("is idempotent for the same pool", () => {
+  test("is idempotent for the same pool", async () => {
     const text = manifestText(THREE_STREAMS_ONE_BATCH);
-    const once = assignModelPoolToManifest(text, "cursor:grok-4.5,cursor:composer-2.5");
-    const twice = assignModelPoolToManifest(once.text, "cursor:grok-4.5,cursor:composer-2.5");
+    const once = await assignModelPoolToManifest(text, "cursor:grok-4.5,cursor:composer-2.5", {
+      now: fixedNow,
+    });
+    const twice = await assignModelPoolToManifest(
+      once.text,
+      "cursor:grok-4.5,cursor:composer-2.5",
+      {
+        now: fixedNow,
+      },
+    );
     expect(twice.text).toBe(once.text);
   });
 
-  test("throws on a malformed manifest", () => {
-    expect(() => assignModelPoolToManifest("not a manifest", "cursor:grok-4.5")).toThrow(
+  test("rejects a malformed manifest", async () => {
+    await expect(assignModelPoolToManifest("not a manifest", "cursor:grok-4.5")).rejects.toThrow(
       AssignError,
     );
   });
 
-  test("leaves terminal streams unstamped in the written manifest", () => {
+  test("leaves terminal streams unstamped in the written manifest", async () => {
     const withDone = [
       "  - id: 1",
       "    depends_on: []",
@@ -281,7 +304,9 @@ describe("assignModelPoolToManifest", () => {
       "        status: done",
       "      - spec_path: docs/b.md",
     ].join("\n");
-    const result = assignModelPoolToManifest(manifestText(withDone), "cursor:grok-4.5");
+    const result = await assignModelPoolToManifest(manifestText(withDone), "cursor:grok-4.5", {
+      now: fixedNow,
+    });
     const reparsed = parseManifest(result.text);
     expect(reparsed.ok).toBe(true);
     if (!reparsed.ok) return;
@@ -292,11 +317,76 @@ describe("assignModelPoolToManifest", () => {
     expect(streams[1]?.model_id).toBe("grok-4.5");
   });
 
-  test("preserves CRLF line endings", () => {
+  test("preserves CRLF line endings", async () => {
     const crlf = manifestText(THREE_STREAMS_ONE_BATCH).replace(/\n/g, "\r\n");
-    const result = assignModelPoolToManifest(crlf, "cursor:grok-4.5");
+    const result = await assignModelPoolToManifest(crlf, "cursor:grok-4.5", { now: fixedNow });
     expect(result.text).toContain("\r\n");
     expect(result.text).not.toMatch(/[^\r]\n/);
     expect(parseManifest(result.text).ok).toBe(true);
+  });
+
+  test("preflight drops an unreachable member and records it", async () => {
+    const text = manifestText(THREE_STREAMS_ONE_BATCH);
+    // Catalog lists grok but not composer → composer is dropped.
+    const result = await assignModelPoolToManifest(text, "cursor:grok-4.5,cursor:composer-2.5", {
+      deps: stubDeps(["grok-4.5"]),
+      now: fixedNow,
+      preflight: true,
+    });
+    expect(result.effectivePool.map((member) => member.modelId)).toEqual(["grok-4.5"]);
+    expect(result.dropped.map((drop) => drop.member.modelId)).toEqual(["composer-2.5"]);
+    // Effective pool of one → every stream gets grok.
+    expect(result.assignments.map((a) => a.modelId)).toEqual(["grok-4.5", "grok-4.5", "grok-4.5"]);
+    const reparsed = parseManifest(result.text);
+    expect(reparsed.ok).toBe(true);
+    if (!reparsed.ok) return;
+    expect(reparsed.manifest.assignment).toEqual({
+      assigned_at: NOW,
+      dropped: [
+        {
+          member: "cursor:composer-2.5",
+          reason: 'cursor model "composer-2.5" is not in /v1/models',
+        },
+      ],
+      effective_pool: ["cursor:grok-4.5"],
+      pool: ["cursor:grok-4.5", "cursor:composer-2.5"],
+    });
+  });
+
+  test("aborts before write-back when preflight empties the pool", async () => {
+    await expect(
+      assignModelPoolToManifest(
+        manifestText(THREE_STREAMS_ONE_BATCH),
+        "cursor:grok-4.5,cursor:composer-2.5",
+        { deps: stubDeps([]), preflight: true },
+      ),
+    ).rejects.toThrow(/preflight dropped every pool member/);
+  });
+
+  test("skips the probe when preflight is off, even with a would-drop catalog", async () => {
+    const result = await assignModelPoolToManifest(
+      manifestText(THREE_STREAMS_ONE_BATCH),
+      "cursor:grok-4.5,cursor:composer-2.5",
+      { deps: stubDeps([]), now: fixedNow, preflight: false },
+    );
+    expect(result.dropped).toEqual([]);
+    expect(result.effectivePool.map((member) => member.modelId)).toEqual([
+      "grok-4.5",
+      "composer-2.5",
+    ]);
+  });
+
+  test("propagates a catalog fetch failure as a hard error", async () => {
+    const deps: ViabilityDeps = {
+      env: {},
+      listCursorModels: () =>
+        Promise.reject(new AssignError("cursor /v1/models unreachable: boom")),
+    };
+    await expect(
+      assignModelPoolToManifest(manifestText(THREE_STREAMS_ONE_BATCH), "cursor:grok-4.5", {
+        deps,
+        preflight: true,
+      }),
+    ).rejects.toThrow(/unreachable/);
   });
 });
