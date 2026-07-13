@@ -92,6 +92,9 @@ export const driverManifestSchema = z
     skipped_during_resolution: advisoryBlockSchema,
     runtime_notes: advisoryBlockSchema,
     ping_gates: advisoryBlockSchema,
+    // Written by `driver assign`: the pool that produced the current stamps,
+    // for reproducibility. Lenient passthrough like the other advisory blocks.
+    assignment: advisoryBlockSchema,
   })
   .strict();
 

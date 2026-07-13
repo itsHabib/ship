@@ -9,6 +9,7 @@ import { describe, expect, test } from "vitest";
 import {
   formatCancelOutput,
   formatDiagnoseRun,
+  formatDriverAssignOutput,
   formatDriverImportOutput,
   formatDriverListOutput,
   formatDriverRunOutput,
@@ -77,6 +78,34 @@ describe("formatDriverImportOutput", () => {
       driverRunId: "drv_01",
       warnings: ['line 10: unknown field "base_branch" at manifest root'],
     });
+  });
+});
+
+describe("formatDriverAssignOutput", () => {
+  test("renders the pool header, per-stream rows, and skipped streams", () => {
+    const text = formatDriverAssignOutput({
+      text: "",
+      pool: [
+        { provider: "cursor", modelId: "grok-4.5" },
+        { provider: "claude", modelId: "claude-opus-4-8", runtime: "local" },
+      ],
+      assignments: [
+        {
+          batchPos: 0,
+          streamPos: 0,
+          specPath: "docs/a.md",
+          provider: "cursor",
+          modelId: "grok-4.5",
+          resolvedRuntime: "cloud",
+        },
+      ],
+      skipped: [{ specPath: "docs/b.md", status: "done" }],
+    });
+    expect(text).toContain(
+      "assigned 1 stream(s) from pool [cursor:grok-4.5, local/claude:claude-opus-4-8]",
+    );
+    expect(text).toContain("docs/a.md -> cloud/cursor:grok-4.5");
+    expect(text).toContain("docs/b.md -> skipped (done)");
   });
 });
 
