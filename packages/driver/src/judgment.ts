@@ -20,8 +20,10 @@ import type {
 
 import { CancelError, DecideError } from "./errors.js";
 import {
+  resolveAllDispatchFailingEscalations,
   resolveAllRunEscalations,
   resolveAllStreamParkedEscalations,
+  resolveDispatchFailingEscalation,
   resolveStreamParkedEscalation,
 } from "./escalation.js";
 import { parseManifest } from "./manifest.js";
@@ -240,6 +242,51 @@ function latestAttempt(stream: DriverStream): StreamAttempt | undefined {
   return stream.attempts.at(-1);
 }
 
+/**
+ * A terminal dispatch/run failure — `sdk-throw` at dispatch or a failed poll.
+ * A cancellation is terminal without a `failureCategory` and is excluded, as is
+ * a landed success; either resets the consecutive count.
+ */
+function isFailedAttempt(attempt: StreamAttempt): boolean {
+  return attempt.terminal && attempt.failureCategory !== undefined;
+}
+
+/**
+ * Consecutive same-stream dispatch failures derived from the existing `attempts`
+ * list — no stored counter. Counts the trailing run of failed attempts, stopping
+ * at (and excluding) the first success, non-failure terminal, or a human
+ * `decide retry` reset boundary. That boundary is why a post-trip retry restarts
+ * the count instead of re-tripping on the next failure.
+ */
+export function consecutiveDispatchFailures(stream: DriverStream): number {
+  let count = 0;
+  for (let i = stream.attempts.length - 1; i >= 0; i -= 1) {
+    const attempt = stream.attempts[i];
+    if (attempt === undefined) break;
+    if (attempt.resetBoundary === true) break;
+    if (!isFailedAttempt(attempt)) break;
+    count += 1;
+  }
+  return count;
+}
+
+/** True when a failed stream has reached the consecutive dispatch-failure cap. */
+export function hasTrippedDispatchBreaker(stream: DriverStream, threshold: number): boolean {
+  if (stream.status !== "failed") return false;
+  return consecutiveDispatchFailures(stream) >= threshold;
+}
+
+/**
+ * Mark the latest attempt as a reset boundary so a post-trip `decide retry`
+ * restarts the consecutive-failure count. A no-op when the stream carries no
+ * attempts.
+ */
+export function markLatestAttemptResetBoundary(attempts: StreamAttempt[]): StreamAttempt[] {
+  const last = attempts.at(-1);
+  if (last === undefined) return attempts;
+  return [...attempts.slice(0, -1), { ...last, resetBoundary: true }];
+}
+
 function markAttemptWorkflowRunId(
   attempts: StreamAttempt[],
   workflowRunId: string,
@@ -347,6 +394,7 @@ export function decide(
 
 function applyAbortDecision(store: Store, driverRunId: string, _streamId: string): DriverRun {
   resolveAllStreamParkedEscalations(store, driverRunId, "decide:abort");
+  resolveAllDispatchFailingEscalations(store, driverRunId, "decide:abort");
   return store.updateDriverRunStatus(driverRunId, "failed");
 }
 
@@ -374,9 +422,33 @@ function applyRetryDecision(
       `stream ${streamId} is not failed or dispatching (status=${stream.status})`,
     );
   }
-  store.updateDriverStream(streamId, PENDING_RESET_PATCH);
+  store.updateDriverStream(streamId, resetPatchForRetry(store, driverRunId, stream));
   resolveStreamParkedEscalation(store, driverRunId, streamId, "decide:retry");
   return resumeAfterDecision(store, driverRunId);
+}
+
+/**
+ * A `decide retry` of a tripped stream is an explicit human override: stamp a
+ * reset boundary so the consecutive-failure count restarts, and resolve the open
+ * `dispatch-failing` row. A retry before the breaker tripped leaves the count
+ * intact so it can still climb to the threshold across cycles.
+ */
+function resetPatchForRetry(
+  store: Store,
+  driverRunId: string,
+  stream: DriverStream,
+): Parameters<Store["updateDriverStream"]>[1] {
+  const tripped = store.getOpenEscalation({
+    class: "dispatch-failing",
+    driverRunId,
+    streamId: stream.id,
+  });
+  if (tripped === null) return PENDING_RESET_PATCH;
+  resolveDispatchFailingEscalation(store, driverRunId, stream.id, "decide:retry");
+  return {
+    ...PENDING_RESET_PATCH,
+    attempts: markLatestAttemptResetBoundary(stream.attempts),
+  };
 }
 
 function applySkipDecision(
@@ -391,6 +463,7 @@ function applySkipDecision(
   }
   store.updateDriverStream(streamId, { errorMessage: reason, status: "skipped" });
   resolveStreamParkedEscalation(store, driverRunId, streamId, "decide:skip");
+  resolveDispatchFailingEscalation(store, driverRunId, streamId, "decide:skip");
   return resumeAfterDecision(store, driverRunId);
 }
 

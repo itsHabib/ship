@@ -154,6 +154,215 @@ batches:
     store.close();
   });
 
+  test("3 consecutive dispatch failures trip the breaker: park + one dispatch-failing row", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const { port } = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("send failed"), workflowRunId: "wf1" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("send failed"), workflowRunId: "wf2" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("send failed"), workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const imported = driver.importManifest(manifestPath);
+    const runId = imported.run.id;
+
+    // Cycle: dispatch fails → awaiting_judgment → decide retry → re-pend.
+    const streamId = await failThenRetry(driver, store, runId); // failure 1
+    await failThenRetry(driver, store, runId); // failure 2
+    const third = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 }); // failure 3
+    expect(third.status).toBe("awaiting_judgment");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.status).toBe("failed");
+    expect(stream?.attempts.length).toBe(3);
+
+    const breaker = store.listEscalations({
+      class: "dispatch-failing",
+      driverRunId: runId,
+      unresolvedOnly: true,
+    });
+    expect(breaker).toHaveLength(1);
+    expect(breaker[0]?.streamId).toBe(streamId);
+
+    // A 4th tick without a decide does not re-dispatch — the stream stays failed.
+    const fourth = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+    expect(fourth.status).toBe("awaiting_judgment");
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.attempts.length).toBe(3);
+    store.close();
+  });
+
+  test("breaker escalation write is idempotent across ticks", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const { port } = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf1" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf2" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const runId = driver.importManifest(manifestPath).run.id;
+
+    await failThenRetry(driver, store, runId);
+    await failThenRetry(driver, store, runId);
+    await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+    // A second tick over the same tripped stream must not add a second open row.
+    await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+
+    const breaker = store.listEscalations({
+      class: "dispatch-failing",
+      driverRunId: runId,
+      unresolvedOnly: true,
+    });
+    expect(breaker).toHaveLength(1);
+    store.close();
+  });
+
+  test("2 failures then a success does not trip the breaker", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const { port } = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf1" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf2" },
+      { docPath: docA, repo: "ship", workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const runId = driver.importManifest(manifestPath).run.id;
+
+    await failThenRetry(driver, store, runId);
+    await failThenRetry(driver, store, runId);
+    const third = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+    // Third dispatch lands; the stream leaves the failed state.
+    expect(third.status).not.toBe("awaiting_judgment");
+    expect(
+      store.listEscalations({
+        class: "dispatch-failing",
+        driverRunId: runId,
+        unresolvedOnly: true,
+      }),
+    ).toHaveLength(0);
+    store.close();
+  });
+
+  test("distinct streams failing once each do not trip the breaker", async () => {
+    const manifest = join(repoRoot, "two-cloud-breaker.driver.md");
+    writeFileSync(manifest, twoCloudStreamManifest("2026-06-12T09:00:00Z"));
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docB = resolveDocPath(repoRoot, "docs/tasks/b.md");
+    const { port } = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom-a"), workflowRunId: "wf_a" },
+      { docPath: docB, repo: "ship", throwOnStart: new Error("boom-b"), workflowRunId: "wf_b" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run(
+      { driverRunId: runId },
+      { maxParallel: { cloud: 2 }, maxWaitMs: 0 },
+    );
+    expect(result.status).toBe("awaiting_judgment");
+    // Per-unit, not global: two single failures across streams must not trip.
+    expect(
+      store.listEscalations({
+        class: "dispatch-failing",
+        driverRunId: runId,
+        unresolvedOnly: true,
+      }),
+    ).toHaveLength(0);
+    store.close();
+  });
+
+  test("decide retry after a trip resets the counter and re-dispatches", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const { port } = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf1" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf2" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf3" },
+      { docPath: docA, repo: "ship", workflowRunId: "wf_ok" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const runId = driver.importManifest(manifestPath).run.id;
+
+    await failThenRetry(driver, store, runId);
+    await failThenRetry(driver, store, runId);
+    const tripped = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+    const streamId = tripped.awaiting[0]!.streamId;
+    expect(
+      store.listEscalations({
+        class: "dispatch-failing",
+        driverRunId: runId,
+        unresolvedOnly: true,
+      }),
+    ).toHaveLength(1);
+
+    // The human override: retry the tripped stream. Its dispatch-failing row
+    // resolves, and the last attempt is stamped a reset boundary.
+    driver.decide(runId, streamId, { kind: "retry" });
+    expect(
+      store.listEscalations({
+        class: "dispatch-failing",
+        driverRunId: runId,
+        unresolvedOnly: true,
+      }),
+    ).toHaveLength(0);
+    const afterDecide = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(afterDecide?.status).toBe("pending");
+    expect(afterDecide?.attempts.at(-1)?.resetBoundary).toBe(true);
+
+    // Re-dispatch proceeds; the count restarts, so the 4th dispatch (which
+    // succeeds here) is not blocked by the earlier three failures.
+    const resumed = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+    expect(resumed.status).not.toBe("awaiting_judgment");
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).not.toBe("failed");
+    store.close();
+  });
+
+  test("decide skip on a tripped stream resolves the dispatch-failing row", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const { port } = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf1" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf2" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const runId = driver.importManifest(manifestPath).run.id;
+
+    await failThenRetry(driver, store, runId);
+    await failThenRetry(driver, store, runId);
+    const tripped = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+    const streamId = tripped.awaiting[0]!.streamId;
+
+    driver.decide(runId, streamId, { kind: "skip", reason: "deterministically doomed" });
+    // Both the parked row and the breaker row must close with the decision.
+    expect(store.listEscalations({ driverRunId: runId, unresolvedOnly: true })).toHaveLength(0);
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("skipped");
+    store.close();
+  });
+
+  test("decide abort on a run with a tripped stream resolves the dispatch-failing row", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const { port } = createFakeShipPort([
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf1" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf2" },
+      { docPath: docA, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: port, store });
+    const runId = driver.importManifest(manifestPath).run.id;
+
+    await failThenRetry(driver, store, runId);
+    await failThenRetry(driver, store, runId);
+    const tripped = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+    const streamId = tripped.awaiting[0]!.streamId;
+
+    driver.decide(runId, streamId, { kind: "abort", reason: "abandoning the doc" });
+    expect(store.listEscalations({ driverRunId: runId, unresolvedOnly: true })).toHaveLength(0);
+    expect(store.getDriverRun(runId)?.status).toBe("failed");
+    store.close();
+  });
+
   test("awaiting_judgment writes stream-parked escalation before notify", async () => {
     const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const notifyCalls: string[] = [];
@@ -2751,6 +2960,25 @@ batches:
 /** Local docs resolve inside the stream's worktree (core requires it). */
 function localDoc(root: string, branch: string, specPath: string): string {
   return resolveDocPath(join(root, ".claude", "worktrees", branch), specPath);
+}
+
+/**
+ * Run one tick that fails to dispatch, then `decide retry`. Returns the failed
+ * stream id. Models the engine's only re-dispatch path for a failed stream: a
+ * human retry, across which the breaker counts.
+ */
+async function failThenRetry(
+  driver: ReturnType<typeof createDriverService>,
+  store: ReturnType<typeof createStore>,
+  runId: string,
+): Promise<string> {
+  const tick = await driver.run({ driverRunId: runId }, { batch: 1, maxWaitMs: 0 });
+  expect(tick.status).toBe("awaiting_judgment");
+  const triage = tick.awaiting[0];
+  if (triage?.kind !== "failure-triage") throw new Error("expected failure-triage");
+  driver.decide(runId, triage.streamId, { kind: "retry" });
+  expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("pending");
+  return triage.streamId;
 }
 
 function minimalSourceJson(): string {

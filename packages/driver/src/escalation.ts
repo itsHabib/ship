@@ -22,13 +22,20 @@ import type {
   JudgmentRequest,
 } from "./types.js";
 
-import { buildDispatchAmbiguityRequests, buildFailureTriageRequests } from "./judgment.js";
+import {
+  allStreams,
+  buildDispatchAmbiguityRequests,
+  buildFailureTriageRequests,
+  consecutiveDispatchFailures,
+} from "./judgment.js";
+import { DEFAULT_DISPATCH_FAILURE_THRESHOLD } from "./types.js";
 
 /** Default tier per escalation class. */
 export const DEFAULT_ESCALATION_TIERS: Record<EscalationClass, EscalationTier> = {
   "auth-rejection": "page",
   "ci-infra": "page",
   "cycle-exhausted": "page",
+  "dispatch-failing": "queue",
   "grant-mutated": "page",
   "merge-blocked-no-verdict": "queue",
   "merge-ready-awaiting-authority": "queue",
@@ -168,6 +175,51 @@ export function writeStreamParkedEscalations(
   return ids;
 }
 
+function buildDispatchFailingPayload(
+  run: DriverRun,
+  streamId: string,
+  failures: number,
+  createdAt: string,
+): EscalationPayload {
+  return {
+    class: "dispatch-failing",
+    createdAt,
+    driverRunId: run.id,
+    question: `Stream failed to dispatch ${String(failures)} consecutive times; decide retry, skip, or abort`,
+    repo: run.repo,
+    streamId,
+    suggestion:
+      "the dispatch is likely deterministically doomed — fix the doc/config before retrying",
+    v: 1,
+  };
+}
+
+/**
+ * Write one queue-tier `dispatch-failing` row per stream that has crossed the
+ * consecutive-failure threshold. Idempotent across ticks — the store's
+ * open-row dedup key (run, stream, class) rejects a duplicate, and the
+ * `EscalationOpenRowExistsError` handler in `insertEscalationRow` swallows it.
+ */
+export function writeDispatchFailingEscalations(deps: EscalationDeps, run: DriverRun): string[] {
+  const threshold = deps.escalation?.dispatchFailureThreshold ?? DEFAULT_DISPATCH_FAILURE_THRESHOLD;
+  const createdAt = nowIso(deps);
+  const ids: string[] = [];
+  for (const stream of allStreams(run)) {
+    const failures = consecutiveDispatchFailures(stream);
+    if (stream.status !== "failed" || failures < threshold) continue;
+    const payload = buildDispatchFailingPayload(run, stream.id, failures, createdAt);
+    const id = insertEscalationRow(deps, {
+      class: "dispatch-failing",
+      driverRunId: run.id,
+      payload,
+      repo: run.repo,
+      streamId: stream.id,
+    });
+    ids.push(id);
+  }
+  return ids;
+}
+
 /** Page-tier cycle exhaustion row (writer for review loop). */
 export function writeCycleExhaustedEscalation(
   deps: EscalationDeps,
@@ -237,6 +289,21 @@ export function resolveStreamParkedEscalation(
   }
 }
 
+/** Resolve the open dispatch-failing row after `driver decide` (breaker cleared). */
+export function resolveDispatchFailingEscalation(
+  store: Store,
+  driverRunId: string,
+  streamId: string,
+  resolution: string,
+): void {
+  try {
+    store.resolveOpenEscalation({ class: "dispatch-failing", driverRunId, streamId }, resolution);
+  } catch (err: unknown) {
+    if (err instanceof EscalationNotFoundError) return;
+    throw err;
+  }
+}
+
 /** Resolve every open stream-parked row for a run (e.g. run-level abort). */
 export function resolveAllStreamParkedEscalations(
   store: Store,
@@ -251,6 +318,23 @@ export function resolveAllStreamParkedEscalations(
   for (const row of rows) {
     if (row.streamId === undefined) continue;
     resolveStreamParkedEscalation(store, driverRunId, row.streamId, resolution);
+  }
+}
+
+/** Resolve every open dispatch-failing row for a run (e.g. run-level abort). */
+export function resolveAllDispatchFailingEscalations(
+  store: Store,
+  driverRunId: string,
+  resolution: string,
+): void {
+  const rows = store.listEscalations({
+    class: "dispatch-failing",
+    driverRunId,
+    unresolvedOnly: true,
+  });
+  for (const row of rows) {
+    if (row.streamId === undefined) continue;
+    resolveDispatchFailingEscalation(store, driverRunId, row.streamId, resolution);
   }
 }
 
@@ -317,7 +401,13 @@ export async function writeAndDeliverEscalations(
   run: DriverRun,
   ambiguities: DispatchAmbiguity[],
 ): Promise<void> {
-  const ids = writeStreamParkedEscalations(deps, run, ambiguities);
+  // The breaker rows are written alongside the per-stream park rows: a tripped
+  // stream gets both the generic `stream-parked` row (the park) and the distinct
+  // queue-tier `dispatch-failing` signal.
+  const ids = [
+    ...writeStreamParkedEscalations(deps, run, ambiguities),
+    ...writeDispatchFailingEscalations(deps, run),
+  ];
   for (const id of ids) {
     await deliverPageTierEscalation(deps, id);
   }
