@@ -70,6 +70,57 @@ describe("judgment", () => {
     expect(store.getDriverRun(runId)?.status).toBe("failed");
   });
 
+  test("failed and dispatching streams hold awaiting_judgment until both decided", () => {
+    const { dispatchingStream, failedStream, runId } = seedFailedAndDispatchingRun(store);
+
+    decide(store, runId, failedStream, { kind: "skip", reason: "not worth it" });
+    expectRunAwaitingJudgmentWithSkippedFirstStream(store, runId);
+
+    decide(store, runId, dispatchingStream, { kind: "adopt", workflowRunId: "wf_picked" });
+    expectRunRunningWithAdoptedSecondStream(store, runId, "wf_picked");
+  });
+
+  test("markMerged on cancelled run does not rewrite run status to done", () => {
+    const streamId = newDriverStreamId();
+    const runId = store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: newDriverBatchId(),
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              id: streamId,
+              runtime: "local",
+              specPath: "a.md",
+              status: "landed",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: newDriverRunId(),
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: minimalSource(),
+      status: "cancelled",
+    }).id;
+
+    markMerged(store, runId, streamId, {
+      mergeCommit: "deadbeef",
+      mergedAt: "2026-06-12T00:00:00.000Z",
+      prNumber: 42,
+    });
+
+    const run = store.getDriverRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.batches[0]?.streams[0]?.status).toBe("done");
+    expect(run?.batches[0]?.streams[0]?.prNumber).toBe(42);
+  });
+
   test("two failed streams can both be decided without a re-tick", () => {
     const streamA = newDriverStreamId();
     const streamB = newDriverStreamId();
@@ -631,6 +682,80 @@ describe("judgment", () => {
     expect(isBlockedOnMerges(run)).toBe(true);
   });
 });
+
+function expectRunAwaitingJudgmentWithSkippedFirstStream(
+  store: ReturnType<typeof createStore>,
+  runId: string,
+): void {
+  const run = store.getDriverRun(runId);
+  expect(run?.status).toBe("awaiting_judgment");
+  expect(run?.batches[0]?.streams[0]?.status).toBe("skipped");
+}
+
+function expectRunRunningWithAdoptedSecondStream(
+  store: ReturnType<typeof createStore>,
+  runId: string,
+  workflowRunId: string,
+): void {
+  const run = store.getDriverRun(runId);
+  expect(run?.status).toBe("running");
+  expect(run?.batches[0]?.streams[1]?.status).toBe("dispatched");
+  expect(run?.batches[0]?.streams[1]?.workflowRunId).toBe(workflowRunId);
+}
+
+function seedFailedAndDispatchingRun(store: ReturnType<typeof createStore>): {
+  dispatchingStream: string;
+  failedStream: string;
+  runId: string;
+} {
+  const failedStream = newDriverStreamId();
+  const dispatchingStream = newDriverStreamId();
+  const runId = store.insertDriverRun({
+    batches: [
+      {
+        batchIndex: 1,
+        dependsOn: [],
+        id: newDriverBatchId(),
+        status: "pending",
+        streams: [
+          {
+            attempts: [
+              {
+                dispatchedAt: "2026-06-12T00:00:00.000Z",
+                terminal: true,
+                workflowRunId: "wf_fail",
+              },
+            ],
+            id: failedStream,
+            runtime: "local",
+            specPath: "a.md",
+            status: "failed",
+            streamIndex: 0,
+            touches: [],
+            workflowRunId: "wf_fail",
+          },
+          {
+            attempts: [
+              { dispatchedAt: "2026-06-12T00:00:01.000Z", docPath: "/x", terminal: false },
+            ],
+            id: dispatchingStream,
+            runtime: "local",
+            specPath: "b.md",
+            status: "dispatching",
+            streamIndex: 1,
+            touches: [],
+          },
+        ],
+      },
+    ],
+    id: newDriverRunId(),
+    manifestPath: "/tmp/driver.md",
+    repo: "ship",
+    sourceJson: minimalSource(),
+    status: "awaiting_judgment",
+  }).id;
+  return { dispatchingStream, failedStream, runId };
+}
 
 function seedAwaitingRun(store: ReturnType<typeof createStore>): string {
   const runId = newDriverRunId();

@@ -119,8 +119,12 @@ export function rollBatchStatus(store: Store, run: DriverRun, completedAt?: stri
   }
 }
 
-function hasUndecidedFailedStreams(run: DriverRun): boolean {
-  return allStreams(run).some((s) => s.status === "failed");
+function hasRemainingJudgmentStreams(run: DriverRun): boolean {
+  return allStreams(run).some((s) => s.status === "failed" || s.status === "dispatching");
+}
+
+function isRunTerminal(status: DriverRun["status"]): boolean {
+  return status === "done" || status === "failed" || status === "cancelled";
 }
 
 function resumeAfterDecision(store: Store, driverRunId: string): DriverRun {
@@ -128,7 +132,7 @@ function resumeAfterDecision(store: Store, driverRunId: string): DriverRun {
   if (refreshed === null) {
     throw new DecideError(`driver run not found: ${driverRunId}`);
   }
-  if (hasUndecidedFailedStreams(refreshed)) {
+  if (hasRemainingJudgmentStreams(refreshed)) {
     return refreshed;
   }
   return store.updateDriverRunStatus(driverRunId, "running");
@@ -411,6 +415,20 @@ function applyAdoptDecision(
   return resumeAfterDecision(store, driverRunId);
 }
 
+function maybeCompleteRunAfterMerge(
+  store: Store,
+  driverRunId: string,
+  run: DriverRun,
+  mergedAt?: string,
+): DriverRun {
+  let refreshed = store.getDriverRun(driverRunId) ?? run;
+  rollBatchStatus(store, refreshed, mergedAt);
+  refreshed = store.getDriverRun(driverRunId) ?? refreshed;
+  if (isRunTerminal(refreshed.status)) return refreshed;
+  if (!everyStreamTerminalDoneOrSkipped(refreshed)) return refreshed;
+  return store.updateDriverRunStatus(driverRunId, "done");
+}
+
 export function markMerged(
   store: Store,
   driverRunId: string,
@@ -438,13 +456,7 @@ export function markMerged(
   if (facts.cycles !== undefined) patch.cycles = facts.cycles;
   store.updateDriverStream(streamId, patch);
 
-  let refreshed = store.getDriverRun(driverRunId) ?? run;
-  rollBatchStatus(store, refreshed, facts.mergedAt);
-  refreshed = store.getDriverRun(driverRunId) ?? refreshed;
-  if (everyStreamTerminalDoneOrSkipped(refreshed)) {
-    return store.updateDriverRunStatus(driverRunId, "done");
-  }
-  return refreshed;
+  return maybeCompleteRunAfterMerge(store, driverRunId, run, facts.mergedAt);
 }
 
 export async function cancelRun(
@@ -538,5 +550,5 @@ export function batchHasPendingDispatchable(batch: DriverBatch, batches: DriverB
 }
 
 export function everyStreamTerminalDoneOrSkipped(run: DriverRun): boolean {
-  return allStreams(run).every((s) => s.status === "done" || s.status === "skipped");
+  return allStreams(run).every(isStreamDoneOrSkipped);
 }
