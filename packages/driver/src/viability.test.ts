@@ -178,6 +178,15 @@ describe("createViabilityDeps", () => {
     await expect(built.listCursorModels()).rejects.toThrow(/unexpected shape/);
   });
 
+  test("throws when a data entry has no string id (entry-level drift)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ data: [{ id: "grok-4.5" }, { name: "x" }] }))),
+    );
+    const built = createViabilityDeps({ CURSOR_API_KEY: "secret" });
+    await expect(built.listCursorModels()).rejects.toThrow(/unexpected shape/);
+  });
+
   test("treats an empty catalog as zero models, not an error", async () => {
     vi.stubGlobal(
       "fetch",
