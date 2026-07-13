@@ -111,6 +111,13 @@ export interface Store {
   /** Hydrated cursor run, or `null` if unknown. Does not throw. */
   getCursorRun: (id: string) => CursorRunRef | null;
   /**
+   * Latest cursor run per workflow run id. One bounded `IN (...)` query for
+   * list reads (max 200 ids). Empty input → empty map.
+   */
+  listLatestCursorRunsByWorkflowRunIds: (
+    workflowRunIds: readonly string[],
+  ) => Map<string, CursorRunRef>;
+  /**
    * Cloud cursor runs eligible for startup resume (`running`/`pending` with
    * a persisted SDK `run_id`).
    */
@@ -284,6 +291,8 @@ export function createStore(opts: CreateStoreOptions): Store {
       },
       createWorkflowRun: (input) => withStoreContentionGuard(() => workflowRunOps.create(input)),
       getCursorRun: (id) => withStoreContentionGuard(() => cursorRunOps.get(id)),
+      listLatestCursorRunsByWorkflowRunIds: (workflowRunIds) =>
+        withStoreContentionGuard(() => cursorRunOps.listLatestByWorkflowRunIds(workflowRunIds)),
       getRun: (id) => withStoreContentionGuard(() => workflowRunOps.get(id)),
       listResumableCloudCursorRuns: () =>
         withStoreContentionGuard(() => cursorRunOps.listResumableCloud()),

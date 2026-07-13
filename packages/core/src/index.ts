@@ -32,6 +32,7 @@ export type {
   ShipInput,
   ShipOutput,
   ShipStartOutput,
+  WorkflowRunListItem,
 } from "@ship/mcp";
 
 // `ShipService.listRuns` consumes `ListRunsFilter` from `@ship/store`;

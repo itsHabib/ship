@@ -511,4 +511,108 @@ batches:
     ).toBe(1);
     expect(stderr.join("")).toContain("not landed");
   });
+
+  test("list on empty store prints header and exits 0", async () => {
+    expect(await runDriver(["driver", "list"])).toBe(0);
+    const lines = stdout.join("").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("DRIVER RUN ID");
+  });
+
+  test("list --json emits versioned envelope", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    await runDriver(["driver", "import", layout.manifestPath]);
+    stdout.length = 0;
+    expect(await runDriver(["driver", "list", "--json"])).toBe(0);
+    const parsed = JSON.parse(stdout.join("").trim()) as {
+      v: number;
+      runs: { driverRunId: string; sourceHash: string; manifestRef?: string }[];
+    };
+    expect(parsed.v).toBe(1);
+    expect(parsed.runs).toHaveLength(1);
+    expect(parsed.runs[0]?.driverRunId).toMatch(/^drv_/);
+    expect(parsed.runs[0]?.sourceHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(parsed.runs[0]?.manifestRef).toBe("driver.md");
+    expect(JSON.stringify(parsed)).not.toContain("sourceJson");
+    expect(JSON.stringify(parsed)).not.toContain("manifestPath");
+  });
+
+  test("list --repo + repeated --status + --limit reach the service", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    await runDriver(["driver", "import", layout.manifestPath]);
+    stdout.length = 0;
+    expect(
+      await runDriver([
+        "driver",
+        "list",
+        "--repo",
+        "ship",
+        "--status",
+        "pending",
+        "--status",
+        "running",
+        "--limit",
+        "10",
+        "--json",
+      ]),
+    ).toBe(0);
+    const parsed = JSON.parse(stdout.join("").trim()) as { runs: unknown[] };
+    expect(parsed.runs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("list rejects invalid --status with exit 1", async () => {
+    expect(await runDriver(["driver", "list", "--status", "bogus"])).toBe(1);
+    expect(stderr.join("")).toMatch(/invalid --status: bogus/);
+  });
+
+  test("list rejects invalid --limit with exit 1", async () => {
+    expect(await runDriver(["driver", "list", "--limit", "nope"])).toBe(1);
+    expect(stderr.join("")).toMatch(/invalid --limit: nope/);
+  });
+
+  test("list rejects zero --limit with exit 1", async () => {
+    expect(await runDriver(["driver", "list", "--limit", "0"])).toBe(1);
+    expect(stderr.join("")).toMatch(/invalid --limit: 0/);
+  });
+
+  test("list rejects --limit above 200 cap with exit 1", async () => {
+    expect(await runDriver(["driver", "list", "--limit", "99999999"])).toBe(1);
+    expect(stderr.join("")).toMatch(/exceeds the maximum allowed value 200/);
+  });
+
+  test("list --json writes only JSON to stdout", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    await runDriver(["driver", "import", layout.manifestPath]);
+    stdout.length = 0;
+    stderr.length = 0;
+    expect(await runDriver(["driver", "list", "--json"])).toBe(0);
+    expect(stderr.join("")).toBe("");
+    const parsed = JSON.parse(stdout.join("").trim()) as { v: number };
+    expect(parsed.v).toBe(1);
+  });
+
+  test("list does not trigger ship dispatch or orphan resume", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    await runDriver(["driver", "import", layout.manifestPath]);
+    stdout.length = 0;
+    const callsBefore = h.cursor.calls.length;
+    expect(await runDriver(["driver", "list", "--json"])).toBe(0);
+    expect(h.cursor.calls.length).toBe(callsBefore);
+  });
+
+  test("status --json remains backward compatible after list is added", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    await runDriver(["driver", "import", layout.manifestPath]);
+    const imported = JSON.parse(stdout.join("").trim()) as { driverRunId: string };
+    stdout.length = 0;
+    expect(await runDriver(["driver", "status", imported.driverRunId, "--json"])).toBe(0);
+    const parsed = JSON.parse(stdout.join("").trim()) as {
+      driverRunId: string;
+      manifestPath: string;
+      batches: unknown[];
+    };
+    expect(parsed.driverRunId).toBe(imported.driverRunId);
+    expect(parsed.manifestPath).toBe(layout.manifestPath);
+    expect(parsed.batches).toHaveLength(1);
+  });
 });

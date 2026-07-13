@@ -10,6 +10,7 @@ import {
   formatCancelOutput,
   formatDiagnoseRun,
   formatDriverImportOutput,
+  formatDriverListOutput,
   formatDriverRunOutput,
   formatShipOutput,
   formatWorkflowRun,
@@ -116,6 +117,40 @@ describe("formatDriverRunOutput", () => {
   });
 });
 
+describe("formatDriverListOutput", () => {
+  const SAMPLE_ENVELOPE = {
+    runs: [
+      {
+        batches: [],
+        createdAt: "2026-05-10T00:00:00.000Z",
+        driverRunId: "drv_01J0000000000000000000000A",
+        repo: "ship",
+        sourceHash: "abc123",
+        status: "pending" as const,
+        updatedAt: "2026-05-10T00:00:02.000Z",
+      },
+    ],
+    v: 1 as const,
+  };
+
+  test("empty list prints header only", () => {
+    const text = formatDriverListOutput({ runs: [], v: 1 }, false);
+    const lines = text.split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("DRIVER RUN ID");
+  });
+
+  test("non-empty list prints header + one row per run", () => {
+    const text = formatDriverListOutput(SAMPLE_ENVELOPE, false);
+    expect(text.split("\n")).toHaveLength(2);
+    expect(text).toContain("drv_01J0000000000000000000000A");
+  });
+
+  test("--json emits versioned envelope", () => {
+    expect(JSON.parse(formatDriverListOutput(SAMPLE_ENVELOPE, true))).toEqual(SAMPLE_ENVELOPE);
+  });
+});
+
 describe("formatShipOutput", () => {
   test("pretty mode lists status, id, summary, artifact paths", () => {
     const text = formatShipOutput(SAMPLE_OUTPUT, false);
@@ -183,6 +218,21 @@ describe("formatWorkflowRunList", () => {
   test("--json emits { runs: [...] }", () => {
     const text = formatWorkflowRunList([SAMPLE_RUN], true);
     expect(JSON.parse(text)).toEqual({ runs: [SAMPLE_RUN] });
+  });
+
+  test("--json passes through observability on list rows", () => {
+    const row = {
+      ...SAMPLE_RUN,
+      observability: {
+        actual: { runtime: "local" as const, provider: "cursor" as const },
+        evidence: {
+          availability: "unavailable" as const,
+          reason: "no-persisted-artifact-manifest",
+        },
+      },
+    };
+    const text = formatWorkflowRunList([row], true);
+    expect(JSON.parse(text)).toEqual({ runs: [row] });
   });
 });
 

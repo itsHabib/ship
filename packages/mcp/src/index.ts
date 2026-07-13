@@ -25,12 +25,15 @@ export {
   listWorkflowRunsOutputSchema,
   mergeVerdictEvidenceSchema,
   mergeVerdictSchema,
+  observabilityEvidenceAvailabilitySchema,
   roomRunSpecSchema,
   runBranchRefSchema,
   shipArtifactsSchema,
   shipInputSchema,
   shipOutputSchema,
   shipStartOutputSchema,
+  workflowObservabilityViewSchema,
+  workflowRunListItemSchema,
 } from "./mcp.js";
 
 export type {
@@ -53,9 +56,12 @@ export type {
   ListWorkflowRunsInput,
   ListWorkflowRunsOutput,
   MergeVerdictOutput,
+  ObservabilityEvidenceAvailability,
   RunBranchRef,
   ShipArtifacts,
   ShipInput,
   ShipOutput,
   ShipStartOutput,
+  WorkflowObservabilityView,
+  WorkflowRunListItem,
 } from "./mcp.js";

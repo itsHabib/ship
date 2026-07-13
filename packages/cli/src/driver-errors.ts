@@ -48,6 +48,7 @@ export function isDriverEngineError(err: unknown): boolean {
 /** Maps argv / engine errors to driver exit 1; rethrows unknown errors. */
 export function toDriverCliExitCode(err: unknown): 1 {
   if (err instanceof InvalidArgumentError) return 1;
+  if (err instanceof RangeError) return 1;
   if (isDriverEngineError(err)) return 1;
   if (err instanceof Error && err.name === "ZodError") return 1;
   throw err;
