@@ -89,6 +89,11 @@ describe("formatDriverAssignOutput", () => {
         { provider: "cursor", modelId: "grok-4.5" },
         { provider: "claude", modelId: "claude-opus-4-8", runtime: "local" },
       ],
+      effectivePool: [
+        { provider: "cursor", modelId: "grok-4.5" },
+        { provider: "claude", modelId: "claude-opus-4-8", runtime: "local" },
+      ],
+      dropped: [],
       assignments: [
         {
           batchPos: 0,
@@ -106,6 +111,32 @@ describe("formatDriverAssignOutput", () => {
     );
     expect(text).toContain("docs/a.md -> cloud/cursor:grok-4.5");
     expect(text).toContain("docs/b.md -> skipped (done)");
+  });
+
+  test("renders members dropped by preflight with their reason", () => {
+    const text = formatDriverAssignOutput({
+      text: "",
+      pool: [
+        { provider: "cursor", modelId: "grok-4.5" },
+        { provider: "cursor", modelId: "ghost-1" },
+      ],
+      effectivePool: [{ provider: "cursor", modelId: "grok-4.5" }],
+      dropped: [
+        { member: { provider: "cursor", modelId: "ghost-1" }, reason: "not in /v1/models" },
+      ],
+      assignments: [
+        {
+          batchPos: 0,
+          streamPos: 0,
+          specPath: "docs/a.md",
+          provider: "cursor",
+          modelId: "grok-4.5",
+          resolvedRuntime: "cloud",
+        },
+      ],
+      skipped: [],
+    });
+    expect(text).toContain("dropped cursor:ghost-1 (not in /v1/models)");
   });
 });
 

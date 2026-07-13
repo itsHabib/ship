@@ -12,8 +12,10 @@
 import type { AgentProvider } from "@ship/workflow";
 
 import type { DriverManifest, ManifestStream } from "./manifest.js";
+import type { DispatchTarget, ViabilityDeps, ViabilityResult } from "./viability.js";
 
 import { AssignError } from "./errors.js";
+import { checkTargetViability } from "./viability.js";
 
 type Runtime = NonNullable<ManifestStream["runtime"]>;
 
@@ -230,4 +232,110 @@ export function isLegalCell(provider: AgentProvider, runtime: Runtime): boolean 
 export function poolMemberToString(member: PoolMember): string {
   const prefix = member.runtime === undefined ? "" : `${member.runtime}/`;
   return `${prefix}${member.provider}:${member.modelId}`;
+}
+
+/** A pool member dropped by preflight, with the reason it was dropped. */
+export interface DroppedMember {
+  member: PoolMember;
+  reason: string;
+}
+
+/** Preflight outcome: surviving members and dropped ones, in original order. */
+export interface PreflightResult {
+  effective: PoolMember[];
+  dropped: DroppedMember[];
+}
+
+/**
+ * Filter `pool` to its viable members (spec §5). A prefixed member resolves to
+ * one target; an unprefixed member could be assigned to any assignable stream,
+ * so it is checked against every distinct runtime among them (`candidateRuntimes`)
+ * and kept only if viable on all of them. This is conservative on purpose: a
+ * viability check that passed on the manifest default but failed on a stream's
+ * own runtime would let a credential-less dispatch through — the exact failure
+ * preflight exists to catch. Each unique target is checked once; partition
+ * preserves pool order. A rejecting `deps.listCursorModels` propagates.
+ */
+export async function preflightPool(
+  pool: PoolMember[],
+  candidateRuntimes: Runtime[],
+  deps: ViabilityDeps,
+): Promise<PreflightResult> {
+  const memberTargets = pool.map((member) => ({
+    member,
+    targets: candidateTargets(member, candidateRuntimes),
+  }));
+
+  const targetByKey = new Map<string, DispatchTarget>();
+  for (const { targets } of memberTargets) {
+    for (const target of targets) targetByKey.set(targetKey(target), target);
+  }
+
+  const verdicts = new Map<string, ViabilityResult>();
+  await Promise.all(
+    [...targetByKey].map(async ([key, target]) => {
+      verdicts.set(key, await checkTargetViability(target, deps));
+    }),
+  );
+
+  const effective: PoolMember[] = [];
+  const dropped: DroppedMember[] = [];
+  for (const { member, targets } of memberTargets) {
+    const failure = firstFailingReason(targets, verdicts);
+    if (failure === undefined) {
+      effective.push(member);
+      continue;
+    }
+    dropped.push({ member, reason: failure });
+  }
+  return { dropped, effective };
+}
+
+/**
+ * The targets a member could dispatch on: its prefix runtime if it carries one,
+ * else every runtime an assignable stream could resolve to (an unprefixed member
+ * inherits the stream's runtime at assignment, unknown during this whole-pool phase).
+ */
+function candidateTargets(member: PoolMember, candidateRuntimes: Runtime[]): DispatchTarget[] {
+  const runtimes = member.runtime !== undefined ? [member.runtime] : candidateRuntimes;
+  return runtimes.map((runtime) => ({
+    modelId: member.modelId,
+    provider: member.provider,
+    runtime,
+  }));
+}
+
+function firstFailingReason(
+  targets: DispatchTarget[],
+  verdicts: Map<string, ViabilityResult>,
+): string | undefined {
+  for (const target of targets) {
+    // Every target's key was inserted into `verdicts` above, so the `??` branch
+    // is unreachable by construction — it only satisfies the Map lookup's type.
+    const verdict = verdicts.get(targetKey(target)) ?? unresolvedVerdict();
+    if (!verdict.viable) return verdict.reason;
+  }
+  return undefined;
+}
+
+function targetKey(target: DispatchTarget): string {
+  return `${target.runtime}/${target.provider}:${target.modelId}`;
+}
+
+function unresolvedVerdict(): ViabilityResult {
+  return { reason: "preflight produced no verdict", viable: false };
+}
+
+/** Distinct resolved runtimes across the manifest's assignable (non-terminal) streams. */
+export function assignableRuntimes(manifest: DriverManifest): Runtime[] {
+  const defaultRuntime = manifest.default_runtime ?? "local";
+  const runtimes = manifest.batches
+    .flatMap((batch) => batch.streams)
+    .filter((stream) => !isTerminalStream(stream))
+    .map((stream) => stream.runtime ?? defaultRuntime);
+  return [...new Set(runtimes)];
+}
+
+function isTerminalStream(stream: ManifestStream): boolean {
+  return stream.status !== undefined && TERMINAL_STREAM_STATUSES.has(stream.status);
 }

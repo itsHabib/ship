@@ -163,11 +163,14 @@ export function formatDriverAssignOutput(result: AssignResult): string {
   const poolLabel = result.pool.map(poolMemberToString).join(", ");
   const count = String(result.assignments.length);
   const header = `assigned ${count} stream(s) from pool [${poolLabel}]`;
+  const drops = result.dropped.map(
+    (drop) => `  dropped ${poolMemberToString(drop.member)} (${drop.reason})`,
+  );
   const rows = result.assignments.map(
     (a) => `  ${a.specPath} -> ${a.resolvedRuntime}/${a.provider}:${a.modelId}`,
   );
   const skips = result.skipped.map((skip) => `  ${skip.specPath} -> skipped (${skip.status})`);
-  return [header, ...rows, ...skips].join("\n");
+  return [header, ...drops, ...rows, ...skips].join("\n");
 }
 
 /** Renders a `DriverTickResult` for `ship driver run`. */
