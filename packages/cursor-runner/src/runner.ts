@@ -8,6 +8,7 @@ export type {
   AgentRunHandle,
   AgentRunInput,
   AgentRunner,
+  AgentRunRefreshInput,
   AgentRunResult,
   CloudRunSpec,
   RoomRunSpec,

@@ -15,6 +15,7 @@ import type {
   AgentRunner,
   AgentRunProbeArgs,
   AgentRunProbeResult,
+  AgentRunRefreshInput,
   AgentRunResult,
 } from "./runner.js";
 
@@ -49,6 +50,40 @@ function isFakeAttachNotFound(
   return "notFound" in script;
 }
 
+/**
+ * One scripted `refreshRun` answer. A bare `AgentRunResult` is a terminal
+ * read; `stillRunning` models a run the read found not-yet-terminal (resolves
+ * `undefined`); `notFound` models a definitively-gone run (rejects with
+ * `AgentNotFoundError`); `error` models a transient read failure (rejects with
+ * the given error — the caller should leave the row for a later refresh).
+ */
+export type FakeAgentRefreshScript =
+  | AgentRunResult
+  | { readonly stillRunning: true }
+  | { readonly notFound: true }
+  | { readonly error: Error };
+
+function isFakeRefreshStillRunning(
+  script: FakeAgentRefreshScript,
+): script is { readonly stillRunning: true } {
+  return "stillRunning" in script;
+}
+
+function isFakeRefreshNotFound(
+  script: FakeAgentRefreshScript,
+): script is { readonly notFound: true } {
+  return "notFound" in script;
+}
+
+function isFakeRefreshError(script: FakeAgentRefreshScript): script is { readonly error: Error } {
+  return "error" in script;
+}
+
+export interface FakeAgentRefreshCall {
+  readonly input: AgentRunRefreshInput;
+  readonly script: FakeAgentRefreshScript;
+}
+
 export interface FakeAgentAttachCall {
   readonly input: AgentRunAttachInput;
   readonly script: FakeAgentAttachScript;
@@ -66,16 +101,21 @@ export interface FakeAgentRunnerOptions {
   readonly defaultAttachScript?: FakeAgentAttachScript;
   /** Global probe script when a per-script entry is absent. */
   readonly defaultProbeResult?: AgentRunProbeResult | undefined;
+  /** Answer for `refreshRun` when no per-call script is enqueued. */
+  readonly defaultRefreshScript?: FakeAgentRefreshScript;
 }
 
 export class FakeAgentRunner implements AgentRunner {
   readonly #scripts: FakeAgentScript[] = [];
   readonly #attachScripts: FakeAgentAttachScript[] = [];
+  readonly #refreshScripts: FakeAgentRefreshScript[] = [];
   readonly #calls: FakeAgentRunCall[] = [];
   readonly #attachCalls: FakeAgentAttachCall[] = [];
+  readonly #refreshCalls: FakeAgentRefreshCall[] = [];
   readonly #defaultScript: FakeAgentScript | undefined;
   readonly #defaultAttachScript: FakeAgentAttachScript | undefined;
   readonly #defaultProbeResult: AgentRunProbeResult | undefined;
+  readonly #defaultRefreshScript: FakeAgentRefreshScript | undefined;
   readonly #artifactBytesByAgent = new Map<string, Map<string, Buffer>>();
   readonly #activeLiveness = new Map<string, AgentRunLiveness>();
   readonly #probeScripts = new Map<string, AgentRunProbeResult | undefined>();
@@ -85,6 +125,7 @@ export class FakeAgentRunner implements AgentRunner {
     this.#defaultScript = opts.defaultScript;
     this.#defaultAttachScript = opts.defaultAttachScript;
     this.#defaultProbeResult = opts.defaultProbeResult;
+    this.#defaultRefreshScript = opts.defaultRefreshScript;
   }
 
   enqueue(script: FakeAgentScript): void {
@@ -95,12 +136,20 @@ export class FakeAgentRunner implements AgentRunner {
     this.#attachScripts.push(script);
   }
 
+  enqueueRefresh(script: FakeAgentRefreshScript): void {
+    this.#refreshScripts.push(script);
+  }
+
   get calls(): readonly FakeAgentRunCall[] {
     return this.#calls;
   }
 
   get attachCalls(): readonly FakeAgentAttachCall[] {
     return this.#attachCalls;
+  }
+
+  get refreshCalls(): readonly FakeAgentRefreshCall[] {
+    return this.#refreshCalls;
   }
 
   get pendingScriptCount(): number {
@@ -185,6 +234,29 @@ export class FakeAgentRunner implements AgentRunner {
         script,
       }),
     );
+  }
+
+  refreshRun(input: AgentRunRefreshInput): Promise<AgentRunResult | undefined> {
+    const script = this.#refreshScripts.shift() ?? this.#defaultRefreshScript;
+    if (script === undefined) {
+      return Promise.reject(
+        new Error(
+          "FakeAgentRunner: refreshRun() called with no script enqueued and no defaultRefreshScript provided",
+        ),
+      );
+    }
+    this.#refreshCalls.push({ input, script });
+
+    if (isFakeRefreshNotFound(script)) {
+      return Promise.reject(new AgentNotFoundError({ agentId: input.agentId, runId: input.runId }));
+    }
+    if (isFakeRefreshError(script)) {
+      return Promise.reject(script.error);
+    }
+    if (isFakeRefreshStillRunning(script)) {
+      return Promise.resolve(undefined);
+    }
+    return Promise.resolve(script);
   }
 
   #buildScriptedHandle(args: {

@@ -68,7 +68,7 @@ batches:
     store.close();
   });
 
-  test("run resumes orphaned cloud runs; read verbs do not", async () => {
+  test("run refreshes orphaned cloud runs; read verbs do not", async () => {
     const repoRoot = join(tmpDir, "repo");
     mkdirSync(join(repoRoot, ".git"), { recursive: true });
     mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-a"), { recursive: true });
@@ -106,22 +106,23 @@ batches:
     // Read verbs must not sweep — that was the #137 read/write-separation point.
     driver.render(imported.run.id);
     driver.getDriverRun(imported.run.id);
-    expect(calls.some((c) => c.kind === "resumeOrphanedRuns")).toBe(false);
+    expect(calls.some((c) => c.kind === "refreshOrphanedRuns")).toBe(false);
 
-    // A tick owns orphan recovery.
+    // A tick owns orphan recovery — via the non-streaming refresh, not the
+    // streaming resume (which the mcp-server keeps for its long-lived sweep).
     await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
-    expect(calls.some((c) => c.kind === "resumeOrphanedRuns")).toBe(true);
+    expect(calls.some((c) => c.kind === "refreshOrphanedRuns")).toBe(true);
     store.close();
   });
 
-  test("run tolerates a port without resumeOrphanedRuns", async () => {
+  test("run tolerates a port without refreshOrphanedRuns", async () => {
     const store = createStore({ dbPath: ":memory:" });
     const { port } = createFakeShipPort([]);
     // Omit the optional method entirely (exactOptionalPropertyTypes forbids
     // an explicit `undefined`) — the run path must tolerate its absence.
-    const { resumeOrphanedRuns: _omit, ...portWithoutResume } = port;
-    const driver = createDriverService({ ship: portWithoutResume, store });
-    const manifestPath = join(tmpDir, "noresume.driver.md");
+    const { refreshOrphanedRuns: _omit, ...portWithoutRefresh } = port;
+    const driver = createDriverService({ ship: portWithoutRefresh, store });
+    const manifestPath = join(tmpDir, "norefresh.driver.md");
     mkdirSync(join(tmpDir, ".git"), { recursive: true });
     writeFileSync(
       manifestPath,

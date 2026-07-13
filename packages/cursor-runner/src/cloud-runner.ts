@@ -38,6 +38,7 @@ import type {
   AgentRunHandle,
   AgentRunInput,
   AgentRunner,
+  AgentRunRefreshInput,
   AgentRunResult,
   CloudRunSpec,
 } from "./runner.js";
@@ -259,6 +260,73 @@ export class CloudCursorRunner implements AgentRunner {
       }
       throw new AgentRunFailedError("Agent.resume or Agent.getRun failed", { cause: err });
     }
+  }
+
+  /**
+   * One-shot terminal-state read. Resumes the agent, reads the run via
+   * `Agent.getRun`, and returns its terminal `AgentRunResult` iff the run has
+   * already finished / errored / been cancelled. A still-running run resolves
+   * `undefined` — the caller leaves the persisted row for a later refresh.
+   *
+   * No `sdkRun.stream()`, so nothing keeps an SDK socket / event pump open past
+   * the read; the agent is disposed in `finally` either way. `sdkRun.wait()` on
+   * an already-terminal run resolves immediately from the fetched state, so no
+   * duration cap is needed. `AgentNotFoundError` propagates so the caller can
+   * finalize a definitively-gone run.
+   */
+  async refreshRun(input: AgentRunRefreshInput): Promise<AgentRunResult | undefined> {
+    const apiKey = process.env[API_KEY_ENV];
+    if (apiKey === undefined || apiKey === "") {
+      throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
+    }
+    let agent: SDKAgent | undefined;
+    try {
+      agent = await Agent.resume(input.agentId, { apiKey });
+      const sdkRun = await Agent.getRun(input.runId, {
+        agentId: input.agentId,
+        apiKey,
+        runtime: "cloud",
+      });
+      if (sdkRun.status === "running") return undefined;
+      const waitResult = await sdkRun.wait();
+      const terminal = mapCloudRunResult(waitResult, this.#refreshRunInput(input));
+      // Mirror #finalizeOkWithArtifacts: a harvested orphan must carry its
+      // artifact refs, or listArtifacts stays empty for refresh-recovered runs.
+      const artifacts = await captureCloudArtifacts(agent, input.log);
+      return artifacts !== undefined ? { ...terminal, artifacts } : terminal;
+    } catch (err) {
+      const notFound = mapAgentNotFoundError(err, { agentId: input.agentId, runId: input.runId });
+      if (notFound !== undefined) {
+        throw notFound;
+      }
+      throw new AgentRunFailedError("Agent.resume or Agent.getRun failed on refresh", {
+        cause: err,
+      });
+    } finally {
+      if (agent !== undefined) {
+        try {
+          await agent[Symbol.asyncDispose]();
+        } catch {
+          /* swallow secondary dispose error */
+        }
+      }
+    }
+  }
+
+  // Minimal `AgentRunInput` for `mapCloudRunResult` on the refresh path. No
+  // cloud spec (so no auto-create-PR / branch warnings are derived — the driver
+  // reads branches straight off the terminal result), no prompt, no cwd; the
+  // mapper only reads `model` (fallback for the error path) and `onEvent` isn't
+  // invoked because there is no stream.
+  #refreshRunInput(input: AgentRunRefreshInput): AgentRunInput {
+    return {
+      cwd: "",
+      model: { id: "" },
+      onEvent: () => undefined,
+      prompt: "",
+      runtime: "cloud",
+      ...(input.log !== undefined && { log: input.log }),
+    };
   }
 
   async #startAgent(

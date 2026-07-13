@@ -45,6 +45,7 @@ export type {
   AgentRunProbeArgs,
   AgentRunProbeResult,
   AgentRunner,
+  AgentRunRefreshInput,
   AgentRunResult,
   AgentRunUsage,
   CloudRunSpec,
