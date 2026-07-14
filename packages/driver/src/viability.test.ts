@@ -39,6 +39,14 @@ describe("checkTargetViability — cursor", () => {
 });
 
 describe("checkTargetViability — claude", () => {
+  test("local viable via CLAUDE_CODE_OAUTH_TOKEN", async () => {
+    const result = await checkTargetViability(
+      target({ provider: "claude", runtime: "local" }),
+      deps({ env: { CLAUDE_CODE_OAUTH_TOKEN: "o" } }),
+    );
+    expect(result).toEqual({ viable: true });
+  });
+
   test("local viable via ANTHROPIC_AUTH_TOKEN", async () => {
     const result = await checkTargetViability(
       target({ provider: "claude", runtime: "local" }),
@@ -67,6 +75,14 @@ describe("checkTargetViability — claude", () => {
     const result = await checkTargetViability(
       target({ provider: "claude", runtime: "cloud" }),
       deps({ env: { ANTHROPIC_AUTH_TOKEN: "t" } }),
+    );
+    expect(result.viable).toBe(false);
+  });
+
+  test("cloud requires ANTHROPIC_API_KEY — Claude Code OAuth alone is not enough", async () => {
+    const result = await checkTargetViability(
+      target({ provider: "claude", runtime: "cloud" }),
+      deps({ env: { CLAUDE_CODE_OAUTH_TOKEN: "o" } }),
     );
     expect(result.viable).toBe(false);
   });

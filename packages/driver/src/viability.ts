@@ -44,10 +44,10 @@ const VIABLE: ViabilityResult = { viable: true };
 
 /**
  * Is `target` reachable given `deps`? cursor: id present in `/v1/models`.
- * claude: `ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY` on local, `ANTHROPIC_API_KEY`
- * on cloud (the cloud runner's stricter requirement). codex: `CODEX_API_KEY ||
- * OPENAI_API_KEY`. A missing credential is a verdict, not a throw; only a failing
- * `listCursorModels` propagates.
+ * claude: `CLAUDE_CODE_OAUTH_TOKEN || ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY`
+ * on local, `ANTHROPIC_API_KEY` on cloud (the cloud runner's stricter
+ * requirement). codex: `CODEX_API_KEY || OPENAI_API_KEY`. A missing credential
+ * is a verdict, not a throw; only a failing `listCursorModels` propagates.
  */
 export async function checkTargetViability(
   target: DispatchTarget,
@@ -79,10 +79,14 @@ function checkClaudeCredential(runtime: Runtime, env: ViabilityDeps["env"]): Via
   const present =
     runtime === "cloud"
       ? hasValue(env["ANTHROPIC_API_KEY"])
-      : hasValue(env["ANTHROPIC_AUTH_TOKEN"]) || hasValue(env["ANTHROPIC_API_KEY"]);
+      : hasValue(env["CLAUDE_CODE_OAUTH_TOKEN"]) ||
+        hasValue(env["ANTHROPIC_AUTH_TOKEN"]) ||
+        hasValue(env["ANTHROPIC_API_KEY"]);
   if (present) return VIABLE;
   const need =
-    runtime === "cloud" ? "ANTHROPIC_API_KEY" : "ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY";
+    runtime === "cloud"
+      ? "ANTHROPIC_API_KEY"
+      : "CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY";
   return { reason: `claude/${runtime} needs ${need} in env`, viable: false };
 }
 
