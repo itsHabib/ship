@@ -1,5 +1,6 @@
 /** Tests for `service.ts` — lazy factory, path resolution. */
 
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createCliService, resolveDbPath, resolveRunsDir, userConfigDir } from "./service.js";
@@ -88,8 +89,8 @@ describe("path resolution", () => {
     vi.stubEnv("XDG_CONFIG_HOME", "/abs/xdg");
     vi.stubEnv("SHIP_DB_PATH", "relative/state.db");
     vi.stubEnv("SHIP_RUNS_DIR", "./runs");
-    expect(resolveDbPath()).toBe("/abs/xdg/ship/state.db");
-    expect(resolveRunsDir()).toBe("/abs/xdg/ship/runs");
+    expect(resolveDbPath()).toBe(join("/abs/xdg", "ship", "state.db"));
+    expect(resolveRunsDir()).toBe(join("/abs/xdg", "ship", "runs"));
   });
 
   test("an empty SHIP_DB_PATH / SHIP_RUNS_DIR is treated as unset", () => {
@@ -97,8 +98,8 @@ describe("path resolution", () => {
     vi.stubEnv("XDG_CONFIG_HOME", "/abs/xdg");
     vi.stubEnv("SHIP_DB_PATH", "");
     vi.stubEnv("SHIP_RUNS_DIR", "");
-    expect(resolveDbPath()).toBe("/abs/xdg/ship/state.db");
-    expect(resolveRunsDir()).toBe("/abs/xdg/ship/runs");
+    expect(resolveDbPath()).toBe(join("/abs/xdg", "ship", "state.db"));
+    expect(resolveRunsDir()).toBe(join("/abs/xdg", "ship", "runs"));
   });
 });
 
