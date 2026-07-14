@@ -24,6 +24,7 @@ import {
   resolveDbPath as cliResolveDbPath,
   resolveRunsDir as cliResolveRunsDir,
 } from "@ship/cli/src/service.js";
+import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
@@ -75,8 +76,8 @@ describe("store-path parity: same env → same paths on both surfaces", () => {
   test("unset env falls back to the same <XDG>/ship default on both", () => {
     setPosix();
     for (const surface of SURFACES) {
-      expect(surface.resolveDbPath(), surface.name).toBe("/abs/xdg/ship/state.db");
-      expect(surface.resolveRunsDir(), surface.name).toBe("/abs/xdg/ship/runs");
+      expect(surface.resolveDbPath(), surface.name).toBe(join("/abs/xdg", "ship", "state.db"));
+      expect(surface.resolveRunsDir(), surface.name).toBe(join("/abs/xdg", "ship", "runs"));
     }
   });
 });
@@ -93,7 +94,7 @@ describe("store-path parity: relative / invalid env rejected identically", () =>
       setPosix();
       vi.stubEnv("SHIP_DB_PATH", value);
       for (const surface of SURFACES) {
-        expect(surface.resolveDbPath(), surface.name).toBe("/abs/xdg/ship/state.db");
+        expect(surface.resolveDbPath(), surface.name).toBe(join("/abs/xdg", "ship", "state.db"));
         expect(surface.resolveDbPath(), surface.name).not.toBe(value);
       }
       expect(SURFACES[0]?.resolveDbPath()).toBe(SURFACES[1]?.resolveDbPath());
@@ -103,7 +104,7 @@ describe("store-path parity: relative / invalid env rejected identically", () =>
       setPosix();
       vi.stubEnv("SHIP_RUNS_DIR", value);
       for (const surface of SURFACES) {
-        expect(surface.resolveRunsDir(), surface.name).toBe("/abs/xdg/ship/runs");
+        expect(surface.resolveRunsDir(), surface.name).toBe(join("/abs/xdg", "ship", "runs"));
         expect(surface.resolveRunsDir(), surface.name).not.toBe(value);
       }
       expect(SURFACES[0]?.resolveRunsDir()).toBe(SURFACES[1]?.resolveRunsDir());
