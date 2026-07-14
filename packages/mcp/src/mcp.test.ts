@@ -878,6 +878,18 @@ describe("driver MCP schemas", () => {
     ).toBe(true);
   });
 
+  test("driverMarkMergedInputSchema rejects a non-datetime mergedAt", () => {
+    expect(
+      driverMarkMergedInputSchema.safeParse({
+        driverRunId: DRV_ID,
+        streamId: DS_ID,
+        prNumber: 1,
+        sha: "abc",
+        mergedAt: "today",
+      }).success,
+    ).toBe(false);
+  });
+
   test("driverCancelInputSchema requires driverRunId", () => {
     expect(driverCancelInputSchema.safeParse({}).success).toBe(false);
     expect(driverCancelInputSchema.safeParse({ driverRunId: DRV_ID }).success).toBe(true);

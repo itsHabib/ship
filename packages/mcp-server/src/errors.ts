@@ -30,7 +30,7 @@ import {
   PreconditionError,
   TickLiveError,
 } from "@ship/driver";
-import { WorkflowRunNotFoundError } from "@ship/store";
+import { DriverRunNotFoundError, WorkflowRunNotFoundError } from "@ship/store";
 
 // Caller-actionable typed errors: pre-row validation from `@ship/core`
 // + store resource-not-found. Single source of truth for the
@@ -53,6 +53,7 @@ const USER_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   DecideError,
   CancelError,
   DriverRunNotFoundEngineError,
+  DriverRunNotFoundError,
   ImportManifestError,
 ];
 

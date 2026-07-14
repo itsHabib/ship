@@ -844,7 +844,10 @@ export const driverMarkMergedInputSchema = z
     streamId: driverStreamIdSchema,
     prNumber: z.number().int().positive(),
     sha: z.string().min(1),
-    mergedAt: z.string().min(1).optional(),
+    // ISO datetime with offset — matches the store's merged_at column, so a
+    // bad value (e.g. "today") is rejected at the MCP boundary as invalid
+    // params instead of surfacing later as a StoreSchemaError.
+    mergedAt: isoDateTime.optional(),
     cycles: z.number().int().nonnegative().optional(),
   })
   .strict();
