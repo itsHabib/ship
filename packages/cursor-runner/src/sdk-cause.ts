@@ -52,9 +52,11 @@ function redactSecretShapes(text: string): string {
   // exact-substring replace above misses the token itself.
   return (
     text
-      .replace(/\b(?:gh[pousr]_|github_pat_)\w+/g, "[token]")
-      // `%XX` is a word char boundary for `\b`, so also catch PATs after `%3D`.
-      .replace(/(?<=%3D)(?:gh[pousr]_|github_pat_)\w+/gi, "[token]")
+      // Redact a GitHub PAT anywhere — deliberately no `\b` anchor. A
+      // preceding word char (the `D` in a single- or double-encoded `%3D` /
+      // `%253D` separator) defeats `\b`, so `?token%253Dghp_...` would leak
+      // the token. Matching the prefix unconditionally is fail-safe.
+      .replace(/(?:gh[pousr]_|github_pat_)\w+/gi, "[token]")
       .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [token]")
       .replace(
         /\b([A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)=[^\s,;]+/gi,

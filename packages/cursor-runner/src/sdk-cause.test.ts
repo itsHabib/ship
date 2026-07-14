@@ -129,6 +129,16 @@ describe("extractSdkCause", () => {
     expect(summary?.endpoint).not.toContain("ghp_encodedpat");
   });
 
+  test("double-encoded token%253D query values do not leak the PAT", () => {
+    const err = Object.assign(new Error("echo"), {
+      endpoint: "https://mcp.example/github?token%253Dghp_doubleenc&x=1",
+      status: 400,
+    });
+    const summary = extractSdkCause(err);
+    expect(summary?.endpoint).not.toContain("ghp_doubleenc");
+    expect(summary?.endpoint).toContain("[token]");
+  });
+
   test("detail / message truncated at the cap", () => {
     const long = "y".repeat(500);
     const summary = extractSdkCause(new Error(long), { maxChars: 200 });
