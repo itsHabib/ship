@@ -71,6 +71,11 @@ function redactText(text: string, githubMcpUrl: string | undefined): string {
   let out = text;
   if (githubMcpUrl !== undefined && githubMcpUrl !== "") {
     out = out.split(githubMcpUrl).join(GH_MCP_URL_REDACTION);
+    // The SDK sometimes echoes the URL percent-encoded, which the literal
+    // split misses; an opaque (non-PAT) token in its query then has no shape
+    // the scrubber below can catch. Redact the encoded form of the known URL
+    // too, so the whole secret goes regardless of the token's shape.
+    out = out.split(encodeURIComponent(githubMcpUrl)).join(GH_MCP_URL_REDACTION);
   }
   // Never carry authorization_token values if they leaked into a string field
   // (e.g. an endpoint URL or verbose SDK message).

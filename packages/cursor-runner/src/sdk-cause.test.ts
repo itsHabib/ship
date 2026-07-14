@@ -80,6 +80,20 @@ describe("extractSdkCause", () => {
     expect(summary?.message).not.toContain(secretUrl);
   });
 
+  test("a percent-encoded GITHUB_MCP_URL with an opaque token is redacted", () => {
+    // Opaque token (no ghp_/github_pat_ prefix) so the shape scrubber can't
+    // catch it; fully URL-encoded so the literal-URL split misses it. The
+    // encoded-form redaction is what keeps the token out of the summary.
+    const secretUrl = "https://mcp.example/github?token=opaque_no_pat_prefix";
+    const err = Object.assign(new Error("boom"), {
+      endpoint: `failed against ${encodeURIComponent(secretUrl)}`,
+      status: 400,
+    });
+    const summary = extractSdkCause(err, { githubMcpUrl: secretUrl });
+    expect(summary?.endpoint).toContain(GH_MCP_URL_REDACTION);
+    expect(summary?.endpoint).not.toContain("opaque_no_pat_prefix");
+  });
+
   test("authorization_token values are redacted and the field is never carried", () => {
     const err = Object.assign(new Error("auth authorization_token=ghp_leak failed"), {
       authorization_token: "ghp_should_never_appear",
