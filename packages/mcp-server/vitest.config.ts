@@ -17,7 +17,7 @@ export default defineConfig({
       // `await server.connect(stdio)` only makes sense in the actual
       // process. The L3 subprocess integration test under
       // `e2e/integration/mcp-server.integration.test.ts` exercises it
-      // (including the missing-CURSOR_API_KEY pre-flight). Excluding
+      // (including provider-neutral startup without CURSOR_API_KEY). Excluding
       // it from unit coverage avoids 80-line dead weight that would
       // otherwise drag the package's average below the 80/75 threshold
       // even though every other module is at 90-100%.

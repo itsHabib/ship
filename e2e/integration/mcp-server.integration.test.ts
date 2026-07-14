@@ -18,7 +18,7 @@ import type { WorkflowRun } from "@ship/workflow";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { waitForTerminalRun } from "@ship/test-harness";
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -88,7 +88,12 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
     expect(names).toEqual([
       "cancel_workflow_run",
       "download_artifact",
+      "driver_cancel",
       "driver_decide",
+      "driver_import",
+      "driver_land",
+      "driver_mark_merged",
+      "driver_render",
       "driver_run",
       "driver_status",
       "get_workflow_run",
@@ -207,51 +212,47 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
   });
 });
 
-describe("ship-mcp-server binary — pre-flight", () => {
-  test("missing CURSOR_API_KEY (without SHIP_TEST_FAKE_CURSOR) → exit 1 with stderr message", () => {
-    const env = sanitizedPreflightEnv();
-    delete env["CURSOR_API_KEY"];
+describe("ship-mcp-server binary — provider-aware startup", () => {
+  test.each(["missing", "empty"] as const)(
+    "%s CURSOR_API_KEY starts the provider-neutral server and fails only a Cursor request",
+    async (keyState) => {
+      const providerEnv = buildChildEnv();
+      delete providerEnv.env["SHIP_TEST_FAKE_CURSOR"];
+      if (keyState === "missing") delete providerEnv.env["CURSOR_API_KEY"];
+      if (keyState === "empty") providerEnv.env["CURSOR_API_KEY"] = "";
 
-    const result = spawnSync(process.execPath, ["--import", "tsx/esm", BIN], {
-      encoding: "utf-8",
-      cwd: PKG,
-      env,
-      timeout: 5_000,
-    });
-    expect(result.status).toBe(1);
-    expect(result.stderr).toMatch(/CURSOR_API_KEY/);
-  });
+      const providerTransport = new StdioClientTransport({
+        command: process.execPath,
+        args: ["--import", "tsx/esm", BIN],
+        env: filterEnvForStdio(providerEnv.env),
+        cwd: PKG,
+      });
+      const providerClient = new Client({ name: "provider-aware-startup", version: "0.0.0" });
 
-  test("empty CURSOR_API_KEY is treated as missing → exit 1 (cycle-1 review fix)", () => {
-    const env = sanitizedPreflightEnv();
-    env["CURSOR_API_KEY"] = "";
+      try {
+        await providerClient.connect(providerTransport);
+        const tools = await providerClient.listTools();
+        expect(tools.tools.map((tool) => tool.name)).toContain("ship");
 
-    const result = spawnSync(process.execPath, ["--import", "tsx/esm", BIN], {
-      encoding: "utf-8",
-      cwd: PKG,
-      env,
-      timeout: 5_000,
-    });
-    expect(result.status).toBe(1);
-    expect(result.stderr).toMatch(/CURSOR_API_KEY/);
-  });
+        const startedRaw = await providerClient.callTool({
+          name: "ship",
+          arguments: {
+            workdir: providerEnv.workdir,
+            repo: "ship",
+            docPath: "docs.md",
+            provider: "cursor",
+            runtime: "local",
+          },
+        });
+        const started = parseToolJson(startedRaw) as ShipStartOutput;
+        const terminal = await waitForTerminalRun(providerClient, started.workflowRunId, INT_POLL);
+        expect(terminal.status).toBe("failed");
+      } finally {
+        await providerClient.close();
+      }
+    },
+  );
 });
-
-/**
- * Builds a child env scoped to the per-test tmp + stripped of
- * `XDG_CONFIG_HOME` / `SHIP_TEST_FAKE_CURSOR` so the preflight path
- * runs without interference. Caller still chooses what (if anything)
- * to set on `CURSOR_API_KEY`.
- */
-function sanitizedPreflightEnv(): Record<string, string> {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  delete env["XDG_CONFIG_HOME"];
-  delete env["SHIP_TEST_FAKE_CURSOR"];
-  env["HOME"] = cenv.tmp;
-  env["APPDATA"] = cenv.tmp;
-  env["USERPROFILE"] = cenv.tmp;
-  return filterEnvForStdio(env);
-}
 
 /**
  * Strips `undefined` values so the stdio transport's env-passing path
