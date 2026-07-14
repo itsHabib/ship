@@ -894,9 +894,9 @@ describe("driver MCP schemas", () => {
     expect(
       driverRenderWrittenOutputSchema.safeParse({ written: true, outPath: "/tmp/out.md" }).success,
     ).toBe(true);
-    expect(driverRenderWrittenOutputSchema.safeParse({ written: false, outPath: "/x" }).success).toBe(
-      false,
-    );
+    expect(
+      driverRenderWrittenOutputSchema.safeParse({ written: false, outPath: "/x" }).success,
+    ).toBe(false);
   });
 
   test("driverDecideInputSchema accepts retry/skip/abort/adopt decisions", () => {
