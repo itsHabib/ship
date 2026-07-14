@@ -64,24 +64,24 @@ let cenv: ChildEnv;
 let client: Client;
 let transport: StdioClientTransport;
 
-beforeEach(async () => {
-  cenv = buildChildEnv();
-  transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx/esm", BIN],
-    env: filterEnvForStdio(cenv.env),
-    cwd: PKG,
-  });
-  client = new Client({ name: "ship-mcp-int-client", version: "0.0.0" });
-  await client.connect(transport);
-});
-
-afterEach(async () => {
-  await client.close();
-  // `transport.close()` is implicitly handled by `client.close`.
-});
-
 describe("ship-mcp-server binary — subprocess smoke", () => {
+  beforeEach(async () => {
+    cenv = buildChildEnv();
+    transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["--import", "tsx/esm", BIN],
+      env: filterEnvForStdio(cenv.env),
+      cwd: PKG,
+    });
+    client = new Client({ name: "ship-mcp-int-client", version: "0.0.0" });
+    await client.connect(transport);
+  });
+
+  afterEach(async () => {
+    await client.close();
+    // `transport.close()` is implicitly handled by `client.close`.
+  });
+
   test("listTools returns every registered tool", async () => {
     const list = await client.listTools();
     const names = list.tools.map((t) => t.name).sort((a, b) => a.localeCompare(b));
