@@ -4,7 +4,13 @@
  */
 
 import type { Db } from "./db.js";
-import type { DriverStream, DriverStreamStatus, StreamAttempt } from "./driver-schemas.js";
+import type {
+  DriverStream,
+  DriverStreamStatus,
+  FallbackChainTarget,
+  FallbackLogRecord,
+  StreamAttempt,
+} from "./driver-schemas.js";
 
 import { driverStreamSchema } from "./driver-schemas.js";
 import { DriverStreamNotFoundError, StoreSchemaError } from "./errors.js";
@@ -63,6 +69,9 @@ export interface DriverStreamRow {
   effort_degraded: number | null;
   tier_degrade_reason: string | null;
   work_on_current_branch: number | null;
+  fallback_chain: string | null;
+  fallback_cursor: number | null;
+  fallback_log: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -85,11 +94,15 @@ interface InsertStreamRowInput {
   mergeCommit?: string;
   mergedAt?: string;
   cycles?: number;
+  reviewCycles?: number;
   errorMessage?: string;
   modelTier?: DriverStream["modelTier"];
   modelId?: DriverStream["modelId"];
   effortTier?: DriverStream["effortTier"];
   provider?: DriverStream["provider"];
+  fallbackChain?: FallbackChainTarget[];
+  fallbackCursor?: number;
+  fallbackLog?: FallbackLogRecord[];
   createdAt: string;
 }
 
@@ -106,7 +119,7 @@ export interface DriverStreamOps {
 }
 
 const STREAM_COLUMNS =
-  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, model_id, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, created_at, updated_at";
+  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, model_id, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, fallback_chain, fallback_cursor, fallback_log, created_at, updated_at";
 
 function sqlNull<T>(value: T | undefined): T | null {
   return value ?? null;
@@ -125,10 +138,11 @@ export function createDriverStreamOps(
     `INSERT INTO driver_streams (
        id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch,
        runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url,
-       merge_commit, merged_at, cycles, error_message, model_tier, model_id, effort_tier,
+       merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, model_id, effort_tier,
        provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded,
-       tier_degrade_reason, work_on_current_branch, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       tier_degrade_reason, work_on_current_branch, fallback_chain, fallback_cursor, fallback_log,
+       created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], DriverStreamRow>(
     `SELECT ${STREAM_COLUMNS} FROM driver_streams WHERE id = ?`,
@@ -160,6 +174,7 @@ export function createDriverStreamOps(
       sqlNull(input.mergeCommit),
       sqlNull(input.mergedAt),
       sqlNull(input.cycles),
+      sqlNull(input.reviewCycles),
       sqlNull(input.errorMessage),
       sqlNull(input.modelTier),
       sqlNull(input.modelId),
@@ -171,6 +186,9 @@ export function createDriverStreamOps(
       null,
       null,
       null,
+      input.fallbackChain === undefined ? null : JSON.stringify(input.fallbackChain),
+      sqlNull(input.fallbackCursor),
+      input.fallbackLog === undefined ? null : JSON.stringify(input.fallbackLog),
       input.createdAt,
       now,
     );
@@ -254,22 +272,38 @@ function boolToInt(value: boolean): number {
   return value ? 1 : 0;
 }
 
-function parseStreamRow(row: DriverStreamRow): DriverStream {
-  let touches: unknown;
-  let attempts: unknown;
-  let dispatchModelParams: unknown;
-  let rollsUp: unknown;
+interface StreamJsonColumns {
+  touches: unknown;
+  attempts: unknown;
+  dispatchModelParams: unknown;
+  rollsUp: unknown;
+  fallbackChain: unknown;
+  fallbackLog: unknown;
+}
+
+// Parse every JSON-encoded column in one place. A malformed value in any of
+// them is one malformed-row error, not a per-column branch in parseStreamRow.
+function parseStreamJsonColumns(row: DriverStreamRow): StreamJsonColumns {
   try {
-    touches = JSON.parse(row.touches);
-    attempts = JSON.parse(row.attempts);
-    dispatchModelParams =
-      row.dispatch_model_params === null ? undefined : JSON.parse(row.dispatch_model_params);
-    rollsUp = row.rolls_up === null ? undefined : JSON.parse(row.rolls_up);
+    return {
+      touches: JSON.parse(row.touches),
+      attempts: JSON.parse(row.attempts),
+      dispatchModelParams:
+        row.dispatch_model_params === null ? undefined : JSON.parse(row.dispatch_model_params),
+      rollsUp: row.rolls_up === null ? undefined : JSON.parse(row.rolls_up),
+      fallbackChain: row.fallback_chain === null ? undefined : JSON.parse(row.fallback_chain),
+      fallbackLog: row.fallback_log === null ? undefined : JSON.parse(row.fallback_log),
+    };
   } catch (err: unknown) {
     throw new StoreSchemaError(`driver_streams id=${row.id} has malformed JSON column`, {
       cause: err,
     });
   }
+}
+
+function parseStreamRow(row: DriverStreamRow): DriverStream {
+  const { touches, attempts, dispatchModelParams, rollsUp, fallbackChain, fallbackLog } =
+    parseStreamJsonColumns(row);
   const candidate = {
     attempts,
     createdAt: row.created_at,
@@ -285,6 +319,8 @@ function parseStreamRow(row: DriverStreamRow): DriverStream {
     ...optionalStreamFields(row),
     ...(dispatchModelParams !== undefined ? { dispatchModelParams } : {}),
     ...(rollsUp !== undefined ? { rollsUp } : {}),
+    ...(fallbackChain !== undefined ? { fallbackChain } : {}),
+    ...(fallbackLog !== undefined ? { fallbackLog } : {}),
   };
 
   const result = driverStreamSchema.safeParse(candidate);
@@ -307,6 +343,7 @@ function optionalStreamFields(row: DriverStreamRow): Record<string, string | num
     ["effortDegraded", row.effort_degraded === null ? null : row.effort_degraded === 1],
     ["effortTier", row.effort_tier],
     ["errorMessage", row.error_message],
+    ["fallbackCursor", row.fallback_cursor],
     ["mergeCommit", row.merge_commit],
     ["mergedAt", row.merged_at],
     ["modelId", row.model_id],

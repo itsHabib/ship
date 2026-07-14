@@ -11,26 +11,20 @@
 
 import type { AgentProvider } from "@ship/workflow";
 
+import type { CellStructuralIssue, Runtime } from "./dispatch-cell.js";
 import type { DriverManifest, ManifestStream } from "./manifest.js";
 import type { DispatchTarget, ViabilityDeps, ViabilityResult } from "./viability.js";
 
+import { cellStructuralIssue } from "./dispatch-cell.js";
 import { AssignError } from "./errors.js";
 import { checkTargetViability } from "./viability.js";
 
-type Runtime = NonNullable<ManifestStream["runtime"]>;
+// The wired-cell matrix + per-cell structural requirements live in dispatch-cell,
+// so assignment and the fallback-chain import validation share one source (§4.3).
+export { isLegalCell } from "./dispatch-cell.js";
 
 const KNOWN_RUNTIMES: readonly Runtime[] = ["local", "cloud", "rooms"];
 const KNOWN_PROVIDERS: readonly AgentProvider[] = ["cursor", "claude", "codex"];
-
-// Legal (provider, runtime) cells — the shape of `selectRunner`'s matrix
-// (packages/core/src/service.ts). A cell absent here is an authoring error
-// (e.g. claude/rooms, codex/cloud); whether a legal cell has a runner wired
-// is a dispatch-time concern, not assign-time.
-const LEGAL_RUNTIMES_BY_PROVIDER: Record<AgentProvider, readonly Runtime[]> = {
-  cursor: ["local", "cloud", "rooms"],
-  claude: ["local", "cloud"],
-  codex: ["local"],
-};
 
 // Manifest stream statuses that assignment never restamps (spec §4.1).
 const TERMINAL_STREAM_STATUSES: ReadonlySet<string> = new Set(["done", "skipped"]);
@@ -204,28 +198,24 @@ function validateAssignment(
   stream: ManifestStream,
   repoUrl: string | undefined,
 ): string | undefined {
+  const issue = cellStructuralIssue(
+    { provider: assignment.provider, runtime: assignment.resolvedRuntime },
+    { branchName: stream.branch_name, repoUrl },
+  );
+  if (issue === undefined) return undefined;
   const cell = `${assignment.resolvedRuntime}/${assignment.provider}`;
-  if (!isLegalCell(assignment.provider, assignment.resolvedRuntime)) {
-    return `${assignment.specPath}: unwired dispatch cell ${cell}`;
-  }
-  // Branch preconditions mirrored from import (claude/cloud) and the engine
-  // preflight (any local stream): both require branch_name.
-  const needsBranch =
-    assignment.resolvedRuntime === "local" ||
-    (assignment.provider === "claude" && assignment.resolvedRuntime === "cloud");
-  if (needsBranch && stream.branch_name === undefined) {
-    return `${assignment.specPath}: ${cell} requires branch_name — set it or pick a cloud/cursor target`;
-  }
-  // Cloud streams need a manifest-level repo_url (engine preflight).
-  if (assignment.resolvedRuntime === "cloud" && repoUrl === undefined) {
-    return `${assignment.specPath}: ${cell} needs repo_url in the manifest frontmatter`;
-  }
-  return undefined;
+  return `${assignment.specPath}: ${assignMessageForIssue(issue, cell)}`;
 }
 
-/** True when `(provider, runtime)` is a legal cell of the dispatch matrix. */
-export function isLegalCell(provider: AgentProvider, runtime: Runtime): boolean {
-  return LEGAL_RUNTIMES_BY_PROVIDER[provider].includes(runtime);
+function assignMessageForIssue(issue: CellStructuralIssue, cell: string): string {
+  switch (issue) {
+    case "unwired-cell":
+      return `unwired dispatch cell ${cell}`;
+    case "needs-branch":
+      return `${cell} requires branch_name — set it or pick a cloud/cursor target`;
+    case "needs-repo-url":
+      return `${cell} needs repo_url in the manifest frontmatter`;
+  }
 }
 
 /** Normalized `[runtime/]provider:model` string — the recorded pool form. */

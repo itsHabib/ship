@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
+import type { FallbackLogRecord } from "./driver-schemas.js";
 import type { Store } from "./store.js";
 
 import { newDriverBatchId, newDriverRunId, newDriverStreamId } from "./driver-ids.js";
@@ -143,6 +144,100 @@ describe("driver runs (via createStore)", () => {
 
     store.updateDriverStream(streamId!, { reviewCycles: 2 });
     expect(firstStreamOf(runId)?.reviewCycles).toBe(2);
+  });
+
+  function seedRunWithStream(
+    stream: Parameters<Store["insertDriverRun"]>[0]["batches"][number]["streams"][number],
+  ): string {
+    const runId = newDriverRunId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: newDriverBatchId(),
+          status: "pending",
+          streams: [stream],
+        },
+      ],
+      id: runId,
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "pending",
+    });
+    return runId;
+  }
+
+  test("fallback chain, cursor, empty log, and reviewCycles round-trip on insert", () => {
+    const runId = seedRunWithStream({
+      attempts: [],
+      fallbackChain: [
+        { provider: "claude", runtime: "cloud", modelId: "opus" },
+        { provider: "claude", runtime: "local" },
+      ],
+      fallbackCursor: 0,
+      fallbackLog: [],
+      id: newDriverStreamId(),
+      reviewCycles: 0,
+      runtime: "cloud",
+      specPath: "docs/a.md",
+      status: "pending",
+      streamIndex: 0,
+      touches: [],
+    });
+
+    const stream = firstStreamOf(runId);
+    expect(stream?.fallbackChain).toEqual([
+      { provider: "claude", runtime: "cloud", modelId: "opus" },
+      { provider: "claude", runtime: "local" },
+    ]);
+    expect(stream?.fallbackCursor).toBe(0);
+    expect(stream?.fallbackLog).toEqual([]);
+    expect(stream?.reviewCycles).toBe(0);
+  });
+
+  test("populated fallback log (hop, skip, retry) round-trips through the union schema", () => {
+    const log: FallbackLogRecord[] = [
+      {
+        from: { provider: "cursor", runtime: "cloud" },
+        to: { provider: "claude", runtime: "local" },
+        category: "gateway-auth",
+        at: "2026-07-13T00:00:00.000Z",
+      },
+      {
+        skipped: { provider: "claude", runtime: "cloud" },
+        reason: "ANTHROPIC_API_KEY not set",
+        at: "2026-07-13T00:01:00.000Z",
+      },
+      {
+        retried: { provider: "cursor", runtime: "cloud" },
+        reason: "sdk-throw",
+        at: "2026-07-13T00:02:00.000Z",
+      },
+    ];
+    const runId = seedRunWithStream({
+      attempts: [],
+      fallbackChain: [{ provider: "claude", runtime: "local" }],
+      fallbackCursor: 1,
+      fallbackLog: log,
+      id: newDriverStreamId(),
+      runtime: "local",
+      specPath: "docs/a.md",
+      status: "pending",
+      streamIndex: 0,
+      touches: [],
+    });
+
+    expect(firstStreamOf(runId)?.fallbackLog).toEqual(log);
+    expect(firstStreamOf(runId)?.fallbackCursor).toBe(1);
+  });
+
+  test("streams with no chain read the fallback columns back as absent", () => {
+    const stream = firstStreamOf(seedRun());
+    expect(stream?.fallbackChain).toBeUndefined();
+    expect(stream?.fallbackCursor).toBeUndefined();
+    expect(stream?.fallbackLog).toBeUndefined();
   });
 
   test("provider column round-trips through insert and read", () => {

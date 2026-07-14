@@ -73,6 +73,58 @@ describe("renderDriverRun", () => {
     expect(cloud?.pr_number).toBe(999);
   });
 
+  it("renders the stream's current runtime after the store row changes (hop visibility)", () => {
+    const path = join(fixturesDir, "synthetic-full.driver.md");
+    const { run } = importManifest(store, path);
+    const cloud = run.batches[0]?.streams.find((s) => s.taskSlug === "cloud-stream");
+    expect(cloud).toBeDefined();
+    // synthetic-full's cloud-stream is runtime: cloud; simulate a fallback hop.
+    store.updateDriverStream(cloud!.id, { runtime: "local" });
+
+    const rendered = renderDriverRun(store, run.id);
+    const parsed = parseManifest(rendered);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const out = parsed.manifest.batches[0]?.streams.find((s) => s.task_slug === "cloud-stream");
+    expect(out?.runtime).toBe("local");
+  });
+
+  it("overlays the resolved provider onto a stream that inherited a run default", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-render-provider-"));
+    const path = join(dir, "driver.md");
+    writeFileSync(
+      path,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-07-13T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: render-provider",
+        "repo: ship",
+        "default_provider: claude",
+        "batches:",
+        "  - id: 1",
+        "    depends_on: []",
+        "    streams:",
+        "      - spec_path: docs/a.md",
+        "        branch_name: feat-a",
+        "---",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { run } = importManifest(store, path);
+    const parsed = parseManifest(renderDriverRun(store, run.id));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // The source stream omitted provider; render surfaces the resolved default.
+    expect(parsed.manifest.batches[0]?.streams[0]?.provider).toBe("claude");
+    rmSync(dir, { force: true, recursive: true });
+  });
+
   it("drops stale completed_at when the store batch has none", () => {
     const path = join(fixturesDir, "synthetic-full.driver.md");
     const { run } = importManifest(store, path);

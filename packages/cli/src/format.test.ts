@@ -4,6 +4,7 @@ import type { GetWorkflowRunOutput, ShipOutput } from "@ship/core";
 import type { WorkflowRun } from "@ship/workflow";
 
 import { getWorkflowRunOutputSchema } from "@ship/mcp";
+import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -13,6 +14,7 @@ import {
   formatDriverImportOutput,
   formatDriverListOutput,
   formatDriverRunOutput,
+  formatDriverStatusOutput,
   formatShipOutput,
   formatWorkflowRun,
   formatWorkflowRunList,
@@ -411,5 +413,59 @@ describe("formatDiagnoseRun", () => {
     const parsed = JSON.parse(formatDiagnoseRun(SAMPLE_DIAGNOSE_RUN, true)) as GetWorkflowRunOutput;
     expect(parsed).toEqual(SAMPLE_DIAGNOSE_RUN);
     expect(getWorkflowRunOutputSchema.parse(parsed)).toEqual(SAMPLE_DIAGNOSE_RUN);
+  });
+});
+
+describe("formatDriverStatusOutput", () => {
+  test("renders per-stream tier and fallback diagnostic lines", () => {
+    const store = createStore({ dbPath: ":memory:" });
+    const runId = newDriverRunId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: newDriverBatchId(),
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              fallbackChain: [{ provider: "claude", runtime: "local" }],
+              fallbackCursor: 1,
+              fallbackLog: [
+                {
+                  from: { provider: "cursor", runtime: "cloud" },
+                  to: { provider: "claude", runtime: "local" },
+                  category: "gateway-auth",
+                  at: "2026-07-13T00:00:00.000Z",
+                },
+              ],
+              id: newDriverStreamId(),
+              modelTier: "opus",
+              runtime: "local",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              taskSlug: "alpha",
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "pending",
+    });
+
+    const run = store.getDriverRun(runId);
+    expect(run).not.toBeNull();
+    const text = formatDriverStatusOutput(run!, false, false);
+    expect(text).toMatch(/stream\[1\] alpha: .*requested=opus/);
+    expect(text).toContain(
+      "stream[1] alpha: fallback: cloud/cursor → local/claude on gateway-auth",
+    );
+    store.close();
   });
 });

@@ -21,6 +21,19 @@ export const modelTierSchema = z.enum(["opus", "sonnet", "fable"]);
 export const effortTierSchema = z.enum(["extra", "max", "ultracode"]);
 export const manifestProviderSchema = agentProviderSchema;
 
+// One fallback dispatch target (dispatch-fallback spec §5): the shared
+// `(runtime, provider, model_id?)` vocabulary. `model_id` rides inside the
+// frozen chain JSON (no separate column); omitted → tier mapping decides the
+// model at hop time. `runtime`/`provider` are required — an alternate target is
+// explicit, never inheriting the primary's defaults.
+export const fallbackTargetSchema = z
+  .object({
+    runtime: runtimeSchema,
+    provider: manifestProviderSchema,
+    model_id: z.string().min(1).optional(),
+  })
+  .strict();
+
 export const manifestStreamSchema = z
   .object({
     spec_path: z.string().min(1),
@@ -41,6 +54,9 @@ export const manifestStreamSchema = z
     model_id: z.string().min(1).optional(),
     effort: effortTierSchema.optional(),
     provider: manifestProviderSchema.optional(),
+    // Ordered fallback dispatch targets for this stream. Omitted (not `[]`)
+    // inherits the run-level `default_fallback`; an explicit `[]` opts out.
+    fallback: z.array(fallbackTargetSchema).optional(),
     touches: z.array(z.string()).optional().default([]),
     status: streamStatusSchema.optional(),
     pr_number: z.number().int().optional(),
@@ -87,6 +103,9 @@ export const driverManifestSchema = z
     default_model_id: z.string().min(1).optional(),
     default_effort: effortTierSchema.optional(),
     default_provider: manifestProviderSchema.optional(),
+    // Run-level default fallback chain; streams that omit `fallback` inherit it
+    // (mirrors default_runtime / default_provider).
+    default_fallback: z.array(fallbackTargetSchema).optional(),
     batches: z.array(manifestBatchSchema),
     conflict_notes: advisoryBlockSchema,
     skipped_during_resolution: advisoryBlockSchema,
@@ -100,6 +119,7 @@ export const driverManifestSchema = z
 
 export type ManifestStream = z.infer<typeof manifestStreamSchema>;
 export type ManifestBatch = z.infer<typeof manifestBatchSchema>;
+export type ManifestFallbackTarget = z.infer<typeof fallbackTargetSchema>;
 export type DriverManifest = z.infer<typeof driverManifestSchema>;
 export type ModelTier = z.infer<typeof modelTierSchema>;
 export type EffortTier = z.infer<typeof effortTierSchema>;

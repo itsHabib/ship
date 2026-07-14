@@ -13,7 +13,11 @@ import type { DriverRun, DriverStream } from "@ship/store";
 import type { CursorRunRef, WorkflowRun, WorkflowStatus } from "@ship/workflow";
 
 import { formatPruneAge } from "@ship/core";
-import { formatStreamTierDiagnostic, poolMemberToString } from "@ship/driver";
+import {
+  formatStreamFallbackDiagnostic,
+  formatStreamTierDiagnostic,
+  poolMemberToString,
+} from "@ship/driver";
 
 /** Renders a `ShipOutput` for the `ship ship` subcommand. */
 export function formatShipOutput(out: ShipOutput, json: boolean): string {
@@ -284,13 +288,21 @@ export function formatDriverStatusOutput(
   }
   for (const batch of view.batches) {
     for (const stream of batch.streams) {
-      const tierLine = formatStreamTierLine(stream, batch.batchIndex);
-      if (tierLine !== undefined) {
-        lines.push(tierLine);
-      }
+      pushStreamDiagnosticLines(lines, stream, batch.batchIndex);
     }
   }
   return lines.join("\n");
+}
+
+function pushStreamDiagnosticLines(
+  lines: string[],
+  stream: DriverStream,
+  batchIndex: number,
+): void {
+  const tierLine = formatStreamTierLine(stream, batchIndex);
+  if (tierLine !== undefined) lines.push(tierLine);
+  const fallbackLine = formatStreamFallbackLine(stream, batchIndex);
+  if (fallbackLine !== undefined) lines.push(fallbackLine);
 }
 
 type StreamTierDiagnosticInput = Parameters<typeof formatStreamTierDiagnostic>[0];
@@ -325,6 +337,15 @@ function formatStreamTierLine(stream: DriverStream, batchIndex: number): string 
     ...requestedTierFields(stream),
     ...liveDispatchFields(stream),
   });
+  if (diagnostic === undefined) {
+    return undefined;
+  }
+  const label = stream.taskSlug ?? stream.specPath;
+  return `stream[${String(batchIndex)}] ${label}: ${diagnostic}`;
+}
+
+function formatStreamFallbackLine(stream: DriverStream, batchIndex: number): string | undefined {
+  const diagnostic = formatStreamFallbackDiagnostic(stream.fallbackLog);
   if (diagnostic === undefined) {
     return undefined;
   }
