@@ -42,6 +42,7 @@ import { mapMidStreamFailure, mapResultMessage } from "./terminal-map.js";
 
 const API_KEY_ENV = "ANTHROPIC_API_KEY";
 const AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN";
+const CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 
 const SUPPORTED_PLATFORM_KEYS = new Set([
@@ -130,15 +131,19 @@ function translateMcpServers(
   return out;
 }
 
-function buildGatewayEnv(): Record<string, string> {
-  const gatewayEnv: Record<string, string> = {};
-  const apiKey = process.env[API_KEY_ENV];
-  if (apiKey !== undefined && apiKey !== "") gatewayEnv[API_KEY_ENV] = apiKey;
-  const authToken = process.env[AUTH_TOKEN_ENV];
-  if (authToken !== undefined && authToken !== "") gatewayEnv[AUTH_TOKEN_ENV] = authToken;
-  const baseUrl = process.env[BASE_URL_ENV];
-  if (baseUrl !== undefined && baseUrl !== "") gatewayEnv[BASE_URL_ENV] = baseUrl;
-  return gatewayEnv;
+function buildQueryEnv(): Record<string, string> {
+  const normalizedKeys = new Set([
+    API_KEY_ENV,
+    AUTH_TOKEN_ENV,
+    CLAUDE_CODE_OAUTH_TOKEN_ENV,
+    BASE_URL_ENV,
+  ]);
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] =>
+        entry[1] !== undefined && (!normalizedKeys.has(entry[0]) || entry[1].trim() !== ""),
+    ),
+  );
 }
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {
@@ -159,7 +164,7 @@ function buildQueryOptions(
     abortController,
     allowDangerouslySkipPermissions: true,
     cwd: input.cwd,
-    env: { ...process.env, ...buildGatewayEnv() },
+    env: buildQueryEnv(),
     ...(fallbackModel !== undefined && { fallbackModel }),
     ...(input.agents !== undefined && { agents: input.agents }),
     ...(input.mcpServers !== undefined && {
@@ -194,11 +199,14 @@ function validateRunInput(input: AgentRunInput): void {
   }
   const apiKey = process.env[API_KEY_ENV];
   const authToken = process.env[AUTH_TOKEN_ENV];
-  const hasApiKey = apiKey !== undefined && apiKey !== "";
-  const hasAuthToken = authToken !== undefined && authToken !== "";
-  if (!hasApiKey && !hasAuthToken) {
+  const claudeCodeOAuthToken = process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV];
+  const hasApiKey = apiKey !== undefined && apiKey.trim() !== "";
+  const hasAuthToken = authToken !== undefined && authToken.trim() !== "";
+  const hasClaudeCodeOAuthToken =
+    claudeCodeOAuthToken !== undefined && claudeCodeOAuthToken.trim() !== "";
+  if (!hasApiKey && !hasAuthToken && !hasClaudeCodeOAuthToken) {
     throw new MissingApiKeyError(
-      "no API credential set (ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN required)",
+      "no Claude credential set (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY required)",
     );
   }
 }

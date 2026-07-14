@@ -183,7 +183,7 @@ keyed on the full resolved target `(runtime, provider, model_id)`, since viabili
 runtime-sensitive — verify reachability: cursor ids against `GET /v1/models` (the proven check
 from the grok run; runtime-agnostic, shared across members that differ only by runtime);
 non-cursor members by credential presence in env, **matched to the runner the resolved cell
-selects** — local/claude: `ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY`; cloud/claude:
+selects** — local/claude: `CLAUDE_CODE_OAUTH_TOKEN || ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY`; cloud/claude:
 `ANTHROPIC_API_KEY` (the cloud runner's stricter requirement); codex:
 `CODEX_API_KEY || OPENAI_API_KEY` (presence-only, acknowledged weaker than a catalog probe).
 Failed members are dropped

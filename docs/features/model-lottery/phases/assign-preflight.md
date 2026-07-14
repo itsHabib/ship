@@ -15,7 +15,7 @@ Weighted-LOC budget: **~200 wLOC** (amazing band). New `viability.ts` helper + p
 Adds the `--preflight` phase (default on; `--no-preflight` skips) to `ship driver assign`. Before any round-robin assignment, the whole pool is filtered for reachability:
 
 - **cursor members** — the model id is checked against a live `GET /v1/models` catalog. Runtime-agnostic: cursor viability does not depend on which runtime a stream resolves to, so every cursor member shares one catalog fetch.
-- **claude members** — credential *presence* in env, matched to the runner the resolved cell selects: `local` → `ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY`; `cloud` → `ANTHROPIC_API_KEY` (the cloud runner's stricter requirement).
+- **claude members** — credential *presence* in env, matched to the runner the resolved cell selects: `local` → `CLAUDE_CODE_OAUTH_TOKEN || ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY`; `cloud` → `ANTHROPIC_API_KEY` (the cloud runner's stricter requirement).
 - **codex members** — `CODEX_API_KEY || OPENAI_API_KEY` presence (presence-only, acknowledged weaker than a catalog probe per spec §5).
 
 Non-viable members are dropped with a recorded reason. The surviving **effective pool** — the actual input to round-robin — plus the dropped list and an `assigned_at` timestamp are written into the manifest's `assignment` advisory block alongside the requested `pool`. Round-robin then runs on the effective pool exactly as it does today.
@@ -57,7 +57,7 @@ checkTargetViability(target: DispatchTarget, deps: ViabilityDeps): Promise<Viabi
 
 ## Validation
 
-- `viability.test.ts`: cursor id in/out of catalog; claude local present via `ANTHROPIC_AUTH_TOKEN`, present via `ANTHROPIC_API_KEY`, absent; claude cloud present/absent (only `ANTHROPIC_API_KEY` counts); codex present via either var, absent; unknown provider → non-viable (not a codex fallthrough); the real adapter (bearer auth, memoized single fetch, missing-key, non-2xx, unexpected-shape throw, empty-catalog `[]`, base-url override).
+- `viability.test.ts`: cursor id in/out of catalog; claude local present via `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, or `ANTHROPIC_API_KEY`, absent; claude cloud present/absent (only `ANTHROPIC_API_KEY` counts); codex present via either var, absent; unknown provider → non-viable (not a codex fallthrough); the real adapter (bearer auth, memoized single fetch, missing-key, non-2xx, unexpected-shape throw, empty-catalog `[]`, base-url override).
 - `assign.test.ts` (extend): preflight drops a non-viable member → effective pool shrinks, dropped recorded in advisory; empty effective pool throws `AssignError` and writes nothing; `--no-preflight` path → effective == pool, dropped == []; `assigned_at` pinned via injected `now`; the 2a idempotence test updated to inject a fixed `now` and still round-trips; conservative multi-runtime — an unprefixed claude member on a `default_runtime: cloud` manifest with a `runtime: local` stream is dropped on `ANTHROPIC_AUTH_TOKEN`-only (cloud candidate needs `ANTHROPIC_API_KEY`) and kept on `ANTHROPIC_API_KEY`.
 - `make check` green on ubuntu + windows (typecheck + lint + format + coverage; driver branch threshold).
 
