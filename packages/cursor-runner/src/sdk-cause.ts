@@ -39,11 +39,27 @@ function redactText(text: string, githubMcpUrl: string | undefined): string {
     out = out.split(githubMcpUrl).join(GH_MCP_URL_REDACTION);
   }
   // Never carry authorization_token values if they leaked into a string field
-  // (e.g. an endpoint URL or verbose SDK message).
+  // (e.g. an endpoint URL or verbose SDK message). Handle URL-encoded `=`
+  // (`%3D`) before the plain form so `%` is not swallowed as a separator.
+  out = out.replace(
+    /authorization_token%3D[^\s&"'\\]+/gi,
+    `${AUTH_TOKEN_KEY}%3D[redacted]`,
+  );
   out = out.replace(
     /authorization_token(["\s:=]+)([^\s"',}\\]+)/gi,
     (_m, sep: string) => `${AUTH_TOKEN_KEY}${sep}[redacted]`,
   );
+  // Same scrub family as core's sanitizeFailureDetail — GITHUB_MCP_URL may
+  // carry a PAT in the query, and SDK echoes sometimes mutate the URL so the
+  // exact-substring replace above misses the token itself.
+  out = out
+    .replace(/\b(?:gh[pousr]_|github_pat_)\w+/g, "[token]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [token]")
+    .replace(
+      /\b([A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)=[^\s,;]+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/([?&](?:token|access_token|api_key|key)=)[^&\s"'\\]+/gi, "$1[redacted]");
   return out;
 }
 

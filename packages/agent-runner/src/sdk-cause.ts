@@ -32,7 +32,7 @@ function boundText(text: string, maxChars: number): string {
   return `${text.slice(0, keep)}${TRUNCATED_SUFFIX}`;
 }
 
-function codeOrType(cause: SdkCauseSummary): string | undefined {
+function discriminatorLabel(cause: SdkCauseSummary): string | undefined {
   if (cause.code !== undefined && cause.code !== "") return cause.code;
   if (cause.type !== undefined && cause.type !== "") return cause.type;
   return undefined;
@@ -41,7 +41,7 @@ function codeOrType(cause: SdkCauseSummary): string | undefined {
 function formatCauseHead(cause: SdkCauseSummary): string {
   const parts: string[] = [];
   if (cause.status !== undefined) parts.push(`HTTP ${String(cause.status)}`);
-  const label = codeOrType(cause);
+  const label = discriminatorLabel(cause);
   if (label !== undefined) parts.push(label);
   return parts.join(" ");
 }

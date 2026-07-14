@@ -95,6 +95,30 @@ describe("extractSdkCause", () => {
     expect(summary?.message).not.toContain("ghp_leak");
   });
 
+  test("token-bearing query params and bare PATs are scrubbed without exact URL match", () => {
+    const err = Object.assign(new Error("failed for ghp_barepat123 Bearer sk_live_abc"), {
+      endpoint: "https://mcp.example/github?token=ghp_querypat&other=1",
+      status: 400,
+    });
+    const summary = extractSdkCause(err);
+    expect(summary?.endpoint).toContain("token=[redacted]");
+    expect(summary?.endpoint).not.toContain("ghp_querypat");
+    expect(summary?.message).toContain("[token]");
+    expect(summary?.message).toContain("Bearer [token]");
+    expect(summary?.message).not.toContain("ghp_barepat123");
+    expect(summary?.message).not.toContain("sk_live_abc");
+  });
+
+  test("URL-encoded authorization_token embeddings are redacted", () => {
+    const err = Object.assign(new Error("bad"), {
+      endpoint: "https://api.example?authorization_token%3Dghp_encoded",
+      status: 401,
+    });
+    const summary = extractSdkCause(err);
+    expect(summary?.endpoint).toContain("authorization_token%3D[redacted]");
+    expect(summary?.endpoint).not.toContain("ghp_encoded");
+  });
+
   test("detail / message truncated at the cap", () => {
     const long = "y".repeat(500);
     const summary = extractSdkCause(new Error(long), { maxChars: 200 });
