@@ -71,6 +71,14 @@ describe("checkTargetViability — claude", () => {
     expect(result.viable).toBe(false);
   });
 
+  test("local not viable with whitespace-only Claude Code OAuth", async () => {
+    const result = await checkTargetViability(
+      target({ provider: "claude", runtime: "local" }),
+      deps({ env: { CLAUDE_CODE_OAUTH_TOKEN: " \t" } }),
+    );
+    expect(result.viable).toBe(false);
+  });
+
   test("cloud requires ANTHROPIC_API_KEY — AUTH_TOKEN alone is not enough", async () => {
     const result = await checkTargetViability(
       target({ provider: "claude", runtime: "cloud" }),

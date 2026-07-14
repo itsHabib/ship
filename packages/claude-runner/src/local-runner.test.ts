@@ -101,6 +101,13 @@ function baseInput(
   };
 }
 
+function firstQueryEnv(): Record<string, string | undefined> {
+  const call = vi.mocked(query).mock.calls[0]?.[0] as
+    | { options?: { env?: Record<string, string | undefined> } }
+    | undefined;
+  return call?.options?.env ?? {};
+}
+
 beforeEach(() => {
   vi.stubEnv("ANTHROPIC_API_KEY", "test-key-abc123");
   vi.mocked(query).mockReset();
@@ -411,6 +418,23 @@ describe("LocalClaudeRunner — query options", () => {
       | { options?: { env?: Record<string, string | undefined> } }
       | undefined;
     expect(call?.options?.env?.["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("oauth-token-xyz");
+  });
+
+  test("omits whitespace-only tokens when another credential is valid", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("ANTHROPIC_API_KEY", "test-key-abc123");
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", " ");
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "\t");
+    const { queryInstance } = makeMockQuery({ events: [successResult] });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    await runner.run(baseInput());
+
+    const env = firstQueryEnv();
+    expect(env["ANTHROPIC_API_KEY"]).toBe("test-key-abc123");
+    expect(env["ANTHROPIC_AUTH_TOKEN"]).toBeUndefined();
+    expect(env["CLAUDE_CODE_OAUTH_TOKEN"]).toBeUndefined();
   });
 
   test("omits ANTHROPIC_AUTH_TOKEN from env when unset", async () => {
