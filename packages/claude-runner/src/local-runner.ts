@@ -200,9 +200,10 @@ function validateRunInput(input: AgentRunInput): void {
   const apiKey = process.env[API_KEY_ENV];
   const authToken = process.env[AUTH_TOKEN_ENV];
   const claudeCodeOAuthToken = process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV];
-  const hasApiKey = apiKey !== undefined && apiKey !== "";
-  const hasAuthToken = authToken !== undefined && authToken !== "";
-  const hasClaudeCodeOAuthToken = claudeCodeOAuthToken !== undefined && claudeCodeOAuthToken !== "";
+  const hasApiKey = apiKey !== undefined && apiKey.trim() !== "";
+  const hasAuthToken = authToken !== undefined && authToken.trim() !== "";
+  const hasClaudeCodeOAuthToken =
+    claudeCodeOAuthToken !== undefined && claudeCodeOAuthToken.trim() !== "";
   if (!hasApiKey && !hasAuthToken && !hasClaudeCodeOAuthToken) {
     throw new MissingApiKeyError(
       "no Claude credential set (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY required)",

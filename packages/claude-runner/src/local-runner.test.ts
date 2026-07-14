@@ -139,11 +139,21 @@ describe("LocalClaudeRunner — runtime selection", () => {
 });
 
 describe("LocalClaudeRunner — env / pre-run errors", () => {
-  test("throws MissingApiKeyError when both credentials are unset", async () => {
+  test("throws MissingApiKeyError when no credential is set", async () => {
     vi.unstubAllEnvs();
     vi.stubEnv("ANTHROPIC_API_KEY", "");
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "");
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "");
+    const runner = new LocalClaudeRunner();
+    await expect(runner.run(baseInput())).rejects.toBeInstanceOf(MissingApiKeyError);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  test("throws MissingApiKeyError when every credential is whitespace", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("ANTHROPIC_API_KEY", " ");
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "\t");
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "\r\n");
     const runner = new LocalClaudeRunner();
     await expect(runner.run(baseInput())).rejects.toBeInstanceOf(MissingApiKeyError);
     expect(query).not.toHaveBeenCalled();
