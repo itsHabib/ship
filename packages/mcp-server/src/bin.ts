@@ -2,10 +2,12 @@
 /**
  * `@ship/mcp-server` entrypoint. Wires the production `ShipService`
  * (`createDefaultShipService` from `@ship/core`), builds the server
- * with all four V1 tools + the runs resource, and connects to stdio.
+ * with the workflow, artifact, and driver tools plus the runs resource, and
+ * connects to stdio.
  *
- * Pre-flight rejects when `CURSOR_API_KEY` is missing — same loud
- * failure mode as Phase 7's CLI risk-section recommendation. The
+ * Provider credentials are validated by the selected runner when a
+ * `ship` request is dispatched. The server itself stays provider-neutral,
+ * so Claude/Codex requests do not require a Cursor credential. The
  * `SHIP_TEST_FAKE_CURSOR=1` env var is the one production-side
  * carve-out for the L3 subprocess integration test (ED-7); it
  * substitutes `FakeCursorRunner` so the test harness can spawn the
@@ -35,17 +37,6 @@ import { resolveDbPath, resolveRunsDir } from "./store-paths.js";
 async function main(): Promise<void> {
   const logger = createLogger({ stream: process.stderr });
   const useFake = process.env["SHIP_TEST_FAKE_CURSOR"] === "1";
-  // Treat both "unset" and "set to empty string" as missing — the
-  // Cursor SDK rejects an empty key the same way it rejects an
-  // absent one, so accepting `""` here would let the server start
-  // and silently fail every real `ship` call instead of failing
-  // fast at boot. Cycle-1 review (ship#15) caught this gap.
-  const apiKey = process.env["CURSOR_API_KEY"];
-  if (!useFake && (apiKey === undefined || apiKey === "")) {
-    logger.error({}, "CURSOR_API_KEY is not set");
-    process.exitCode = 1;
-    return;
-  }
 
   const dbPath = resolveDbPath();
   const runsDir = resolveRunsDir();
