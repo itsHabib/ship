@@ -73,7 +73,7 @@ After this fix, both surfaces resolve the same store going forward. Any rows alr
 
 ### Merge
 
-`INSERT OR IGNORE` is the whole trick: every table is keyed by a ULID primary key (plus a few `UNIQUE` constraints), so re-inserting a row that already exists is a no-op and only genuinely-missing rows land. Insert in **foreign-key-dependency order** (parents before children) with `foreign_keys = ON` so no child outlives its parent.
+`INSERT OR IGNORE` is the whole trick: every table has a stable primary key (a ULID for most; a content-hash `artifact_id` for `driver_review_artifacts`), plus a few `UNIQUE` constraints, so re-inserting a row that already exists is a no-op and only genuinely-missing rows land. Insert in **foreign-key-dependency order** (parents before children) with `foreign_keys = ON` so no child outlives its parent.
 
 ```sql
 -- Run against the REAL store. CONTAINER is the app-container copy.
@@ -106,7 +106,7 @@ DETACH DATABASE container;
 Notes:
 
 - **Run artifacts** (`<runs-dir>/<runId>/`) live on disk, not in SQLite. If the container also split `SHIP_RUNS_DIR`, copy its run dirs into the real runs dir the same idempotent way: `cp -rn CONTAINER_RUNS/. REAL_RUNS/` (`-n` = no-clobber, so an existing run dir is never overwritten).
-- **Schema drift.** Both stores must be at the same migration head before merging (`SELECT MAX(id) FROM _migrations;` — the runner's bookkeeping table, created outside the migration files). If the container is behind, open it with any current ship build once to run migrations forward, then merge. Do NOT copy `_migrations` rows between DBs.
+- **Schema drift.** Both stores must be at the same migration head before merging. The runner's bookkeeping table is `_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)` (created outside the migration files), so compare the applied set by name/count, not a numeric id: `SELECT COUNT(*) FROM _migrations;` on each store (they must match — this repo is currently at 17 applied migrations) or diff `SELECT name FROM _migrations ORDER BY name;`. If the container is behind, open it with any current ship build once to run migrations forward, then merge. Do NOT copy `_migrations` rows between DBs.
 - The partial unique index on open `escalations` (`escalations_open_dedup_idx`) means a duplicate *open* escalation for the same (run, stream, class) is dropped by `INSERT OR IGNORE` — the desired behavior.
 
 ### Verify
