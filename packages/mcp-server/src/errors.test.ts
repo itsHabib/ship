@@ -15,7 +15,7 @@ import {
   PreconditionError,
   TickLiveError,
 } from "@ship/driver";
-import { WorkflowRunNotFoundError } from "@ship/store";
+import { DriverRunNotFoundError, WorkflowRunNotFoundError } from "@ship/store";
 import { describe, expect, test } from "vitest";
 
 import { isUserError, mapErrorToMcpError } from "./errors.js";
@@ -28,8 +28,9 @@ describe("isUserError", () => {
     expect(isUserError(new MissingRepoError())).toBe(true);
   });
 
-  test("WorkflowRunNotFoundError (cancel/getRun on unknown id) is a user error", () => {
+  test("store not-found errors (cancel/getRun/render on unknown id) are user errors", () => {
     expect(isUserError(new WorkflowRunNotFoundError("wf_unknown"))).toBe(true);
+    expect(isUserError(new DriverRunNotFoundError("drv_unknown"))).toBe(true);
   });
 
   test("driver engine errors map to user errors", () => {
