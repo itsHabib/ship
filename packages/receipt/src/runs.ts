@@ -113,7 +113,12 @@ export function resolveDefaultRunsDir(
   home: string,
 ): string {
   const override = env["SHIP_RUNS_DIR"];
-  if (override !== undefined && override !== "") {
+  // Match the ship CLI/MCP resolvers: only an ABSOLUTE SHIP_RUNS_DIR is
+  // honored; a relative value falls through to the platform default so all
+  // three surfaces resolve the SAME dir instead of splitting on cwd (a
+  // relative override would leave receipts reading a dir the runs never
+  // landed in).
+  if (override !== undefined && override !== "" && isAbsolute(override)) {
     return override;
   }
   return join(configHome(env, platform, home), "ship", "runs");

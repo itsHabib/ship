@@ -391,6 +391,9 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
     devDependencies:
+      '@ship/cli':
+        specifier: workspace:*
+        version: link:../cli
       '@ship/test-harness':
         specifier: workspace:*
         version: link:../test-harness

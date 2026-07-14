@@ -151,6 +151,12 @@ describe("resolveDefaultRunsDir", () => {
     );
   });
 
+  it("ignores a relative SHIP_RUNS_DIR and uses the platform default", () => {
+    expect(resolveDefaultRunsDir({ SHIP_RUNS_DIR: "rel/runs" }, "linux", "/home/u")).toBe(
+      join("/home/u", ".config", "ship", "runs"),
+    );
+  });
+
   it("uses XDG_CONFIG_HOME when set", () => {
     expect(resolveDefaultRunsDir({ XDG_CONFIG_HOME: "/xdg" }, "linux", "/home/u")).toBe(
       join("/xdg", "ship", "runs"),
