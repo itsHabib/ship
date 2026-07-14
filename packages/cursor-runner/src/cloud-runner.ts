@@ -60,6 +60,7 @@ import {
   MissingCloudSpecError,
   WrongRunnerError,
 } from "./errors.js";
+import { extractSdkCause } from "./sdk-cause.js";
 
 const API_KEY_ENV = "CURSOR_API_KEY";
 const PROBE_TIMEOUT_MS = 10_000;
@@ -372,10 +373,7 @@ export class CloudCursorRunner implements AgentRunner {
       if (err instanceof IntegrationNotConnectedError) {
         throw new CursorCloudIntegrationError(err.provider, err.helpUrl, { cause: err });
       }
-      throw new AgentRunFailedError(
-        agent === undefined ? "Agent.create failed" : "agent.send failed after Agent.create",
-        { cause: err },
-      );
+      throwCloudStartFailed(err, agent !== undefined);
     }
   }
 
@@ -565,4 +563,22 @@ function logCloudStartFailure(log: Logger | undefined, err: unknown, agentCreate
   } catch {
     // swallow — diagnostic logging must never affect control flow
   }
+}
+
+// Persist a bounded, redacted field summary alongside the throw so
+// finalize can fold status/code/requestId into the phase errorMessage.
+// Extraction runs here (not in core) so redaction happens before the
+// value leaves the runner.
+function throwCloudStartFailed(err: unknown, agentCreated: boolean): never {
+  const githubMcpUrl = process.env["GITHUB_MCP_URL"];
+  const causeSummary = extractSdkCause(err, {
+    ...(githubMcpUrl !== undefined && githubMcpUrl !== "" && { githubMcpUrl }),
+  });
+  throw new AgentRunFailedError(
+    agentCreated ? "agent.send failed after Agent.create" : "Agent.create failed",
+    {
+      cause: err,
+      ...(causeSummary !== undefined && { causeSummary }),
+    },
+  );
 }
