@@ -15,8 +15,12 @@ import type { DriverServiceFactory } from "./driver-service.js";
 import { registerRunsResource } from "./resources/runs.js";
 import { registerCancelWorkflowRunTool } from "./tools/cancel-workflow-run.js";
 import { registerDownloadArtifactTool } from "./tools/download-artifact.js";
+import { registerDriverCancelTool } from "./tools/driver-cancel.js";
 import { registerDriverDecideTool } from "./tools/driver-decide.js";
+import { registerDriverImportTool } from "./tools/driver-import.js";
 import { registerDriverLandTool } from "./tools/driver-land.js";
+import { registerDriverMarkMergedTool } from "./tools/driver-mark-merged.js";
+import { registerDriverRenderTool } from "./tools/driver-render.js";
 import { registerDriverRunTool } from "./tools/driver-run.js";
 import { registerDriverStatusTool } from "./tools/driver-status.js";
 import { registerGetWorkflowRunTool } from "./tools/get-workflow-run.js";
@@ -48,10 +52,14 @@ export function buildServer(
   registerListArtifactsTool(server, shipFactory);
   registerDownloadArtifactTool(server, shipFactory);
   if (driverFactory !== undefined) {
+    registerDriverImportTool(server, driverFactory);
     registerDriverRunTool(server, driverFactory);
     registerDriverStatusTool(server, driverFactory);
     registerDriverDecideTool(server, driverFactory);
     registerDriverLandTool(server, driverFactory);
+    registerDriverCancelTool(server, driverFactory);
+    registerDriverRenderTool(server, driverFactory);
+    registerDriverMarkMergedTool(server, driverFactory);
   }
   registerRunsResource(server, shipFactory);
   return server;

@@ -10,7 +10,13 @@ import type { ShipInput, ShipOutput, ShipStartOutput } from "./mcp.js";
 import {
   cancelWorkflowRunInputSchema,
   cancelWorkflowRunOutputSchema,
+  driverCancelInputSchema,
   driverDecideInputSchema,
+  driverImportInputSchema,
+  driverImportOutputSchema,
+  driverMarkMergedInputSchema,
+  driverRenderInputSchema,
+  driverRenderWrittenOutputSchema,
   driverRunInputSchema,
   driverTickResultSchema,
   getWorkflowRunInputSchema,
@@ -837,6 +843,60 @@ describe("driver MCP schemas", () => {
       ],
     };
     expect(driverTickResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  test("driverImportInputSchema requires manifestPath", () => {
+    expect(driverImportInputSchema.safeParse({}).success).toBe(false);
+    expect(driverImportInputSchema.safeParse({ manifestPath: "/x.md" }).success).toBe(true);
+  });
+
+  test("driverImportOutputSchema accepts optional warnings", () => {
+    expect(
+      driverImportOutputSchema.safeParse({ driverRunId: DRV_ID, warnings: ["warn"] }).success,
+    ).toBe(true);
+    expect(driverImportOutputSchema.safeParse({ driverRunId: DRV_ID }).success).toBe(true);
+  });
+
+  test("driverMarkMergedInputSchema requires stream merge facts", () => {
+    expect(
+      driverMarkMergedInputSchema.safeParse({
+        driverRunId: DRV_ID,
+        streamId: DS_ID,
+        prNumber: 1,
+        sha: "abc",
+      }).success,
+    ).toBe(true);
+    expect(
+      driverMarkMergedInputSchema.safeParse({
+        driverRunId: DRV_ID,
+        streamId: DS_ID,
+        prNumber: 1,
+        sha: "abc",
+        mergedAt: "2026-06-12T00:00:00.000Z",
+        cycles: 3,
+      }).success,
+    ).toBe(true);
+  });
+
+  test("driverCancelInputSchema requires driverRunId", () => {
+    expect(driverCancelInputSchema.safeParse({}).success).toBe(false);
+    expect(driverCancelInputSchema.safeParse({ driverRunId: DRV_ID }).success).toBe(true);
+  });
+
+  test("driverRenderInputSchema accepts optional outPath", () => {
+    expect(driverRenderInputSchema.safeParse({ driverRunId: DRV_ID }).success).toBe(true);
+    expect(
+      driverRenderInputSchema.safeParse({ driverRunId: DRV_ID, outPath: "/tmp/out.md" }).success,
+    ).toBe(true);
+  });
+
+  test("driverRenderWrittenOutputSchema requires written and outPath", () => {
+    expect(
+      driverRenderWrittenOutputSchema.safeParse({ written: true, outPath: "/tmp/out.md" }).success,
+    ).toBe(true);
+    expect(driverRenderWrittenOutputSchema.safeParse({ written: false, outPath: "/x" }).success).toBe(
+      false,
+    );
   });
 
   test("driverDecideInputSchema accepts retry/skip/abort/adopt decisions", () => {

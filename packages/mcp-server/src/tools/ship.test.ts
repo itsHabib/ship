@@ -163,8 +163,12 @@ describe("ship tool", () => {
     expect(names).toEqual([
       "cancel_workflow_run",
       "download_artifact",
+      "driver_cancel",
       "driver_decide",
+      "driver_import",
       "driver_land",
+      "driver_mark_merged",
+      "driver_render",
       "driver_run",
       "driver_status",
       "get_workflow_run",
