@@ -119,6 +119,16 @@ describe("extractSdkCause", () => {
     expect(summary?.endpoint).not.toContain("ghp_encoded");
   });
 
+  test("percent-encoded token= query values are redacted", () => {
+    const err = Object.assign(new Error("echo"), {
+      endpoint: "https://mcp.example/github?token%3Dghp_encodedpat&x=1",
+      status: 400,
+    });
+    const summary = extractSdkCause(err);
+    expect(summary?.endpoint).toContain("token%3D[redacted]");
+    expect(summary?.endpoint).not.toContain("ghp_encodedpat");
+  });
+
   test("detail / message truncated at the cap", () => {
     const long = "y".repeat(500);
     const summary = extractSdkCause(new Error(long), { maxChars: 200 });
