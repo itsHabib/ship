@@ -253,7 +253,10 @@ describe("ship-mcp-server binary — provider-aware startup", () => {
         ) as { failureDetail?: string };
         expect(result.failureDetail).toMatch(/CURSOR_API_KEY/);
       } finally {
-        await providerClient.close();
+        await providerClient.close().catch(() => {
+          // Cleanup is best effort: preserve the primary assertion or
+          // transport failure while still asking the stdio child to stop.
+        });
       }
     },
   );
