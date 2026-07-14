@@ -2,7 +2,8 @@
 /**
  * `@ship/mcp-server` entrypoint. Wires the production `ShipService`
  * (`createDefaultShipService` from `@ship/core`), builds the server
- * with all four V1 tools + the runs resource, and connects to stdio.
+ * with the workflow, artifact, and driver tools plus the runs resource, and
+ * connects to stdio.
  *
  * Provider credentials are validated by the selected runner when a
  * `ship` request is dispatched. The server itself stays provider-neutral,

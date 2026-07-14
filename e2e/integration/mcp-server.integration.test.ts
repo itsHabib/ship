@@ -19,7 +19,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { waitForTerminalRun } from "@ship/test-harness";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -214,7 +214,7 @@ describe("ship-mcp-server binary — subprocess smoke", () => {
 
 describe("ship-mcp-server binary — provider-aware startup", () => {
   test.each(["missing", "empty"] as const)(
-    "%s CURSOR_API_KEY starts the provider-neutral server and fails only a Cursor request",
+    "%s CURSOR_API_KEY starts the provider-neutral server and fails a Cursor/local request",
     async (keyState) => {
       const providerEnv = buildChildEnv();
       delete providerEnv.env["SHIP_TEST_FAKE_CURSOR"];
@@ -245,8 +245,13 @@ describe("ship-mcp-server binary — provider-aware startup", () => {
           },
         });
         const started = parseToolJson(startedRaw) as ShipStartOutput;
+        expect(started.status).toBe("running");
         const terminal = await waitForTerminalRun(providerClient, started.workflowRunId, INT_POLL);
         expect(terminal.status).toBe("failed");
+        const result = JSON.parse(
+          readFileSync(join(providerEnv.runsDir, started.workflowRunId, "result.json"), "utf-8"),
+        ) as { failureDetail?: string };
+        expect(result.failureDetail).toMatch(/CURSOR_API_KEY/);
       } finally {
         await providerClient.close();
       }
