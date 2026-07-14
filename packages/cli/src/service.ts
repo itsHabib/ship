@@ -91,12 +91,38 @@ export function userConfigDir(): string {
   return join(homedir(), ".config");
 }
 
-/** Default SQLite path: `<UserConfigDir>/ship/state.db`. */
-export function resolveDbPath(): string {
-  return join(userConfigDir(), "ship", "state.db");
+/**
+ * Honor an env-var store override only when it names an absolute path.
+ * A relative or empty value falls through to the caller's default — the
+ * same guard the XDG lookup uses, so a bad env value never resolves a
+ * cwd-relative store the caller didn't intend.
+ *
+ * This is why the CLI and MCP server land on the SAME store on one
+ * machine: both read `SHIP_DB_PATH` / `SHIP_RUNS_DIR` first with an
+ * identical `isAbsolute()` guard. A connector dispatch and a terminal
+ * CLI that share the env therefore share the store instead of
+ * orphaning each other's history.
+ */
+function envStoreOverride(name: "SHIP_DB_PATH" | "SHIP_RUNS_DIR"): string | undefined {
+  const value = process.env[name];
+  if (value !== undefined && value !== "" && isAbsolute(value)) return value;
+  return undefined;
 }
 
-/** Default artifacts dir: `<UserConfigDir>/ship/runs/`. */
+/**
+ * SQLite path: absolute `SHIP_DB_PATH` override, else
+ * `<UserConfigDir>/ship/state.db`. Mirrors the mcp-server's resolution
+ * exactly — see `envStoreOverride`.
+ */
+export function resolveDbPath(): string {
+  return envStoreOverride("SHIP_DB_PATH") ?? join(userConfigDir(), "ship", "state.db");
+}
+
+/**
+ * Artifacts dir: absolute `SHIP_RUNS_DIR` override, else
+ * `<UserConfigDir>/ship/runs/`. Mirrors the mcp-server's resolution
+ * exactly — see `envStoreOverride`.
+ */
 export function resolveRunsDir(): string {
-  return join(userConfigDir(), "ship", "runs");
+  return envStoreOverride("SHIP_RUNS_DIR") ?? join(userConfigDir(), "ship", "runs");
 }

@@ -25,26 +25,17 @@ describe("createCliService", () => {
 
 describe("path resolution", () => {
   const origPlatform = process.platform;
-  const origAppData = process.env["APPDATA"];
-  const origXdg = process.env["XDG_CONFIG_HOME"];
-
+  // `vi.stubEnv` restores every mutated var on `unstubAllEnvs` (stubbing "" is
+  // how "unset for this test" is expressed vs the real inherited env). Platform
+  // is not env, so it snapshots / restores separately.
   afterEach(() => {
+    vi.unstubAllEnvs();
     Object.defineProperty(process, "platform", { value: origPlatform });
-    if (origAppData === undefined) {
-      delete process.env["APPDATA"];
-    } else {
-      process.env["APPDATA"] = origAppData;
-    }
-    if (origXdg === undefined) {
-      delete process.env["XDG_CONFIG_HOME"];
-    } else {
-      process.env["XDG_CONFIG_HOME"] = origXdg;
-    }
   });
 
   test("resolveDbPath / resolveRunsDir append `ship` exactly once on POSIX", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
-    delete process.env["XDG_CONFIG_HOME"];
+    vi.stubEnv("XDG_CONFIG_HOME", "");
     const home = userConfigDir();
     expect(resolveDbPath().startsWith(home)).toBe(true);
     expect(resolveDbPath().endsWith("state.db")).toBe(true);
@@ -55,32 +46,59 @@ describe("path resolution", () => {
 
   test("POSIX honors XDG_CONFIG_HOME when set; falls back to ~/.config when unset", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
-    process.env["XDG_CONFIG_HOME"] = "/custom/xdg";
+    vi.stubEnv("XDG_CONFIG_HOME", "/custom/xdg");
     expect(userConfigDir()).toBe("/custom/xdg");
-    delete process.env["XDG_CONFIG_HOME"];
+    vi.stubEnv("XDG_CONFIG_HOME", "");
     expect(userConfigDir().endsWith(".config") || userConfigDir().endsWith(".config\\")).toBe(true);
   });
 
   test("POSIX treats empty XDG_CONFIG_HOME as unset (per the XDG spec)", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
-    process.env["XDG_CONFIG_HOME"] = "";
+    vi.stubEnv("XDG_CONFIG_HOME", "");
     expect(userConfigDir()).not.toBe("");
     expect(userConfigDir().endsWith(".config")).toBe(true);
   });
 
   test("POSIX ignores a relative XDG_CONFIG_HOME (spec: only absolute paths are valid)", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
-    process.env["XDG_CONFIG_HOME"] = "relative/.config";
+    vi.stubEnv("XDG_CONFIG_HOME", "relative/.config");
     expect(userConfigDir()).not.toBe("relative/.config");
     expect(userConfigDir().endsWith(".config")).toBe(true);
   });
 
   test("Windows uses APPDATA when set; falls back to ~/AppData/Roaming when not", () => {
     Object.defineProperty(process, "platform", { value: "win32" });
-    process.env["APPDATA"] = "C:\\Users\\dev\\AppData\\Roaming";
+    vi.stubEnv("APPDATA", "C:\\Users\\dev\\AppData\\Roaming");
     expect(userConfigDir()).toBe("C:\\Users\\dev\\AppData\\Roaming");
-    delete process.env["APPDATA"];
+    vi.stubEnv("APPDATA", "");
     expect(userConfigDir()).toMatch(/[\\/]AppData[\\/]Roaming$/);
+  });
+
+  test("an absolute SHIP_DB_PATH / SHIP_RUNS_DIR override wins over the default", () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.stubEnv("XDG_CONFIG_HOME", "/abs/xdg");
+    vi.stubEnv("SHIP_DB_PATH", "/abs/store/state.db");
+    vi.stubEnv("SHIP_RUNS_DIR", "/abs/store/runs");
+    expect(resolveDbPath()).toBe("/abs/store/state.db");
+    expect(resolveRunsDir()).toBe("/abs/store/runs");
+  });
+
+  test("a relative SHIP_DB_PATH / SHIP_RUNS_DIR is rejected — falls back to the default", () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.stubEnv("XDG_CONFIG_HOME", "/abs/xdg");
+    vi.stubEnv("SHIP_DB_PATH", "relative/state.db");
+    vi.stubEnv("SHIP_RUNS_DIR", "./runs");
+    expect(resolveDbPath()).toBe("/abs/xdg/ship/state.db");
+    expect(resolveRunsDir()).toBe("/abs/xdg/ship/runs");
+  });
+
+  test("an empty SHIP_DB_PATH / SHIP_RUNS_DIR is treated as unset", () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.stubEnv("XDG_CONFIG_HOME", "/abs/xdg");
+    vi.stubEnv("SHIP_DB_PATH", "");
+    vi.stubEnv("SHIP_RUNS_DIR", "");
+    expect(resolveDbPath()).toBe("/abs/xdg/ship/state.db");
+    expect(resolveRunsDir()).toBe("/abs/xdg/ship/runs");
   });
 });
 

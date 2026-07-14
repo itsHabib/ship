@@ -11,12 +11,14 @@
  * substitutes `FakeCursorRunner` so the test harness can spawn the
  * real binary without burning real model quota.
  *
- * Path resolution mirrors the human-facing CLI binary: env-var
- * override (`SHIP_DB_PATH` / `SHIP_RUNS_DIR`), falling back to
- * `<UserConfigDir>/ship/{state.db, runs/}`. The CLI's `userConfigDir`
- * helper is intentionally NOT consumed here — that would invert the
- * dep direction. We re-derive the same XDG / APPDATA lookup inline;
- * tests pin the equivalence.
+ * Path resolution mirrors the human-facing CLI binary: an ABSOLUTE
+ * env-var override (`SHIP_DB_PATH` / `SHIP_RUNS_DIR`) wins, else it
+ * falls back to `<UserConfigDir>/ship/{state.db, runs/}`. A relative /
+ * empty env value is rejected identically on both surfaces so one
+ * machine never splits into two stores. The resolvers live in
+ * `./store-paths.ts` (re-derived from the CLI's shape, not imported —
+ * that would invert the dep direction); an L1 parity matrix pins the
+ * equivalence.
  */
 
 import type { AgentRunner } from "@ship/cursor-runner";
@@ -25,11 +27,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createDefaultShipService, ORPHAN_RESUME_STALENESS_MS } from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createLogger } from "@ship/logger";
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
 
 import { createMcpDriverServiceFactory } from "./driver-service.js";
 import { buildServer } from "./server.js";
+import { resolveDbPath, resolveRunsDir } from "./store-paths.js";
 
 async function main(): Promise<void> {
   const logger = createLogger({ stream: process.stderr });
@@ -46,8 +47,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const dbPath = process.env["SHIP_DB_PATH"] ?? join(userConfigDir(), "ship", "state.db");
-  const runsDir = process.env["SHIP_RUNS_DIR"] ?? join(userConfigDir(), "ship", "runs");
+  const dbPath = resolveDbPath();
+  const runsDir = resolveRunsDir();
 
   const opts: Parameters<typeof createDefaultShipService>[0] = {
     dbPath,
@@ -102,23 +103,6 @@ function startOrphanResweep(
       });
   }, ORPHAN_RESUME_STALENESS_MS);
   timer.unref();
-}
-
-/**
- * Mirrors `@ship/cli/src/service.ts#userConfigDir` — duplicated rather
- * than imported to avoid an mcp-server → cli dep. POSIX honors
- * `XDG_CONFIG_HOME` (only when absolute, per the XDG spec); Windows
- * reads `%APPDATA%`.
- */
-function userConfigDir(): string {
-  if (process.platform === "win32") {
-    const appData = process.env["APPDATA"];
-    if (appData !== undefined && appData !== "") return appData;
-    return join(homedir(), "AppData", "Roaming");
-  }
-  const xdg = process.env["XDG_CONFIG_HOME"];
-  if (xdg !== undefined && xdg !== "" && isAbsolute(xdg)) return xdg;
-  return join(homedir(), ".config");
 }
 
 main().catch((err: unknown) => {
