@@ -741,6 +741,46 @@ batches:
     expect(resolveRepoRoot(manifestPath)).toBe(repoRoot);
   });
 
+  test("resolveRepoRoot resolves the main root from a manifest inside a linked worktree", () => {
+    // A real linked worktree: `.git` is a FILE pointing at the admin dir, which
+    // carries a `commondir` back to the main `.git`. Reading the manifest from
+    // inside the worktree must still resolve to the main root — otherwise the
+    // worktree base doubles (…/feat-a/.claude/worktrees/feat-a).
+    const linkedWt = join(repoRoot, ".claude", "worktrees", "feat-a");
+    const adminDir = join(repoRoot, ".git", "worktrees", "feat-a");
+    mkdirSync(adminDir, { recursive: true });
+    writeFileSync(join(adminDir, "commondir"), "../..\n");
+    writeFileSync(join(linkedWt, ".git"), `gitdir: ${adminDir}\n`);
+    const wtDocsDir = join(linkedWt, "docs", "features", "x");
+    mkdirSync(wtDocsDir, { recursive: true });
+    const wtManifest = join(wtDocsDir, "driver.md");
+    writeFileSync(wtManifest, "# manifest\n");
+    expect(resolveRepoRoot(wtManifest)).toBe(repoRoot);
+  });
+
+  test("resolveRepoRoot treats a .git file without commondir as the working-tree root", () => {
+    // Not every `.git` file is a linked worktree: `git init --separate-git-dir`
+    // (and submodules) point at a git dir that has NO `commondir`. There the
+    // working tree holding the `.git` file IS the repo root — don't throw
+    // chasing an absent pointer.
+    const sepRoot = join(repoRoot, "separate-checkout");
+    const sepGitDir = join(repoRoot, "separate-gitdir");
+    mkdirSync(sepRoot, { recursive: true });
+    mkdirSync(sepGitDir, { recursive: true });
+    writeFileSync(join(sepRoot, ".git"), `gitdir: ${sepGitDir}\n`);
+    const sepManifest = join(sepRoot, "driver.md");
+    writeFileSync(sepManifest, "# manifest\n");
+    expect(resolveRepoRoot(sepManifest)).toBe(sepRoot);
+  });
+
+  test("resolveRepoRoot throws on a malformed worktree pointer", () => {
+    const linkedWt = join(repoRoot, ".claude", "worktrees", "feat-b");
+    writeFileSync(join(linkedWt, ".git"), "not-a-gitdir-pointer\n");
+    const wtManifest = join(linkedWt, "driver.md");
+    writeFileSync(wtManifest, "# manifest\n");
+    expect(() => resolveRepoRoot(wtManifest)).toThrow(/malformed git worktree pointer/);
+  });
+
   test("sticky terminal run returns immediately", async () => {
     const store = createStore({ dbPath: ":memory:" });
     const runId = newDriverRunId();
