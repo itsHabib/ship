@@ -27,6 +27,9 @@ export {
 export { ImportManifestError, importManifest } from "./import.js";
 export type { ImportManifestResult } from "./import.js";
 
+export { DispatchPolicyError, loadDispatchPolicy } from "./policy.js";
+export type { DispatchPolicy, LoadedDispatchPolicy, PolicyRuntime } from "./policy.js";
+
 export { renderDriverRun } from "./render.js";
 
 export {

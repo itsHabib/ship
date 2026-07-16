@@ -3,7 +3,7 @@
 import type { Store } from "@ship/store";
 
 import { createStore, newDriverRunId } from "@ship/store";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -429,5 +429,98 @@ describe("importManifest provider threading", () => {
     expect(() => importManifest(store, path)).toThrow(/claude-cloud-task/);
     expect(() => importManifest(store, path)).toThrow(/requires branch_name/);
     rmSync(dir, { force: true, recursive: true });
+  });
+});
+
+describe("importManifest dispatch policy", () => {
+  let store: Store;
+  let repoRoot: string;
+
+  beforeEach(() => {
+    store = createStore({ dbPath: ":memory:" });
+    repoRoot = mkdtempSync(join(tmpdir(), "ship-import-policy-"));
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(repoRoot, { force: true, recursive: true });
+  });
+
+  function writeManifest(streams: string, extra = ""): string {
+    const path = join(repoRoot, "driver.md");
+    writeFileSync(
+      path,
+      [
+        "---",
+        "driver_version: 1",
+        "generated_at: 2026-07-15T00:00:00Z",
+        "generated_by: test",
+        "source:",
+        "  project: ship",
+        "  phase: policy-test",
+        "repo: ship",
+        "repo_url: https://github.com/example/ship",
+        ...(extra !== "" ? [extra] : []),
+        "batches:",
+        "  - id: 1",
+        "    depends_on: []",
+        "    streams:",
+        streams,
+        "---",
+      ].join("\n"),
+      "utf8",
+    );
+    return path;
+  }
+
+  function writePolicy(policy: unknown): void {
+    writeFileSync(join(repoRoot, ".ship.json"), JSON.stringify(policy), "utf8");
+  }
+
+  it("fills provider from the policy default when no manifest field sets it", () => {
+    writePolicy({ provider: { default: "claude" } });
+    const path = writeManifest("      - spec_path: docs/a.md\n        branch_name: feat-a");
+
+    const { run } = importManifest(store, path);
+    expect(run.batches[0]?.streams[0]?.provider).toBe("claude");
+  });
+
+  it("lets an explicit manifest provider beat the policy default", () => {
+    writePolicy({ provider: { default: "claude" } });
+    const path = writeManifest(
+      "      - spec_path: docs/a.md\n        provider: codex\n        runtime: local",
+    );
+
+    const { run } = importManifest(store, path);
+    expect(run.batches[0]?.streams[0]?.provider).toBe("codex");
+  });
+
+  it("rejects a cloud stream at import when the policy allows local only", () => {
+    writePolicy({ runtime: { allow: ["local"] } });
+    const path = writeManifest(
+      "      - spec_path: docs/a.md\n        task_slug: cloud-task\n        branch_name: feat-a\n        runtime: cloud",
+    );
+
+    expect(() => importManifest(store, path)).toThrow(ImportManifestError);
+    expect(() => importManifest(store, path)).toThrow(/cloud-task/);
+    expect(() => importManifest(store, path)).toThrow(/\.ship\.json/);
+    expect(() => importManifest(store, path)).toThrow(/runtime 'cloud' is not permitted/);
+  });
+
+  it("throws a hard error on a malformed policy file before inserting", () => {
+    writeFileSync(join(repoRoot, ".ship.json"), "{ broken", "utf8");
+    const path = writeManifest("      - spec_path: docs/a.md\n        branch_name: feat-a");
+
+    expect(() => importManifest(store, path)).toThrow(/invalid dispatch policy/);
+    expect(store.listDriverRuns({ limit: 50 })).toHaveLength(0);
+  });
+
+  it("imports unchanged when no policy file is present", () => {
+    const path = writeManifest(
+      "      - spec_path: docs/a.md\n        branch_name: feat-a\n        runtime: cloud",
+    );
+    const { run } = importManifest(store, path);
+    expect(run.batches[0]?.streams[0]?.runtime).toBe("cloud");
   });
 });

@@ -793,6 +793,46 @@ batches:
     store.close();
   });
 
+  test("policy ceiling rejects a store-resident cloud stream at pre-flight", async () => {
+    // Import with no policy so the cloud stream lands in the store, then drop a
+    // `.ship.json` that forbids cloud — the dispatch-time re-check must catch it.
+    const manifest = join(repoRoot, "policy-preflight.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-15T05:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: policy-preflight
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const fake = createFakeShipPort([]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    writeFileSync(join(repoRoot, ".ship.json"), JSON.stringify({ runtime: { allow: ["local"] } }));
+
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /runtime 'cloud' is not permitted/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    store.close();
+  });
+
   test("all skipped streams yields done", async () => {
     const manifest = join(repoRoot, "skipped.driver.md");
     writeFileSync(
@@ -1961,6 +2001,45 @@ batches:
     );
     expect(input.cloud?.repos[0]?.startingRef).toBe("feat-a");
     expect(input.cloud?.workOnCurrentBranch).toBe(true);
+  });
+
+  test("refuses the flip when the policy forbids cloud", async () => {
+    const manifestPath = join(repoRoot, "driver.md");
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-15T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: flip-forbidden
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/a.md
+        branch_name: feat-a
+        runtime: local
+        status: pending
+---
+`,
+    );
+    const fake = createFakeShipPort([]);
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+    const streamId = imported.run.batches[0]?.streams[0]?.id;
+    expect(streamId).toBeDefined();
+
+    // Local import succeeds; the policy then forbids the cloud flip.
+    writeFileSync(join(repoRoot, ".ship.json"), JSON.stringify({ runtime: { allow: ["local"] } }));
+
+    await expect(
+      flipStreamToCloud(store, fake.port, imported.run.id, streamId!, () => 0),
+    ).rejects.toThrow(/flip-cloud.*runtime 'cloud' is not permitted/);
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
   });
 });
 
