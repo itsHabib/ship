@@ -973,6 +973,8 @@ export async function flipStreamToCloud(
   }
   // Refuse the flip when the repo policy forbids cloud — without this the
   // import-time guard has a hole (this verb mutates runtime after import).
+  // Provider ceiling is NOT re-checked here: the flip changes runtime, not
+  // provider; the next tick's validatePreFlight catches provider violations.
   const policy = loadDispatchPolicy(dirname(run.manifestPath));
   const cloudViolation = runtimeCeilingViolation(policy, "cloud");
   if (cloudViolation !== undefined) {

@@ -20,6 +20,9 @@ export type PolicyRuntime = z.infer<typeof runtimeSchema>;
 
 // Hardcoded fallbacks that stand in when neither a stream, a manifest default,
 // nor a policy default sets a value — the bottom of the precedence ladder.
+// PROVIDER_FALLBACK must match engine.ts DEFAULT_DISPATCH_PROVIDER (the
+// effective provider when a stream carries none); they can't share a constant
+// because policy imports nothing from engine.
 const RUNTIME_FALLBACK: PolicyRuntime = "local";
 const PROVIDER_FALLBACK: AgentProvider = "cursor";
 

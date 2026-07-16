@@ -833,6 +833,51 @@ batches:
     store.close();
   });
 
+  test("policy ceiling rejects a store-resident stream by provider at pre-flight", async () => {
+    // Import with no policy so the claude-provider stream lands in the store,
+    // then drop a `.ship.json` that only allows cursor — the dispatch-time
+    // re-check must catch the provider violation too.
+    const manifest = join(repoRoot, "policy-provider-preflight.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-15T06:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: policy-provider-preflight
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: cloud
+        provider: claude
+        status: pending
+---
+`,
+    );
+    const fake = createFakeShipPort([]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    writeFileSync(
+      join(repoRoot, ".ship.json"),
+      JSON.stringify({ provider: { allow: ["cursor"] } }),
+    );
+
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /provider 'claude' is not permitted/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    store.close();
+  });
+
   test("all skipped streams yields done", async () => {
     const manifest = join(repoRoot, "skipped.driver.md");
     writeFileSync(
