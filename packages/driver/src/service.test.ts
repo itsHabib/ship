@@ -1,6 +1,6 @@
 /** Service surface and error-path coverage. */
 
-import { createStore } from "@ship/store";
+import { createStore, newDriverRunId } from "@ship/store";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -251,6 +251,34 @@ batches:
     const imported = driver.importManifest(manifestPath);
     const result = await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
     expect(result.status).toBe("awaiting_judgment");
+    store.close();
+  });
+
+  test("deleteDriverRun returns the deleted run and removes it from the store", () => {
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: createFakeShipPort([]).port, store });
+    const runId = newDriverRunId();
+    store.insertDriverRun({
+      batches: [],
+      id: runId,
+      manifestPath: join(tmpDir, "driver.md"),
+      phase: "svc",
+      project: "ship",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "pending",
+    });
+
+    const deleted = driver.deleteDriverRun(runId);
+    expect(deleted.id).toBe(runId);
+    expect(store.getDriverRun(runId)).toBeNull();
+    store.close();
+  });
+
+  test("deleteDriverRun throws DriverRunNotFoundEngineError for an unknown id", () => {
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: createFakeShipPort([]).port, store });
+    expect(() => driver.deleteDriverRun(newDriverRunId())).toThrow(DriverRunNotFoundEngineError);
     store.close();
   });
 });

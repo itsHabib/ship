@@ -93,6 +93,7 @@ export interface DriverRunOps {
   claimTick: (id: string, input: ClaimTickInput) => boolean;
   updateBatch: (id: string, patch: UpdateDriverBatchInput) => DriverBatch;
   updateStream: (id: string, patch: UpdateDriverStreamInput) => DriverStream;
+  deleteById: (id: string) => boolean;
 }
 
 interface DriverRunRow {
@@ -146,6 +147,7 @@ export function createDriverRunOps(db: Db, clock: () => string): DriverRunOps {
   const selectBatchRunIdStmt = db.prepare<[string], { driver_run_id: string }>(
     "SELECT driver_run_id FROM driver_batches WHERE id = ?",
   );
+  const deleteByIdStmt = db.prepare(`DELETE FROM driver_runs WHERE id = ?`);
 
   function insert(input: InsertDriverRunInput): DriverRun {
     const txn = db.transaction((): DriverRun => {
@@ -282,8 +284,15 @@ export function createDriverRunOps(db: Db, clock: () => string): DriverRunOps {
     return streams.update(id, patch);
   }
 
+  // `ON DELETE CASCADE` (0005) plus `foreign_keys = ON` (db.ts) removes the
+  // run's batches, streams, escalations, and review artifacts in one statement.
+  function deleteById(id: string): boolean {
+    return deleteByIdStmt.run(id).changes > 0;
+  }
+
   return {
     claimTick,
+    deleteById,
     get,
     insert,
     list,

@@ -39,6 +39,7 @@ export interface DriverService {
   address(driverRunId: string, opts: AddressOpts): Promise<DriverRun>;
   render(driverRunId: string): string;
   getDriverRun(id: string): DriverRun | null;
+  deleteDriverRun(id: string): DriverRun;
   listDriverRuns(filter?: {
     repo?: string;
     status?: DriverRunStatus[];
@@ -78,6 +79,19 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
       return addressFn({ clock: clock ?? Date.now, gh, ship, store }, driverRunId, addressOpts);
     },
     cancel: (driverRunId) => cancelRun(store, ship, driverRunId, now()),
+    deleteDriverRun: (id) => {
+      // Fetch first so the caller can report the removed run's identity.
+      const run = store.getDriverRun(id);
+      if (run === null) {
+        throw new DriverRunNotFoundEngineError(id);
+      }
+      // A false return means a concurrent rm won the get→delete gap; report
+      // not-found rather than a phantom success for a run we didn't remove.
+      if (!store.deleteDriverRun(id)) {
+        throw new DriverRunNotFoundEngineError(id);
+      }
+      return run;
+    },
     flipStreamToCloud: (driverRunId, streamId) =>
       flipStreamToCloud(store, ship, driverRunId, streamId, clock ?? Date.now),
     decide: (driverRunId, streamId, decision) => decideFn(store, driverRunId, streamId, decision),

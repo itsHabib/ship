@@ -227,6 +227,29 @@ describe("driver runs (via createStore)", () => {
     );
   });
 
+  test("deleteDriverRun removes the run and cascades its batches + streams", () => {
+    const runId = seedRun();
+    const seeded = store.getDriverRun(runId);
+    const batchId = seeded?.batches[0]?.id;
+    const streamId = seeded?.batches[0]?.streams[0]?.id;
+    expect(batchId).toBeDefined();
+    expect(streamId).toBeDefined();
+
+    expect(store.deleteDriverRun(runId)).toBe(true);
+    expect(store.getDriverRun(runId)).toBeNull();
+    // Children cascaded: their update paths now report the rows gone.
+    expect(() => store.updateDriverBatch(batchId!, { status: "done" })).toThrow(
+      DriverBatchNotFoundError,
+    );
+    expect(() => store.updateDriverStream(streamId!, { status: "failed" })).toThrow(
+      DriverStreamNotFoundError,
+    );
+  });
+
+  test("deleteDriverRun returns false for an unknown id", () => {
+    expect(store.deleteDriverRun(newDriverRunId())).toBe(false);
+  });
+
   test("listDriverRuns filters by repo and status", () => {
     const runId = seedRun();
     store.updateDriverRunStatus(runId, "done");
