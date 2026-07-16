@@ -758,6 +758,21 @@ batches:
     expect(resolveRepoRoot(wtManifest)).toBe(repoRoot);
   });
 
+  test("resolveRepoRoot treats a .git file without commondir as the working-tree root", () => {
+    // Not every `.git` file is a linked worktree: `git init --separate-git-dir`
+    // (and submodules) point at a git dir that has NO `commondir`. There the
+    // working tree holding the `.git` file IS the repo root — don't throw
+    // chasing an absent pointer.
+    const sepRoot = join(repoRoot, "separate-checkout");
+    const sepGitDir = join(repoRoot, "separate-gitdir");
+    mkdirSync(sepRoot, { recursive: true });
+    mkdirSync(sepGitDir, { recursive: true });
+    writeFileSync(join(sepRoot, ".git"), `gitdir: ${sepGitDir}\n`);
+    const sepManifest = join(sepRoot, "driver.md");
+    writeFileSync(sepManifest, "# manifest\n");
+    expect(resolveRepoRoot(sepManifest)).toBe(sepRoot);
+  });
+
   test("resolveRepoRoot throws on a malformed worktree pointer", () => {
     const linkedWt = join(repoRoot, ".claude", "worktrees", "feat-b");
     writeFileSync(join(linkedWt, ".git"), "not-a-gitdir-pointer\n");
