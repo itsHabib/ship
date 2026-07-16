@@ -557,13 +557,32 @@ function couldDispatchThisTick(
 export function resolveRepoRoot(manifestPath: string): string {
   let dir = resolve(dirname(manifestPath));
   for (;;) {
-    if (existsSync(join(dir, ".git"))) return dir;
+    const gitPath = join(dir, ".git");
+    // A linked worktree's `.git` is a *file* pointing back to the main repo. Its
+    // `.claude/worktrees/` lives under the main worktree root, not here — so
+    // resolve through the pointer, else a manifest read from inside a worktree
+    // doubles the path (…/<branch>/.claude/worktrees/<branch>).
+    if (existsSync(gitPath))
+      return statSync(gitPath).isDirectory() ? dir : mainWorktreeRoot(gitPath);
     const parent = dirname(dir);
     if (parent === dir) {
       throw new PreconditionError(`no .git ancestor found for manifest path ${manifestPath}`);
     }
     dir = parent;
   }
+}
+
+// Resolve the main worktree root from a linked worktree's `.git` file
+// (`gitdir: <repo>/.git/worktrees/<name>`) via its `commondir` pointer.
+function mainWorktreeRoot(gitFilePath: string): string {
+  const pointer = readFileSync(gitFilePath, "utf8").trim();
+  const gitdir = pointer.startsWith("gitdir:") ? pointer.slice("gitdir:".length).trim() : "";
+  if (gitdir === "") {
+    throw new PreconditionError(`malformed git worktree pointer at ${gitFilePath}`);
+  }
+  const adminDir = resolve(dirname(gitFilePath), gitdir);
+  const commonDir = resolve(adminDir, readFileSync(join(adminDir, "commondir"), "utf8").trim());
+  return dirname(commonDir);
 }
 
 export function resolveDocPath(repoRoot: string, specPath: string): string {
