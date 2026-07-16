@@ -11,7 +11,7 @@ import { agentProviderSchema } from "@ship/workflow";
 import { type Document, LineCounter, type ParsedNode, parseDocument } from "yaml";
 import { z } from "zod";
 
-const runtimeSchema = z.enum(["local", "cloud", "rooms"]);
+export const runtimeSchema = z.enum(["local", "cloud", "rooms"]);
 
 const batchStatusSchema = z.enum(["pending", "running", "in_progress", "done", "failed"]);
 

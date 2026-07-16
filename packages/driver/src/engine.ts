@@ -64,6 +64,12 @@ import {
 } from "./judgment.js";
 import { createNotifyPort, type NotifyPort } from "./notify.js";
 import {
+  loadDispatchPolicy,
+  type LoadedDispatchPolicy,
+  providerCeilingViolation,
+  runtimeCeilingViolation,
+} from "./policy.js";
+import {
   canonicalReviewFindingsSha256,
   MAX_REVIEW_FINDINGS_BYTES,
   parseReviewFindings,
@@ -497,7 +503,11 @@ function isStickyTerminal(status: DriverRun["status"]): boolean {
 function validatePreFlight(run: DriverRun, opts: ResolvedRunOpts): void {
   const repoRoot = resolveRepoRoot(run.manifestPath);
   const repoUrl = extractRepoUrl(run);
-  const missing = collectMissingWorktrees(run, opts, repoRoot, repoUrl);
+  // Re-load the repo policy from the run's manifest path so a store-resident
+  // stream that reached the store by any path still cannot dispatch past the
+  // ceiling (import-time guard is not the only entry point).
+  const policy = loadDispatchPolicy(dirname(run.manifestPath));
+  const missing = collectMissingWorktrees(run, opts, repoRoot, repoUrl, policy);
   if (missing.length === 0) return;
   const lines = missing.map((path) => `${path} — create with /worktree-add <branch>`);
   throw new PreconditionError(`missing worktree directories:\n${lines.join("\n")}`);
@@ -508,12 +518,13 @@ function collectMissingWorktrees(
   opts: ResolvedRunOpts,
   repoRoot: string,
   repoUrl: string | undefined,
+  policy: LoadedDispatchPolicy,
 ): string[] {
   const missing: string[] = [];
   for (const batch of run.batches) {
     if (!couldDispatchThisTick(batch, run.batches, opts.batch)) continue;
     for (const stream of batch.streams) {
-      collectStreamPreflightErrors(stream, repoRoot, repoUrl, missing);
+      collectStreamPreflightErrors(stream, repoRoot, repoUrl, policy, missing);
     }
   }
   return missing;
@@ -523,9 +534,11 @@ function collectStreamPreflightErrors(
   stream: DriverStream,
   repoRoot: string,
   repoUrl: string | undefined,
+  policy: LoadedDispatchPolicy,
   missing: string[],
 ): void {
   if (stream.status !== "pending") return;
+  assertStreamWithinPolicy(stream, policy);
   if (stream.runtime === "rooms") {
     throw new PreconditionError(
       `rooms stream ${stream.id} is not supported by the engine yet — dispatch rooms work via ship.ship directly`,
@@ -542,6 +555,20 @@ function collectStreamPreflightErrors(
   }
   const worktreePath = join(repoRoot, ".claude", "worktrees", stream.branch);
   if (!existsSync(worktreePath)) missing.push(worktreePath);
+}
+
+// The stored runtime/provider re-checked against the repo ceiling at dispatch
+// time — a stream that slipped past import (edited store, older row) must not
+// dispatch past the allowlist.
+function assertStreamWithinPolicy(stream: DriverStream, policy: LoadedDispatchPolicy): void {
+  const runtimeViolation = runtimeCeilingViolation(policy, stream.runtime);
+  if (runtimeViolation !== undefined) {
+    throw new PreconditionError(`stream ${stream.id}: ${runtimeViolation}`);
+  }
+  const providerViolation = providerCeilingViolation(policy, stream.provider);
+  if (providerViolation !== undefined) {
+    throw new PreconditionError(`stream ${stream.id}: ${providerViolation}`);
+  }
 }
 
 function couldDispatchThisTick(
@@ -973,6 +1000,15 @@ export async function flipStreamToCloud(
   const stream = allStreams(run).find((s) => s.id === streamId);
   if (stream === undefined) {
     throw new PreconditionError(`stream not found: ${streamId}`);
+  }
+  // Refuse the flip when the repo policy forbids cloud — without this the
+  // import-time guard has a hole (this verb mutates runtime after import).
+  // Provider ceiling is NOT re-checked here: the flip changes runtime, not
+  // provider; the next tick's validatePreFlight catches provider violations.
+  const policy = loadDispatchPolicy(dirname(run.manifestPath));
+  const cloudViolation = runtimeCeilingViolation(policy, "cloud");
+  if (cloudViolation !== undefined) {
+    throw new PreconditionError(`flip-cloud for stream ${streamId}: ${cloudViolation}`);
   }
   const branch = assertFlipEligibleStream(stream, run);
 

@@ -9,14 +9,22 @@ import type { AgentProvider } from "@ship/workflow";
 
 import { newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 import type { ManifestBatch, ManifestParseError, ManifestStream } from "./manifest.js";
+import type { LoadedDispatchPolicy, PolicyRuntime } from "./policy.js";
 
 import { parseManifest } from "./manifest.js";
 import {
+  loadDispatchPolicy,
+  providerCeilingViolation,
+  resolveDispatchProvider,
+  resolveDispatchRuntime,
+  runtimeCeilingViolation,
+} from "./policy.js";
+import {
   manifestBatchStatusToStore,
   manifestStatusToStore,
-  resolveStreamProvider,
   resolveStreamTier,
 } from "./status-mapping.js";
 
@@ -58,7 +66,11 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
   const { manifest, warnings } = parsed;
   const project = manifest.source.project;
   const phase = manifest.source.phase;
-  const warningExtras = warnings.length > 0 ? { warnings } : {};
+  // Load the repo policy fail-closed before any early return: a broken
+  // `.ship.json` must error even on a re-import, never silently pass through.
+  const policy = loadDispatchPolicy(dirname(manifestPath));
+  const allWarnings = [...warnings, ...policy.warnings];
+  const warningExtras = allWarnings.length > 0 ? { warnings: allWarnings } : {};
   const existing = findExistingRun(store, manifest.repo, project, phase, manifest.generated_at);
   if (existing !== undefined) {
     return { alreadyImported: true, run: existing, ...warningExtras };
@@ -68,6 +80,7 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
     manifest.batches,
     manifest.default_runtime,
     manifest.default_provider,
+    policy,
   );
   if (providerErrors.length > 0) {
     throw new ImportManifestError(providerErrors);
@@ -80,6 +93,7 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
       defaultModelId: manifest.default_model_id,
       defaultProvider: manifest.default_provider,
       defaultRuntime: manifest.default_runtime,
+      policy,
     }),
   );
   const runStatus = deriveRunStatus(batches.map((b) => b.status));
@@ -102,15 +116,36 @@ function collectProviderValidationErrors(
   batches: ManifestBatch[],
   defaultRuntime: ManifestStream["runtime"] | undefined,
   defaultProvider: AgentProvider | undefined,
+  policy: LoadedDispatchPolicy,
 ): ManifestParseError[] {
   const errors: ManifestParseError[] = [];
   for (const batch of batches) {
     for (const stream of batch.streams) {
-      const runtime = stream.runtime ?? defaultRuntime ?? "local";
-      const provider = resolveStreamProvider(stream, defaultProvider).provider;
+      const runtime = resolveDispatchRuntime(policy, stream.runtime, defaultRuntime);
+      const provider = resolveDispatchProvider(policy, stream.provider, defaultProvider);
       const streamError = validateStreamProviderRules(stream, runtime, provider);
       if (streamError !== undefined) errors.push(streamError);
+      errors.push(...collectStreamCeilingErrors(policy, stream, runtime, provider));
     }
+  }
+  return errors;
+}
+
+function collectStreamCeilingErrors(
+  policy: LoadedDispatchPolicy,
+  stream: ManifestStream,
+  runtime: PolicyRuntime,
+  provider: AgentProvider | undefined,
+): ManifestParseError[] {
+  const errors: ManifestParseError[] = [];
+  const label = streamLabel(stream);
+  const runtimeViolation = runtimeCeilingViolation(policy, runtime);
+  if (runtimeViolation !== undefined) {
+    errors.push({ message: `stream ${label}: ${runtimeViolation}` });
+  }
+  const providerViolation = providerCeilingViolation(policy, provider);
+  if (providerViolation !== undefined) {
+    errors.push({ message: `stream ${label}: ${providerViolation}` });
   }
   return errors;
 }
@@ -181,6 +216,7 @@ interface ManifestStreamDefaults {
   defaultModelId: ManifestStream["model_id"] | undefined;
   defaultEffort: ManifestStream["effort"] | undefined;
   defaultProvider: AgentProvider | undefined;
+  policy: LoadedDispatchPolicy;
 }
 
 function buildBatchInput(
@@ -257,7 +293,7 @@ function buildStreamInput(
   modelTier?: ReturnType<typeof resolveStreamTier>["modelTier"];
   modelId?: ReturnType<typeof resolveStreamTier>["modelId"];
   effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
-  provider?: ReturnType<typeof resolveStreamProvider>["provider"];
+  provider?: AgentProvider;
 } {
   const candidate: {
     id: string;
@@ -278,11 +314,11 @@ function buildStreamInput(
     modelTier?: ReturnType<typeof resolveStreamTier>["modelTier"];
     modelId?: ReturnType<typeof resolveStreamTier>["modelId"];
     effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
-    provider?: ReturnType<typeof resolveStreamProvider>["provider"];
+    provider?: AgentProvider;
   } = {
     attempts: [],
     id: newDriverStreamId(),
-    runtime: stream.runtime ?? defaults.defaultRuntime ?? "local",
+    runtime: resolveDispatchRuntime(defaults.policy, stream.runtime, defaults.defaultRuntime),
     specPath: stream.spec_path,
     status: manifestStatusToStore(stream.status),
     streamIndex,
@@ -293,10 +329,23 @@ function buildStreamInput(
       defaults.defaultEffort,
       defaults.defaultModelId,
     ),
-    ...resolveStreamProvider(stream, defaults.defaultProvider),
+    ...policyProviderField(defaults, stream),
     ...optionalStreamInputFields(stream),
   };
   return candidate;
+}
+
+/** Resolved provider with the policy default folded in; omitted when unset. */
+function policyProviderField(
+  defaults: ManifestStreamDefaults,
+  stream: ManifestStream,
+): { provider?: AgentProvider } {
+  const provider = resolveDispatchProvider(
+    defaults.policy,
+    stream.provider,
+    defaults.defaultProvider,
+  );
+  return provider !== undefined ? { provider } : {};
 }
 
 /** The optional stream fields carried verbatim from manifest to store input. */
