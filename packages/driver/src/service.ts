@@ -80,13 +80,16 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
     },
     cancel: (driverRunId) => cancelRun(store, ship, driverRunId, now()),
     deleteDriverRun: (id) => {
-      // Return the run we removed so the caller can report its identity; a
-      // known-wedged run is not ticking, so the get→delete gap is immaterial.
+      // Fetch first so the caller can report the removed run's identity.
       const run = store.getDriverRun(id);
       if (run === null) {
         throw new DriverRunNotFoundEngineError(id);
       }
-      store.deleteDriverRun(id);
+      // A false return means a concurrent rm won the get→delete gap; report
+      // not-found rather than a phantom success for a run we didn't remove.
+      if (!store.deleteDriverRun(id)) {
+        throw new DriverRunNotFoundEngineError(id);
+      }
       return run;
     },
     flipStreamToCloud: (driverRunId, streamId) =>

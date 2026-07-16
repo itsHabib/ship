@@ -54,6 +54,25 @@ describe("ship driver", () => {
     expect(parsed.driverRunId).toMatch(/^drv_/);
   });
 
+  test("rm deletes a run, prints its identity JSON, and exits 0", async () => {
+    const layout = writeOneStreamManifest(h.repoRoot);
+    expect(await runDriver(["driver", "import", layout.manifestPath])).toBe(0);
+    const imported = JSON.parse(stdout.join("").trim()) as { driverRunId: string };
+    stdout.length = 0;
+
+    expect(await runDriver(["driver", "rm", imported.driverRunId])).toBe(0);
+    const parsed = JSON.parse(stdout.join("").trim()) as { driverRunId: string; streams: number };
+    expect(parsed.driverRunId).toBe(imported.driverRunId);
+    expect(parsed.streams).toBe(1);
+
+    // The run is gone — a follow-up status now exits non-zero.
+    expect(await runDriver(["driver", "status", imported.driverRunId, "--json"])).toBe(1);
+  });
+
+  test("rm exits 1 for an unknown driver run id", async () => {
+    expect(await runDriver(["driver", "rm", "drv_01J0000000000000000000000A"])).toBe(1);
+  });
+
   test("run auto-import prints manifest warnings", async () => {
     const layout = writeOneStreamManifest(h.repoRoot);
     const { readFileSync, writeFileSync } = await import("node:fs");

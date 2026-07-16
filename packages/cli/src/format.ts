@@ -212,9 +212,11 @@ export function formatDriverDecideOutput(run: DriverRun): string {
 /** JSON view for `driver rm` — the deleted run's identity + stream count. */
 export function formatDriverDeleteOutput(run: DriverRun): string {
   const streams = run.batches.reduce((total, batch) => total + batch.streams.length, 0);
-  // JSON.stringify omits undefined project/phase — no conditional needed.
+  // `driverRunId` (not `deleted`) to match the rest of the driver JSON surface —
+  // the `rm` command context already conveys the deletion. JSON.stringify omits
+  // undefined project/phase, so no conditional is needed.
   return JSON.stringify({
-    deleted: run.id,
+    driverRunId: run.id,
     repo: run.repo,
     project: run.project,
     phase: run.phase,
