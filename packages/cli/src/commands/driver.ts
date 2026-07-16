@@ -31,6 +31,7 @@ import { cliExit, InvalidArgumentError } from "../errors.js";
 import {
   formatDriverAssignOutput,
   formatDriverDecideOutput,
+  formatDriverDeleteOutput,
   formatDriverImportOutput,
   formatDriverListOutput,
   formatDriverRunOutput,
@@ -242,6 +243,16 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
       await runDriverActionAsync(async () => {
         const run = await factory().cancel(driverRunId);
         process.stdout.write(`${formatDriverDecideOutput(run)}\n`);
+      });
+    });
+
+  driver
+    .command("rm <driverRunId>")
+    .description("delete a driver run and its batches/streams (frees a wedged run for re-import)")
+    .action((driverRunId: string) => {
+      runDriverAction(() => {
+        const run = factory().deleteDriverRun(driverRunId);
+        process.stdout.write(`${formatDriverDeleteOutput(run)}\n`);
       });
     });
 

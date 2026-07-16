@@ -158,6 +158,8 @@ export interface Store {
   listDriverRuns: (filter: ListDriverRunsFilter) => DriverRun[];
   /** Flip a driver run's `status` and bump `updated_at`. */
   updateDriverRunStatus: (id: string, status: DriverRunStatus) => DriverRun;
+  /** Delete a driver run; cascades batches/streams/escalations/review-artifacts. Returns false for an unknown id. */
+  deleteDriverRun: (id: string) => boolean;
   /** Stamp `tick_started_at` and bump `updated_at` (engine lease entry). */
   stampDriverRunTickStarted: (id: string) => DriverRun;
   /** Stamp `tick_ended_at` and bump `updated_at` (engine lease exit). */
@@ -251,6 +253,7 @@ export function createStore(opts: CreateStoreOptions): Store {
         withStoreContentionGuard(() => driverRunOps.updateBatch(id, patch)),
       updateDriverRunStatus: (id, status) =>
         withStoreContentionGuard(() => driverRunOps.updateStatus(id, status)),
+      deleteDriverRun: (id) => withStoreContentionGuard(() => driverRunOps.deleteById(id)),
       stampDriverRunTickStarted: (id) =>
         withStoreContentionGuard(() => driverRunOps.stampTickStarted(id)),
       stampDriverRunTickEnded: (id) =>
