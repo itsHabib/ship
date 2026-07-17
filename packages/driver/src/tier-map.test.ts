@@ -75,6 +75,14 @@ describe("mapTierToDispatch", () => {
     });
   });
 
+  test("claude max effort on an unknown verbatim id degrades to high", () => {
+    const mapped = mapTierToDispatch("claude", undefined, "max", "claude-haiku-4-5");
+    expect(mapped.model).toBe("claude-haiku-4-5");
+    expect(mapped.modelParams).toEqual([{ id: "reasoning", value: "high" }]);
+    expect(mapped.degrade?.effortDegraded).toBe(true);
+    expect(mapped.degrade?.reason).toContain("unknown max-effort support");
+  });
+
   test("claude ultracode degrades to max effort", () => {
     const mapped = mapTierToDispatch("claude", "sonnet", "ultracode");
     expect(mapped.model).toBe("claude-sonnet-4-6");

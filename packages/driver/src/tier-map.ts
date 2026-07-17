@@ -200,7 +200,11 @@ function mapClaudeTier(
     degradeParts.push(
       "ultracode implies a multi-agent path; dispatching at max effort until engine support exists",
     );
-    modelParams = appendParam(modelParams, reasoningParam("max"));
+    const capped = capClaudeMaxEffort(model, "max");
+    if (capped.reason !== undefined) {
+      degradeParts.push(capped.reason);
+    }
+    modelParams = appendParam(modelParams, reasoningParam(capped.value));
     return buildDispatchResult(model, modelParams, {
       ...degrade,
       reason: degradeParts.join("; "),
@@ -208,7 +212,12 @@ function mapClaudeTier(
   }
 
   if (effortTier !== undefined) {
-    modelParams = appendParam(modelParams, reasoningParam(CLAUDE_REASONING_BY_EFFORT[effortTier]));
+    const capped = capClaudeMaxEffort(model, CLAUDE_REASONING_BY_EFFORT[effortTier]);
+    if (capped.reason !== undefined) {
+      degrade.effortDegraded = true;
+      degradeParts.push(capped.reason);
+    }
+    modelParams = appendParam(modelParams, reasoningParam(capped.value));
   }
 
   if (degradeParts.length === 0) {
@@ -217,6 +226,25 @@ function mapClaudeTier(
 
   degrade.reason = degradeParts.join("; ");
   return buildDispatchResult(model, modelParams, degrade);
+}
+
+// Models known to accept the SDK's model-specific "max" effort. Unlike xhigh
+// (which the SDK downgrades gracefully on models without it), an unsupported
+// max rejects the dispatch — so max is gated by id: known-capable ids keep it,
+// anything else (verbatim ids of unknown capability, the engine default)
+// degrades to high with a recorded reason.
+const CLAUDE_MAX_EFFORT_MODEL_IDS = new Set(["claude-opus-4-8", "claude-sonnet-4-6"]);
+
+function capClaudeMaxEffort(
+  model: string | undefined,
+  value: string,
+): { value: string; reason?: string } {
+  if (value !== "max") return { value };
+  if (model !== undefined && CLAUDE_MAX_EFFORT_MODEL_IDS.has(model)) return { value };
+  return {
+    reason: `model "${model ?? "engine default"}" has unknown max-effort support; dispatching at high`,
+    value: "high",
+  };
 }
 
 function unknownProviderDegrade(
