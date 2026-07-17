@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./dispatch-policy": {
+      "types": "./src/dispatch-policy.ts",
+      "default": "./src/dispatch-policy.ts"
     }
   },
   "scripts": {
@@ -24,7 +28,8 @@
     "@ship/logger": "workspace:*",
     "@ship/mcp": "workspace:*",
     "@ship/store": "workspace:*",
-    "@ship/workflow": "workspace:*"
+    "@ship/workflow": "workspace:*",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@fast-check/vitest": "0.3.0",

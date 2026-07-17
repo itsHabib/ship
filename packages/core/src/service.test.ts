@@ -18,6 +18,9 @@ import {
   DEFAULT_WORKFLOW_POLICY,
   isTerminal,
 } from "@ship/workflow";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -26,6 +29,7 @@ import type { DocSource } from "./doc-source/doc-source.js";
 import { ORPHAN_RESUME_STALENESS_MS } from "./cursor-runs/orphan-resume.js";
 import {
   CloudRunnerNotConfiguredError,
+  DispatchPolicyCeilingError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
   IllegalProviderRuntimeError,
@@ -2645,5 +2649,139 @@ describe("ShipService.resumeOrphanedRuns", () => {
     expect(store.listResumableCloudCursorRuns()).toHaveLength(0);
     expect((await service.getRun(workflowRunId))?.status).toBe("cancelled");
     store.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch policy ceiling enforcement
+// ---------------------------------------------------------------------------
+// These tests create real directories on disk because `loadDispatchPolicy`
+// uses Node's synchronous `existsSync`/`readFileSync` (not ShipFs). The
+// policy check fires before `prepareRun`, so the service never attempts to
+// read the task doc via the in-memory MemoryShipFs when a ceiling blocks the
+// dispatch. Each test cleans up its tmpdir in `afterEach`.
+// ---------------------------------------------------------------------------
+describe("ShipService — dispatch policy ceiling", () => {
+  let tmpdir: string;
+
+  beforeEach(() => {
+    tmpdir = mkdtempSync(join(osTmpdir(), "ship-policy-test-"));
+    // Place a `.git` marker so the policy walk-up stops at `tmpdir`.
+    mkdirSync(join(tmpdir, ".git"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpdir, { recursive: true, force: true });
+  });
+
+  test("runtime ceiling: cloud dispatch refused when allow is ['local']", async () => {
+    writeFileSync(join(tmpdir, ".ship.json"), JSON.stringify({ runtime: { allow: ["local"] } }));
+    const h = await createHarness();
+    try {
+      await expect(
+        h.service.startShip({
+          workdir: tmpdir,
+          repo: "ship",
+          docPath: "docs.md",
+          runtime: "cloud",
+        }),
+      ).rejects.toThrow(DispatchPolicyCeilingError);
+    } finally {
+      h.store.close();
+    }
+  });
+
+  test("runtime ceiling: error names the policy path and offending runtime", async () => {
+    writeFileSync(join(tmpdir, ".ship.json"), JSON.stringify({ runtime: { allow: ["local"] } }));
+    const h = await createHarness();
+    try {
+      const err = await h.service
+        .startShip({ workdir: tmpdir, repo: "ship", docPath: "docs.md", runtime: "cloud" })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(DispatchPolicyCeilingError);
+      const ceiling = err as DispatchPolicyCeilingError;
+      expect(ceiling.policyPath).toContain(".ship.json");
+      expect(ceiling.reason).toContain("cloud");
+      expect(ceiling.reason).toContain("local");
+    } finally {
+      h.store.close();
+    }
+  });
+
+  test("provider ceiling: cursor refused when allow is ['claude']", async () => {
+    writeFileSync(join(tmpdir, ".ship.json"), JSON.stringify({ provider: { allow: ["claude"] } }));
+    const h = await createHarness();
+    try {
+      // provider defaults to 'cursor' when omitted — ceiling blocks it
+      await expect(
+        h.service.startShip({ workdir: tmpdir, repo: "ship", docPath: "docs.md" }),
+      ).rejects.toThrow(DispatchPolicyCeilingError);
+    } finally {
+      h.store.close();
+    }
+  });
+
+  test("runtime ceiling: also enforced via ship() (sync path)", async () => {
+    writeFileSync(join(tmpdir, ".ship.json"), JSON.stringify({ runtime: { allow: ["cloud"] } }));
+    const h = await createHarness();
+    try {
+      // local runtime (default) blocked by runtime.allow: ["cloud"]
+      await expect(
+        h.service.ship({ workdir: tmpdir, repo: "ship", docPath: "docs.md" }),
+      ).rejects.toThrow(DispatchPolicyCeilingError);
+    } finally {
+      h.store.close();
+    }
+  });
+
+  test("absent .ship.json: passthrough — behavior byte-identical to today", async () => {
+    // No .ship.json in tmpdir; its .git marker bounds the policy walk-up so
+    // the test never traverses the real filesystem above it. The task doc is
+    // seeded into the memory FS at the tmpdir-based path the service resolves.
+    const h = await createHarness();
+    await h.fs.mkdir(tmpdir, { recursive: true });
+    await h.fs.writeFile(join(tmpdir, "docs.md"), "# Task\n\nDo the thing.");
+    h.cursor.enqueue({
+      events: [],
+      result: { status: "succeeded", durationMs: 0, branches: [] },
+    });
+    const out = await h.service.ship({ workdir: tmpdir, repo: "ship", docPath: "docs.md" });
+    expect(out.status).toBe("succeeded");
+    h.store.close();
+  });
+
+  test("policy discovery walks up from workdir (not manifest dir)", async () => {
+    // .ship.json lives in tmpdir; workdir is a subdir — walk-up must find it.
+    writeFileSync(join(tmpdir, ".ship.json"), JSON.stringify({ runtime: { allow: ["local"] } }));
+    const subdir = join(tmpdir, "workdir");
+    mkdirSync(subdir);
+    const h = await createHarness();
+    try {
+      await expect(
+        h.service.startShip({
+          workdir: subdir,
+          repo: "ship",
+          docPath: "docs.md",
+          runtime: "cloud",
+        }),
+      ).rejects.toThrow(DispatchPolicyCeilingError);
+    } finally {
+      h.store.close();
+    }
+  });
+
+  test("policy without ceiling: dispatch not blocked by default-only policy", async () => {
+    // A policy with only a `default` (no `allow` list) imposes no ceiling —
+    // dispatch must proceed past the ceiling check. The next failure is
+    // workdir/doc validation (WorkdirNotFoundError from MemoryShipFs), which
+    // confirms the ceiling check returned cleanly.
+    writeFileSync(join(tmpdir, ".ship.json"), JSON.stringify({ runtime: { default: "local" } }));
+    const h = await createHarness();
+    const err = await h.service
+      .startShip({ workdir: tmpdir, repo: "ship", docPath: "docs.md" })
+      .catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(DispatchPolicyCeilingError);
+    expect(err).toBeInstanceOf(WorkdirNotFoundError);
+    h.store.close();
   });
 });

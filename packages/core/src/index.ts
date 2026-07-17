@@ -40,6 +40,22 @@ export type {
 // just to type the filter argument.
 export type { ListRunsFilter } from "@ship/store";
 
+// --- dispatch policy ---
+export {
+  DispatchPolicyError,
+  loadDispatchPolicy,
+  providerCeilingViolation,
+  resolveDispatchProvider,
+  resolveDispatchRuntime,
+  runtimeCeilingViolation,
+} from "./dispatch-policy.js";
+export type {
+  DispatchPolicy,
+  DispatchPolicyConstraint,
+  LoadedDispatchPolicy,
+  PolicyRuntime,
+} from "./dispatch-policy.js";
+
 // --- errors ---
 export {
   ArtifactGoneError,
@@ -49,6 +65,7 @@ export {
   ArtifactTooLargeError,
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
+  DispatchPolicyCeilingError,
   DocNotFoundError,
   DocPathEscapesWorkdirError,
   IllegalProviderRuntimeError,

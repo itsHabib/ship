@@ -4,6 +4,25 @@
  * resolve `ship()` with `ShipOutput.status === "failed"` instead.
  */
 
+/**
+ * A resolved runtime or provider violates the repo's `.ship.json`
+ * ceiling — thrown by `ShipService.startShip` / `ShipService.ship`
+ * before any state is persisted. Distinct from `DispatchPolicyError`
+ * (malformed file) — the policy file is valid but this dispatch is
+ * outside its `allow` ceiling.
+ */
+export class DispatchPolicyCeilingError extends Error {
+  override readonly name = "DispatchPolicyCeilingError";
+  readonly policyPath: string;
+  readonly reason: string;
+
+  constructor(policyPath: string, reason: string) {
+    super(`dispatch refused: ${reason}`);
+    this.policyPath = policyPath;
+    this.reason = reason;
+  }
+}
+
 /** Constructed without `cloudCursor` when `input.runtime === "cloud"`. */
 export class CloudRunnerNotConfiguredError extends Error {
   override readonly name = "CloudRunnerNotConfiguredError";

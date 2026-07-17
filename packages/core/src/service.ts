@@ -61,6 +61,7 @@ import {
   newPhaseId,
   newWorkflowRunId,
 } from "@ship/workflow";
+import { realpathSync } from "node:fs";
 import { basename, resolve as resolvePathAbs } from "node:path";
 
 import type { EventWriter } from "./artifacts/ndjson.js";
@@ -91,6 +92,11 @@ import {
 import { DEFAULT_INACTIVITY_TIMEOUT_MS, runWithDurationCap } from "./cursor-runs/duration-cap.js";
 import { type EventPumpHandle, startEventPump } from "./cursor-runs/event-pump.js";
 import { selectStaleOrphanResumeCandidates } from "./cursor-runs/orphan-resume.js";
+import {
+  loadDispatchPolicy,
+  providerCeilingViolation,
+  runtimeCeilingViolation,
+} from "./dispatch-policy.js";
 import { parseGitHubRepoSlug } from "./doc-source/parse-github-url.js";
 import {
   ArtifactGoneError,
@@ -100,6 +106,7 @@ import {
   ArtifactWriteFailedError,
   CloudRunnerNotConfiguredError,
   CursorRunStartTimedOutError,
+  DispatchPolicyCeilingError,
   IllegalProviderRuntimeError,
   MissingRepoError,
   RoomRunnerNotConfiguredError,
@@ -799,6 +806,42 @@ interface PreparedRun {
   readonly scratchTaskDocPath?: string;
 }
 
+// Enforces the repo-level `.ship.json` dispatch policy ceiling.
+// Called at the entry point of both `runShip` and `runShipStart` so
+// every dispatch path is covered. Absent workdir = no check possible —
+// the v1 policy mechanism is file discovery up a local tree, so a
+// cloud/rooms call without a local copy dispatches unchecked (boundary
+// recorded in FOLLOWUPS.md; closing it means resolving the policy from
+// the remote repository, a design of its own). Absent `.ship.json` =
+// no constraints, byte-identical to today's behavior.
+function enforceDispatchPolicy(ctx: ShipContext): void {
+  const { workdir } = ctx.input;
+  if (workdir === undefined) return;
+  const loaded = loadDispatchPolicy(resolveWorkdirForPolicy(workdir));
+  for (const warning of loaded.warnings) {
+    ctx.logger.warn({ policyPath: loaded.policyPath }, warning);
+  }
+  const runtimeViolation = runtimeCeilingViolation(loaded, ctx.resolvedCursorRuntime);
+  if (runtimeViolation !== undefined) {
+    throw new DispatchPolicyCeilingError(loaded.policyPath ?? workdir, runtimeViolation);
+  }
+  const providerViolation = providerCeilingViolation(loaded, ctx.provider);
+  if (providerViolation !== undefined) {
+    throw new DispatchPolicyCeilingError(loaded.policyPath ?? workdir, providerViolation);
+  }
+}
+
+// A symlinked workdir resolves to its real path first so the policy walk-up
+// sees the governed repository's tree, not the link's lexical parent. An
+// unresolvable path falls back to the lexical walk (absent-policy behavior).
+function resolveWorkdirForPolicy(workdir: string): string {
+  try {
+    return realpathSync(workdir);
+  } catch {
+    return workdir;
+  }
+}
+
 // Sync `ship` body — drives the run end-to-end, blocking the caller
 // until terminal state. Shares the prepareRun → markRunStarted →
 // activeRuns.set scaffolding with `runShipStart`; the only difference
@@ -807,6 +850,7 @@ interface PreparedRun {
 // `setImmediate` keeps timing semantics identical, so a future tweak
 // to the kickoff window only has to land in one place.
 async function runShip(ctx: ShipContext): Promise<ShipOutput> {
+  enforceDispatchPolicy(ctx);
   const prep = await prepareRun(ctx);
   markRunStarted(ctx, prep);
   const controller = new AbortController();
@@ -834,6 +878,7 @@ async function runShipStart(
   ctx: ShipContext,
   bgPending: Set<Promise<void>>,
 ): Promise<ShipStartOutput> {
+  enforceDispatchPolicy(ctx);
   const prep = await prepareRun(ctx);
   markRunStarted(ctx, prep);
   const controller = new AbortController();
