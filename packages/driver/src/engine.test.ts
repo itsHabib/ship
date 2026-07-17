@@ -2144,6 +2144,60 @@ batches:
     expect(input.cloud?.workOnCurrentBranch).toBe(true);
   });
 
+  test("cloud dispatch carries the repo root as the policy-resolution cwd", () => {
+    // Regression: a cloud driver stream must resolve `.ship.json` from the local
+    // repo root (where the manifest lives), so the credential guard and the
+    // dispatch-policy ceiling get the same fail-closed lookup local streams do —
+    // not a ship scratch dir. Threaded as ShipInput.workdir → runner cwd.
+    const manifestPath = join(repoRoot, "cloud-policy-cwd.driver.md");
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-17T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: cloud-policy-cwd
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const docPath = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([{ docPath, repo: "ship", workflowRunId: "wf_policy_cwd" }]);
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId: imported.run.id,
+        ship: fake.port,
+        store,
+      },
+      stream!,
+      docPath,
+    );
+
+    expect(input.runtime).toBe("cloud");
+    expect(input.workdir).toBe(repoRoot);
+  });
+
   test("refuses the flip when the policy forbids cloud", async () => {
     const manifestPath = join(repoRoot, "driver.md");
     writeFileSync(

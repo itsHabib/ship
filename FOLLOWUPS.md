@@ -14,3 +14,19 @@ Small, agreed-but-not-now items. One line of context each; delete when done.
 (merged spec, #216). Closing it means resolving `.ship.json` from the remote repository at
 dispatch (a network fetch with its own failure/trust model) — a design of its own, not a patch.
 Until then the ceiling is only as strong as "every governed dispatch supplies a workdir".
+(Narrowed by PR #221: driver **cloud** streams now carry the local repo root as their workdir,
+so the ceiling AND the credential guard resolve for them; the gap remains for bare `ship.ship`
+cloud/rooms calls that pass no workdir.)
+
+## cloud resume/attach uses ambient credentials, not the repo-pinned source (2026-07-17, PR #221)
+
+`resolveDispatchCredential` guards both the local and cloud **dispatch** paths (PR #221), but the
+cloud **resume** path — `CloudClaudeRunner.attach`, reached from `resumeOneOrphanedCloudRun` —
+still builds its SDK client from the ambient `ANTHROPIC_API_KEY`. The session it re-attaches was
+already created under the guard (isolated at dispatch); attach only re-lists that session's events,
+so the exposure is a read-only re-list under the ambient credential, not a fresh dispatch. Closing
+it means threading policy resolution through resume: the orphan-resume site reconstructs from the
+persisted cloud run row, which carries no workdir/repo-root, so it would need BOTH a new cwd field
+on `AgentRunAttachInput` AND persisting the repo root on the cloud run row (a store-schema change) —
+beyond a small seam. Fail-closed at dispatch beats a half-threaded schema change; documented until
+the resume path warrants it.

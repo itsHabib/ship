@@ -927,6 +927,13 @@ function buildCloudShipInput(
     docPath,
     repo: run.repo,
     runtime: "cloud",
+    // The local repo root is the policy-resolution cwd: a driver cloud stream
+    // executes remotely but its `.ship.json` lives in this checkout, so carrying
+    // the root lets the credential guard (and the dispatch-policy ceiling) resolve
+    // the repo's constraint — the same fail-closed lookup local streams get.
+    // Without it, the runner would resolve policy from a ship scratch dir and the
+    // guard would silently no-op on cloud dispatches.
+    workdir: ctx.repoRoot,
     ...(startingRef !== undefined ? { startingRef } : {}),
     cloud: {
       autoCreatePR: !prExists,
