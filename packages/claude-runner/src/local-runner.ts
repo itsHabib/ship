@@ -32,7 +32,7 @@ import type {
   AgentRunResult,
 } from "./runner.js";
 
-import { assertCredentialSource } from "./credential-source.js";
+import { resolveDispatchCredential } from "./credential-source.js";
 import {
   OperationNotSupportedError,
   UnsupportedPlatformError,
@@ -155,7 +155,7 @@ function translateMcpServers(
   return out;
 }
 
-function buildQueryEnv(): Record<string, string> {
+function buildQueryEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const normalizedKeys = new Set([
     API_KEY_ENV,
     AUTH_TOKEN_ENV,
@@ -163,7 +163,7 @@ function buildQueryEnv(): Record<string, string> {
     BASE_URL_ENV,
   ]);
   return Object.fromEntries(
-    Object.entries(process.env).filter(
+    Object.entries(env).filter(
       (entry): entry is [string, string] =>
         entry[1] !== undefined && (!normalizedKeys.has(entry[0]) || entry[1].trim() !== ""),
     ),
@@ -182,6 +182,7 @@ function buildQueryOptions(
   input: AgentRunInput,
   abortController: AbortController,
   sessionId: `${string}-${string}-${string}-${string}-${string}`,
+  dispatchEnv: NodeJS.ProcessEnv,
 ): NonNullable<Parameters<typeof query>[0]["options"]> {
   const fallbackModel = fallbackModelFromParams(input.model.params);
   const effort = effortFromParams(input.model.params);
@@ -190,7 +191,7 @@ function buildQueryOptions(
     allowDangerouslySkipPermissions: true,
     cwd: input.cwd,
     ...(effort !== undefined && { effort }),
-    env: buildQueryEnv(),
+    env: buildQueryEnv(dispatchEnv),
     ...(fallbackModel !== undefined && { fallbackModel }),
     ...(input.agents !== undefined && { agents: input.agents }),
     ...(input.mcpServers !== undefined && {
@@ -206,10 +207,11 @@ function startQuery(
   input: AgentRunInput,
   abortController: AbortController,
   sessionId: `${string}-${string}-${string}-${string}-${string}`,
+  dispatchEnv: NodeJS.ProcessEnv,
 ): Query {
   try {
     return query({
-      options: buildQueryOptions(input, abortController, sessionId),
+      options: buildQueryOptions(input, abortController, sessionId, dispatchEnv),
       prompt: input.prompt,
     });
   } catch (err) {
@@ -217,15 +219,15 @@ function startQuery(
   }
 }
 
-function validateRunInput(input: AgentRunInput): void {
+function validateRunInput(input: AgentRunInput, env: NodeJS.ProcessEnv): void {
   if (input.runtime !== undefined && input.runtime !== "local") {
     throw new WrongRunnerError(
       `LocalClaudeRunner accepts runtime: "local" or undefined; received: ${JSON.stringify(input.runtime)}`,
     );
   }
-  const apiKey = process.env[API_KEY_ENV];
-  const authToken = process.env[AUTH_TOKEN_ENV];
-  const claudeCodeOAuthToken = process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV];
+  const apiKey = env[API_KEY_ENV];
+  const authToken = env[AUTH_TOKEN_ENV];
+  const claudeCodeOAuthToken = env[CLAUDE_CODE_OAUTH_TOKEN_ENV];
   const hasApiKey = apiKey !== undefined && apiKey.trim() !== "";
   const hasAuthToken = authToken !== undefined && authToken.trim() !== "";
   const hasClaudeCodeOAuthToken =
@@ -298,16 +300,17 @@ export class LocalClaudeRunner implements AgentRunner {
 
   run(input: AgentRunInput): Promise<AgentRunHandle> {
     return Promise.resolve().then(() => {
-      validateRunInput(input);
-      // Repo-pinned credential-source guard: refuse before constructing the
-      // query env when the required token source is absent or a forbidden
-      // override is present.
-      assertCredentialSource(input.cwd, process.env);
+      // Repo-pinned credential chokepoint: refuse when the required token source
+      // is absent or a forbidden override is present, and get back the child env
+      // with the pinned token routed in and competing credentials stripped. The
+      // credential check then runs against THAT env, not the ambient one.
+      const { env: dispatchEnv } = resolveDispatchCredential(input.cwd, process.env);
+      validateRunInput(input, dispatchEnv);
 
       const sessionId = randomUUID();
       const runId = randomUUID();
       const abortController = new AbortController();
-      const queryInstance = startQuery(input, abortController, sessionId);
+      const queryInstance = startQuery(input, abortController, sessionId, dispatchEnv);
 
       const state = createSdkRunHandleState({
         cancelRun: async () => {

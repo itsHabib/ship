@@ -250,7 +250,9 @@ function parseNonEmptyString(policyPath: string, label: string, value: unknown):
   if (typeof value !== "string" || value.trim() === "") {
     throw new DispatchPolicyError(policyPath, `${label} must be a non-empty string`);
   }
-  return value;
+  // Return the trimmed value: surrounding whitespace in an env-var name or a
+  // gh login would otherwise make later enforcement look up the wrong thing.
+  return value.trim();
 }
 
 function parseEnvNameList(policyPath: string, value: unknown): string[] {

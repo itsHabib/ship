@@ -503,9 +503,34 @@ describe("land", () => {
       );
 
       await expect(land(store, gh, runId, { prNumber: 201 })).rejects.toThrow(
-        /gh identity mismatch: .ship.json requires login 'work-login' but gh is authenticated as 'personal-login'/,
+        /gh identity mismatch: .*\.ship\.json requires login 'work-login' but gh is authenticated as 'personal-login'/,
       );
       expect(gh.mergeCalls).toEqual([]);
+    });
+
+    test("does not refuse an already-MERGED PR on identity mismatch (read-only path)", async () => {
+      // The write guard sits at the merge site, so a land that only reads (PR
+      // already merged) is never refused on identity — the misleading refusal the
+      // reword/move fixes. Identity is never even checked (no write attempted).
+      pinGhHostUser("work-login");
+      const streamId = newDriverStreamId();
+      const runId = seedRunUnderRepo(streamId, "https://github.com/org/ship/pull/205");
+      const gh = createFakeGhPort(
+        {
+          205: {
+            mergeCommit: { oid: "abc123" },
+            mergedAt: "2026-07-17T00:00:00Z",
+            state: "MERGED",
+          },
+        },
+        { login: "personal-login" },
+      );
+
+      const run = await land(store, gh, runId, { prNumber: 205 });
+
+      expect(gh.mergeCalls).toEqual([]);
+      expect(gh.loginCalls).toBe(0);
+      expect(run.batches[0]?.streams[0]?.status).toBe("done");
     });
 
     test("refuses when the gh login cannot be read", async () => {

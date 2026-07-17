@@ -6,15 +6,14 @@ import type { Store } from "@ship/store";
 import type { DriverRun, DriverStream } from "@ship/store";
 
 import { prNumberFromUrl } from "@ship/receipt";
-import { dirname } from "node:path";
 
 import type { DriverGhPort, GhPrReadiness, GhPullRequestView } from "./gh-port.js";
 import type { LandOpts, MergeFacts } from "./types.js";
 
 import { DecideError } from "./errors.js";
+import { assertGhIdentity } from "./gh-identity.js";
 import { toGhRepo } from "./gh-port.js";
 import { allStreams, extractRepoUrl, markMerged } from "./judgment.js";
-import { loadDispatchPolicy } from "./policy.js";
 
 // Post-merge view poll — GitHub can lag briefly after mergePullRequest.
 const POST_MERGE_VIEW_ATTEMPTS = 3;
@@ -40,9 +39,13 @@ export async function land(
   const repo = resolveRepoForGh(run);
   const streamId = resolveLandStream(run, opts, repo);
   assertStreamLandable(run, streamId);
-  await assertGhIdentity(gh, run);
 
-  const prView = await fetchMergedPrView(gh, repo, opts.prNumber, opts.admin === true);
+  // The gh-identity guard runs at the WRITE site (right before mergePullRequest),
+  // not here: an already-merged PR takes the read-only path below, which must not
+  // be refused on an identity mismatch it never acts on.
+  const prView = await fetchMergedPrView(gh, run, repo, opts.prNumber, {
+    admin: opts.admin === true,
+  });
   const facts = buildLandFacts(prView, opts);
   return markMerged(store, driverRunId, streamId, facts);
 }
@@ -53,35 +56,6 @@ function loadRun(store: Store, driverRunId: string): DriverRun {
     throw new DecideError(`driver run not found: ${driverRunId}`);
   }
   return run;
-}
-
-// gh-identity guard — when the repo's `.ship.json` pins `credentials.gh_host_user`,
-// verify `gh api user` is authenticated as that login before any gh write. Refuse
-// on mismatch (or when the login is unreadable). No pinned login → no-op, so repos
-// without the constraint stay byte-identical to today.
-async function assertGhIdentity(gh: DriverGhPort, run: DriverRun): Promise<void> {
-  const loaded = loadDispatchPolicy(dirname(run.manifestPath));
-  const expected = loaded.policy.credentials?.ghHostUser;
-  if (expected === undefined) {
-    return;
-  }
-  const actual = await readGhLogin(gh, loaded.policyPath ?? ".ship.json");
-  if (actual !== expected) {
-    throw new DecideError(
-      `gh identity mismatch: .ship.json requires login '${expected}' but gh is authenticated as '${actual}' — refusing gh write`,
-    );
-  }
-}
-
-async function readGhLogin(gh: DriverGhPort, policyPath: string): Promise<string> {
-  try {
-    return await gh.currentUserLogin();
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new DecideError(
-      `cannot verify gh identity required by ${policyPath}: ${detail} — refusing gh write`,
-    );
-  }
 }
 
 function resolveRepoForGh(run: DriverRun): string {
@@ -106,18 +80,22 @@ function assertStreamLandable(run: DriverRun, streamId: string): void {
 
 async function fetchMergedPrView(
   gh: DriverGhPort,
+  run: DriverRun,
   repo: string,
   prNumber: number,
-  admin: boolean,
-  sleep: SleepFn = defaultSleep,
+  opts: { admin: boolean; sleep?: SleepFn },
 ): Promise<GhPullRequestView> {
+  const sleep = opts.sleep ?? defaultSleep;
   try {
     let prView = await gh.viewPullRequest(repo, prNumber);
     if (prView.state !== "MERGED") {
       // Always-on readiness guard: refuse to merge an unready PR. Runs even
       // under --admin (admin bypasses the *approval* gate, not this check).
       await assertReady(gh, repo, prNumber);
-      await gh.mergePullRequest(repo, prNumber, { admin });
+      // gh-identity guard immediately before the write — a mismatched gh login
+      // must not merge under a repo that pins its identity.
+      await assertGhIdentity(gh, run);
+      await gh.mergePullRequest(repo, prNumber, { admin: opts.admin });
       prView = await readMergedViewWithRetry(gh, repo, prNumber, { sleep });
     }
 

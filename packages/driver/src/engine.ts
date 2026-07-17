@@ -44,6 +44,7 @@ import {
   writeAndDeliverEscalations,
   writeCycleExhaustedEscalation,
 } from "./escalation.js";
+import { assertGhIdentity } from "./gh-identity.js";
 import { toGhRepo } from "./gh-port.js";
 import {
   allStreams,
@@ -1664,6 +1665,11 @@ async function flipCloudDraftReady(
     return `draft→ready flip failed: cannot parse PR number from prUrl ${prUrl}`;
   }
   try {
+    // Guard the write: markReady is a gh mutation, so a repo that pins its gh
+    // identity must be authenticated as that login before the draft→ready flip —
+    // the same assertion land() runs before merge. A mismatch surfaces as a flip
+    // failure (fail-closed), marking the stream failed.
+    await assertGhIdentity(gh, run);
     await gh.markReady(repo, prNumber);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

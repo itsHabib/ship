@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { assertCredentialSource } from "./credential-source.js";
+import { resolveDispatchCredential } from "./credential-source.js";
 import { CredentialSourcePolicyError } from "./errors.js";
 
-describe("assertCredentialSource", () => {
+describe("resolveDispatchCredential", () => {
   let tmpDir: string;
   let repoRoot: string;
 
@@ -27,11 +27,11 @@ describe("assertCredentialSource", () => {
     writeFileSync(join(repoRoot, ".ship.json"), content, "utf8");
   }
 
-  // Wraps the void-returning guard so assertions don't trip
-  // no-confusing-void-expression on an arrow shorthand.
+  // Wraps the guard so throw-assertions don't trip no-confusing-void-expression;
+  // the resolved value is discarded (throw-path tests only).
   function attempt(cwd: string, env: NodeJS.ProcessEnv): () => void {
     return () => {
-      assertCredentialSource(cwd, env);
+      resolveDispatchCredential(cwd, env);
     };
   }
 
@@ -116,5 +116,35 @@ describe("assertCredentialSource", () => {
       JSON.stringify({ credentials: { claude_token_env: "WORK_ANTHROPIC_TOKEN" } }),
     );
     expect(attempt(repoRoot, {})).not.toThrow();
+  });
+
+  it("passes the env through unchanged when nothing is pinned", () => {
+    const env = { PATH: "/bin", ANTHROPIC_API_KEY: "sk-personal" };
+    const resolved = resolveDispatchCredential(repoRoot, env);
+    expect(resolved.token).toBeUndefined();
+    expect(resolved.env["ANTHROPIC_API_KEY"]).toBe("sk-personal");
+  });
+
+  it("routes a pinned custom token into ANTHROPIC_AUTH_TOKEN and strips competing creds", () => {
+    writePolicy(JSON.stringify({ credentials: { claude_token_env: "WORK_ANTHROPIC_TOKEN" } }));
+    const resolved = resolveDispatchCredential(repoRoot, {
+      WORK_ANTHROPIC_TOKEN: "sk-work-123",
+      ANTHROPIC_API_KEY: "sk-personal",
+      CLAUDE_CODE_OAUTH_TOKEN: "oauth-personal",
+      PATH: "/bin",
+    });
+    // The pinned token is the ONLY credential a recognized reader can see.
+    expect(resolved.token).toBe("sk-work-123");
+    expect(resolved.env["ANTHROPIC_AUTH_TOKEN"]).toBe("sk-work-123");
+    expect(resolved.env["ANTHROPIC_API_KEY"]).toBeUndefined();
+    expect(resolved.env["CLAUDE_CODE_OAUTH_TOKEN"]).toBeUndefined();
+    expect(resolved.env["PATH"]).toBe("/bin"); // non-credential vars pass through
+  });
+
+  it("trims a pinned token env name so the lookup is not thrown off by whitespace", () => {
+    writePolicy(JSON.stringify({ credentials: { claude_token_env: "  WORK_ANTHROPIC_TOKEN  " } }));
+    const resolved = resolveDispatchCredential(repoRoot, { WORK_ANTHROPIC_TOKEN: "sk-work-123" });
+    expect(resolved.token).toBe("sk-work-123");
+    expect(resolved.env["ANTHROPIC_AUTH_TOKEN"]).toBe("sk-work-123");
   });
 });

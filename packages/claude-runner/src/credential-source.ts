@@ -20,36 +20,86 @@ interface RunnerCredentialConstraint {
   forbidEnv: readonly string[];
 }
 
+// The env slots a Claude reader (the SDK query, the cloud client) will pick a
+// credential up from. When a repo pins its token source, the pinned value is
+// routed into ROUTED_SLOT and every one of these is stripped first, so a
+// personal credential can never ride alongside the pinned one.
+const RECOGNIZED_CREDENTIAL_ENVS = [
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+] as const;
+const ROUTED_SLOT = "ANTHROPIC_AUTH_TOKEN";
+
 /**
- * Refuse the dispatch when the repo's `.ship.json` credentials constraint is not
- * met. No `.ship.json` (or no `credentials` block) → no-op, byte-identical to
- * today. A present-but-malformed policy fails closed.
+ * The dispatch credential a runner must use, resolved from the repo's
+ * `.ship.json` credentials constraint.
  */
-export function assertCredentialSource(cwd: string, env: NodeJS.ProcessEnv): void {
+export interface DispatchCredential {
+  /**
+   * The child environment to dispatch under. When a token source is pinned, the
+   * pinned value is routed into the recognized credential slot and every other
+   * recognized slot is stripped (the pinned token is the ONLY credential a
+   * reader can see). When nothing is pinned, this is a copy of the input env.
+   */
+  readonly env: NodeJS.ProcessEnv;
+  /**
+   * The pinned credential value, when the repo pins `claude_token_env` — the one
+   * credential the dispatch may authenticate with. Undefined when unpinned, so a
+   * runner falls back to the ambient credential exactly as before.
+   */
+  readonly token?: string;
+}
+
+/**
+ * Resolve the credential a dispatch must run under, enforcing the repo's
+ * `.ship.json` credentials constraint. No `.ship.json` (or no `credentials`
+ * block) → the env is returned unchanged, byte-identical to today. A pinned but
+ * absent token source, a forbidden override, or a malformed policy fails closed.
+ *
+ * This is the single credential chokepoint BOTH the local and cloud runners call
+ * before authenticating, so the constraint applies uniformly regardless of
+ * runtime (a cloud stream is not a bypass).
+ */
+export function resolveDispatchCredential(cwd: string, env: NodeJS.ProcessEnv): DispatchCredential {
   const constraint = readCredentialConstraint(cwd);
   if (constraint === undefined) {
-    return;
+    return { env: { ...env } };
   }
-  const violation = credentialSourceViolation(constraint, env);
-  if (violation !== undefined) {
-    throw new CredentialSourcePolicyError(violation);
+  assertForbidEnv(constraint, env);
+  const pinned = constraint.claudeTokenEnv;
+  if (pinned === undefined) {
+    return { env: { ...env } };
+  }
+  const value = env[pinned];
+  if (value === undefined || value.trim() === "") {
+    throw new CredentialSourcePolicyError(
+      `.ship.json credentials.claude_token_env requires ${pinned} to carry the Claude token, but it is absent or empty`,
+    );
+  }
+  return { env: routePinnedCredential(env, value), token: value };
+}
+
+function assertForbidEnv(constraint: RunnerCredentialConstraint, env: NodeJS.ProcessEnv): void {
+  for (const name of constraint.forbidEnv) {
+    if (isEnvSet(env[name])) {
+      throw new CredentialSourcePolicyError(
+        `.ship.json credentials.forbid_env forbids ${name}, but it is set in the dispatch environment`,
+      );
+    }
   }
 }
 
-function credentialSourceViolation(
-  constraint: RunnerCredentialConstraint,
-  env: NodeJS.ProcessEnv,
-): string | undefined {
-  const { claudeTokenEnv } = constraint;
-  if (claudeTokenEnv !== undefined && !isEnvSet(env[claudeTokenEnv])) {
-    return `.ship.json credentials.claude_token_env requires ${claudeTokenEnv} to carry the Claude token, but it is absent or empty`;
-  }
-  for (const name of constraint.forbidEnv) {
-    if (isEnvSet(env[name])) {
-      return `.ship.json credentials.forbid_env forbids ${name}, but it is set in the dispatch environment`;
-    }
-  }
-  return undefined;
+// Rebuild env WITHOUT any recognized credential slot, then route the pinned
+// value into the single ROUTED_SLOT — so a recognized reader picks up the pinned
+// token and cannot pick up a personal one that was in another slot.
+function routePinnedCredential(env: NodeJS.ProcessEnv, value: string): NodeJS.ProcessEnv {
+  const stripped = new Set<string>(RECOGNIZED_CREDENTIAL_ENVS);
+  const out: NodeJS.ProcessEnv = Object.fromEntries(
+    Object.entries(env).filter(([name, val]) => val !== undefined && !stripped.has(name)),
+  );
+  out[ROUTED_SLOT] = value;
+  return out;
 }
 
 function isEnvSet(value: string | undefined): boolean {
@@ -129,7 +179,9 @@ function readOptionalString(policyPath: string, label: string, value: unknown): 
   if (typeof value !== "string" || value.trim() === "") {
     throw new CredentialSourcePolicyError(`${policyPath}: ${label} must be a non-empty string`);
   }
-  return value;
+  // Return the trimmed value: surrounding whitespace in an env-var name would
+  // otherwise make the guard look up the wrong variable and fail confusingly.
+  return value.trim();
 }
 
 // Walk up from `startDir` taking the first `.ship.json`, stopping at the repo
