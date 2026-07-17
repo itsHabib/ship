@@ -126,6 +126,62 @@ describe("loadDispatchPolicy validation", () => {
     writePolicy(JSON.stringify({ runtime: { allow: "local" } }));
     expect(() => loadDispatchPolicy(repoRoot)).toThrow(/allow must be an array/);
   });
+
+  it("parses a credentials constraint into camelCase fields", () => {
+    writePolicy(
+      JSON.stringify({
+        credentials: {
+          claude_token_env: "WORK_ANTHROPIC_TOKEN",
+          forbid_env: ["ANTHROPIC_BASE_URL"],
+          gh_host_user: "work-login",
+        },
+      }),
+    );
+    const loaded = loadDispatchPolicy(repoRoot);
+    expect(loaded.policy.credentials).toEqual({
+      claudeTokenEnv: "WORK_ANTHROPIC_TOKEN",
+      forbidEnv: ["ANTHROPIC_BASE_URL"],
+      ghHostUser: "work-login",
+    });
+  });
+
+  it("omits the credentials constraint entirely when the key is absent", () => {
+    writePolicy(JSON.stringify({ runtime: { allow: ["local"] } }));
+    expect(loadDispatchPolicy(repoRoot).policy.credentials).toBeUndefined();
+  });
+
+  it("warns on an unknown credentials key without erroring", () => {
+    writePolicy(
+      JSON.stringify({ credentials: { gh_host_user: "work-login", claude_token: "typo" } }),
+    );
+    const loaded = loadDispatchPolicy(repoRoot);
+    expect(loaded.policy.credentials?.ghHostUser).toBe("work-login");
+    expect(loaded.warnings.some((w) => w.includes("credentials.claude_token"))).toBe(true);
+  });
+
+  it("throws when credentials is not an object", () => {
+    writePolicy(JSON.stringify({ credentials: ["WORK_ANTHROPIC_TOKEN"] }));
+    expect(() => loadDispatchPolicy(repoRoot)).toThrow(/credentials must be an object/);
+  });
+
+  it("throws when claude_token_env is empty", () => {
+    writePolicy(JSON.stringify({ credentials: { claude_token_env: "  " } }));
+    expect(() => loadDispatchPolicy(repoRoot)).toThrow(
+      /credentials.claude_token_env must be a non-empty string/,
+    );
+  });
+
+  it("throws when forbid_env is not an array", () => {
+    writePolicy(JSON.stringify({ credentials: { forbid_env: "ANTHROPIC_BASE_URL" } }));
+    expect(() => loadDispatchPolicy(repoRoot)).toThrow(/credentials.forbid_env must be an array/);
+  });
+
+  it("throws when a forbid_env entry is not a non-empty string", () => {
+    writePolicy(JSON.stringify({ credentials: { forbid_env: ["OK", 3] } }));
+    expect(() => loadDispatchPolicy(repoRoot)).toThrow(
+      /credentials.forbid_env\[1\] must be a non-empty string/,
+    );
+  });
 });
 
 describe("policy resolution helpers", () => {

@@ -32,6 +32,7 @@ import type {
   AgentRunResult,
 } from "./runner.js";
 
+import { assertCredentialSource } from "./credential-source.js";
 import {
   OperationNotSupportedError,
   UnsupportedPlatformError,
@@ -298,6 +299,10 @@ export class LocalClaudeRunner implements AgentRunner {
   run(input: AgentRunInput): Promise<AgentRunHandle> {
     return Promise.resolve().then(() => {
       validateRunInput(input);
+      // Repo-pinned credential-source guard: refuse before constructing the
+      // query env when the required token source is absent or a forbidden
+      // override is present.
+      assertCredentialSource(input.cwd, process.env);
 
       const sessionId = randomUUID();
       const runId = randomUUID();

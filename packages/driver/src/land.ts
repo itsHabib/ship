@@ -6,6 +6,7 @@ import type { Store } from "@ship/store";
 import type { DriverRun, DriverStream } from "@ship/store";
 
 import { prNumberFromUrl } from "@ship/receipt";
+import { dirname } from "node:path";
 
 import type { DriverGhPort, GhPrReadiness, GhPullRequestView } from "./gh-port.js";
 import type { LandOpts, MergeFacts } from "./types.js";
@@ -13,6 +14,7 @@ import type { LandOpts, MergeFacts } from "./types.js";
 import { DecideError } from "./errors.js";
 import { toGhRepo } from "./gh-port.js";
 import { allStreams, extractRepoUrl, markMerged } from "./judgment.js";
+import { loadDispatchPolicy } from "./policy.js";
 
 // Post-merge view poll — GitHub can lag briefly after mergePullRequest.
 const POST_MERGE_VIEW_ATTEMPTS = 3;
@@ -38,6 +40,7 @@ export async function land(
   const repo = resolveRepoForGh(run);
   const streamId = resolveLandStream(run, opts, repo);
   assertStreamLandable(run, streamId);
+  await assertGhIdentity(gh, run);
 
   const prView = await fetchMergedPrView(gh, repo, opts.prNumber, opts.admin === true);
   const facts = buildLandFacts(prView, opts);
@@ -50,6 +53,35 @@ function loadRun(store: Store, driverRunId: string): DriverRun {
     throw new DecideError(`driver run not found: ${driverRunId}`);
   }
   return run;
+}
+
+// gh-identity guard — when the repo's `.ship.json` pins `credentials.gh_host_user`,
+// verify `gh api user` is authenticated as that login before any gh write. Refuse
+// on mismatch (or when the login is unreadable). No pinned login → no-op, so repos
+// without the constraint stay byte-identical to today.
+async function assertGhIdentity(gh: DriverGhPort, run: DriverRun): Promise<void> {
+  const loaded = loadDispatchPolicy(dirname(run.manifestPath));
+  const expected = loaded.policy.credentials?.ghHostUser;
+  if (expected === undefined) {
+    return;
+  }
+  const actual = await readGhLogin(gh, loaded.policyPath ?? ".ship.json");
+  if (actual !== expected) {
+    throw new DecideError(
+      `gh identity mismatch: .ship.json requires login '${expected}' but gh is authenticated as '${actual}' — refusing gh write`,
+    );
+  }
+}
+
+async function readGhLogin(gh: DriverGhPort, policyPath: string): Promise<string> {
+  try {
+    return await gh.currentUserLogin();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new DecideError(
+      `cannot verify gh identity required by ${policyPath}: ${detail} — refusing gh write`,
+    );
+  }
 }
 
 function resolveRepoForGh(run: DriverRun): string {

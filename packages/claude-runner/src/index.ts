@@ -30,6 +30,7 @@ export { LocalClaudeRunner } from "./local-runner.js";
 export {
   AgentRunFailedError,
   CloudSessionError,
+  CredentialSourcePolicyError,
   InvalidCloudReposError,
   MissingApiKeyError,
   MissingCloudSpecError,

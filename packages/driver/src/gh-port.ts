@@ -57,6 +57,8 @@ export interface DriverGhPort {
   fetchPrReadiness(repo: string, prNumber: number): Promise<GhPrReadiness>;
   /** Flip a draft PR to ready; idempotent when already ready. Verified write. */
   markReady(repo: string, prNumber: number): Promise<void>;
+  /** `gh api user` login of the authenticated account — the gh-identity guard reads this before a write. */
+  currentUserLogin(): Promise<string>;
 }
 
 interface GhPrViewJson {
@@ -161,6 +163,10 @@ export function createExecGhPort(exec: GhExec = defaultGhExec): DriverGhPort {
           `PR #${String(prNumber)} is still draft after gh pr ready — flip unconfirmed`,
         );
       }
+    },
+    async currentUserLogin(): Promise<string> {
+      const { stdout } = await exec("gh", ["api", "user", "--jq", ".login"]);
+      return stdout.trim();
     },
   };
 }

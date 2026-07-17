@@ -31,9 +31,20 @@ export interface FakeGhPort extends DriverGhPort {
   mergeCalls: { repo: string; prNumber: number; admin: boolean }[];
   viewCalls: { repo: string; prNumber: number }[];
   markReadyCalls: { repo: string; prNumber: number }[];
+  loginCalls: number;
 }
 
-export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): FakeGhPort {
+export interface FakeGhIdentity {
+  /** Login `currentUserLogin` returns; defaults to "fake-login". */
+  login?: string;
+  /** When set, `currentUserLogin` rejects with this message. */
+  loginError?: string;
+}
+
+export function createFakeGhPort(
+  initial: Record<number, FakeGhPrState> = {},
+  identity: FakeGhIdentity = {},
+): FakeGhPort {
   const prs = new Map<number, FakeGhPrState>(
     Object.entries(initial).map(([k, v]) => [Number(k), v]),
   );
@@ -41,11 +52,11 @@ export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): F
   const viewCalls: { repo: string; prNumber: number }[] = [];
   const markReadyCalls: { repo: string; prNumber: number }[] = [];
   const postMergeLagRemaining = new Map<number, number>();
-
-  return {
+  const port = {
     markReadyCalls,
     mergeCalls,
     viewCalls,
+    loginCalls: 0,
     mergePullRequest(_repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void> {
       mergeCalls.push({ admin: opts?.admin === true, prNumber, repo: _repo });
       const current = prs.get(prNumber);
@@ -128,5 +139,13 @@ export function createFakeGhPort(initial: Record<number, FakeGhPrState> = {}): F
       prs.set(prNumber, { ...current, isDraft: false });
       return Promise.resolve();
     },
+    currentUserLogin(): Promise<string> {
+      port.loginCalls += 1;
+      if (identity.loginError !== undefined) {
+        return Promise.reject(new Error(identity.loginError));
+      }
+      return Promise.resolve(identity.login ?? "fake-login");
+    },
   };
+  return port;
 }
