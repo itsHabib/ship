@@ -232,6 +232,9 @@ importers:
       '@ship/workflow':
         specifier: workspace:*
         version: link:../workflow
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
     devDependencies:
       '@fast-check/vitest':
         specifier: 0.3.0
