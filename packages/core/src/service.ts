@@ -808,9 +808,12 @@ interface PreparedRun {
 
 // Enforces the repo-level `.ship.json` dispatch policy ceiling.
 // Called at the entry point of both `runShip` and `runShipStart` so
-// every dispatch path is covered. Absent workdir = no check possible
-// (cloud/rooms without a local copy); absent `.ship.json` = no
-// constraints, byte-identical to today's behavior.
+// every dispatch path is covered. Absent workdir = no check possible —
+// the v1 policy mechanism is file discovery up a local tree, so a
+// cloud/rooms call without a local copy dispatches unchecked (boundary
+// recorded in FOLLOWUPS.md; closing it means resolving the policy from
+// the remote repository, a design of its own). Absent `.ship.json` =
+// no constraints, byte-identical to today's behavior.
 function enforceDispatchPolicy(ctx: ShipContext): void {
   const { workdir } = ctx.input;
   if (workdir === undefined) return;
