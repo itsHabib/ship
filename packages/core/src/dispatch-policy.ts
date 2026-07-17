@@ -30,17 +30,32 @@ export type PolicyRuntime = CursorRunRuntime;
 const RUNTIME_FALLBACK: PolicyRuntime = "local";
 const PROVIDER_FALLBACK: AgentProvider = "cursor";
 
-const TOP_LEVEL_KEYS = new Set(["runtime", "provider"]);
+const TOP_LEVEL_KEYS = new Set(["runtime", "provider", "credentials"]);
 const CONSTRAINT_KEYS = new Set(["default", "allow"]);
+const CREDENTIALS_KEYS = new Set(["claude_token_env", "forbid_env", "gh_host_user"]);
 
 export interface DispatchPolicyConstraint<T> {
   default?: T;
   allow?: readonly T[];
 }
 
+/**
+ * Repo-pinned credential identity, fail-closed. `claudeTokenEnv` names the env
+ * var that must carry the Claude token at dispatch; `forbidEnv` names env vars
+ * that must be absent (e.g. a personal `ANTHROPIC_BASE_URL` override); `ghHostUser`
+ * is the `gh` login every gh write must be authenticated as. All optional — the
+ * `.ship.json` surface stays minimal and each field is enforced only when set.
+ */
+export interface CredentialsConstraint {
+  claudeTokenEnv?: string;
+  forbidEnv?: readonly string[];
+  ghHostUser?: string;
+}
+
 export interface DispatchPolicy {
   runtime?: DispatchPolicyConstraint<PolicyRuntime>;
   provider?: DispatchPolicyConstraint<AgentProvider>;
+  credentials?: CredentialsConstraint;
 }
 
 export interface LoadedDispatchPolicy {
@@ -190,7 +205,63 @@ function parsePolicy(policyPath: string, raw: string): LoadedDispatchPolicy {
   if (provider !== undefined) {
     policy.provider = provider;
   }
+  const credentials = parseCredentials(policyPath, parsed["credentials"], warnings);
+  if (credentials !== undefined) {
+    policy.credentials = credentials;
+  }
   return { policy, policyPath, warnings };
+}
+
+function parseCredentials(
+  policyPath: string,
+  value: unknown,
+  warnings: string[],
+): CredentialsConstraint | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new DispatchPolicyError(policyPath, "credentials must be an object");
+  }
+  collectUnknownKeys(value, CREDENTIALS_KEYS, "credentials.", warnings, policyPath);
+
+  const constraint: CredentialsConstraint = {};
+  if (value["claude_token_env"] !== undefined) {
+    constraint.claudeTokenEnv = parseNonEmptyString(
+      policyPath,
+      "credentials.claude_token_env",
+      value["claude_token_env"],
+    );
+  }
+  if (value["forbid_env"] !== undefined) {
+    constraint.forbidEnv = parseEnvNameList(policyPath, value["forbid_env"]);
+  }
+  if (value["gh_host_user"] !== undefined) {
+    constraint.ghHostUser = parseNonEmptyString(
+      policyPath,
+      "credentials.gh_host_user",
+      value["gh_host_user"],
+    );
+  }
+  return constraint;
+}
+
+function parseNonEmptyString(policyPath: string, label: string, value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new DispatchPolicyError(policyPath, `${label} must be a non-empty string`);
+  }
+  // Return the trimmed value: surrounding whitespace in an env-var name or a
+  // gh login would otherwise make later enforcement look up the wrong thing.
+  return value.trim();
+}
+
+function parseEnvNameList(policyPath: string, value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new DispatchPolicyError(policyPath, "credentials.forbid_env must be an array");
+  }
+  return value.map((entry, index) =>
+    parseNonEmptyString(policyPath, `credentials.forbid_env[${String(index)}]`, entry),
+  );
 }
 
 function parseJson(policyPath: string, raw: string): unknown {

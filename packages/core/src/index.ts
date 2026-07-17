@@ -50,6 +50,7 @@ export {
   runtimeCeilingViolation,
 } from "./dispatch-policy.js";
 export type {
+  CredentialsConstraint,
   DispatchPolicy,
   DispatchPolicyConstraint,
   LoadedDispatchPolicy,

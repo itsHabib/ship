@@ -58,6 +58,7 @@ import {
   mapCloudStreamThrow,
   newCloudTerminalState,
 } from "./cloud-terminal-map.js";
+import { resolveDispatchCredential } from "./credential-source.js";
 import {
   AgentRunFailedError,
   CloudSessionError,
@@ -217,7 +218,12 @@ export class CloudClaudeRunner implements AgentRunner {
     if (!Array.isArray(repos) || repos.length !== 1) {
       throw new InvalidCloudReposError(Array.isArray(repos) ? repos.length : 0);
     }
-    const apiKey = process.env[API_KEY_ENV];
+    // Repo-pinned credential chokepoint — the SAME guard the local runner runs,
+    // applied here so a cloud stream is not a bypass. It refuses when a pinned
+    // token source is absent or a forbidden override is present, and yields the
+    // pinned token + an env with competing credentials stripped.
+    const { env: dispatchEnv, token } = resolveDispatchCredential(input.cwd, process.env);
+    const apiKey = token ?? dispatchEnv[API_KEY_ENV];
     if (apiKey === undefined || apiKey === "") {
       throw new MissingApiKeyError(`${API_KEY_ENV} environment variable is not set`);
     }
@@ -225,7 +231,7 @@ export class CloudClaudeRunner implements AgentRunner {
     // The UUID is only a unique suffix for the agent/env resource names; the
     // handle's runId is the session id (ED-5), set in #buildHandle.
     const runName = randomUUID();
-    const resources = await this.#startSession(apiKey, input, runName);
+    const resources = await this.#startSession(apiKey, dispatchEnv[BASE_URL_ENV], input, runName);
     return this.#buildHandle(resources, input);
   }
 
@@ -264,10 +270,11 @@ export class CloudClaudeRunner implements AgentRunner {
 
   async #startSession(
     apiKey: string,
+    baseUrl: string | undefined,
     input: AgentRunInput,
     runName: string,
   ): Promise<SessionResources> {
-    const client = buildClient(apiKey, process.env[BASE_URL_ENV]);
+    const client = buildClient(apiKey, baseUrl);
     // Hoisted above the try so the failure path can redact it: a token-bearing
     // GITHUB_MCP_URL rides in the agents.create body, so it can surface in the
     // SDK error object that logCloudStartFailure dumps.

@@ -1357,6 +1357,62 @@ batches:
     store.close();
   });
 
+  test("cloud draft→ready flip is refused when gh identity does not match the pin", async () => {
+    // The flip's markReady is a gh write, so a repo pinning credentials.gh_host_user
+    // must be authenticated as that login; a mismatch fails the flip (fail-closed)
+    // and markReady is never called.
+    writeFileSync(
+      join(repoRoot, ".ship.json"),
+      JSON.stringify({ credentials: { gh_host_user: "work-login" } }),
+      "utf8",
+    );
+    const manifest = join(repoRoot, "cloud-flip-identity.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-02T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: cloud-flip-identity
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        branchName: "cursor/flip-88",
+        docPath: docA,
+        prUrl: "https://github.com/example/ship/pull/88",
+        repo: "ship",
+        workflowRunId: "wf_flip_identity",
+      },
+    ]);
+    // Default fake login ("fake-login") does not match the pinned "work-login".
+    const gh = createFakeGhPort({ 88: { isDraft: true, state: "OPEN" } });
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ gh, ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+    expect(stream?.status).toBe("failed");
+    expect(stream?.errorMessage).toMatch(/draft→ready flip failed: gh identity mismatch/);
+    expect(gh.markReadyCalls).toEqual([]);
+    store.close();
+  });
+
   test("decide retry after a failed flip re-runs the flip on the persisted prUrl", async () => {
     const manifest = join(repoRoot, "cloud-flip-retry.driver.md");
     writeFileSync(
@@ -2086,6 +2142,60 @@ batches:
     );
     expect(input.cloud?.repos[0]?.startingRef).toBe("feat-a");
     expect(input.cloud?.workOnCurrentBranch).toBe(true);
+  });
+
+  test("cloud dispatch carries the repo root as the policy-resolution cwd", () => {
+    // Regression: a cloud driver stream must resolve `.ship.json` from the local
+    // repo root (where the manifest lives), so the credential guard and the
+    // dispatch-policy ceiling get the same fail-closed lookup local streams do —
+    // not a ship scratch dir. Threaded as ShipInput.workdir → runner cwd.
+    const manifestPath = join(repoRoot, "cloud-policy-cwd.driver.md");
+    writeFileSync(
+      manifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-17T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: cloud-policy-cwd
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: cloud
+        status: pending
+---
+`,
+    );
+    const docPath = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([{ docPath, repo: "ship", workflowRunId: "wf_policy_cwd" }]);
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+    const stream = store.getDriverRun(imported.run.id)?.batches[0]?.streams[0];
+
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId: imported.run.id,
+        ship: fake.port,
+        store,
+      },
+      stream!,
+      docPath,
+    );
+
+    expect(input.runtime).toBe("cloud");
+    expect(input.workdir).toBe(repoRoot);
   });
 
   test("refuses the flip when the policy forbids cloud", async () => {

@@ -11,6 +11,7 @@ import type { DriverGhPort, GhPrReadiness, GhPullRequestView } from "./gh-port.j
 import type { LandOpts, MergeFacts } from "./types.js";
 
 import { DecideError } from "./errors.js";
+import { assertGhIdentity } from "./gh-identity.js";
 import { toGhRepo } from "./gh-port.js";
 import { allStreams, extractRepoUrl, markMerged } from "./judgment.js";
 
@@ -39,7 +40,12 @@ export async function land(
   const streamId = resolveLandStream(run, opts, repo);
   assertStreamLandable(run, streamId);
 
-  const prView = await fetchMergedPrView(gh, repo, opts.prNumber, opts.admin === true);
+  // The gh-identity guard runs at the WRITE site (right before mergePullRequest),
+  // not here: an already-merged PR takes the read-only path below, which must not
+  // be refused on an identity mismatch it never acts on.
+  const prView = await fetchMergedPrView(gh, run, repo, opts.prNumber, {
+    admin: opts.admin === true,
+  });
   const facts = buildLandFacts(prView, opts);
   return markMerged(store, driverRunId, streamId, facts);
 }
@@ -74,18 +80,22 @@ function assertStreamLandable(run: DriverRun, streamId: string): void {
 
 async function fetchMergedPrView(
   gh: DriverGhPort,
+  run: DriverRun,
   repo: string,
   prNumber: number,
-  admin: boolean,
-  sleep: SleepFn = defaultSleep,
+  opts: { admin: boolean; sleep?: SleepFn },
 ): Promise<GhPullRequestView> {
+  const sleep = opts.sleep ?? defaultSleep;
   try {
     let prView = await gh.viewPullRequest(repo, prNumber);
     if (prView.state !== "MERGED") {
       // Always-on readiness guard: refuse to merge an unready PR. Runs even
       // under --admin (admin bypasses the *approval* gate, not this check).
       await assertReady(gh, repo, prNumber);
-      await gh.mergePullRequest(repo, prNumber, { admin });
+      // gh-identity guard immediately before the write — a mismatched gh login
+      // must not merge under a repo that pins its identity.
+      await assertGhIdentity(gh, run);
+      await gh.mergePullRequest(repo, prNumber, { admin: opts.admin });
       prView = await readMergedViewWithRetry(gh, repo, prNumber, { sleep });
     }
 

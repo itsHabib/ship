@@ -48,3 +48,12 @@ export class InvalidCloudReposError extends AgentRunFailedError {
 export class CloudSessionError extends AgentRunFailedError {
   override readonly name: string = "CloudSessionError";
 }
+
+/**
+ * Repo `.ship.json` `credentials` constraint refused this dispatch — the pinned
+ * token source is absent/empty or a forbidden env override is present. Fail-closed:
+ * naming the offending source is the whole point, so the operator sees exactly why.
+ */
+export class CredentialSourcePolicyError extends AgentRunFailedError {
+  override readonly name: string = "CredentialSourcePolicyError";
+}

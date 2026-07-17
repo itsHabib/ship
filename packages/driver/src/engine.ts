@@ -44,6 +44,7 @@ import {
   writeAndDeliverEscalations,
   writeCycleExhaustedEscalation,
 } from "./escalation.js";
+import { assertGhIdentity } from "./gh-identity.js";
 import { toGhRepo } from "./gh-port.js";
 import {
   allStreams,
@@ -926,6 +927,13 @@ function buildCloudShipInput(
     docPath,
     repo: run.repo,
     runtime: "cloud",
+    // The local repo root is the policy-resolution cwd: a driver cloud stream
+    // executes remotely but its `.ship.json` lives in this checkout, so carrying
+    // the root lets the credential guard (and the dispatch-policy ceiling) resolve
+    // the repo's constraint — the same fail-closed lookup local streams get.
+    // Without it, the runner would resolve policy from a ship scratch dir and the
+    // guard would silently no-op on cloud dispatches.
+    workdir: ctx.repoRoot,
     ...(startingRef !== undefined ? { startingRef } : {}),
     cloud: {
       autoCreatePR: !prExists,
@@ -1664,6 +1672,11 @@ async function flipCloudDraftReady(
     return `draft→ready flip failed: cannot parse PR number from prUrl ${prUrl}`;
   }
   try {
+    // Guard the write: markReady is a gh mutation, so a repo that pins its gh
+    // identity must be authenticated as that login before the draft→ready flip —
+    // the same assertion land() runs before merge. A mismatch surfaces as a flip
+    // failure (fail-closed), marking the stream failed.
+    await assertGhIdentity(gh, run);
     await gh.markReady(repo, prNumber);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

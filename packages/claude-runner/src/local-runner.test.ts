@@ -6,10 +6,14 @@
 import type { Query, SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   AgentRunFailedError,
+  CredentialSourcePolicyError,
   MissingApiKeyError,
   OperationNotSupportedError,
   WrongRunnerError,
@@ -129,6 +133,62 @@ describe("LocalClaudeRunner — attach", () => {
       }),
     ).rejects.toBeInstanceOf(OperationNotSupportedError);
     expect(query).not.toHaveBeenCalled();
+  });
+});
+
+describe("LocalClaudeRunner — credential-source guard", () => {
+  let repoRoot: string;
+
+  beforeEach(() => {
+    const tmp = mkdtempSync(join(tmpdir(), "ship-runner-cred-"));
+    repoRoot = join(tmp, "repo");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(join(repoRoot, ".."), { force: true, recursive: true });
+  });
+
+  function pinPolicy(credentials: unknown): void {
+    writeFileSync(join(repoRoot, ".ship.json"), JSON.stringify({ credentials }), "utf8");
+  }
+
+  test("refuses dispatch when the pinned token env is absent, before query()", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("ANTHROPIC_API_KEY", "personal-key");
+    pinPolicy({ claude_token_env: "WORK_ANTHROPIC_TOKEN" });
+
+    const runner = new LocalClaudeRunner();
+    await expect(runner.run(baseInput({ cwd: repoRoot }))).rejects.toBeInstanceOf(
+      CredentialSourcePolicyError,
+    );
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  test("refuses dispatch when a forbidden env override is present", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("ANTHROPIC_API_KEY", "personal-key");
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://personal.example");
+    pinPolicy({ forbid_env: ["ANTHROPIC_BASE_URL"] });
+
+    const runner = new LocalClaudeRunner();
+    await expect(runner.run(baseInput({ cwd: repoRoot }))).rejects.toThrow(/ANTHROPIC_BASE_URL/);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  test("dispatches when the pinned token env is satisfied", async () => {
+    // The pinned env is one the SDK actually reads, so it doubles as the
+    // credential validateRunInput requires and the source the policy pins.
+    vi.unstubAllEnvs();
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "sk-work-123");
+    pinPolicy({ claude_token_env: "ANTHROPIC_AUTH_TOKEN" });
+    const { queryInstance } = makeMockQuery({ events: [successResult] });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    const handle = await runner.run(baseInput({ cwd: repoRoot }));
+    await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+    expect(query).toHaveBeenCalled();
   });
 });
 

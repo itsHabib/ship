@@ -69,8 +69,13 @@ function prToolResult(body: Record<string, unknown>): CloudStreamEvent {
     content: [{ type: "text", text: JSON.stringify(body) }],
   });
 }
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   CloudSessionError,
+  CredentialSourcePolicyError,
   InvalidCloudReposError,
   MissingApiKeyError,
   MissingCloudSpecError,
@@ -178,6 +183,52 @@ describe("CloudClaudeRunner.run — input guards", () => {
     vi.stubEnv(API_KEY_ENV, "");
     const runner = new CloudClaudeRunner();
     await expect(runner.run(makeInput())).rejects.toBeInstanceOf(MissingApiKeyError);
+  });
+});
+
+// The credential chokepoint must apply to cloud dispatch too — a cloud stream is
+// not a bypass for a repo's `.ship.json` credentials constraint (parity with the
+// local runner).
+describe("CloudClaudeRunner.run — credential-source guard (parity)", () => {
+  let tmpDir: string;
+  let repoRoot: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "ship-cloud-cred-"));
+    repoRoot = join(tmpDir, "repo");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { force: true, recursive: true });
+  });
+
+  function pin(content: Record<string, unknown>): void {
+    writeFileSync(join(repoRoot, ".ship.json"), JSON.stringify({ credentials: content }), "utf8");
+  }
+
+  test("refuses when the pinned token source is absent", async () => {
+    pin({ claude_token_env: "WORK_ANTHROPIC_TOKEN" });
+    const runner = new CloudClaudeRunner();
+    await expect(runner.run(makeInput({ cwd: repoRoot }))).rejects.toBeInstanceOf(
+      CredentialSourcePolicyError,
+    );
+  });
+
+  test("refuses when a forbidden env override is present", async () => {
+    pin({ forbid_env: ["ANTHROPIC_BASE_URL"] });
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://personal.example");
+    const runner = new CloudClaudeRunner();
+    await expect(runner.run(makeInput({ cwd: repoRoot }))).rejects.toBeInstanceOf(
+      CredentialSourcePolicyError,
+    );
+  });
+
+  test("proceeds using the pinned token when the source is present", async () => {
+    pin({ claude_token_env: "WORK_ANTHROPIC_TOKEN" });
+    vi.stubEnv("WORK_ANTHROPIC_TOKEN", "sk-work-123");
+    const runner = new CloudClaudeRunner();
+    await expect(runner.run(makeInput({ cwd: repoRoot }))).resolves.toBeDefined();
   });
 });
 

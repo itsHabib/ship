@@ -17,6 +17,7 @@ export {
   runtimeCeilingViolation,
 } from "@ship/core/dispatch-policy";
 export type {
+  CredentialsConstraint,
   DispatchPolicy,
   DispatchPolicyConstraint,
   LoadedDispatchPolicy,

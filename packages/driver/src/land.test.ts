@@ -1,6 +1,9 @@
 /** Land verb — merge, read gh facts, record via markMerged. */
 
 import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { DecideError } from "./errors.js";
@@ -417,6 +420,151 @@ describe("land", () => {
       const run = await land(store, gh, runId, { prNumber: 111 });
 
       expect(gh.mergeCalls).toHaveLength(1);
+      expect(run.batches[0]?.streams[0]?.status).toBe("done");
+    });
+  });
+
+  describe("gh identity guard", () => {
+    let tmpDir: string;
+    let repoRoot: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), "ship-land-cred-"));
+      repoRoot = join(tmpDir, "repo");
+      mkdirSync(join(repoRoot, ".git"), { recursive: true });
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { force: true, recursive: true });
+    });
+
+    function pinGhHostUser(login: string): void {
+      writeFileSync(
+        join(repoRoot, ".ship.json"),
+        JSON.stringify({ credentials: { gh_host_user: login } }),
+        "utf8",
+      );
+    }
+
+    function seedRunUnderRepo(streamId: string, prUrl: string): string {
+      return store.insertDriverRun({
+        batches: [
+          {
+            batchIndex: 1,
+            dependsOn: [],
+            id: newDriverBatchId(),
+            status: "running",
+            streams: [
+              {
+                attempts: [],
+                id: streamId,
+                prUrl,
+                runtime: "cloud",
+                specPath: "a.md",
+                status: "landed",
+                streamIndex: 0,
+                touches: [],
+              },
+            ],
+          },
+        ],
+        id: newDriverRunId(),
+        manifestPath: join(repoRoot, "docs", "driver.md"),
+        repo: "ship",
+        sourceJson: minimalSource(),
+        status: "running",
+      }).id;
+    }
+
+    test("merges when gh login matches the pinned gh_host_user", async () => {
+      pinGhHostUser("work-login");
+      const streamId = newDriverStreamId();
+      const runId = seedRunUnderRepo(streamId, "https://github.com/org/ship/pull/200");
+      const gh = createFakeGhPort(
+        { 200: { mergeCommit: null, mergedAt: null, state: "OPEN" } },
+        { login: "work-login" },
+      );
+
+      const run = await land(store, gh, runId, { prNumber: 200 });
+
+      expect(gh.loginCalls).toBe(1);
+      expect(gh.mergeCalls).toHaveLength(1);
+      expect(run.batches[0]?.streams[0]?.status).toBe("done");
+    });
+
+    test("refuses the gh write when the login does not match, before merging", async () => {
+      pinGhHostUser("work-login");
+      const streamId = newDriverStreamId();
+      const runId = seedRunUnderRepo(streamId, "https://github.com/org/ship/pull/201");
+      const gh = createFakeGhPort(
+        { 201: { mergeCommit: null, mergedAt: null, state: "OPEN" } },
+        { login: "personal-login" },
+      );
+
+      await expect(land(store, gh, runId, { prNumber: 201 })).rejects.toThrow(
+        /gh identity mismatch: .*\.ship\.json requires login 'work-login' but gh is authenticated as 'personal-login'/,
+      );
+      expect(gh.mergeCalls).toEqual([]);
+    });
+
+    test("does not refuse an already-MERGED PR on identity mismatch (read-only path)", async () => {
+      // The write guard sits at the merge site, so a land that only reads (PR
+      // already merged) is never refused on identity — the misleading refusal the
+      // reword/move fixes. Identity is never even checked (no write attempted).
+      pinGhHostUser("work-login");
+      const streamId = newDriverStreamId();
+      const runId = seedRunUnderRepo(streamId, "https://github.com/org/ship/pull/205");
+      const gh = createFakeGhPort(
+        {
+          205: {
+            mergeCommit: { oid: "abc123" },
+            mergedAt: "2026-07-17T00:00:00Z",
+            state: "MERGED",
+          },
+        },
+        { login: "personal-login" },
+      );
+
+      const run = await land(store, gh, runId, { prNumber: 205 });
+
+      expect(gh.mergeCalls).toEqual([]);
+      expect(gh.loginCalls).toBe(0);
+      expect(run.batches[0]?.streams[0]?.status).toBe("done");
+    });
+
+    test("refuses when the gh login cannot be read", async () => {
+      pinGhHostUser("work-login");
+      const streamId = newDriverStreamId();
+      const runId = seedRunUnderRepo(streamId, "https://github.com/org/ship/pull/202");
+      const gh = createFakeGhPort(
+        { 202: { mergeCommit: null, mergedAt: null, state: "OPEN" } },
+        { loginError: "gh: not authenticated" },
+      );
+
+      await expect(land(store, gh, runId, { prNumber: 202 })).rejects.toThrow(
+        /cannot verify gh identity required by .* not authenticated/,
+      );
+      expect(gh.mergeCalls).toEqual([]);
+    });
+
+    test("skips the identity check entirely when no gh_host_user is pinned", async () => {
+      // .ship.json present but with no credentials block — byte-identical to today.
+      writeFileSync(
+        join(repoRoot, ".ship.json"),
+        JSON.stringify({ runtime: { allow: ["cloud"] } }),
+        "utf8",
+      );
+      const streamId = newDriverStreamId();
+      const runId = seedRunUnderRepo(streamId, "https://github.com/org/ship/pull/203");
+      const gh = createFakeGhPort(
+        { 203: { mergeCommit: null, mergedAt: null, state: "OPEN" } },
+        { login: "anyone" },
+      );
+
+      const run = await land(store, gh, runId, { prNumber: 203 });
+
+      expect(gh.loginCalls).toBe(0);
       expect(run.batches[0]?.streams[0]?.status).toBe("done");
     });
   });
