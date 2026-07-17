@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./dispatch-policy": {
+      "types": "./src/dispatch-policy.ts",
+      "default": "./src/dispatch-policy.ts"
     }
   },
   "scripts": {

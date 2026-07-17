@@ -2721,7 +2721,7 @@ describe("ShipService — dispatch policy ceiling", () => {
     }
   });
 
-  test("provider ceiling: also enforced via ship() (sync path)", async () => {
+  test("runtime ceiling: also enforced via ship() (sync path)", async () => {
     writeFileSync(join(tmpdir, ".ship.json"), JSON.stringify({ runtime: { allow: ["cloud"] } }));
     const h = await createHarness();
     try {
@@ -2735,13 +2735,17 @@ describe("ShipService — dispatch policy ceiling", () => {
   });
 
   test("absent .ship.json: passthrough — behavior byte-identical to today", async () => {
-    // No .ship.json in WORKDIR (in-memory path); policy finds nothing → no ceiling.
+    // No .ship.json in tmpdir; its .git marker bounds the policy walk-up so
+    // the test never traverses the real filesystem above it. The task doc is
+    // seeded into the memory FS at the tmpdir-based path the service resolves.
     const h = await createHarness();
+    await h.fs.mkdir(tmpdir, { recursive: true });
+    await h.fs.writeFile(join(tmpdir, "docs.md"), "# Task\n\nDo the thing.");
     h.cursor.enqueue({
       events: [],
       result: { status: "succeeded", durationMs: 0, branches: [] },
     });
-    const out = await h.service.ship({ workdir: WORKDIR, repo: "ship", docPath: "docs.md" });
+    const out = await h.service.ship({ workdir: tmpdir, repo: "ship", docPath: "docs.md" });
     expect(out.status).toBe("succeeded");
     h.store.close();
   });

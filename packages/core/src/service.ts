@@ -61,6 +61,7 @@ import {
   newPhaseId,
   newWorkflowRunId,
 } from "@ship/workflow";
+import { realpathSync } from "node:fs";
 import { basename, resolve as resolvePathAbs } from "node:path";
 
 import type { EventWriter } from "./artifacts/ndjson.js";
@@ -813,7 +814,10 @@ interface PreparedRun {
 function enforceDispatchPolicy(ctx: ShipContext): void {
   const { workdir } = ctx.input;
   if (workdir === undefined) return;
-  const loaded = loadDispatchPolicy(workdir);
+  const loaded = loadDispatchPolicy(resolveWorkdirForPolicy(workdir));
+  for (const warning of loaded.warnings) {
+    ctx.logger.warn({ policyPath: loaded.policyPath }, warning);
+  }
   const runtimeViolation = runtimeCeilingViolation(loaded, ctx.resolvedCursorRuntime);
   if (runtimeViolation !== undefined) {
     throw new DispatchPolicyCeilingError(loaded.policyPath ?? workdir, runtimeViolation);
@@ -821,6 +825,17 @@ function enforceDispatchPolicy(ctx: ShipContext): void {
   const providerViolation = providerCeilingViolation(loaded, ctx.provider);
   if (providerViolation !== undefined) {
     throw new DispatchPolicyCeilingError(loaded.policyPath ?? workdir, providerViolation);
+  }
+}
+
+// A symlinked workdir resolves to its real path first so the policy walk-up
+// sees the governed repository's tree, not the link's lexical parent. An
+// unresolvable path falls back to the lexical walk (absent-policy behavior).
+function resolveWorkdirForPolicy(workdir: string): string {
+  try {
+    return realpathSync(workdir);
+  } catch {
+    return workdir;
   }
 }
 
