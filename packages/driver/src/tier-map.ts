@@ -71,9 +71,12 @@ const CLAUDE_MODEL_BY_TIER: Record<ModelTier, string> = {
   opus: "claude-opus-4-8",
 };
 
+// Claude effort analogs (SDK EffortLevel): extra = xhigh (single-agent deep,
+// falls back to high on models without it), max = the SDK maximum. These are
+// consumed by the claude local runner as the query effort option.
 const CLAUDE_REASONING_BY_EFFORT: Record<Exclude<EffortTier, "ultracode">, string> = {
-  extra: "low",
-  max: "high",
+  extra: "xhigh",
+  max: "max",
 };
 
 /** Map resolved stream tiers to `ShipInput` model fields for the given provider. */
@@ -197,7 +200,7 @@ function mapClaudeTier(
     degradeParts.push(
       "ultracode implies a multi-agent path; dispatching at max effort until engine support exists",
     );
-    modelParams = appendParam(modelParams, reasoningParam("high"));
+    modelParams = appendParam(modelParams, reasoningParam("max"));
     return buildDispatchResult(model, modelParams, {
       ...degrade,
       reason: degradeParts.join("; "),

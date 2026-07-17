@@ -64,14 +64,21 @@ describe("mapTierToDispatch", () => {
   test("claude maps model and effort to modelParams", () => {
     expect(mapTierToDispatch("claude", "opus", "max")).toEqual({
       model: "claude-opus-4-8",
-      modelParams: [{ id: "reasoning", value: "high" }],
+      modelParams: [{ id: "reasoning", value: "max" }],
+    });
+  });
+
+  test("claude extra effort maps to xhigh", () => {
+    expect(mapTierToDispatch("claude", "opus", "extra")).toEqual({
+      model: "claude-opus-4-8",
+      modelParams: [{ id: "reasoning", value: "xhigh" }],
     });
   });
 
   test("claude ultracode degrades to max effort", () => {
     const mapped = mapTierToDispatch("claude", "sonnet", "ultracode");
     expect(mapped.model).toBe("claude-sonnet-4-6");
-    expect(mapped.modelParams).toEqual([{ id: "reasoning", value: "high" }]);
+    expect(mapped.modelParams).toEqual([{ id: "reasoning", value: "max" }]);
     expect(mapped.degrade?.effortDegraded).toBe(true);
     expect(mapped.degrade?.reason).toContain("multi-agent");
   });
@@ -141,7 +148,7 @@ describe("mapTierToDispatch", () => {
     test("claude model_id passes through verbatim with reasoning param", () => {
       expect(mapTierToDispatch("claude", undefined, "max", "claude-opus-4-8")).toEqual({
         model: "claude-opus-4-8",
-        modelParams: [{ id: "reasoning", value: "high" }],
+        modelParams: [{ id: "reasoning", value: "max" }],
       });
     });
 
