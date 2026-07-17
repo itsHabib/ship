@@ -107,6 +107,29 @@ function fallbackModelFromParams(params: ModelSelection["params"]): string | und
   return undefined;
 }
 
+type QueryEffort = Extract<NonNullable<Parameters<typeof query>[0]["options"]>["effort"], string>;
+
+const EFFORT_LEVELS: ReadonlySet<string> = new Set([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] satisfies QueryEffort[]);
+
+// The driver records the effort tier as a "reasoning" model param; the SDK
+// takes it as the query effort option. An unrecognized value is dropped (the
+// SDK default applies) rather than failing the dispatch.
+function effortFromParams(params: ModelSelection["params"]): QueryEffort | undefined {
+  if (params === undefined) return undefined;
+  const reasoning = params.find((p) => p.id === "reasoning");
+  if (reasoning === undefined) return undefined;
+  if (typeof reasoning.value !== "string" || !EFFORT_LEVELS.has(reasoning.value)) {
+    return undefined;
+  }
+  return reasoning.value as QueryEffort;
+}
+
 function translateMcpServers(
   mcpServers: Record<string, McpServerConfig> | undefined,
 ): Record<string, SdkMcpServerConfig> | undefined {
@@ -160,10 +183,12 @@ function buildQueryOptions(
   sessionId: `${string}-${string}-${string}-${string}-${string}`,
 ): NonNullable<Parameters<typeof query>[0]["options"]> {
   const fallbackModel = fallbackModelFromParams(input.model.params);
+  const effort = effortFromParams(input.model.params);
   return {
     abortController,
     allowDangerouslySkipPermissions: true,
     cwd: input.cwd,
+    ...(effort !== undefined && { effort }),
     env: buildQueryEnv(),
     ...(fallbackModel !== undefined && { fallbackModel }),
     ...(input.agents !== undefined && { agents: input.agents }),

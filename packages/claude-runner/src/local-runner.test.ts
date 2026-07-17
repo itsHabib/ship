@@ -374,6 +374,46 @@ describe("LocalClaudeRunner — query options", () => {
     expect(call?.options?.["fallbackModel"]).toBeUndefined();
   });
 
+  test("reasoning param reaches options.effort", async () => {
+    const { queryInstance } = makeMockQuery({ events: [successResult] });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    await runner.run(
+      baseInput({
+        model: {
+          id: "claude-opus-4-8",
+          params: [{ id: "reasoning", value: "xhigh" }],
+        },
+      }),
+    );
+
+    const call = vi.mocked(query).mock.calls[0]?.[0] as
+      | { options?: Record<string, unknown> }
+      | undefined;
+    expect(call?.options?.["effort"]).toBe("xhigh");
+  });
+
+  test("unrecognized reasoning value is dropped, not dispatched", async () => {
+    const { queryInstance } = makeMockQuery({ events: [successResult] });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    await runner.run(
+      baseInput({
+        model: {
+          id: "claude-opus-4-8",
+          params: [{ id: "reasoning", value: "turbo" }],
+        },
+      }),
+    );
+
+    const call = vi.mocked(query).mock.calls[0]?.[0] as
+      | { options?: Record<string, unknown> }
+      | undefined;
+    expect(call?.options?.["effort"]).toBeUndefined();
+  });
+
   test("omits ANTHROPIC_BASE_URL from env when unset", async () => {
     vi.unstubAllEnvs();
     vi.stubEnv("ANTHROPIC_API_KEY", "test-key-abc123");
