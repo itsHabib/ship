@@ -658,6 +658,28 @@ describe("importManifest fallback chains", () => {
     );
   });
 
+  it("rejects a fallback that duplicates the implicit engine-default primary", () => {
+    // No provider anywhere: the engine dispatches such a stream as cursor, so a
+    // cloud/cursor fallback is a hop back to the same cell.
+    const path = writeManifest([
+      ...HEADER,
+      "repo_url: https://github.com/itsHabib/ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        branch_name: feat-a",
+      "        runtime: cloud",
+      "        fallback:",
+      "          - runtime: cloud",
+      "            provider: cursor",
+    ]);
+    expect(() => importManifest(store, path, { env: FULL_ENV })).toThrow(
+      /duplicate fallback target cloud\/cursor/,
+    );
+  });
+
   it("rejects two identical fallback entries", () => {
     const path = cloudCursorStream([
       "fallback:",
@@ -717,7 +739,7 @@ describe("importManifest fallback chains", () => {
     const path = cloudCursorStream(["fallback:", "  - runtime: local", "    provider: claude"]);
     const { warnings } = importManifest(store, path, { env: {} });
     expect(warnings?.join("\n")).toMatch(
-      /fallback target local\/claude: ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY not set/,
+      /fallback target local\/claude: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY not set/,
     );
   });
 

@@ -145,7 +145,17 @@ export const driverStreamSchema = z
     updatedAt: z.string().datetime({ offset: true }),
     workflowRunId: z.string().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((stream, ctx) => {
+    const set = [stream.fallbackChain, stream.fallbackCursor, stream.fallbackLog].filter(
+      (v) => v !== undefined,
+    ).length;
+    if (set === 0 || set === 3) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "fallbackChain, fallbackCursor, and fallbackLog must be set together",
+    });
+  });
 
 export const driverBatchSchema = z
   .object({

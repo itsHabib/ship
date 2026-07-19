@@ -90,8 +90,13 @@ function missingClaudeEnv(
   if (runtime === "cloud") {
     return hasEnv(env["ANTHROPIC_API_KEY"]) ? undefined : "ANTHROPIC_API_KEY";
   }
-  const present = hasEnv(env["ANTHROPIC_AUTH_TOKEN"]) || hasEnv(env["ANTHROPIC_API_KEY"]);
-  return present ? undefined : "ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY";
+  const present =
+    hasEnv(env["CLAUDE_CODE_OAUTH_TOKEN"]) ||
+    hasEnv(env["ANTHROPIC_AUTH_TOKEN"]) ||
+    hasEnv(env["ANTHROPIC_API_KEY"]);
+  return present
+    ? undefined
+    : "CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY";
 }
 
 function hasEnv(value: string | undefined): boolean {

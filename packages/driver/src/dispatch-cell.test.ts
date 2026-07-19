@@ -73,7 +73,13 @@ describe("missingCredentialEnv", () => {
     ).toBeUndefined();
   });
 
-  it("accepts either token for claude/local, only API_KEY for claude/cloud", () => {
+  it("accepts any claude/local token, only API_KEY for claude/cloud", () => {
+    expect(
+      missingCredentialEnv(
+        { provider: "claude", runtime: "local" },
+        { CLAUDE_CODE_OAUTH_TOKEN: "o" },
+      ),
+    ).toBeUndefined();
     expect(
       missingCredentialEnv({ provider: "claude", runtime: "local" }, { ANTHROPIC_AUTH_TOKEN: "t" }),
     ).toBeUndefined();
@@ -81,7 +87,7 @@ describe("missingCredentialEnv", () => {
       missingCredentialEnv({ provider: "claude", runtime: "local" }, { ANTHROPIC_API_KEY: "k" }),
     ).toBeUndefined();
     expect(missingCredentialEnv({ provider: "claude", runtime: "local" }, {})).toBe(
-      "ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY",
     );
     // AUTH_TOKEN alone does not satisfy the cloud runner (spec §4.4).
     expect(

@@ -26,6 +26,7 @@ import type {
 import type { LoadedDispatchPolicy, PolicyRuntime } from "./policy.js";
 
 import { cellStructuralIssue, missingCredentialEnv } from "./dispatch-cell.js";
+import { DEFAULT_DISPATCH_PROVIDER } from "./engine.js";
 import { parseManifest } from "./manifest.js";
 import {
   loadDispatchPolicy,
@@ -486,11 +487,11 @@ function collectStreamFallbackErrors(
 ): void {
   const label = streamLabel(stream);
   const primaryRuntime = resolveDispatchRuntime(policy, stream.runtime, manifest.default_runtime);
-  const primaryProvider = resolveDispatchProvider(
-    policy,
-    stream.provider,
-    manifest.default_provider,
-  );
+  // A stream with no provider anywhere still dispatches as the engine default,
+  // so the dupe seed must name it — else a fallback to that same cell passes.
+  const primaryProvider =
+    resolveDispatchProvider(policy, stream.provider, manifest.default_provider) ??
+    DEFAULT_DISPATCH_PROVIDER;
   const primaryModelId = stream.model_id ?? manifest.default_model_id;
   const seen = new Set<string>([targetKey(primaryRuntime, primaryProvider, primaryModelId)]);
   const ctx = { branchName: stream.branch_name, repoUrl: manifest.repo_url };
