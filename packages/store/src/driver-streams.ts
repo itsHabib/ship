@@ -22,6 +22,7 @@ export interface UpdateDriverStreamInput {
   attempts?: StreamAttempt[];
   branch?: string;
   runtime?: DriverStream["runtime"];
+  provider?: DriverStream["provider"] | null;
   workOnCurrentBranch?: boolean | null;
   prNumber?: number;
   prUrl?: string;
@@ -35,6 +36,12 @@ export interface UpdateDriverStreamInput {
   dispatchModelParams?: DriverStream["dispatchModelParams"] | null;
   effortDegraded?: boolean;
   tierDegradeReason?: string | null;
+  /** Rewrite (or `null`-clear) the model id when a hop changes the target. */
+  modelId?: DriverStream["modelId"] | null;
+  /** Advance the fallback cursor (dispatch-fallback hop); chain stays frozen. */
+  fallbackCursor?: number;
+  /** Replace the append-only fallback log (caller concatenates). */
+  fallbackLog?: FallbackLogRecord[];
 }
 
 export interface DriverStreamRow {
@@ -226,6 +233,7 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
   appendStreamPatchColumn(sets, params, "attempts = ?", patch.attempts, JSON.stringify);
   appendStreamPatchColumn(sets, params, "branch = ?", patch.branch);
   appendStreamPatchColumn(sets, params, "runtime = ?", patch.runtime);
+  appendStreamPatchColumn(sets, params, "provider = ?", patch.provider);
   appendStreamPatchColumn(sets, params, "pr_number = ?", patch.prNumber);
   appendStreamPatchColumn(sets, params, "pr_url = ?", patch.prUrl);
   appendStreamPatchColumn(sets, params, "merge_commit = ?", patch.mergeCommit);
@@ -235,6 +243,7 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
   appendStreamPatchColumn(sets, params, "error_message = ?", patch.errorMessage);
   appendStreamPatchColumn(sets, params, "dispatch_provider = ?", patch.dispatchProvider);
   appendStreamPatchColumn(sets, params, "dispatch_model = ?", patch.dispatchModel);
+  appendStreamPatchColumn(sets, params, "model_id = ?", patch.modelId);
   appendStreamPatchColumn(
     sets,
     params,
@@ -251,6 +260,8 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
     patch.workOnCurrentBranch,
     (value) => (value === null ? null : boolToInt(value)),
   );
+  appendStreamPatchColumn(sets, params, "fallback_cursor = ?", patch.fallbackCursor);
+  appendStreamPatchColumn(sets, params, "fallback_log = ?", patch.fallbackLog, JSON.stringify);
   if (sets.length === 1) return;
   params.push(id);
   db.prepare(`UPDATE driver_streams SET ${sets.join(", ")} WHERE id = ?`).run(...params);

@@ -44,6 +44,7 @@ import {
   writeAndDeliverEscalations,
   writeCycleExhaustedEscalation,
 } from "./escalation.js";
+import { decideFallbackHop, type FallbackHopDecision } from "./fallback-hop.js";
 import { assertGhIdentity } from "./gh-identity.js";
 import { toGhRepo } from "./gh-port.js";
 import {
@@ -79,6 +80,7 @@ import {
   ReviewFindingsValidationError,
 } from "./review-findings.js";
 import { mapTierToDispatch } from "./tier-map.js";
+import { createViabilityDeps } from "./viability.js";
 
 /** The provider the engine dispatches with when nothing else names one. */
 export const DEFAULT_DISPATCH_PROVIDER: AgentProvider = "cursor";
@@ -371,6 +373,35 @@ async function runDispatchPollLoop(state: PollLoopState): Promise<DriverTickResu
         status: exit.status,
       });
     }
+
+    // Poll-seam hop leaves pending work with no in-flight — one immediate
+    // re-dispatch pass (not an unbounded continue) so maxWaitMs:0 ticks can
+    // finish the hop target without spinning when pending stays undispatchable.
+    current = loadRun(state.ctx.store, state.driverRunId);
+    if (!hasInFlightStreams(current) && runHasPendingDispatchable(current, state.opts)) {
+      noteProgress();
+      await dispatchEligible(buildDispatchContext(current, state.opts, state.ctx, noteProgress));
+      current = loadRun(state.ctx.store, state.driverRunId);
+      current = await pollDispatched(
+        state.ctx,
+        state.liveness,
+        state.ctx.store,
+        state.ctx.ship,
+        current,
+      );
+      const afterHop = evaluateExit(current, state.ambiguities);
+      if (afterHop !== undefined) {
+        return finalizeExit({
+          ambiguities: state.ambiguities,
+          ctx: state.ctx,
+          driverRunId: state.driverRunId,
+          opts: state.opts,
+          run: current,
+          status: afterHop.status,
+        });
+      }
+    }
+
     if (shouldGiveUpTick(state.ctx.monotonicClock(), state.liveness, state.opts)) {
       return buildResult(current, state.ambiguities, "running");
     }
@@ -378,6 +409,14 @@ async function runDispatchPollLoop(state: PollLoopState): Promise<DriverTickResu
     await state.ctx.sleep(jitteredPollInterval(state.opts.pollIntervalMs, state.ctx.rng));
     current = loadRun(state.ctx.store, state.driverRunId);
   }
+}
+
+function runHasPendingDispatchable(run: DriverRun, opts: ResolvedRunOpts): boolean {
+  for (const batch of run.batches) {
+    if (opts.batch !== undefined && batch.batchIndex !== opts.batch) continue;
+    if (batchHasPendingDispatchable(batch, run.batches)) return true;
+  }
+  return false;
 }
 
 interface FinalizeExitInput {
@@ -693,10 +732,25 @@ async function dispatchBatchStreams(
     // A failed dispatch holds no slot — only live work counts against the caps.
     if (!dispatched) continue;
     ctx.onProgress();
-    if (stream.runtime === "local") local += 1;
-    if (stream.runtime === "cloud") cloud += 1;
+    const bumped = bumpInFlightAfterDispatch(ctx, stream, local, cloud);
+    local = bumped.local;
+    cloud = bumped.cloud;
   }
   return local;
+}
+
+/** Count the post-dispatch runtime — a hop may have rewritten it mid-call. */
+function bumpInFlightAfterDispatch(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  local: number,
+  cloud: number,
+): { local: number; cloud: number } {
+  const live = findStream(loadRun(ctx.store, ctx.runId), stream.id);
+  const runtime = live?.runtime ?? stream.runtime;
+  if (runtime === "local") return { cloud, local: local + 1 };
+  if (runtime === "cloud") return { cloud: cloud + 1, local };
+  return { cloud, local };
 }
 
 function canDispatchStream(
@@ -727,6 +781,41 @@ async function dispatchStream(
   ctx: DispatchContext,
   stream: DriverStream,
   opts: DispatchStreamOpts = {},
+): Promise<boolean> {
+  // Sync-seam hops reset the stream to pending on a new target; re-dispatch in
+  // the same tick until start succeeds, the chain exhausts, or the failure is
+  // ineligible. Cursor monotonicity bounds the loop to chain length.
+  let current = stream;
+  for (;;) {
+    const dispatched = await dispatchStreamOnce(ctx, current, opts);
+    if (dispatched) return true;
+    const refreshed = ctx.store.getDriverRun(ctx.runId);
+    if (refreshed === null) return false;
+    const next = findStream(refreshed, current.id);
+    if (next?.status !== "pending") return false;
+    // A hop may have rewritten the runtime — the redispatch must clear the
+    // same caps a fresh dispatch would; a saturated target waits for a later
+    // tick instead of overshooting maxParallel*.
+    const local = countInFlight(refreshed, "local");
+    const cloud = countInFlight(refreshed, "cloud");
+    if (!canDispatchStream(next, local, cloud, ctx.opts)) return false;
+    current = next;
+  }
+}
+
+function findStream(run: DriverRun, streamId: string): DriverStream | undefined {
+  for (const batch of run.batches) {
+    for (const s of batch.streams) {
+      if (s.id === streamId) return s;
+    }
+  }
+  return undefined;
+}
+
+async function dispatchStreamOnce(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  opts: DispatchStreamOpts,
 ): Promise<boolean> {
   const headOk = await checkTickAddressHead(ctx, stream);
   if (!headOk) return false;
@@ -760,10 +849,13 @@ async function dispatchStream(
   return dispatchStartShip({
     baseAttempts: attempts,
     input,
+    repoRoot: ctx.repoRoot,
+    repoUrl: ctx.repoUrl,
     runId: ctx.runId,
     ship: ctx.ship,
     store: ctx.store,
-    streamId: stream.id,
+    stream,
+    clock: ctx.clock,
   });
 }
 
@@ -837,25 +929,31 @@ function failStreamHeadCheck(store: Store, streamId: string, reason: string): fa
 }
 
 /**
- * The doc a tick re-dispatch resolves: the latest attempt's recorded docPath
- * (so a `decide retry` of a failed `address` re-runs the synthesized findings
- * doc, not the spec) before falling back to the stream's spec path for a fresh
- * dispatch. Callers that change runtime (flip-cloud) or synthesize a doc
- * (address) pass an explicit `docPath` and never hit this.
+ * The doc a tick re-dispatch resolves. An `address` re-dispatch (reviewCycles
+ * > 0) must reuse the latest attempt's synthesized findings doc. Everything
+ * else — including a fallback hop onto a new runtime — resolves from the
+ * stream's spec path for the *current* runtime (cloud root vs local worktree).
+ * Reusing a prior cloud attempt's docPath after a hop to local would miss the
+ * worktree and break the fake-runner / core workdir invariant.
  */
 function resolveDispatchDocPath(repoRoot: string, stream: DriverStream): string {
-  const recorded = stream.attempts.at(-1)?.docPath;
-  if (recorded !== undefined) return recorded;
+  if ((stream.reviewCycles ?? 0) > 0) {
+    const recorded = stream.attempts.at(-1)?.docPath;
+    if (recorded !== undefined) return recorded;
+  }
   return resolveStreamDocPath(repoRoot, stream);
 }
 
 interface StartShipParams {
   store: Store;
   ship: DriverShipPort;
-  streamId: string;
+  stream: DriverStream;
   input: ShipInput;
   runId: string;
   baseAttempts: StreamAttempt[];
+  repoRoot: string;
+  repoUrl: string | undefined;
+  clock: () => number;
 }
 
 async function dispatchStartShip(params: StartShipParams): Promise<boolean> {
@@ -864,22 +962,94 @@ async function dispatchStartShip(params: StartShipParams): Promise<boolean> {
     output = await params.ship.startShip(params.input);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    params.store.updateDriverStream(params.streamId, {
-      attempts: markLatestAttemptFailed(params.baseAttempts, "sdk-throw"),
+    const failedAttempts = markLatestAttemptFailed(params.baseAttempts, "sdk-throw");
+    await applyFallbackAfterFailure({
+      category: "sdk-throw",
+      clock: params.clock,
       errorMessage: message,
-      status: "failed",
+      failedAttempts,
+      repoRoot: params.repoRoot,
+      repoUrl: params.repoUrl,
+      store: params.store,
+      stream: params.stream,
     });
+    // false either way: hop leaves pending for the dispatchStream loop; fail parks.
     return false;
   }
   // Persistence failures past this point propagate as engine errors: the
   // workflow is live, so the stream must stay `dispatching` for §7.3 recovery
   // to adopt — marking it failed would invite duplicate dispatch on retry.
-  params.store.updateDriverStream(params.streamId, {
+  params.store.updateDriverStream(params.stream.id, {
     attempts: markLatestAttemptWorkflowRunId(params.baseAttempts, output.workflowRunId),
     status: "dispatched",
     workflowRunId: output.workflowRunId,
   });
   return true;
+}
+
+/**
+ * Shared hop gate for both seams. Returns `hopped` when the stream was reset to
+ * pending on a new target; `failed` when it stays (or becomes) failed.
+ */
+async function applyFallbackAfterFailure(params: {
+  store: Store;
+  stream: DriverStream;
+  failedAttempts: StreamAttempt[];
+  category: FailureCategory;
+  errorMessage: string;
+  repoRoot: string;
+  repoUrl: string | undefined;
+  clock: () => number;
+  pollPrUrl?: string;
+}): Promise<"hopped" | "failed"> {
+  const at = new Date(params.clock()).toISOString();
+  const decision = await decideFallbackHop(params.stream, {
+    at,
+    category: params.category,
+    failedAttempts: params.failedAttempts,
+    repoRoot: params.repoRoot,
+    repoUrl: params.repoUrl,
+    viability: createViabilityDeps(process.env),
+    ...(params.pollPrUrl !== undefined ? { pollPrUrl: params.pollPrUrl } : {}),
+  });
+  return commitFallbackDecision(params, decision);
+}
+
+function commitFallbackDecision(
+  params: {
+    store: Store;
+    stream: DriverStream;
+    failedAttempts: StreamAttempt[];
+    errorMessage: string;
+    pollPrUrl?: string;
+  },
+  decision: FallbackHopDecision,
+): "hopped" | "failed" {
+  if (decision.kind === "hop") {
+    params.store.updateDriverStream(params.stream.id, decision.patch);
+    return "hopped";
+  }
+  if (decision.kind === "exhaust") {
+    params.store.updateDriverStream(params.stream.id, {
+      ...decision.patch,
+      errorMessage: params.errorMessage,
+    });
+    return "failed";
+  }
+  // A workflow PR seen at the poll seam is a work product every later
+  // stored-column reader (sync seam, breaker predicate, decide retry) must
+  // see — persist it with the failure.
+  const prUrlExtras =
+    params.pollPrUrl !== undefined && params.stream.prUrl === undefined
+      ? { prUrl: params.pollPrUrl }
+      : {};
+  params.store.updateDriverStream(params.stream.id, {
+    attempts: params.failedAttempts,
+    errorMessage: params.errorMessage,
+    status: "failed",
+    ...prUrlExtras,
+  });
+  return "failed";
 }
 
 function buildShipInput(params: {
@@ -1352,11 +1522,14 @@ async function dispatchAddress(params: {
   });
   const dispatched = await dispatchStartShip({
     baseAttempts: flipped.attempts,
+    clock,
     input,
+    repoRoot: ctx.repoRoot,
+    repoUrl: ctx.repoUrl,
     runId: driverRunId,
     ship,
     store,
-    streamId: flipped.id,
+    stream: flipped,
   });
   if (!dispatched) {
     // The failed launch left the stream `failed`; stamp the run awaiting_judgment
@@ -1611,10 +1784,29 @@ async function pollOneStream(params: PollOneStreamParams): Promise<void> {
     return;
   }
 
-  store.updateDriverStream(stream.id, {
-    attempts: markLatestAttemptFailed(stream.attempts, wfRun.failureCategory ?? "unknown"),
+  await handleFailedPoll(ctx, run, store, stream, wfRun);
+}
+
+async function handleFailedPoll(
+  ctx: TickContext,
+  run: DriverRun,
+  store: Store,
+  stream: DriverStream,
+  wfRun: GetWorkflowRunOutput,
+): Promise<void> {
+  const category = wfRun.failureCategory ?? "unknown";
+  const failedAttempts = markLatestAttemptFailed(stream.attempts, category);
+  const pollPrUrl = wfRun.branches?.[0]?.prUrl;
+  await applyFallbackAfterFailure({
+    category,
+    clock: ctx.clock,
     errorMessage: wfRun.failureCategory ?? wfRun.status,
-    status: "failed",
+    failedAttempts,
+    repoRoot: resolveRepoRoot(run.manifestPath),
+    repoUrl: extractRepoUrl(run),
+    store,
+    stream,
+    ...(pollPrUrl !== undefined ? { pollPrUrl } : {}),
   });
 }
 

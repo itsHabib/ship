@@ -173,7 +173,8 @@ function buildRun(script: FakeRunScript, now: () => string): GetWorkflowRunOutpu
   if (status === "failed" && script.failureCategory !== undefined) {
     run.failureCategory = script.failureCategory;
   }
-  if (status === "succeeded" && script.prUrl !== undefined) {
+  // Any status may carry a PR (cloud autoPR then failure) — mirror that.
+  if (script.prUrl !== undefined) {
     run.branches = [
       {
         branch: script.branchName ?? branch,

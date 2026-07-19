@@ -23,6 +23,12 @@ import type {
 } from "./types.js";
 
 import {
+  buildFallbackExhaustionEscalationCopy,
+  chainStillConsumable,
+  hasExhaustedFallbackChain,
+  hasUnconsumedFallbackChain,
+} from "./fallback-hop.js";
+import {
   allStreams,
   buildDispatchAmbiguityRequests,
   buildFailureTriageRequests,
@@ -116,11 +122,13 @@ function buildStreamParkedPayload(
   request: JudgmentRequest,
   createdAt: string,
 ): EscalationPayload {
+  const stream = findStream(run, streamId);
+  const question = parkQuestion(request, stream);
   const base: EscalationPayload = {
     class: "stream-parked",
     createdAt,
     driverRunId: run.id,
-    question: judgmentQuestion(request),
+    question,
     repo: run.repo,
     streamId,
     v: 1,
@@ -128,12 +136,41 @@ function buildStreamParkedPayload(
   if (request.kind === "merge-confirmation" || request.kind === "review-adjudication") {
     base.pr = request.prNumber;
   }
+  if (
+    request.kind === "failure-triage" &&
+    stream !== undefined &&
+    hasExhaustedFallbackChain(stream)
+  ) {
+    base.evidence = { links: [] };
+    return base;
+  }
   if (request.kind === "failure-triage" && request.errorMessage !== undefined) {
     base.question = `${base.question}: ${request.errorMessage}`;
     base.evidence = { links: [] };
     if (request.hint !== undefined) base.suggestion = request.hint;
   }
   return base;
+}
+
+function findStream(run: DriverRun, streamId: string): DriverStream | undefined {
+  for (const batch of run.batches) {
+    for (const stream of batch.streams) {
+      if (stream.id === streamId) return stream;
+    }
+  }
+  return undefined;
+}
+
+function parkQuestion(request: JudgmentRequest, stream: DriverStream | undefined): string {
+  if (
+    request.kind === "failure-triage" &&
+    stream !== undefined &&
+    hasExhaustedFallbackChain(stream)
+  ) {
+    const copy = buildFallbackExhaustionEscalationCopy(stream, request.failureCategory);
+    return `${copy.subject}\n${copy.body}`;
+  }
+  return judgmentQuestion(request);
 }
 
 function judgmentQuestion(request: JudgmentRequest): string {
@@ -205,6 +242,12 @@ export function writeDispatchFailingEscalations(deps: EscalationDeps, run: Drive
   const createdAt = nowIso(deps);
   const ids: string[] = [];
   for (const stream of allStreams(run)) {
+    // Live chain: breaker must not park (§7.2 step 0) — but only while the
+    // chain is actually consumable; an ineligible or work-carrying stream
+    // never hops, so its chain must not silence the breaker. Exhausted chain:
+    // §6 park copy subsumes the breaker row — never double-escalate.
+    if (hasUnconsumedFallbackChain(stream) && chainStillConsumable(stream)) continue;
+    if (hasExhaustedFallbackChain(stream)) continue;
     const failures = consecutiveDispatchFailures(stream);
     if (stream.status !== "failed" || failures < threshold) continue;
     const payload = buildDispatchFailingPayload(run, stream.id, failures, createdAt);
