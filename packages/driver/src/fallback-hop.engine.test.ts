@@ -1,0 +1,362 @@
+/**
+ * Engine e2e (fake runners) for dispatch-fallback P2a — both seams.
+ */
+
+import { createStore } from "@ship/store";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+
+import { resolveDocPath } from "./engine.js";
+import { createDriverService } from "./service.js";
+import { createFakeShipPort } from "./test/fake-ship-port.js";
+
+describe("engine fallback hop (P2a)", () => {
+  let tmpDir: string;
+  let repoRoot: string;
+  let prevAnthropic: string | undefined;
+  let prevClaudeOauth: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "fallback-engine-"));
+    repoRoot = join(tmpDir, "repo");
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    mkdirSync(join(repoRoot, "docs", "tasks"), { recursive: true });
+    writeFileSync(join(repoRoot, "docs", "tasks", "a.md"), "# task a\n");
+    mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-a"), { recursive: true });
+
+    prevAnthropic = process.env["ANTHROPIC_API_KEY"];
+    prevClaudeOauth = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "test-oauth";
+  });
+
+  afterEach(() => {
+    if (prevAnthropic === undefined) delete process.env["ANTHROPIC_API_KEY"];
+    else process.env["ANTHROPIC_API_KEY"] = prevAnthropic;
+    if (prevClaudeOauth === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+    else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = prevClaudeOauth;
+    rmSync(tmpDir, { force: true, recursive: true });
+  });
+
+  function writeCloudFallbackManifest(extraStreamLines: string[] = []): string {
+    const path = join(repoRoot, "fallback.driver.md");
+    writeFileSync(
+      path,
+      `---
+driver_version: 1
+generated_at: 2026-07-13T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: fallback-hop
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: cloud
+        provider: cursor
+        status: pending
+        fallback:
+          - runtime: local
+            provider: claude
+${extraStreamLines.map((l) => `        ${l}`).join("\n")}
+---
+`,
+    );
+    return path;
+  }
+
+  test("sync throw → hop → completes on local/claude with zero decide", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const localDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/tasks/a.md",
+    );
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        repo: "ship",
+        throwOnStart: new Error("boom"),
+        workflowRunId: "wf_cloud",
+      },
+      { docPath: localDoc, repo: "ship", workflowRunId: "wf_local" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+    expect(result.awaiting).toHaveLength(0);
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("local");
+    expect(stream?.provider).toBe("claude");
+    expect(stream?.fallbackCursor).toBe(1);
+    expect(stream?.fallbackLog).toHaveLength(1);
+    expect(stream?.fallbackLog?.[0] && "from" in stream.fallbackLog[0]).toBe(true);
+    store.close();
+  });
+
+  test("async pre-work gateway-auth → hop at poll seam", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const localDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/tasks/a.md",
+    );
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        failureCategory: "gateway-auth",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_cloud",
+      },
+      { docPath: localDoc, repo: "ship", workflowRunId: "wf_local" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+    expect(result.awaiting).toHaveLength(0);
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("local");
+    expect(stream?.provider).toBe("claude");
+    expect(stream?.fallbackLog?.[0]).toMatchObject({ category: "gateway-auth" });
+    store.close();
+  });
+
+  test("work-carrying stream (reviewCycles > 0) + eligible category does not hop (sync)", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        repo: "ship",
+        throwOnStart: new Error("boom"),
+        workflowRunId: "wf_cloud",
+      },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+    const streamId = store.getDriverRun(runId)!.batches[0]!.streams[0]!.id;
+    store.updateDriverStream(streamId, {
+      prUrl: "https://github.com/example/ship/pull/9",
+      reviewCycles: 1,
+    });
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("awaiting_judgment");
+    expect(result.awaiting[0]?.kind).toBe("failure-triage");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.provider).toBe("cursor");
+    expect(stream?.fallbackCursor).toBe(0);
+    expect(stream?.fallbackLog).toEqual([]);
+    store.close();
+  });
+
+  test("work-carrying + eligible does not hop at poll seam", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        failureCategory: "gateway-auth",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_cloud",
+      },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+    const streamId = store.getDriverRun(runId)!.batches[0]!.streams[0]!.id;
+    store.updateDriverStream(streamId, {
+      prUrl: "https://github.com/example/ship/pull/9",
+      reviewCycles: 2,
+    });
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("awaiting_judgment");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.fallbackLog).toEqual([]);
+    store.close();
+  });
+
+  test("multi-hop: two chain entries, first throws, second succeeds", async () => {
+    const path = join(repoRoot, "multi-hop.driver.md");
+    writeFileSync(
+      path,
+      `---
+driver_version: 1
+generated_at: 2026-07-13T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: fallback-multi
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: cloud
+        provider: cursor
+        status: pending
+        fallback:
+          - runtime: cloud
+            provider: claude
+          - runtime: local
+            provider: claude
+---
+`,
+    );
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const localDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/tasks/a.md",
+    );
+    const fake = createFakeShipPort([
+      { docPath: cloudDoc, repo: "ship", throwOnStart: new Error("primary"), workflowRunId: "wf1" },
+      // After hop to cloud/claude, doc path is still the cloud root doc.
+      { docPath: cloudDoc, repo: "ship", throwOnStart: new Error("second"), workflowRunId: "wf2" },
+      { docPath: localDoc, repo: "ship", workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(path).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("local");
+    expect(stream?.provider).toBe("claude");
+    expect(stream?.fallbackCursor).toBe(2);
+    expect(stream?.fallbackLog?.filter((r) => "from" in r)).toHaveLength(2);
+    store.close();
+  });
+
+  test("exhaustion escalates once with derived failed: line; no dispatch-failing row", async () => {
+    const path = join(repoRoot, "exhaust.driver.md");
+    writeFileSync(path, exhaustManifestYaml());
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const localDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/tasks/a.md",
+    );
+    const fake = createFakeShipPort([
+      { docPath: cloudDoc, repo: "ship", throwOnStart: new Error("primary"), workflowRunId: "wf1" },
+      {
+        docPath: localDoc,
+        repo: "ship",
+        throwOnStart: new Error("fallback"),
+        workflowRunId: "wf2",
+      },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(path).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expectExhaustionEscalation(store, runId, result);
+
+    // decide retry → fail again → exactly one new park escalation, no re-walk
+    const triage = result.awaiting[0];
+    if (triage?.kind !== "failure-triage") throw new Error("expected failure-triage");
+    driver.decide(runId, triage.streamId, { kind: "retry" });
+    const again = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(again.status).toBe("awaiting_judgment");
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.fallbackCursor).toBe(1);
+    expect(stream?.fallbackLog?.filter((r) => "from" in r)).toHaveLength(1);
+
+    const parkedAfter = store.listEscalations({ class: "stream-parked", driverRunId: runId });
+    expect(parkedAfter.length).toBeGreaterThanOrEqual(2);
+    store.close();
+  });
+
+  test("ineligible category (logic) does not hop", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        failureCategory: "logic",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_cloud",
+      },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("awaiting_judgment");
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.fallbackCursor).toBe(0);
+    expect(stream?.fallbackLog).toEqual([]);
+    store.close();
+  });
+});
+
+function exhaustManifestYaml(): string {
+  return `---
+driver_version: 1
+generated_at: 2026-07-13T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: fallback-exhaust
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: cloud
+        provider: cursor
+        status: pending
+        fallback:
+          - runtime: local
+            provider: claude
+---
+`;
+}
+
+function expectExhaustionEscalation(
+  store: ReturnType<typeof createStore>,
+  runId: string,
+  result: { status: string; awaiting: unknown[] },
+): void {
+  expect(result.status).toBe("awaiting_judgment");
+  expect(result.awaiting).toHaveLength(1);
+  const parked = store.listEscalations({ class: "stream-parked", driverRunId: runId });
+  expect(parked).toHaveLength(1);
+  expect(parked[0]?.payloadJson).toMatch(/dispatch failed after fallback/);
+  expect(parked[0]?.payloadJson).toMatch(/failed: sdk-throw on local\/claude/);
+  expect(parked[0]?.payloadJson).toMatch(/bare decide retry re-fires local\/claude/);
+  expect(store.listEscalations({ class: "dispatch-failing", driverRunId: runId })).toHaveLength(0);
+}

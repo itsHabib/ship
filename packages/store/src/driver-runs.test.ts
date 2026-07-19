@@ -233,6 +233,44 @@ describe("driver runs (via createStore)", () => {
     expect(firstStreamOf(runId)?.fallbackCursor).toBe(1);
   });
 
+  test("updateDriverStream advances fallbackCursor and replaces fallbackLog", () => {
+    const runId = seedRunWithStream({
+      attempts: [],
+      fallbackChain: [{ provider: "claude", runtime: "local" }],
+      fallbackCursor: 0,
+      fallbackLog: [],
+      id: newDriverStreamId(),
+      runtime: "cloud",
+      specPath: "docs/a.md",
+      status: "pending",
+      streamIndex: 0,
+      touches: [],
+    });
+    const streamId = firstStreamOf(runId)!.id;
+    const log: FallbackLogRecord[] = [
+      {
+        from: { provider: "cursor", runtime: "cloud" },
+        to: { provider: "claude", runtime: "local" },
+        category: "sdk-throw",
+        at: "2026-07-13T00:00:00.000Z",
+      },
+    ];
+    store.updateDriverStream(streamId, {
+      fallbackCursor: 1,
+      fallbackLog: log,
+      provider: "claude",
+      runtime: "local",
+      status: "pending",
+      workOnCurrentBranch: false,
+    });
+    const stream = firstStreamOf(runId);
+    expect(stream?.fallbackCursor).toBe(1);
+    expect(stream?.fallbackLog).toEqual(log);
+    expect(stream?.provider).toBe("claude");
+    expect(stream?.runtime).toBe("local");
+    expect(stream?.workOnCurrentBranch).toBe(false);
+  });
+
   test("streams with no chain read the fallback columns back as absent", () => {
     const stream = firstStreamOf(seedRun());
     expect(stream?.fallbackChain).toBeUndefined();
