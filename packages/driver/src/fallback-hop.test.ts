@@ -15,6 +15,7 @@ import type { ViabilityDeps } from "./viability.js";
 
 import {
   buildFallbackExhaustionEscalationCopy,
+  chainStillConsumable,
   decideFallbackHop,
   FALLBACK_ELIGIBLE_CATEGORIES,
   hasExhaustedFallbackChain,
@@ -154,6 +155,7 @@ describe("FALLBACK_RESET_PATCH via decideFallbackHop", () => {
       dispatchProvider: null,
       effortDegraded: false,
       fallbackCursor: 1,
+      modelId: null,
       provider: "claude",
       runtime: "local",
       status: "pending",
@@ -169,6 +171,28 @@ describe("FALLBACK_RESET_PATCH via decideFallbackHop", () => {
         at: "2026-07-13T00:01:00.000Z",
       },
     ]);
+  });
+
+  test("hop writes the target's model_id; a stale primary id never rides along", async () => {
+    repoRoot = mkdtempSync(join(tmpdir(), "fallback-hop-modelid-"));
+    mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-a"), { recursive: true });
+    const stream = baseStream({
+      fallbackChain: [{ modelId: "target-model", provider: "claude", runtime: "local" }],
+      modelId: "grok-4.5",
+    });
+
+    const decision = await decideFallbackHop(stream, {
+      at: "2026-07-13T00:01:00.000Z",
+      category: "sdk-throw",
+      failedAttempts: [],
+      repoRoot,
+      repoUrl: "https://github.com/example/ship",
+      viability: viability(),
+    });
+
+    expect(decision.kind).toBe("hop");
+    if (decision.kind !== "hop") return;
+    expect(decision.patch.modelId).toBe("target-model");
   });
 
   test("missing local worktree is skipped with a recorded reason", async () => {
@@ -294,7 +318,39 @@ describe("§6 exhaustion copy", () => {
       ],
     });
     const copy = buildFallbackExhaustionEscalationCopy(stream, "gateway-auth");
-    expect(copy.body).toMatch(/remedy: set /);
+    // The ", or"-joined token list must survive whole — dropping the last env
+    // var makes the remedy actively misleading.
+    expect(copy.body).toContain(
+      "remedy: set CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY",
+    );
+  });
+});
+
+describe("chainStillConsumable (§7.2 step 0 breaker predicate)", () => {
+  const failedAttempt = (category: FailureCategory) => ({
+    dispatchedAt: "2026-07-13T00:00:00.000Z",
+    docPath: "/doc",
+    failureCategory: category,
+    terminal: true,
+  });
+
+  test("eligible pre-work failure keeps the chain live", () => {
+    const stream = baseStream({ attempts: [failedAttempt("sdk-throw")] });
+    expect(chainStillConsumable(stream)).toBe(true);
+  });
+
+  test("ineligible category can never hop — chain must not suppress the breaker", () => {
+    const stream = baseStream({ attempts: [failedAttempt("logic")] });
+    expect(chainStillConsumable(stream)).toBe(false);
+  });
+
+  test("work-carrying stream (reviewCycles > 0) can never hop", () => {
+    const stream = baseStream({ attempts: [failedAttempt("sdk-throw")], reviewCycles: 1 });
+    expect(chainStillConsumable(stream)).toBe(false);
+  });
+
+  test("no attempts yet is benign (breaker only fires on failed streams)", () => {
+    expect(chainStillConsumable(baseStream())).toBe(true);
   });
 });
 

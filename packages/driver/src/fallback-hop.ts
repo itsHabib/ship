@@ -67,6 +67,21 @@ export function hasUnconsumedFallbackChain(stream: DriverStream): boolean {
 }
 
 /**
+ * Could a future failure of the same shape actually consume the chain? An
+ * ineligible category or a work-carrying stream never hops, so its live chain
+ * must not suppress the #199 breaker — that would silence the escalation
+ * forever while the cursor sits below chain length.
+ */
+export function chainStillConsumable(stream: DriverStream): boolean {
+  if (!hasNoWorkProducts(stream)) return false;
+  // Attempt rows persist the category as a plain string; an unrecognized value
+  // is simply not in the allowlist.
+  const category = stream.attempts.at(-1)?.failureCategory;
+  if (category === undefined) return true;
+  return (FALLBACK_ELIGIBLE_CATEGORIES as ReadonlySet<string>).has(category);
+}
+
+/**
  * True when a declared non-empty chain has been fully consumed — §6 escalation
  * subsumes the #199 breaker copy for these streams.
  */
@@ -281,6 +296,9 @@ function buildFallbackResetPatch(params: {
     attempts: withResetBoundary(params.failedAttempts),
     fallbackCursor: params.cursor,
     fallbackLog: log,
+    // The target is the full (runtime, provider, model_id) triple — a stale
+    // primary model id must not ride onto a different target's dispatch.
+    modelId: params.to.modelId ?? null,
     provider: params.to.provider,
     runtime: params.to.runtime,
     workOnCurrentBranch: false,
@@ -360,7 +378,7 @@ function sameCell(a: FallbackChainTarget, b: FallbackChainTarget): boolean {
 
 /** Credential-shaped skip reasons → actionable remedy line for §6. */
 function remedyForSkipReason(reason: string): string | undefined {
-  const match = /([A-Z][A-Z0-9_]+(?:, [A-Z][A-Z0-9_]+)*(?: or [A-Z][A-Z0-9_]+)?)/.exec(reason);
+  const match = /([A-Z][A-Z0-9_]+(?:, [A-Z][A-Z0-9_]+)*(?:,? or [A-Z][A-Z0-9_]+)?)/.exec(reason);
   if (match?.[1] === undefined) return undefined;
   if (!reason.includes("not set") && !reason.includes("needs")) return undefined;
   return `set ${match[1]}`;

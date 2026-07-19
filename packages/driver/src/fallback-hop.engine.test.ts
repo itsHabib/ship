@@ -318,6 +318,72 @@ batches:
     expect(stream?.fallbackLog).toEqual([]);
     store.close();
   });
+
+  test("hop to a saturated runtime stays pending — caps hold across the redispatch", async () => {
+    mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-b"), { recursive: true });
+    const path = join(repoRoot, "caps.driver.md");
+    writeFileSync(
+      path,
+      `---
+driver_version: 1
+generated_at: 2026-07-13T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: fallback-caps
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/b.md
+        branch_name: feat-b
+        runtime: local
+        provider: claude
+        status: pending
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: cloud
+        provider: cursor
+        status: pending
+        fallback:
+          - runtime: local
+            provider: claude
+---
+`,
+    );
+    const slotHolderDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-b"),
+      "docs/tasks/b.md",
+    );
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      // Occupies the single local slot for the whole tick (never terminal).
+      { docPath: slotHolderDoc, repo: "ship", terminalStatus: "running", workflowRunId: "wf_slot" },
+      { docPath: cloudDoc, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf_c" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(path).run.id;
+
+    await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+
+    const streams = store.getDriverRun(runId)?.batches[0]?.streams;
+    const hopped = streams?.[1];
+    // The hop rewrote the target, but with maxParallelLocal (default 1) held by
+    // the slot stream, the redispatch waits for a later tick.
+    expect(hopped?.runtime).toBe("local");
+    expect(hopped?.status).toBe("pending");
+    expect(hopped?.fallbackCursor).toBe(1);
+    const startedDocs = fake.calls
+      .filter((c) => c.kind === "startShip")
+      .map((c) => (c.input as { docPath?: string }).docPath);
+    expect(startedDocs).toHaveLength(2);
+    expect(startedDocs).toContain(slotHolderDoc);
+    expect(startedDocs).toContain(cloudDoc);
+    store.close();
+  });
 });
 
 function exhaustManifestYaml(): string {

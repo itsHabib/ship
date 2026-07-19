@@ -36,6 +36,8 @@ export interface UpdateDriverStreamInput {
   dispatchModelParams?: DriverStream["dispatchModelParams"] | null;
   effortDegraded?: boolean;
   tierDegradeReason?: string | null;
+  /** Rewrite (or `null`-clear) the model id when a hop changes the target. */
+  modelId?: DriverStream["modelId"] | null;
   /** Advance the fallback cursor (dispatch-fallback hop); chain stays frozen. */
   fallbackCursor?: number;
   /** Replace the append-only fallback log (caller concatenates). */
@@ -241,6 +243,7 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
   appendStreamPatchColumn(sets, params, "error_message = ?", patch.errorMessage);
   appendStreamPatchColumn(sets, params, "dispatch_provider = ?", patch.dispatchProvider);
   appendStreamPatchColumn(sets, params, "dispatch_model = ?", patch.dispatchModel);
+  appendStreamPatchColumn(sets, params, "model_id = ?", patch.modelId);
   appendStreamPatchColumn(
     sets,
     params,

@@ -24,6 +24,7 @@ import type {
 
 import {
   buildFallbackExhaustionEscalationCopy,
+  chainStillConsumable,
   hasExhaustedFallbackChain,
   hasUnconsumedFallbackChain,
 } from "./fallback-hop.js";
@@ -241,9 +242,12 @@ export function writeDispatchFailingEscalations(deps: EscalationDeps, run: Drive
   const createdAt = nowIso(deps);
   const ids: string[] = [];
   for (const stream of allStreams(run)) {
-    // Live chain: breaker must not park (§7.2 step 0). Exhausted chain: §6 park
-    // copy subsumes the breaker row — never double-escalate.
-    if (hasUnconsumedFallbackChain(stream) || hasExhaustedFallbackChain(stream)) continue;
+    // Live chain: breaker must not park (§7.2 step 0) — but only while the
+    // chain is actually consumable; an ineligible or work-carrying stream
+    // never hops, so its chain must not silence the breaker. Exhausted chain:
+    // §6 park copy subsumes the breaker row — never double-escalate.
+    if (hasUnconsumedFallbackChain(stream) && chainStillConsumable(stream)) continue;
+    if (hasExhaustedFallbackChain(stream)) continue;
     const failures = consecutiveDispatchFailures(stream);
     if (stream.status !== "failed" || failures < threshold) continue;
     const payload = buildDispatchFailingPayload(run, stream.id, failures, createdAt);

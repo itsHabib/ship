@@ -793,6 +793,12 @@ async function dispatchStream(
     if (refreshed === null) return false;
     const next = findStream(refreshed, current.id);
     if (next?.status !== "pending") return false;
+    // A hop may have rewritten the runtime — the redispatch must clear the
+    // same caps a fresh dispatch would; a saturated target waits for a later
+    // tick instead of overshooting maxParallel*.
+    const local = countInFlight(refreshed, "local");
+    const cloud = countInFlight(refreshed, "cloud");
+    if (!canDispatchStream(next, local, cloud, ctx.opts)) return false;
     current = next;
   }
 }
