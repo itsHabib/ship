@@ -743,6 +743,14 @@ describe("importManifest fallback chains", () => {
     );
   });
 
+  it("re-emits fallback env warnings on re-import", () => {
+    const path = cloudCursorStream(["fallback:", "  - runtime: local", "    provider: claude"]);
+    importManifest(store, path, { env: FULL_ENV });
+    const { alreadyImported, warnings } = importManifest(store, path, { env: {} });
+    expect(alreadyImported).toBe(true);
+    expect(warnings?.join("\n")).toMatch(/fallback target local\/claude/);
+  });
+
   it("emits no warning when the fallback credential is present", () => {
     const path = cloudCursorStream(["fallback:", "  - runtime: local", "    provider: claude"]);
     const { warnings } = importManifest(store, path, { env: { ANTHROPIC_API_KEY: "k" } });

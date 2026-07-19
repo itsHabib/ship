@@ -91,8 +91,14 @@ export function importManifest(
   // Load the repo policy fail-closed before any early return: a broken
   // `.ship.json` must error even on a re-import, never silently pass through.
   const policy = loadDispatchPolicy(dirname(manifestPath));
-  const baseWarnings = [...warnings, ...policy.warnings];
-  const warningExtras = baseWarnings.length > 0 ? { warnings: baseWarnings } : {};
+  // Env warnings are re-derived on every import, re-imports included — the
+  // credential landscape at THIS import is what the caller can act on.
+  const allWarnings = [
+    ...warnings,
+    ...policy.warnings,
+    ...collectFallbackEnvWarnings(manifest, opts.env ?? process.env),
+  ];
+  const warningExtras = allWarnings.length > 0 ? { warnings: allWarnings } : {};
   const existing = findExistingRun(store, manifest.repo, project, phase, manifest.generated_at);
   if (existing !== undefined) {
     return { alreadyImported: true, run: existing, ...warningExtras };
@@ -112,11 +118,6 @@ export function importManifest(
   if (fallbackErrors.length > 0) {
     throw new ImportManifestError(fallbackErrors);
   }
-
-  const allWarnings = [
-    ...baseWarnings,
-    ...collectFallbackEnvWarnings(manifest, opts.env ?? process.env),
-  ];
 
   const batches = manifest.batches.map((batch) =>
     buildBatchInput(batch, {
@@ -142,7 +143,7 @@ export function importManifest(
     status: runStatus,
   });
 
-  return { run, ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}) };
+  return { run, ...warningExtras };
 }
 
 function collectProviderValidationErrors(
