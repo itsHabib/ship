@@ -248,13 +248,16 @@ async function viabilitySkipReason(
   entry: FallbackChainTarget,
   viability: ViabilityDeps,
 ): Promise<string | undefined> {
-  // Cursor without a concrete model_id: tier mapping stands at dispatch — only
-  // the credential gate applies (model attribution is P2b). Claude/codex ignore
+  // Cursor credential first, before any catalog lookup: a MISSING key is a
+  // definitive skip with a remedy — it must never surface as the catalog
+  // call's throw (UNKNOWN), which parks instead of skipping. Without a
+  // concrete model_id the credential gate is the whole check — tier mapping
+  // stands at dispatch (model attribution is P2b). Claude/codex ignore
   // modelId inside checkTargetViability.
-  if (entry.provider === "cursor" && entry.modelId === undefined) {
+  if (entry.provider === "cursor") {
     const key = viability.env["CURSOR_API_KEY"];
-    if (key !== undefined && key.trim() !== "") return undefined;
-    return "CURSOR_API_KEY not set";
+    if (key === undefined || key.trim() === "") return "CURSOR_API_KEY not set";
+    if (entry.modelId === undefined) return undefined;
   }
 
   const target: DispatchTarget = {

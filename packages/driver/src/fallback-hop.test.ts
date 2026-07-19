@@ -195,6 +195,31 @@ describe("FALLBACK_RESET_PATCH via decideFallbackHop", () => {
     expect(decision.patch.modelId).toBe("target-model");
   });
 
+  test("missing CURSOR_API_KEY is a definitive skip, never an UNKNOWN park", async () => {
+    repoRoot = mkdtempSync(join(tmpdir(), "fallback-hop-nokey-"));
+    const stream = baseStream({
+      fallbackChain: [{ modelId: "m", provider: "cursor", runtime: "cloud" }],
+      provider: "claude",
+      runtime: "local",
+    });
+
+    const decision = await decideFallbackHop(stream, {
+      at: "2026-07-13T00:01:00.000Z",
+      category: "sdk-throw",
+      failedAttempts: [],
+      repoRoot,
+      repoUrl: "https://github.com/example/ship",
+      viability: {
+        env: {},
+        listCursorModels: () => Promise.reject(new Error("would not even be called")),
+      },
+    });
+
+    expect(decision.kind).toBe("exhaust");
+    if (decision.kind !== "exhaust") return;
+    expect(decision.patch.fallbackLog).toMatchObject([{ reason: "CURSOR_API_KEY not set" }]);
+  });
+
   test("viability throw (catalog outage) parks without consuming the chain", async () => {
     repoRoot = mkdtempSync(join(tmpdir(), "fallback-hop-outage-"));
     const stream = baseStream({
