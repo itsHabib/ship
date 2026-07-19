@@ -30,7 +30,10 @@ export type PolicyRuntime = CursorRunRuntime;
 const RUNTIME_FALLBACK: PolicyRuntime = "local";
 const PROVIDER_FALLBACK: AgentProvider = "cursor";
 
-const TOP_LEVEL_KEYS = new Set(["runtime", "provider", "credentials"]);
+// "review" is declared-but-unparsed: the review-panel stanza is the
+// /work-driver review tail's contract, not a dispatch concern — registered
+// here only so a declaring repo doesn't warn on every policy load.
+const TOP_LEVEL_KEYS = new Set(["runtime", "provider", "credentials", "review"]);
 const CONSTRAINT_KEYS = new Set(["default", "allow"]);
 const CREDENTIALS_KEYS = new Set(["claude_token_env", "forbid_env", "gh_host_user"]);
 

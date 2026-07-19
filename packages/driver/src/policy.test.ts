@@ -117,6 +117,18 @@ describe("loadDispatchPolicy validation", () => {
     expect(loaded.warnings.some((w) => w.includes("runtime.unknownNested"))).toBe(true);
   });
 
+  it("accepts a review stanza without warnings and without touching dispatch", () => {
+    writePolicy(
+      JSON.stringify({
+        runtime: { default: "local" },
+        review: { panel: [{ name: "codex", trigger: "mention" }], require: ["codex"] },
+      }),
+    );
+    const loaded = loadDispatchPolicy(repoRoot);
+    expect(loaded.warnings).toEqual([]);
+    expect(resolveDispatchRuntime(loaded, undefined, undefined)).toBe("local");
+  });
+
   it("throws when the top-level value is not an object", () => {
     writePolicy(JSON.stringify(["local"]));
     expect(() => loadDispatchPolicy(repoRoot)).toThrow(/must be a JSON object/);
