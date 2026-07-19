@@ -1021,6 +1021,7 @@ function commitFallbackDecision(
     stream: DriverStream;
     failedAttempts: StreamAttempt[];
     errorMessage: string;
+    pollPrUrl?: string;
   },
   decision: FallbackHopDecision,
 ): "hopped" | "failed" {
@@ -1035,10 +1036,18 @@ function commitFallbackDecision(
     });
     return "failed";
   }
+  // A workflow PR seen at the poll seam is a work product every later
+  // stored-column reader (sync seam, breaker predicate, decide retry) must
+  // see — persist it with the failure.
+  const prUrlExtras =
+    params.pollPrUrl !== undefined && params.stream.prUrl === undefined
+      ? { prUrl: params.pollPrUrl }
+      : {};
   params.store.updateDriverStream(params.stream.id, {
     attempts: params.failedAttempts,
     errorMessage: params.errorMessage,
     status: "failed",
+    ...prUrlExtras,
   });
   return "failed";
 }

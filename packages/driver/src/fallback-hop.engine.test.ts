@@ -199,6 +199,35 @@ ${extraStreamLines.map((l) => `        ${l}`).join("\n")}
     store.close();
   });
 
+  test("poll-seam PR on a failed run blocks the hop AND persists to the stream row", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        failureCategory: "gateway-auth",
+        prUrl: "https://github.com/example/ship/pull/12",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_cloud",
+      },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("awaiting_judgment");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.fallbackCursor ?? 0).toBe(0);
+    // The workflow's PR is now a stored fact — later stored-column readers
+    // (sync seam, breaker predicate, decide retry) see the work products.
+    expect(stream?.prUrl).toBe("https://github.com/example/ship/pull/12");
+    store.close();
+  });
+
   test("multi-hop: two chain entries, first throws, second succeeds", async () => {
     const path = join(repoRoot, "multi-hop.driver.md");
     writeFileSync(

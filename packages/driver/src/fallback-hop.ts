@@ -134,7 +134,15 @@ export async function decideFallbackHop(
   const startCursor = stream.fallbackCursor ?? 0;
   if (startCursor >= chain.length) return { kind: "ineligible" };
 
-  const walk = await walkFallbackChain(stream, chain, startCursor, ctx);
+  let walk: WalkHop | WalkExhaust;
+  try {
+    walk = await walkFallbackChain(stream, chain, startCursor, ctx);
+  } catch {
+    // Viability UNKNOWN (e.g. a transient cursor-catalog outage) is not a
+    // skip — a skip burns the entry permanently. Park without consuming; a
+    // later `decide retry` re-walks once the catalog answers again.
+    return { kind: "ineligible" };
+  }
   if (walk.kind === "hop") {
     return {
       kind: "hop",
@@ -254,14 +262,11 @@ async function viabilitySkipReason(
     provider: entry.provider,
     runtime: entry.runtime,
   };
-  try {
-    const result = await checkTargetViability(target, viability);
-    if (result.viable) return undefined;
-    return result.reason;
-  } catch (err: unknown) {
-    const detail = err instanceof Error ? err.message : String(err);
-    return detail;
-  }
+  // A thrown viability check means UNKNOWN, not unviable — propagate so the
+  // walk aborts without consuming the entry (decideFallbackHop parks instead).
+  const result = await checkTargetViability(target, viability);
+  if (result.viable) return undefined;
+  return result.reason;
 }
 
 function currentTarget(stream: DriverStream): FallbackChainTarget {

@@ -195,6 +195,31 @@ describe("FALLBACK_RESET_PATCH via decideFallbackHop", () => {
     expect(decision.patch.modelId).toBe("target-model");
   });
 
+  test("viability throw (catalog outage) parks without consuming the chain", async () => {
+    repoRoot = mkdtempSync(join(tmpdir(), "fallback-hop-outage-"));
+    const stream = baseStream({
+      fallbackChain: [{ modelId: "m", provider: "cursor", runtime: "cloud" }],
+      provider: "claude",
+      runtime: "local",
+    });
+
+    const decision = await decideFallbackHop(stream, {
+      at: "2026-07-13T00:01:00.000Z",
+      category: "sdk-throw",
+      failedAttempts: [],
+      repoRoot,
+      repoUrl: "https://github.com/example/ship",
+      viability: {
+        env: { CURSOR_API_KEY: "c" },
+        listCursorModels: () => Promise.reject(new Error("catalog timeout")),
+      },
+    });
+
+    // UNKNOWN viability must not become a skip — the entry survives for a
+    // later decide retry.
+    expect(decision).toEqual({ kind: "ineligible" });
+  });
+
   test("missing local worktree is skipped with a recorded reason", async () => {
     repoRoot = mkdtempSync(join(tmpdir(), "fallback-hop-missing-wt-"));
 
