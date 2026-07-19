@@ -107,7 +107,7 @@ export function importManifest(
     throw new ImportManifestError(providerErrors);
   }
 
-  const fallbackErrors = collectFallbackValidationErrors(manifest);
+  const fallbackErrors = collectFallbackValidationErrors(manifest, policy);
   if (fallbackErrors.length > 0) {
     throw new ImportManifestError(fallbackErrors);
   }
@@ -464,12 +464,15 @@ function targetKey(
  * do — derived from `cellStructuralIssue`, not restated. Structured import
  * failure, same channel as the provider preflight.
  */
-function collectFallbackValidationErrors(manifest: DriverManifest): ManifestParseError[] {
+function collectFallbackValidationErrors(
+  manifest: DriverManifest,
+  policy: LoadedDispatchPolicy,
+): ManifestParseError[] {
   const errors: ManifestParseError[] = [];
   for (const stream of manifest.batches.flatMap((batch) => batch.streams)) {
     const chain = resolveEffectiveChain(stream, manifest.default_fallback);
     if (chain.length === 0) continue;
-    collectStreamFallbackErrors(stream, chain, manifest, errors);
+    collectStreamFallbackErrors(stream, chain, manifest, policy, errors);
   }
   return errors;
 }
@@ -478,11 +481,16 @@ function collectStreamFallbackErrors(
   stream: ManifestStream,
   chain: ManifestFallbackTarget[],
   manifest: DriverManifest,
+  policy: LoadedDispatchPolicy,
   errors: ManifestParseError[],
 ): void {
   const label = streamLabel(stream);
-  const primaryRuntime = stream.runtime ?? manifest.default_runtime ?? "local";
-  const primaryProvider = resolveStreamProvider(stream, manifest.default_provider).provider;
+  const primaryRuntime = resolveDispatchRuntime(policy, stream.runtime, manifest.default_runtime);
+  const primaryProvider = resolveDispatchProvider(
+    policy,
+    stream.provider,
+    manifest.default_provider,
+  );
   const primaryModelId = stream.model_id ?? manifest.default_model_id;
   const seen = new Set<string>([targetKey(primaryRuntime, primaryProvider, primaryModelId)]);
   const ctx = { branchName: stream.branch_name, repoUrl: manifest.repo_url };
