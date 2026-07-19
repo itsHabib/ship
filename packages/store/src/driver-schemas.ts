@@ -52,6 +52,50 @@ export const streamAttemptSchema = z
   })
   .strict();
 
+// A persisted fallback dispatch target (dispatch-fallback spec §4.1/§5): the
+// shared `(runtime, provider, model_id?)` vocabulary — structurally the driver's
+// `DispatchTarget` (viability.ts) with `modelId` optional (omitted → tier
+// mapping stands at dispatch). Defined here, not imported, because `@ship/store`
+// cannot depend on `@ship/driver` (driver → store, not the reverse).
+export const fallbackChainTargetSchema = z
+  .object({
+    runtime: driverRuntimeSchema,
+    provider: agentProviderSchema,
+    modelId: z.string().min(1).optional(),
+  })
+  .strict();
+
+// One append-only `fallbackLog` record (spec §5). No record is written before
+// P2a (engine hop); the shapes ship now so the column round-trips and the walk
+// has a schema to append to. A `union`, not a discriminated union — the three
+// variants key on distinct fields (`from` / `skipped` / `retried`).
+export const fallbackLogRecordSchema = z.union([
+  z
+    .object({
+      from: fallbackChainTargetSchema,
+      to: fallbackChainTargetSchema,
+      fromModel: z.string().optional(),
+      toModel: z.string().optional(),
+      category: z.string(),
+      at: z.string().datetime({ offset: true }),
+    })
+    .strict(),
+  z
+    .object({
+      skipped: fallbackChainTargetSchema,
+      reason: z.string(),
+      at: z.string().datetime({ offset: true }),
+    })
+    .strict(),
+  z
+    .object({
+      retried: fallbackChainTargetSchema,
+      reason: z.string(),
+      at: z.string().datetime({ offset: true }),
+    })
+    .strict(),
+]);
+
 export const driverStreamSchema = z
   .object({
     attempts: z.array(streamAttemptSchema),
@@ -92,10 +136,26 @@ export const driverStreamSchema = z
     dispatchModelParams: z.array(shipInputModelParamEntrySchema).optional(),
     effortDegraded: z.boolean().optional(),
     tierDegradeReason: z.string().optional(),
+    // Fallback dispatch chain, frozen at import (dispatch-fallback spec §5).
+    // Absent for streams with no chain — the feature is opt-in. cursor/log are
+    // meaningless without a chain, so all three travel together.
+    fallbackChain: z.array(fallbackChainTargetSchema).optional(),
+    fallbackCursor: z.number().int().min(0).optional(),
+    fallbackLog: z.array(fallbackLogRecordSchema).optional(),
     updatedAt: z.string().datetime({ offset: true }),
     workflowRunId: z.string().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((stream, ctx) => {
+    const set = [stream.fallbackChain, stream.fallbackCursor, stream.fallbackLog].filter(
+      (v) => v !== undefined,
+    ).length;
+    if (set === 0 || set === 3) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "fallbackChain, fallbackCursor, and fallbackLog must be set together",
+    });
+  });
 
 export const driverBatchSchema = z
   .object({
@@ -131,6 +191,8 @@ export type DriverRunStatus = z.infer<typeof driverRunStatusSchema>;
 export type DriverBatchStatus = z.infer<typeof driverBatchStatusSchema>;
 export type DriverStreamStatus = z.infer<typeof driverStreamStatusSchema>;
 export type StreamAttempt = z.infer<typeof streamAttemptSchema>;
+export type FallbackChainTarget = z.infer<typeof fallbackChainTargetSchema>;
+export type FallbackLogRecord = z.infer<typeof fallbackLogRecordSchema>;
 export type DriverStream = z.infer<typeof driverStreamSchema>;
 export type DriverBatch = z.infer<typeof driverBatchSchema>;
 export type DriverRun = z.infer<typeof driverRunSchema>;

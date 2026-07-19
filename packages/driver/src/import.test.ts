@@ -524,3 +524,236 @@ describe("importManifest dispatch policy", () => {
     expect(run.batches[0]?.streams[0]?.runtime).toBe("cloud");
   });
 });
+
+describe("importManifest fallback chains", () => {
+  let store: Store;
+  let dir: string;
+  const FULL_ENV = {
+    ANTHROPIC_API_KEY: "k",
+    ANTHROPIC_AUTH_TOKEN: "t",
+    CURSOR_API_KEY: "k",
+    CODEX_API_KEY: "k",
+  };
+  const HEADER = [
+    "driver_version: 1",
+    "generated_at: 2026-07-13T00:00:00Z",
+    "generated_by: test",
+    "source:",
+    "  project: ship",
+    "  phase: fallback-test",
+    "repo: ship",
+  ];
+
+  beforeEach(() => {
+    store = createStore({ dbPath: ":memory:" });
+    dir = mkdtempSync(join(tmpdir(), "ship-import-fallback-"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { force: true, recursive: true });
+  });
+
+  function writeManifest(frontmatter: string[]): string {
+    const path = join(dir, "driver.md");
+    writeFileSync(path, ["---", ...frontmatter, "---", ""].join("\n"), "utf8");
+    return path;
+  }
+
+  // A single cloud/cursor stream (repo_url + branch_name present) with the given
+  // extra stream lines (8-space indented). The baseline is structurally valid so
+  // tests isolate the fallback behavior under test.
+  function cloudCursorStream(streamLines: string[]): string {
+    return writeManifest([
+      ...HEADER,
+      "repo_url: https://github.com/itsHabib/ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        branch_name: feat-a",
+      "        runtime: cloud",
+      "        provider: cursor",
+      ...streamLines.map((line) => `        ${line}`),
+    ]);
+  }
+
+  it("freezes the resolved chain with cursor 0, empty log, and reviewCycles 0", () => {
+    const path = cloudCursorStream([
+      "fallback:",
+      "  - runtime: cloud",
+      "    provider: claude",
+      "    model_id: claude-opus-4-8",
+      "  - runtime: local",
+      "    provider: claude",
+    ]);
+    const { run } = importManifest(store, path, { env: FULL_ENV });
+    const stream = run.batches[0]?.streams[0];
+    expect(stream?.fallbackChain).toEqual([
+      { runtime: "cloud", provider: "claude", modelId: "claude-opus-4-8" },
+      { runtime: "local", provider: "claude" },
+    ]);
+    expect(stream?.fallbackCursor).toBe(0);
+    expect(stream?.fallbackLog).toEqual([]);
+    expect(stream?.reviewCycles).toBe(0);
+  });
+
+  it("inherits default_fallback for a stream that omits fallback; an explicit chain wins", () => {
+    const path = writeManifest([
+      ...HEADER,
+      "repo_url: https://github.com/itsHabib/ship",
+      "default_fallback:",
+      "  - runtime: local",
+      "    provider: claude",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        branch_name: feat-a",
+      "        runtime: cloud",
+      "        provider: cursor",
+      "      - spec_path: docs/b.md",
+      "        branch_name: feat-b",
+      "        runtime: cloud",
+      "        provider: cursor",
+      "        fallback:",
+      "          - runtime: cloud",
+      "            provider: claude",
+    ]);
+    const { run } = importManifest(store, path, { env: FULL_ENV });
+    const streams = run.batches[0]?.streams ?? [];
+    expect(streams[0]?.fallbackChain).toEqual([{ runtime: "local", provider: "claude" }]);
+    expect(streams[1]?.fallbackChain).toEqual([{ runtime: "cloud", provider: "claude" }]);
+  });
+
+  it("initializes reviewCycles to 0 and leaves fallback columns absent for a chainless stream", () => {
+    const path = cloudCursorStream([]);
+    const stream = importManifest(store, path, { env: FULL_ENV }).run.batches[0]?.streams[0];
+    expect(stream?.reviewCycles).toBe(0);
+    expect(stream?.fallbackChain).toBeUndefined();
+    expect(stream?.fallbackCursor).toBeUndefined();
+    expect(stream?.fallbackLog).toBeUndefined();
+  });
+
+  it("rejects a rooms fallback target", () => {
+    const path = cloudCursorStream(["fallback:", "  - runtime: rooms", "    provider: cursor"]);
+    expect(() => importManifest(store, path, { env: FULL_ENV })).toThrow(
+      /rooms is not a valid fallback target/,
+    );
+  });
+
+  it("rejects an unwired fallback cell", () => {
+    const path = cloudCursorStream(["fallback:", "  - runtime: cloud", "    provider: codex"]);
+    expect(() => importManifest(store, path, { env: FULL_ENV })).toThrow(
+      /cloud\/codex is not a wired dispatch cell/,
+    );
+  });
+
+  it("rejects a fallback target that duplicates the primary", () => {
+    const path = cloudCursorStream(["fallback:", "  - runtime: cloud", "    provider: cursor"]);
+    expect(() => importManifest(store, path, { env: FULL_ENV })).toThrow(
+      /duplicate fallback target cloud\/cursor/,
+    );
+  });
+
+  it("rejects a fallback that duplicates the implicit engine-default primary", () => {
+    // No provider anywhere: the engine dispatches such a stream as cursor, so a
+    // cloud/cursor fallback is a hop back to the same cell.
+    const path = writeManifest([
+      ...HEADER,
+      "repo_url: https://github.com/itsHabib/ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        branch_name: feat-a",
+      "        runtime: cloud",
+      "        fallback:",
+      "          - runtime: cloud",
+      "            provider: cursor",
+    ]);
+    expect(() => importManifest(store, path, { env: FULL_ENV })).toThrow(
+      /duplicate fallback target cloud\/cursor/,
+    );
+  });
+
+  it("rejects two identical fallback entries", () => {
+    const path = cloudCursorStream([
+      "fallback:",
+      "  - runtime: local",
+      "    provider: claude",
+      "  - runtime: local",
+      "    provider: claude",
+    ]);
+    expect(() => importManifest(store, path, { env: FULL_ENV })).toThrow(
+      /duplicate fallback target/,
+    );
+  });
+
+  it("rejects a fallback needing branch_name when the stream has none", () => {
+    // Primary cloud/cursor needs no branch; the local/cursor fallback does.
+    const path = writeManifest([
+      ...HEADER,
+      "repo_url: https://github.com/itsHabib/ship",
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        runtime: cloud",
+      "        provider: cursor",
+      "        fallback:",
+      "          - runtime: local",
+      "            provider: cursor",
+    ]);
+    expect(() => importManifest(store, path, { env: FULL_ENV })).toThrow(
+      /local\/cursor requires branch_name/,
+    );
+  });
+
+  it("rejects a cloud fallback when the manifest has no repo_url", () => {
+    // Primary local/cursor needs no repo_url; the cloud/cursor fallback does.
+    const path = writeManifest([
+      ...HEADER,
+      "batches:",
+      "  - id: 1",
+      "    depends_on: []",
+      "    streams:",
+      "      - spec_path: docs/a.md",
+      "        branch_name: feat-a",
+      "        runtime: local",
+      "        provider: cursor",
+      "        fallback:",
+      "          - runtime: cloud",
+      "            provider: cursor",
+    ]);
+    expect(() => importManifest(store, path, { env: FULL_ENV })).toThrow(
+      /cloud\/cursor requires repo_url/,
+    );
+  });
+
+  it("warns (does not fail) when a fallback target's credential is absent from env", () => {
+    const path = cloudCursorStream(["fallback:", "  - runtime: local", "    provider: claude"]);
+    const { warnings } = importManifest(store, path, { env: {} });
+    expect(warnings?.join("\n")).toMatch(
+      /fallback target local\/claude: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY not set/,
+    );
+  });
+
+  it("re-emits fallback env warnings on re-import", () => {
+    const path = cloudCursorStream(["fallback:", "  - runtime: local", "    provider: claude"]);
+    importManifest(store, path, { env: FULL_ENV });
+    const { alreadyImported, warnings } = importManifest(store, path, { env: {} });
+    expect(alreadyImported).toBe(true);
+    expect(warnings?.join("\n")).toMatch(/fallback target local\/claude/);
+  });
+
+  it("emits no warning when the fallback credential is present", () => {
+    const path = cloudCursorStream(["fallback:", "  - runtime: local", "    provider: claude"]);
+    const { warnings } = importManifest(store, path, { env: { ANTHROPIC_API_KEY: "k" } });
+    expect(warnings).toBeUndefined();
+  });
+});

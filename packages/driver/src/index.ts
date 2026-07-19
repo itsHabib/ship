@@ -10,6 +10,7 @@ export type {
   DriverManifest,
   EffortTier,
   ManifestBatch,
+  ManifestFallbackTarget,
   ManifestStream,
   ManifestParseError,
   ModelTier,
@@ -18,6 +19,7 @@ export type {
 export {
   driverManifestSchema,
   effortTierSchema,
+  fallbackTargetSchema,
   manifestBatchSchema,
   manifestStreamSchema,
   modelTierSchema,
@@ -55,6 +57,7 @@ export type { DispatchTarget, ViabilityDeps, ViabilityResult } from "./viability
 export { mapTierToDispatch } from "./tier-map.js";
 
 export {
+  formatStreamFallbackDiagnostic,
   formatStreamTierDiagnostic,
   manifestBatchStatusToStore,
   manifestStatusToStore,

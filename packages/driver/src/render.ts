@@ -129,6 +129,13 @@ function overlayStreamProgress(
   if (storeStream.mergeCommit !== undefined) overlaid["merge_commit"] = storeStream.mergeCommit;
   if (storeStream.mergedAt !== undefined) overlaid["merged_at"] = storeStream.mergedAt;
   if (storeStream.cycles !== undefined) overlaid["cycles"] = storeStream.cycles;
+  // Current dispatch target — the store row is the truth. A fallback hop
+  // rewrites runtime/provider (dispatch-fallback spec §5); without overlaying
+  // them a hopped stream would render as its original target (silent reroute,
+  // §2 NFR-Legibility). No-op when nothing hopped: values equal import.
+  overlaid["runtime"] = storeStream.runtime;
+  delete overlaid["provider"];
+  if (storeStream.provider !== undefined) overlaid["provider"] = storeStream.provider;
   return overlaid;
 }
 

@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatStreamFallbackDiagnostic,
   formatStreamTierDiagnostic,
   resolveStreamProvider,
   resolveStreamTier,
@@ -102,5 +103,65 @@ describe("formatStreamTierDiagnostic", () => {
     const line = formatStreamTierDiagnostic({ modelId: "grok-4.5", provider: "cursor" });
     expect(line).toMatch(/model_id=grok-4\.5/);
     expect(line).toMatch(/provider=cursor/);
+  });
+});
+
+describe("formatStreamFallbackDiagnostic", () => {
+  it("returns undefined for an absent or empty log", () => {
+    expect(formatStreamFallbackDiagnostic(undefined)).toBeUndefined();
+    expect(formatStreamFallbackDiagnostic([])).toBeUndefined();
+  });
+
+  it("renders a hop with resolved cells and category", () => {
+    const line = formatStreamFallbackDiagnostic([
+      {
+        from: { provider: "cursor", runtime: "cloud" },
+        to: { provider: "claude", runtime: "local" },
+        category: "gateway-auth",
+        at: "2026-07-13T00:00:00.000Z",
+      },
+    ]);
+    expect(line).toBe("fallback: cloud/cursor → local/claude on gateway-auth");
+  });
+
+  it("renders a skip with its reason and a pinned model", () => {
+    const line = formatStreamFallbackDiagnostic([
+      {
+        skipped: { provider: "claude", runtime: "cloud", modelId: "opus" },
+        reason: "ANTHROPIC_API_KEY not set",
+        at: "2026-07-13T00:00:00.000Z",
+      },
+    ]);
+    expect(line).toBe("skipped cloud/claude:opus: ANTHROPIC_API_KEY not set");
+  });
+
+  it("renders a retry", () => {
+    const line = formatStreamFallbackDiagnostic([
+      {
+        retried: { provider: "cursor", runtime: "cloud" },
+        reason: "sdk-throw",
+        at: "2026-07-13T00:00:00.000Z",
+      },
+    ]);
+    expect(line).toBe("retried cloud/cursor once on sdk-throw");
+  });
+
+  it("joins multiple records in order", () => {
+    const line = formatStreamFallbackDiagnostic([
+      {
+        retried: { provider: "cursor", runtime: "cloud" },
+        reason: "sdk-throw",
+        at: "2026-07-13T00:00:00.000Z",
+      },
+      {
+        from: { provider: "cursor", runtime: "cloud" },
+        to: { provider: "claude", runtime: "local" },
+        category: "sdk-throw",
+        at: "2026-07-13T00:01:00.000Z",
+      },
+    ]);
+    expect(line).toBe(
+      "retried cloud/cursor once on sdk-throw; fallback: cloud/cursor → local/claude on sdk-throw",
+    );
   });
 });

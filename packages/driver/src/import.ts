@@ -2,18 +2,31 @@
  * Import a `driver.md` manifest into the store as a `driver_run` aggregate.
  */
 
-import type { Store } from "@ship/store";
-import type { DriverRun } from "@ship/store";
-import type { DriverBatchStatus } from "@ship/store";
+import type {
+  DriverBatchStatus,
+  DriverRun,
+  FallbackChainTarget,
+  FallbackLogRecord,
+  Store,
+} from "@ship/store";
 import type { AgentProvider } from "@ship/workflow";
 
 import { newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { ManifestBatch, ManifestParseError, ManifestStream } from "./manifest.js";
+import type { CellStructuralIssue } from "./dispatch-cell.js";
+import type {
+  DriverManifest,
+  ManifestBatch,
+  ManifestFallbackTarget,
+  ManifestParseError,
+  ManifestStream,
+} from "./manifest.js";
 import type { LoadedDispatchPolicy, PolicyRuntime } from "./policy.js";
 
+import { cellStructuralIssue, missingCredentialEnv } from "./dispatch-cell.js";
+import { DEFAULT_DISPATCH_PROVIDER } from "./engine.js";
 import { parseManifest } from "./manifest.js";
 import {
   loadDispatchPolicy,
@@ -55,8 +68,17 @@ function readManifestFile(manifestPath: string): string {
   }
 }
 
+/** Options for `importManifest`. `env` is injectable for the fallback env-warning check. */
+export interface ImportManifestOptions {
+  env?: Record<string, string | undefined>;
+}
+
 /** Read, parse, and insert a manifest; idempotent by (repo, project, phase, generated_at). */
-export function importManifest(store: Store, manifestPath: string): ImportManifestResult {
+export function importManifest(
+  store: Store,
+  manifestPath: string,
+  opts: ImportManifestOptions = {},
+): ImportManifestResult {
   const sourceJson = readManifestFile(manifestPath);
   const parsed = parseManifest(sourceJson);
   if (!parsed.ok) {
@@ -69,7 +91,13 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
   // Load the repo policy fail-closed before any early return: a broken
   // `.ship.json` must error even on a re-import, never silently pass through.
   const policy = loadDispatchPolicy(dirname(manifestPath));
-  const allWarnings = [...warnings, ...policy.warnings];
+  // Env warnings are re-derived on every import, re-imports included — the
+  // credential landscape at THIS import is what the caller can act on.
+  const allWarnings = [
+    ...warnings,
+    ...policy.warnings,
+    ...collectFallbackEnvWarnings(manifest, opts.env ?? process.env),
+  ];
   const warningExtras = allWarnings.length > 0 ? { warnings: allWarnings } : {};
   const existing = findExistingRun(store, manifest.repo, project, phase, manifest.generated_at);
   if (existing !== undefined) {
@@ -86,9 +114,15 @@ export function importManifest(store: Store, manifestPath: string): ImportManife
     throw new ImportManifestError(providerErrors);
   }
 
+  const fallbackErrors = collectFallbackValidationErrors(manifest, policy);
+  if (fallbackErrors.length > 0) {
+    throw new ImportManifestError(fallbackErrors);
+  }
+
   const batches = manifest.batches.map((batch) =>
     buildBatchInput(batch, {
       defaultEffort: manifest.default_effort,
+      defaultFallback: manifest.default_fallback,
       defaultModel: manifest.default_model,
       defaultModelId: manifest.default_model_id,
       defaultProvider: manifest.default_provider,
@@ -217,6 +251,7 @@ interface ManifestStreamDefaults {
   defaultEffort: ManifestStream["effort"] | undefined;
   defaultProvider: AgentProvider | undefined;
   policy: LoadedDispatchPolicy;
+  defaultFallback: ManifestFallbackTarget[] | undefined;
 }
 
 function buildBatchInput(
@@ -294,6 +329,10 @@ function buildStreamInput(
   modelId?: ReturnType<typeof resolveStreamTier>["modelId"];
   effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
   provider?: AgentProvider;
+  reviewCycles: number;
+  fallbackChain?: FallbackChainTarget[];
+  fallbackCursor?: number;
+  fallbackLog?: FallbackLogRecord[];
 } {
   const candidate: {
     id: string;
@@ -315,6 +354,10 @@ function buildStreamInput(
     modelId?: ReturnType<typeof resolveStreamTier>["modelId"];
     effortTier?: ReturnType<typeof resolveStreamTier>["effortTier"];
     provider?: AgentProvider;
+    reviewCycles: number;
+    fallbackChain?: FallbackChainTarget[];
+    fallbackCursor?: number;
+    fallbackLog?: FallbackLogRecord[];
   } = {
     attempts: [],
     id: newDriverStreamId(),
@@ -331,6 +374,8 @@ function buildStreamInput(
     ),
     ...policyProviderField(defaults, stream),
     ...optionalStreamInputFields(stream),
+    reviewCycles: 0,
+    ...buildFallbackFields(stream, defaults.defaultFallback),
   };
   return candidate;
 }
@@ -346,6 +391,22 @@ function policyProviderField(
     defaults.defaultProvider,
   );
   return provider !== undefined ? { provider } : {};
+}
+
+// Freeze the stream's effective fallback chain onto its row (spec §7.1 step 4):
+// cursor at 0, empty log. Streams with no chain leave all three columns absent —
+// the feature is opt-in, so a chainless stream's row is byte-for-byte as today.
+function buildFallbackFields(
+  stream: ManifestStream,
+  defaultFallback: ManifestFallbackTarget[] | undefined,
+): {
+  fallbackChain?: FallbackChainTarget[];
+  fallbackCursor?: number;
+  fallbackLog?: FallbackLogRecord[];
+} {
+  const chain = resolveEffectiveChain(stream, defaultFallback);
+  if (chain.length === 0) return {};
+  return { fallbackChain: chain.map(toStoreChainTarget), fallbackCursor: 0, fallbackLog: [] };
 }
 
 /** The optional stream fields carried verbatim from manifest to store input. */
@@ -369,4 +430,139 @@ function optionalStreamInputFields(stream: ManifestStream): {
     ...(stream.merged_at !== undefined ? { mergedAt: stream.merged_at } : {}),
     ...(stream.cycles !== undefined ? { cycles: stream.cycles } : {}),
   };
+}
+
+// A stream's effective chain: its own `fallback`, else the run `default_fallback`,
+// else empty (spec §7.1 step 1). `??` — an explicit `[]` opts out of inheritance.
+function resolveEffectiveChain(
+  stream: ManifestStream,
+  defaultFallback: ManifestFallbackTarget[] | undefined,
+): ManifestFallbackTarget[] {
+  return stream.fallback ?? defaultFallback ?? [];
+}
+
+// Manifest entry (snake_case model_id) → the persisted store target (modelId).
+function toStoreChainTarget(entry: ManifestFallbackTarget): FallbackChainTarget {
+  if (entry.model_id === undefined) {
+    return { provider: entry.provider, runtime: entry.runtime };
+  }
+  return { modelId: entry.model_id, provider: entry.provider, runtime: entry.runtime };
+}
+
+// Identity of a dispatch target for dupe detection: the full (runtime, provider,
+// model_id) triple, so a model-variant of the same cell is a distinct target.
+function targetKey(
+  runtime: string,
+  provider: AgentProvider | undefined,
+  modelId: string | undefined,
+): string {
+  return `${runtime}/${provider ?? "-"}:${modelId ?? ""}`;
+}
+
+/**
+ * Validate every stream's effective fallback chain (spec §6/§7.1 step 2). Each
+ * target must be a wired cell, not `rooms`, not a dupe of the primary or an
+ * earlier entry, and satisfy the same per-cell structural requirements primaries
+ * do — derived from `cellStructuralIssue`, not restated. Structured import
+ * failure, same channel as the provider preflight.
+ */
+function collectFallbackValidationErrors(
+  manifest: DriverManifest,
+  policy: LoadedDispatchPolicy,
+): ManifestParseError[] {
+  const errors: ManifestParseError[] = [];
+  for (const stream of manifest.batches.flatMap((batch) => batch.streams)) {
+    const chain = resolveEffectiveChain(stream, manifest.default_fallback);
+    if (chain.length === 0) continue;
+    collectStreamFallbackErrors(stream, chain, manifest, policy, errors);
+  }
+  return errors;
+}
+
+function collectStreamFallbackErrors(
+  stream: ManifestStream,
+  chain: ManifestFallbackTarget[],
+  manifest: DriverManifest,
+  policy: LoadedDispatchPolicy,
+  errors: ManifestParseError[],
+): void {
+  const label = streamLabel(stream);
+  const primaryRuntime = resolveDispatchRuntime(policy, stream.runtime, manifest.default_runtime);
+  // A stream with no provider anywhere still dispatches as the engine default,
+  // so the dupe seed must name it — else a fallback to that same cell passes.
+  const primaryProvider =
+    resolveDispatchProvider(policy, stream.provider, manifest.default_provider) ??
+    DEFAULT_DISPATCH_PROVIDER;
+  const primaryModelId = stream.model_id ?? manifest.default_model_id;
+  const seen = new Set<string>([targetKey(primaryRuntime, primaryProvider, primaryModelId)]);
+  const ctx = { branchName: stream.branch_name, repoUrl: manifest.repo_url };
+
+  chain.forEach((entry, index) => {
+    const at = `stream ${label} fallback[${String(index)}]`;
+    const cell = `${entry.runtime}/${entry.provider}`;
+    const error = fallbackEntryError(entry, ctx, seen, at, cell);
+    if (error !== undefined) errors.push({ message: error });
+  });
+}
+
+// The first rule `entry` breaks, or undefined when it is a valid, non-duplicate
+// target. On success the entry is recorded in `seen` so a later dupe is caught.
+function fallbackEntryError(
+  entry: ManifestFallbackTarget,
+  ctx: { branchName: string | undefined; repoUrl: string | undefined },
+  seen: Set<string>,
+  at: string,
+  cell: string,
+): string | undefined {
+  if (entry.runtime === "rooms") {
+    return `${at}: rooms is not a valid fallback target (${cell})`;
+  }
+  const issue = cellStructuralIssue({ provider: entry.provider, runtime: entry.runtime }, ctx);
+  if (issue !== undefined) {
+    return `${at}: ${fallbackMessageForIssue(issue, cell)}`;
+  }
+  const key = targetKey(entry.runtime, entry.provider, entry.model_id);
+  if (seen.has(key)) {
+    const suffix = entry.model_id !== undefined ? ` (model_id ${entry.model_id})` : "";
+    return `${at}: duplicate fallback target ${cell}${suffix}`;
+  }
+  seen.add(key);
+  return undefined;
+}
+
+function fallbackMessageForIssue(issue: CellStructuralIssue, cell: string): string {
+  switch (issue) {
+    case "unwired-cell":
+      return `${cell} is not a wired dispatch cell`;
+    case "needs-branch":
+      return `${cell} requires branch_name on the stream`;
+    case "needs-repo-url":
+      return `${cell} requires repo_url in the manifest frontmatter`;
+  }
+}
+
+/**
+ * Advisory (spec §4.4/§7.1 step 3): a chain target whose per-cell credential is
+ * absent from `env` gets a run-level warning — import still succeeds, since the
+ * env can change before the hop. Deduped by cell so one missing key warns once.
+ */
+function collectFallbackEnvWarnings(
+  manifest: DriverManifest,
+  env: Record<string, string | undefined>,
+): string[] {
+  const seen = new Set<string>();
+  const warnings: string[] = [];
+  const entries = manifest.batches
+    .flatMap((batch) => batch.streams)
+    .flatMap((stream) => resolveEffectiveChain(stream, manifest.default_fallback));
+  for (const entry of entries) {
+    const cell = `${entry.runtime}/${entry.provider}`;
+    const missing = missingCredentialEnv({ provider: entry.provider, runtime: entry.runtime }, env);
+    if (missing === undefined || seen.has(cell)) continue;
+    seen.add(cell);
+    warnings.push(
+      `fallback target ${cell}: ${missing} not set — the target will be skipped at hop time if still unset`,
+    );
+  }
+  return warnings;
 }

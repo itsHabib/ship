@@ -16,7 +16,7 @@
  * losslessly through import.
  */
 
-import type { DriverStreamStatus } from "@ship/store";
+import type { DriverStreamStatus, FallbackChainTarget, FallbackLogRecord } from "@ship/store";
 import type { AgentProvider } from "@ship/workflow";
 
 import type { EffortTier, ManifestStream, ModelTier } from "./manifest.js";
@@ -196,4 +196,35 @@ function formatRequestedTier(modelTier?: ModelTier, effortTier?: EffortTier): st
   const model = modelTier ?? "-";
   const effort = effortTier ?? "-";
   return `${model}/${effort}`;
+}
+
+/**
+ * Render a stream's fallback log (dispatch-fallback spec §6) — hops, skips, and
+ * transient retries — the same first-class treatment `degrade=` gets. Undefined
+ * when the log is empty (no chain, or a chain that never hopped), so a stream
+ * with nothing to report adds no line. No record is written before P2a, so this
+ * renders nothing until the engine hop lands.
+ */
+export function formatStreamFallbackDiagnostic(
+  fallbackLog: FallbackLogRecord[] | undefined,
+): string | undefined {
+  if (fallbackLog === undefined || fallbackLog.length === 0) {
+    return undefined;
+  }
+  return fallbackLog.map(formatFallbackRecord).join("; ");
+}
+
+function formatFallbackRecord(record: FallbackLogRecord): string {
+  if ("from" in record) {
+    return `fallback: ${formatFallbackCell(record.from)} → ${formatFallbackCell(record.to)} on ${record.category}`;
+  }
+  if ("skipped" in record) {
+    return `skipped ${formatFallbackCell(record.skipped)}: ${record.reason}`;
+  }
+  return `retried ${formatFallbackCell(record.retried)} once on ${record.reason}`;
+}
+
+function formatFallbackCell(target: FallbackChainTarget): string {
+  const cell = `${target.runtime}/${target.provider}`;
+  return target.modelId === undefined ? cell : `${cell}:${target.modelId}`;
 }

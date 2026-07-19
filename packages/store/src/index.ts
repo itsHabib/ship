@@ -28,6 +28,8 @@ export type {
   DriverRunStatus,
   DriverStream,
   DriverStreamStatus,
+  FallbackChainTarget,
+  FallbackLogRecord,
   StreamAttempt,
 } from "./driver-schemas.js";
 

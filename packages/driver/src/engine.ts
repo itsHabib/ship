@@ -80,7 +80,8 @@ import {
 } from "./review-findings.js";
 import { mapTierToDispatch } from "./tier-map.js";
 
-const DEFAULT_DISPATCH_PROVIDER: AgentProvider = "cursor";
+/** The provider the engine dispatches with when nothing else names one. */
+export const DEFAULT_DISPATCH_PROVIDER: AgentProvider = "cursor";
 const DEFAULT_MAX_WAIT_MS = 20 * 60 * 1000;
 const DEFAULT_RUNAWAY_BACKSTOP_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 30_000;

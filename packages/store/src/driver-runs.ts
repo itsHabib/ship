@@ -5,7 +5,14 @@
 
 import type { Db } from "./db.js";
 import type { UpdateDriverBatchInput } from "./driver-batches.js";
-import type { DriverBatch, DriverRun, DriverRunStatus, DriverStream } from "./driver-schemas.js";
+import type {
+  DriverBatch,
+  DriverRun,
+  DriverRunStatus,
+  DriverStream,
+  FallbackChainTarget,
+  FallbackLogRecord,
+} from "./driver-schemas.js";
 import type { UpdateDriverStreamInput } from "./driver-streams.js";
 
 import { createDriverBatchOps } from "./driver-batches.js";
@@ -35,11 +42,15 @@ export interface InsertDriverStreamInput {
   mergeCommit?: string;
   mergedAt?: string;
   cycles?: number;
+  reviewCycles?: number;
   errorMessage?: string;
   modelTier?: DriverStream["modelTier"];
   modelId?: DriverStream["modelId"];
   effortTier?: DriverStream["effortTier"];
   provider?: DriverStream["provider"];
+  fallbackChain?: FallbackChainTarget[];
+  fallbackCursor?: number;
+  fallbackLog?: FallbackLogRecord[];
 }
 
 /** Nested batch input for aggregate insert. */

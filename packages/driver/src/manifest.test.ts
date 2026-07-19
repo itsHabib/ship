@@ -1035,3 +1035,94 @@ describe("repo sweep — every in-tree docs/features/**/driver.md parses clean",
     expect(result.ok).toBe(true);
   });
 });
+
+// A manifest with a single stream, `streamLines` appended (8-space indented) to
+// its fields and `topLevel` lines inserted at the frontmatter root.
+function manifestWithStream(streamLines: string[], topLevel: string[] = []): string {
+  return [
+    "---",
+    "driver_version: 1",
+    "generated_at: 2026-06-10T00:00:00Z",
+    "generated_by: work-driver-prep",
+    "source:",
+    "  project: ship",
+    "  phase: test",
+    "repo: ship",
+    "repo_url: https://github.com/itsHabib/ship",
+    ...topLevel,
+    "batches:",
+    "  - id: 1",
+    "    depends_on: []",
+    "    streams:",
+    "      - spec_path: docs/a.md",
+    "        branch_name: feat-a",
+    ...streamLines.map((line) => `        ${line}`),
+    "---",
+    "",
+  ].join("\n");
+}
+
+describe("parseManifest fallback chains", () => {
+  it("parses a per-stream fallback array", () => {
+    const result = parseManifest(
+      manifestWithStream(["fallback:", "  - runtime: local", "    provider: claude"]),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.batches[0]?.streams[0]?.fallback).toEqual([
+      { runtime: "local", provider: "claude" },
+    ]);
+  });
+
+  it("parses a fallback entry's model_id", () => {
+    const result = parseManifest(
+      manifestWithStream([
+        "fallback:",
+        "  - runtime: cloud",
+        "    provider: claude",
+        "    model_id: claude-opus-4-8",
+      ]),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.batches[0]?.streams[0]?.fallback?.[0]).toEqual({
+      runtime: "cloud",
+      provider: "claude",
+      model_id: "claude-opus-4-8",
+    });
+  });
+
+  it("parses a run-level default_fallback", () => {
+    const result = parseManifest(
+      manifestWithStream([], ["default_fallback:", "  - runtime: local", "    provider: claude"]),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.default_fallback).toEqual([{ runtime: "local", provider: "claude" }]);
+  });
+
+  it("hard-errors on a malformed runtime enum in a fallback entry", () => {
+    expectError(
+      manifestWithStream(["fallback:", "  - runtime: banana", "    provider: claude"]),
+      /invalid runtime/,
+    );
+  });
+
+  it("hard-errors when a fallback entry omits the required provider", () => {
+    expectError(manifestWithStream(["fallback:", "  - runtime: local"]), /provider/);
+  });
+
+  it("warns (does not error) on an unknown key inside a fallback entry", () => {
+    const result = parseManifest(
+      manifestWithStream([
+        "fallback:",
+        "  - runtime: local",
+        "    provider: claude",
+        "    weight: 3",
+      ]),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.warnings.join("\n")).toMatch(/weight/);
+  });
+});
