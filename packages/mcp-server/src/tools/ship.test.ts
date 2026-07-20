@@ -177,4 +177,25 @@ describe("ship tool", () => {
       "ship",
     ]);
   });
+
+  test("ship advertises portable single-repo array schemas", async () => {
+    const list = await h.client.listTools();
+    const ship = list.tools.find((tool) => tool.name === "ship");
+    const inputSchema = ship?.inputSchema as {
+      properties?: Record<string, { properties?: Record<string, SingleRepoJsonSchema> }>;
+    };
+
+    for (const field of ["cloud", "room"]) {
+      const repos = inputSchema.properties?.[field]?.properties?.["repos"];
+      expect(repos?.minItems).toBe(1);
+      expect(repos?.maxItems).toBe(1);
+      expect(Array.isArray(repos?.items)).toBe(false);
+    }
+  });
 });
+
+interface SingleRepoJsonSchema {
+  readonly items?: unknown;
+  readonly minItems?: number;
+  readonly maxItems?: number;
+}
