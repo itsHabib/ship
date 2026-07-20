@@ -15,6 +15,14 @@
 
 Band: **amazing** per repo PR sizing.
 
+## Goal
+
+A transient blip (connect-timeout, network flap, rate-limit) gets one same-target
+retry before the chain moves, so a 10-second outage never permanently demotes a
+stream off its intended target; and every hop record carries the resolved
+from/to dispatch models, so cross-provider hops stay attributable in
+`/provenance` and model-comparison readouts.
+
 **Scope shrank vs the spec's P2b row (verified against main, 2026-07-20).** The
 §4.1 `model_id` dispatch plumbing is ALREADY LANDED — do not rebuild it:
 
@@ -56,10 +64,12 @@ model-comparison readouts.
 
 **2. Resolved from/to models on hop records (§4.1 residue).**
 
-- Hop records gain `fromModel`/`toModel`: the *resolved* dispatch model on each
-  side (the tier-mapped or verbatim id — i.e. what `dispatchModel` was/will be),
-  not just the chain entry's optional `model_id`. A cross-provider hop changes
-  the model even when no entry pins one; that must be attributable.
+- Hop records **populate the existing optional `fromModel`/`toModel` schema
+  fields** (the shapes landed with P1's `fallbackLogRecordSchema`; nothing
+  writes them today): the *resolved* dispatch model on each side (the
+  tier-mapped or verbatim id — i.e. what `dispatchModel` was/will be), not just
+  the chain entry's optional `model_id`. A cross-provider hop changes the model
+  even when no entry pins one; that must be attributable.
 - `/provenance` and #202's model-comparison readouts can then re-attribute (or
   exclude) hopped streams — one line in the readout query, documented in the
   hop-record shape.
@@ -67,8 +77,10 @@ model-comparison readouts.
 ## Acceptance
 
 - Transient-shape failure on a pre-work stream → one same-target retry
-  (recorded), success path continues normally; a second transient failure on the
-  same target advances the chain (or escalates when exhausted).
+  (recorded), success path continues normally; a second failure on the same
+  target falls through to the §4.2 hop gate — an *eligible* category advances
+  the chain (or escalates when exhausted); a *non-eligible* one (e.g.
+  `contention`) escalates as today, never burning a chain entry.
 - `contention` (non-hop category) gets its one retry via the same path.
 - Non-transient failures skip straight to the hop gate — zero behavior change.
 - A hop record carries resolved `fromModel`/`toModel` whether or not the chain
@@ -80,8 +92,10 @@ model-comparison readouts.
 
 Unit: allowlist membership (each shape class + a non-member), retry bookkeeping
 (one per target, per lifecycle, across a decide-retry round-trip),
-retry-before-category ordering (`contention` reaches the retry), hop-record
-model resolution (pinned entry vs tier-mapped). e2e (fake runners, both seams):
+retry-before-category ordering (`contention` reaches the retry; its second
+failure escalates without consuming chain), `chainStillConsumable` with an
+unused retry on the current target (and false once retried + exhausted),
+hop-record model resolution (pinned entry vs tier-mapped). e2e (fake runners, both seams):
 transient-retry-then-succeed; transient-retry-then-advance;
 cross-provider hop with and without pinned `model_id` → records + dispatch
 correct.
