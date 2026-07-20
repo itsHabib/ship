@@ -25,7 +25,8 @@
     "@ship/store": "workspace:*",
     "@ship/workflow": "workspace:*",
     "yaml": "^2.6.1",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "@ship/driverstate-emitter": "workspace:*"
   },
   "devDependencies": {
     "@fast-check/vitest": "0.3.0",

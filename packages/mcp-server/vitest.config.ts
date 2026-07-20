@@ -6,7 +6,10 @@ export default defineConfig({
     // Never write park receipts to the real ship data-dir file when a driver
     // tool test drives a run to awaiting_judgment (e.g. driver_decide retry).
     // See packages/receipt/test/receipts-isolation.ts.
-    setupFiles: ["../receipt/test/receipts-isolation.ts"],
+    setupFiles: [
+      "../receipt/test/receipts-isolation.ts",
+      "../driverstate-emitter/test/driverstate-isolation.ts",
+    ],
     include: ["src/**/*.test.ts", "test/**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/dist/**"],
     coverage: {
