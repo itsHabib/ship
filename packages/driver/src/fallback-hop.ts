@@ -86,10 +86,22 @@ export function hasCurrentTargetBeenRetried(stream: DriverStream): boolean {
 }
 
 /**
+ * FR6 opt-in gate: the §4.7 retry is part of the fallback feature, so a stream
+ * with no declared chain behaves byte-for-byte as today — and the retry's
+ * one-per-target bookkeeping lives in `fallbackLog`, whose schema requires the
+ * three fallback columns to travel together (writing a log record onto a
+ * chainless row would fail the next `loadRun`).
+ */
+function hasDeclaredFallbackChain(stream: DriverStream): boolean {
+  return stream.fallbackChain !== undefined && stream.fallbackChain.length > 0;
+}
+
+/**
  * Unused §4.7 retry on the current target for a transient-shaped last failure —
  * the stream is still movement-capable without consuming the chain.
  */
 export function hasUnusedTransientRetry(stream: DriverStream): boolean {
+  if (!hasDeclaredFallbackChain(stream)) return false;
   if (!hasNoWorkProducts(stream)) return false;
   if (hasCurrentTargetBeenRetried(stream)) return false;
   const category = stream.attempts.at(-1)?.failureCategory as FailureCategory | undefined;
@@ -189,6 +201,7 @@ export function decideTransientRetry(
   stream: DriverStream,
   ctx: TransientRetryContext,
 ): Extract<FallbackHopDecision, { kind: "retry" }> | undefined {
+  if (!hasDeclaredFallbackChain(stream)) return undefined;
   if (!isTransientBlipFailure(ctx.errorMessage, ctx.category)) return undefined;
   if (!hasNoWorkProducts(stream, ctx.pollPrUrl)) return undefined;
   if (hasCurrentTargetBeenRetried(stream)) return undefined;

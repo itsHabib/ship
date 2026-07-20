@@ -247,6 +247,9 @@ export function writeDispatchFailingEscalations(deps: EscalationDeps, run: Drive
     // but only while the stream is actually movement-capable; an ineligible
     // or work-carrying stream never hops, so its chain must not silence the
     // breaker. Exhausted chain: §6 park copy subsumes the breaker row.
+    // hasUnusedTransientRetry reads stored columns only (no pollPrUrl): safe
+    // here because this sweep runs after the poll persisted any autoPR prUrl
+    // onto the stream row, so the cloud-autoPR case cannot slip past it.
     if (hasUnusedTransientRetry(stream)) continue;
     if (hasUnconsumedFallbackChain(stream) && chainStillConsumable(stream)) continue;
     if (hasExhaustedFallbackChain(stream)) continue;

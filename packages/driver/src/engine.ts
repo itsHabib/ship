@@ -1848,11 +1848,21 @@ async function handleFailedPoll(
  * network flaps land) so the §4.7 shape sensor can classify async failures.
  * Fall back to category / status when no phase message was persisted.
  */
-function pollFailureErrorMessage(wfRun: GetWorkflowRunOutput): string {
+// Implement-phase first: its error carries the root failure the §4.7 shape
+// sensor must classify; a later phase's message may be a follow-on symptom.
+function firstPhaseErrorMessage(wfRun: GetWorkflowRunOutput): string | undefined {
+  const implementMsg = wfRun.phases.find((p) => p.kind === "implement")?.errorMessage;
+  if (implementMsg !== undefined && implementMsg !== "") return implementMsg;
   for (let i = wfRun.phases.length - 1; i >= 0; i--) {
     const msg = wfRun.phases[i]?.errorMessage;
     if (msg !== undefined && msg !== "") return msg;
   }
+  return undefined;
+}
+
+function pollFailureErrorMessage(wfRun: GetWorkflowRunOutput): string {
+  const phaseMsg = firstPhaseErrorMessage(wfRun);
+  if (phaseMsg !== undefined) return phaseMsg;
   const detail = wfRun.observability?.failure?.detail;
   if (detail !== undefined && detail !== "") return detail;
   return wfRun.failureCategory ?? wfRun.status;

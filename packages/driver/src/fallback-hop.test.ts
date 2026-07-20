@@ -459,6 +459,26 @@ describe("transient-blip retry (§4.7)", () => {
     expect(isTransientBlipFailure("busy", "contention")).toBe(true);
   });
 
+  test("chainless stream never retries — FR6 opt-in; fallbackLog cannot land on a row without the fallback columns", () => {
+    const ctx = {
+      at: "2026-07-13T00:01:00.000Z",
+      category: "sdk-throw" as const,
+      errorMessage: "connect ETIMEDOUT",
+      failedAttempts: [],
+    };
+    const noChain = baseStream({
+      fallbackChain: undefined,
+      fallbackCursor: undefined,
+      fallbackLog: undefined,
+    });
+    expect(decideTransientRetry(noChain, ctx)).toBeUndefined();
+    expect(hasUnusedTransientRetry(noChain)).toBe(false);
+    // Explicit [] opts out the same way (manifest `fallback: []`).
+    const emptyChain = baseStream({ fallbackChain: [] });
+    expect(decideTransientRetry(emptyChain, ctx)).toBeUndefined();
+    expect(hasUnusedTransientRetry(emptyChain)).toBe(false);
+  });
+
   test("pre-work transient failure records one same-target retry", () => {
     const stream = baseStream();
     const decision = decideTransientRetry(stream, {
