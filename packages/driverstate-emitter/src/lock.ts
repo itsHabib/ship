@@ -14,8 +14,8 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const RETRY_DELAY_MS = 10;
 
 /** Runs `fn` while holding the lock file at `lockFile`, releasing it after. */
-export function withLock<T>(lockFile: string, fn: () => T): T {
-  acquireLock(lockFile);
+export function withLock<T>(lockFile: string, fn: () => T, timeoutMs = DEFAULT_TIMEOUT_MS): T {
+  acquireLock(lockFile, timeoutMs);
   try {
     return fn();
   } finally {

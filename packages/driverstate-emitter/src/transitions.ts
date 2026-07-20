@@ -40,6 +40,9 @@ export function checkTransition(events: Event[], e: DraftEvent): void {
   if (events.length === 0) {
     throw illegal("run_absent", e.kind);
   }
+  if (e.stream === "") {
+    throw new Error(`driverstate: ${e.kind} requires a stream id`);
+  }
   applyStream(streamStatus(events, e.stream), e);
   if (e.kind === "stream_attempt") {
     checkSeq(events, e);
