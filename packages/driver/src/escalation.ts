@@ -27,6 +27,7 @@ import {
   chainStillConsumable,
   hasExhaustedFallbackChain,
   hasUnconsumedFallbackChain,
+  hasUnusedTransientRetry,
 } from "./fallback-hop.js";
 import {
   allStreams,
@@ -242,10 +243,14 @@ export function writeDispatchFailingEscalations(deps: EscalationDeps, run: Drive
   const createdAt = nowIso(deps);
   const ids: string[] = [];
   for (const stream of allStreams(run)) {
-    // Live chain: breaker must not park (§7.2 step 0) — but only while the
-    // chain is actually consumable; an ineligible or work-carrying stream
-    // never hops, so its chain must not silence the breaker. Exhausted chain:
-    // §6 park copy subsumes the breaker row — never double-escalate.
+    // Live chain / unused §4.7 retry: breaker must not park (§7.2 step 0) —
+    // but only while the stream is actually movement-capable; an ineligible
+    // or work-carrying stream never hops, so its chain must not silence the
+    // breaker. Exhausted chain: §6 park copy subsumes the breaker row.
+    // hasUnusedTransientRetry reads stored columns only (no pollPrUrl): safe
+    // here because this sweep runs after the poll persisted any autoPR prUrl
+    // onto the stream row, so the cloud-autoPR case cannot slip past it.
+    if (hasUnusedTransientRetry(stream)) continue;
     if (hasUnconsumedFallbackChain(stream) && chainStillConsumable(stream)) continue;
     if (hasExhaustedFallbackChain(stream)) continue;
     const failures = consecutiveDispatchFailures(stream);
