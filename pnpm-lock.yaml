@@ -323,6 +323,19 @@ importers:
         specifier: 2.1.9
         version: 2.1.9(@types/node@22.19.17)
 
+  packages/driverstate-emitter:
+    dependencies:
+      ulid:
+        specifier: ^2.4.0
+        version: 2.4.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.17
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.19.17)
+
   packages/logger:
     dependencies:
       pino:
