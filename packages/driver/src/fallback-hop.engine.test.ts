@@ -450,6 +450,78 @@ batches:
     store.close();
   });
 
+  test("poll-seam shape blip (phase errorMessage) → one retry → succeed", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        errorMessage: "gateway-unreachable; connect ETIMEDOUT",
+        failureCategory: "gateway-unreachable",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_blip",
+      },
+      { docPath: cloudDoc, repo: "ship", workflowRunId: "wf_ok" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.fallbackCursor).toBe(0);
+    expect(stream?.fallbackLog?.[0]).toMatchObject({
+      retried: { provider: "cursor", runtime: "cloud" },
+      reason: "gateway-unreachable",
+    });
+    store.close();
+  });
+
+  test("poll-seam shape retry then second failure advances when eligible", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const localDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/tasks/a.md",
+    );
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        errorMessage: "connect ETIMEDOUT",
+        failureCategory: "gateway-unreachable",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf1",
+      },
+      {
+        docPath: cloudDoc,
+        errorMessage: "connect ETIMEDOUT",
+        failureCategory: "gateway-unreachable",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf2",
+      },
+      { docPath: localDoc, repo: "ship", workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("local");
+    expect(stream?.fallbackCursor).toBe(1);
+    expect(stream?.fallbackLog?.filter((r) => "retried" in r)).toHaveLength(1);
+    expect(stream?.fallbackLog?.filter((r) => "from" in r)).toHaveLength(1);
+    store.close();
+  });
+
   test("poll-seam contention retry then second failure advances when eligible", async () => {
     const manifest = writeCloudFallbackManifest();
     const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
@@ -510,7 +582,7 @@ batches:
         branch_name: feat-a
         runtime: cloud
         provider: cursor
-        model: opus
+        model: sonnet
         status: pending
         fallback:
           - runtime: local
@@ -537,8 +609,8 @@ batches:
     const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
     const hop = stream?.fallbackLog?.find((r) => "from" in r);
     expect(hop).toMatchObject({
-      fromModel: "claude-opus-4-8",
-      toModel: "claude-opus-4-8",
+      fromModel: "composer-2.5",
+      toModel: "claude-sonnet-4-6",
     });
     store.close();
   });

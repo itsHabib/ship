@@ -379,10 +379,11 @@ async function runDispatchPollLoop(state: PollLoopState): Promise<DriverTickResu
     }
 
     // Poll-seam hop/retry leaves pending work with no in-flight — re-dispatch
-    // until the stream leaves pending or a small bound is hit so maxWaitMs:0
-    // ticks can finish a retry-then-hop without spinning when pending stays
-    // undispatchable (caps keep hasInFlight true and skip this block).
-    const maxRedispatches = 8;
+    // until the stream leaves pending or the structural attempt bound is hit
+    // (§8: ≤ 2×(1+chain)) so maxWaitMs:0 ticks can finish a retry-then-hop
+    // without spinning when pending stays undispatchable (caps keep
+    // hasInFlight true and skip this block).
+    const maxRedispatches = maxPollRedispatches(current);
     for (let n = 0; n < maxRedispatches; n++) {
       current = loadRun(state.ctx.store, state.driverRunId);
       if (hasInFlightStreams(current) || !runHasPendingDispatchable(current, state.opts)) {
@@ -426,6 +427,17 @@ function runHasPendingDispatchable(run: DriverRun, opts: ResolvedRunOpts): boole
     if (batchHasPendingDispatchable(batch, run.batches)) return true;
   }
   return false;
+}
+
+/** Spec §8 structural attempt ceiling — bounds poll-seam redispatch loops. */
+function maxPollRedispatches(run: DriverRun): number {
+  let maxChain = 0;
+  for (const stream of allStreams(run)) {
+    if (stream.status !== "pending") continue;
+    const len = stream.fallbackChain?.length ?? 0;
+    if (len > maxChain) maxChain = len;
+  }
+  return 2 * (1 + maxChain);
 }
 
 interface FinalizeExitInput {
@@ -1031,7 +1043,6 @@ async function applyFallbackAfterFailure(params: {
     repoRoot: params.repoRoot,
     repoUrl: params.repoUrl,
     viability: createViabilityDeps(process.env),
-    errorMessage: params.errorMessage,
     ...(params.pollPrUrl !== undefined ? { pollPrUrl: params.pollPrUrl } : {}),
   });
   return commitFallbackDecision(params, decision);
@@ -1822,7 +1833,7 @@ async function handleFailedPoll(
   await applyFallbackAfterFailure({
     category,
     clock: ctx.clock,
-    errorMessage: wfRun.failureCategory ?? wfRun.status,
+    errorMessage: pollFailureErrorMessage(wfRun),
     failedAttempts,
     repoRoot: resolveRepoRoot(run.manifestPath),
     repoUrl: extractRepoUrl(run),
@@ -1830,6 +1841,21 @@ async function handleFailedPoll(
     stream,
     ...(pollPrUrl !== undefined ? { pollPrUrl } : {}),
   });
+}
+
+/**
+ * Prefer the implement phase's error text (where connect-timeout / 429 /
+ * network flaps land) so the §4.7 shape sensor can classify async failures.
+ * Fall back to category / status when no phase message was persisted.
+ */
+function pollFailureErrorMessage(wfRun: GetWorkflowRunOutput): string {
+  for (let i = wfRun.phases.length - 1; i >= 0; i--) {
+    const msg = wfRun.phases[i]?.errorMessage;
+    if (msg !== undefined && msg !== "") return msg;
+  }
+  const detail = wfRun.observability?.failure?.detail;
+  if (detail !== undefined && detail !== "") return detail;
+  return wfRun.failureCategory ?? wfRun.status;
 }
 
 async function handleSucceededPoll(

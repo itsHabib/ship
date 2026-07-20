@@ -17,6 +17,8 @@ export interface FakeRunScript {
   repo: string;
   terminalStatus?: GetWorkflowRunOutput["status"];
   failureCategory?: GetWorkflowRunOutput["failureCategory"];
+  /** Persisted on the implement phase — feeds the §4.7 poll-seam shape sensor. */
+  errorMessage?: string;
   prUrl?: string;
   branchName?: string;
   throwOnStart?: Error;
@@ -140,24 +142,24 @@ function mergeOptionalScriptFields(
   if (match === undefined) return base;
   const category = match.failureCategory;
   const prUrl = match.prUrl;
-  if (category === undefined && prUrl === undefined) return base;
-  if (category === undefined && prUrl !== undefined) return { ...base, prUrl };
-  if (category !== undefined && prUrl === undefined) return { ...base, failureCategory: category };
-  if (category !== undefined && prUrl !== undefined) {
-    return { ...base, failureCategory: category, prUrl };
-  }
-  return base;
+  const errorMessage = match.errorMessage;
+  let next = base;
+  if (category !== undefined) next = { ...next, failureCategory: category };
+  if (prUrl !== undefined) next = { ...next, prUrl };
+  if (errorMessage !== undefined) next = { ...next, errorMessage };
+  return next;
 }
 
 function buildRun(script: FakeRunScript, now: () => string): GetWorkflowRunOutput {
   const status = script.terminalStatus ?? "succeeded";
   const branch = script.branch ?? script.branchName ?? "main";
+  const failure = failedRunExtras(script, status, now);
   const run: GetWorkflowRunOutput = {
     baseRef: "main",
     createdAt: now(),
     docPath: script.docPath,
     id: script.workflowRunId,
-    phases: [],
+    phases: failure.phases,
     policy: DEFAULT_WORKFLOW_POLICY,
     repo: script.repo,
     status,
@@ -169,19 +171,53 @@ function buildRun(script: FakeRunScript, now: () => string): GetWorkflowRunOutpu
       path: `/worktrees/${branch}`,
       repo: script.repo,
     },
+    ...(failure.failureCategory !== undefined ? { failureCategory: failure.failureCategory } : {}),
   };
-  if (status === "failed" && script.failureCategory !== undefined) {
-    run.failureCategory = script.failureCategory;
-  }
   // Any status may carry a PR (cloud autoPR then failure) — mirror that.
   if (script.prUrl !== undefined) {
-    run.branches = [
-      {
-        branch: script.branchName ?? branch,
-        prUrl: script.prUrl,
-        repoUrl: "https://github.com/example/ship",
-      },
-    ];
+    return {
+      ...run,
+      branches: [
+        {
+          branch: script.branchName ?? branch,
+          prUrl: script.prUrl,
+          repoUrl: "https://github.com/example/ship",
+        },
+      ],
+    };
   }
   return run;
+}
+
+function failedRunExtras(
+  script: FakeRunScript,
+  status: GetWorkflowRunOutput["status"],
+  now: () => string,
+): {
+  phases: GetWorkflowRunOutput["phases"];
+  failureCategory?: GetWorkflowRunOutput["failureCategory"];
+} {
+  if (status !== "failed") return { phases: [] };
+  if (script.errorMessage === undefined && script.failureCategory === undefined) {
+    return { phases: [] };
+  }
+  const ts = now();
+  return {
+    phases: [
+      {
+        endedAt: ts,
+        id: `ph_${script.workflowRunId}`,
+        inputJson: "{}",
+        kind: "implement",
+        startedAt: ts,
+        status: "failed",
+        workflowRunId: script.workflowRunId,
+        ...(script.errorMessage !== undefined ? { errorMessage: script.errorMessage } : {}),
+        ...(script.failureCategory !== undefined
+          ? { failureCategory: script.failureCategory }
+          : {}),
+      },
+    ],
+    ...(script.failureCategory !== undefined ? { failureCategory: script.failureCategory } : {}),
+  };
 }

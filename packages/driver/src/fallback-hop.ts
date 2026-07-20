@@ -170,8 +170,6 @@ export interface FallbackHopContext {
   viability: ViabilityDeps;
   /** Poll-seam PR URL from the workflow run, if any. */
   pollPrUrl?: string;
-  /** Error text in hand — used by the §4.7 transient-shape sensor. */
-  errorMessage?: string;
 }
 
 export interface TransientRetryContext {
