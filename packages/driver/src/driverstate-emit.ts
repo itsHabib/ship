@@ -14,7 +14,13 @@
  */
 
 import type { Logger } from "@ship/logger";
-import type { DriverRun, DriverStream, Store, UpdateDriverStreamInput } from "@ship/store";
+import type {
+  ConsumeReviewArtifactInput,
+  DriverRun,
+  DriverStream,
+  Store,
+  UpdateDriverStreamInput,
+} from "@ship/store";
 
 import { appendEvent, type AppendResult, releaseRun } from "@ship/driverstate-emitter";
 
@@ -82,7 +88,36 @@ export function withDriverStateEmission(store: Store, logger?: Logger): Store {
       }
       return run;
     },
+    consumeReviewArtifactAndPrepareDispatch: (input) => {
+      store.consumeReviewArtifactAndPrepareDispatch(input);
+      try {
+        emitReviewCycle(input, emit);
+      } catch (err) {
+        logger?.warn({ streamId: input.streamId, err: String(err) }, "driverstate: emission threw");
+      }
+    },
   };
+}
+
+/**
+ * The address flow moves a stream back to `dispatching` through this atomic
+ * store op, bypassing `updateDriverStream` — in ledger terms the stream stays
+ * `pr_open` and the round is a `review_cycle` (the only legal pr_open event).
+ * findings is -1: the count is not known at this seam, only that a settled
+ * review round is being addressed.
+ */
+function emitReviewCycle(input: ConsumeReviewArtifactInput, emit: Emit): void {
+  emit(
+    input.driverRunId,
+    appendEvent({
+      actor: `ship:${input.driverRunId}`,
+      body: { cycle: Math.max(1, input.addressCycle), findings: -1, panel_settled: true },
+      id: eventId(`${ledgerStreamId(input.streamId)}_cycle_${String(input.addressCycle)}`),
+      kind: "review_cycle",
+      runId: ledgerRunId(input.driverRunId),
+      stream: ledgerStreamId(input.streamId),
+    }),
+  );
 }
 
 function emitRunImported(run: DriverRun, sourceJson: string, manifestPath: string): AppendResult {
@@ -173,8 +208,12 @@ function attemptEvent(
   ctx: StreamEventCtx,
 ): Parameters<typeof appendEvent>[0] {
   const { seq, ...base } = ctx;
-  const failure =
-    status === "failed" ? { failure_category: stream.errorMessage ?? "engine_failure" } : {};
+  // Prefer the engine's structured classification on the latest attempt
+  // (bounded vocabulary: sdk-throw, gateway categories, …); the raw
+  // errorMessage is the fallback, "engine_failure" the floor.
+  const category =
+    stream.attempts.at(-1)?.failureCategory ?? stream.errorMessage ?? "engine_failure";
+  const failure = status === "failed" ? { failure_category: category } : {};
   return {
     ...base,
     body: { doc_path: stream.specPath, seq, terminal: true, ...failure },
@@ -208,6 +247,8 @@ function emitPrEvents(
     send(
       appendEvent({
         ...base,
+        // head_sha is required by the contract but the driver model does not
+        // track a HEAD SHA at this seam — empty by design, meaning unknown.
         body: { head_sha: "", pr: patch.prNumber, url: stream.prUrl ?? "" },
         extRef: stream.prUrl ?? "",
         id: eventId(`${ctx.stream}_pr_${String(patch.prNumber)}`),
@@ -235,6 +276,9 @@ function emitRunTerminal(run: DriverRun, status: DriverRun["status"], emit: Emit
   if (status !== "done" && status !== "failed" && status !== "cancelled") {
     return;
   }
+  if (status !== "done") {
+    closeAbortedStreams(run, status, emit);
+  }
   emit(
     run.id,
     appendEvent({
@@ -246,4 +290,47 @@ function emitRunTerminal(run: DriverRun, status: DriverRun["status"], emit: Emit
     }),
   );
   releaseRun(ledgerRunId(run.id), `ship:${run.id}`);
+}
+
+/**
+ * A failed/cancelled run can stop with streams the ledger still holds
+ * non-terminal, and `run_finished` is only legal once every stream is terminal.
+ * Close what can legally close: never-dispatched streams skip
+ * (pending → skipped), in-flight ones fail (dispatched → failed). A stream the
+ * table cannot close from here (landed / pr_open) leaves `run_finished` to be
+ * rejected and logged — visible, not silent, per the best-effort rule.
+ */
+function closeAbortedStreams(run: DriverRun, status: "failed" | "cancelled", emit: Emit): void {
+  const reason = `run ${status}`;
+  const actor = `ship:${run.id}`;
+  const runId = ledgerRunId(run.id);
+  for (const s of run.batches.flatMap((b) => b.streams)) {
+    const kind = abortCloseKind(s);
+    emit(
+      run.id,
+      appendEvent({
+        actor,
+        body: { reason },
+        id: eventId(`${ledgerStreamId(s.id)}_abort_${kind}`),
+        kind,
+        runId,
+        stream: ledgerStreamId(s.id),
+      }),
+    );
+  }
+}
+
+/**
+ * The closing kind for one aborted stream, chosen so the common ledger state
+ * accepts it: in-flight streams fail (ledger dispatched → failed); everything
+ * else skips — legal from both pending (never emitted, incl. progress absorbed
+ * at import) and failed. A stream the ledger already holds terminal (e.g.
+ * merged live in this process) rejects the skip in the emitter's validator —
+ * logged and harmless, per the best-effort rule.
+ */
+function abortCloseKind(s: DriverStream): string {
+  if (s.status === "dispatching" || s.status === "dispatched") {
+    return "stream_failed";
+  }
+  return "stream_skipped";
 }

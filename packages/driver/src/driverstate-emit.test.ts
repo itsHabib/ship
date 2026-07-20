@@ -41,12 +41,16 @@ function importFixture(): DriverRun {
   return importManifest(wrapped, join(fixturesDir, "synthetic-full.driver.md")).run;
 }
 
-function ledgerKinds(driverRunId: string): string[] {
+function ledgerEvents(driverRunId: string): { kind: string; body: unknown }[] {
   const path = join(stateRoot, ledgerRunId(driverRunId), "events.jsonl");
   return readFileSync(path, "utf8")
     .split("\n")
     .filter((l) => l.trim() !== "")
-    .map((l) => (JSON.parse(l) as { kind: string }).kind);
+    .map((l) => JSON.parse(l) as { kind: string; body: unknown });
+}
+
+function ledgerKinds(driverRunId: string): string[] {
+  return ledgerEvents(driverRunId).map((e) => e.kind);
 }
 
 function pendingStreamId(run: DriverRun): string {
@@ -75,7 +79,7 @@ describe("withDriverStateEmission", () => {
     expect(first.body.manifest).toBeTruthy();
   });
 
-  it("maps stream lifecycle patches to ledger events through merge and run finish", () => {
+  it("maps stream lifecycle patches to ledger events through merge", () => {
     const run = importFixture();
     const streamId = pendingStreamId(run);
 
@@ -95,6 +99,79 @@ describe("withDriverStateEmission", () => {
       "stream_pr_opened",
       "stream_merged",
     ]);
+  });
+
+  it("falls back to merged_at now when the patch carries only the merge commit", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+    wrapped.updateDriverStream(streamId, { prNumber: 41, prUrl: "https://x/pull/41" });
+    wrapped.updateDriverStream(streamId, { mergeCommit: "abc123", status: "done" });
+
+    const merged = ledgerEvents(run.id).find((e) => e.kind === "stream_merged");
+    expect(merged?.body).toMatchObject({ merge_commit: "abc123", pr: 41 });
+    expect((merged?.body as { merged_at: string }).merged_at).not.toBe("");
+  });
+
+  it("prefers the latest attempt's structured failureCategory over errorMessage", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    wrapped.updateDriverStream(streamId, {
+      attempts: [
+        { dispatchedAt: "2026-07-20T00:00:00.000Z", failureCategory: "sdk-throw", terminal: true },
+      ],
+      errorMessage: "raw exception text",
+      status: "failed",
+    });
+
+    const attempt = ledgerEvents(run.id).find((e) => e.kind === "stream_attempt");
+    expect((attempt?.body as { failure_category: string }).failure_category).toBe("sdk-throw");
+  });
+
+  it("emits run_finished (and closes aborted streams) on a cancelled run; non-terminal statuses emit nothing", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+
+    wrapped.updateDriverRunStatus(run.id, "running");
+    expect(ledgerKinds(run.id)).not.toContain("run_finished");
+
+    wrapped.updateDriverRunStatus(run.id, "cancelled");
+    const kinds = ledgerKinds(run.id);
+    expect(kinds).toContain("run_finished");
+    // The in-flight stream failed, the untouched manifest streams skipped.
+    expect(kinds.filter((k) => k === "stream_failed")).toHaveLength(1);
+    expect(kinds).toContain("stream_skipped");
+    expect(kinds.at(-1)).toBe("run_finished");
+  });
+
+  it("emits a review_cycle when the address flow consumes a review artifact", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+    wrapped.updateDriverStream(streamId, { prNumber: 41, prUrl: "https://x/pull/41" });
+
+    wrapped.consumeReviewArtifactAndPrepareDispatch({
+      addressCycle: 1,
+      artifactId: "rf_one",
+      attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
+      canonicalSha256: "a".repeat(64),
+      dispatchProvider: "cursor",
+      docPath: "C:/repo/address.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha: "b".repeat(40),
+      prNumber: 41,
+      repo: "example/ship",
+      streamId,
+    });
+
+    expect(ledgerKinds(run.id)).toContain("review_cycle");
   });
 
   it("emits a terminal failed attempt with a failure category", () => {
