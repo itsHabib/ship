@@ -23,7 +23,6 @@ import type {
 } from "@ship/store";
 
 import { appendEvent, type AppendResult, releaseRun } from "@ship/driverstate-emitter";
-
 import { prNumberFromUrl } from "@ship/receipt";
 
 import { parseManifest } from "./manifest.js";
@@ -292,41 +291,65 @@ function emitPrEvents(
   ctx: StreamEventCtx,
   send: Send,
 ): void {
-  const base = { actor: ctx.actor, runId: ctx.runId, stream: ctx.stream };
-  // The landed patch carries prUrl (buildLandedPatch); prNumber often only
-  // arrives at merge time — trigger on either, resolving the number from the
-  // URL, so pr_opened precedes review_cycle/stream_merged in the ledger.
-  if (patch.prUrl !== undefined || patch.prNumber !== undefined) {
-    const url = patch.prUrl ?? stream.prUrl ?? "";
-    const pr = patch.prNumber ?? stream.prNumber ?? prNumberFromUrl(url);
-    if (pr !== undefined) {
-      send(
-        appendEvent({
-          ...base,
-          // head_sha is required by the contract but the driver model does not
-          // track a HEAD SHA at this seam — empty by design, meaning unknown.
-          body: { head_sha: "", pr, url },
-          extRef: url,
-          id: eventId(`${ctx.stream}_pr_${String(pr)}`),
-          kind: "stream_pr_opened",
-        }),
-      );
-    }
+  emitPrOpened(stream, patch, ctx, send);
+  emitMerged(stream, patch, ctx, send);
+}
+
+// The landed patch carries prUrl (buildLandedPatch); prNumber often only
+// arrives at merge time — trigger on either, resolving the number from the
+// URL, so pr_opened precedes review_cycle/stream_merged in the ledger.
+function emitPrOpened(
+  stream: DriverStream,
+  patch: UpdateDriverStreamInput,
+  ctx: StreamEventCtx,
+  send: Send,
+): void {
+  if (patch.prUrl === undefined && patch.prNumber === undefined) {
+    return;
   }
-  if (patch.mergeCommit !== undefined && stream.prNumber !== undefined) {
-    send(
-      appendEvent({
-        ...base,
-        body: {
-          merge_commit: patch.mergeCommit,
-          merged_at: stream.mergedAt ?? new Date().toISOString(),
-          pr: stream.prNumber,
-        },
-        id: eventId(`${ctx.stream}_merged`),
-        kind: "stream_merged",
-      }),
-    );
+  const url = patch.prUrl ?? stream.prUrl ?? "";
+  const pr = patch.prNumber ?? stream.prNumber ?? prNumberFromUrl(url);
+  if (pr === undefined) {
+    return;
   }
+  send(
+    appendEvent({
+      actor: ctx.actor,
+      // head_sha is required by the contract but the driver model does not
+      // track a HEAD SHA at this seam — empty by design, meaning unknown.
+      body: { head_sha: "", pr, url },
+      extRef: url,
+      id: eventId(`${ctx.stream}_pr_${String(pr)}`),
+      kind: "stream_pr_opened",
+      runId: ctx.runId,
+      stream: ctx.stream,
+    }),
+  );
+}
+
+function emitMerged(
+  stream: DriverStream,
+  patch: UpdateDriverStreamInput,
+  ctx: StreamEventCtx,
+  send: Send,
+): void {
+  if (patch.mergeCommit === undefined || stream.prNumber === undefined) {
+    return;
+  }
+  send(
+    appendEvent({
+      actor: ctx.actor,
+      body: {
+        merge_commit: patch.mergeCommit,
+        merged_at: stream.mergedAt ?? new Date().toISOString(),
+        pr: stream.prNumber,
+      },
+      id: eventId(`${ctx.stream}_merged`),
+      kind: "stream_merged",
+      runId: ctx.runId,
+      stream: ctx.stream,
+    }),
+  );
 }
 
 function emitRunTerminal(run: DriverRun, status: DriverRun["status"], emit: Emit): void {
