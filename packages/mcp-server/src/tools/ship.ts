@@ -13,9 +13,25 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ShipServiceFactory } from "@ship/core";
 
-import { shipInputSchema, shipStartOutputSchema } from "@ship/mcp";
+import {
+  cloudRunSpecSchema,
+  roomRunSpecSchema,
+  shipInputSchema,
+  shipStartOutputSchema,
+} from "@ship/mcp";
+import { z } from "zod";
 
 import { mapErrorToMcpError } from "../errors.js";
+
+const shipToolInputShape = {
+  ...shipInputSchema.innerType().shape,
+  cloud: cloudRunSpecSchema
+    .extend({ repos: z.array(cloudRunSpecSchema.shape.repos.items[0]).length(1) })
+    .optional(),
+  room: roomRunSpecSchema
+    .extend({ repos: z.array(roomRunSpecSchema.shape.repos.items[0]).length(1) })
+    .optional(),
+};
 
 /** Registers the `ship` tool on the given `McpServer`. Idempotent within a server lifetime. */
 export function registerShipTool(server: McpServer, factory: ShipServiceFactory): void {
@@ -31,7 +47,11 @@ export function registerShipTool(server: McpServer, factory: ShipServiceFactory)
       // full schema below so the `runtime === "cloud" ⇒ cloud required`
       // invariant fires at the MCP boundary instead of deep in the runner after
       // workflow state has been persisted.
-      inputSchema: shipInputSchema.innerType().shape,
+      // JSON Schema's legacy tuple form emits `items: [...]`, which some MCP
+      // clients reject. Advertise the one-repo constraint as a bounded array
+      // (`items: {...}`, `minItems: 1`, `maxItems: 1`) while retaining the
+      // canonical tuple schema for handler validation and internal types.
+      inputSchema: shipToolInputShape,
     },
     async (args) => {
       try {
