@@ -28,9 +28,10 @@ import type { Event } from "./canonical.js";
 
 import { computeHash, encodeEvent, SCHEMA_VERSION } from "./canonical.js";
 import { newEventId } from "./id.js";
-import { claimLease } from "./lease.js";
+import { claimLease, releaseLease } from "./lease.js";
 import { withLock } from "./lock.js";
 import { appendLockPath, ledgerPath, resolveStateRoot, runDir } from "./paths.js";
+import { checkTransition } from "./transitions.js";
 
 export interface AppendInput {
   /** Client-minted idempotency key; auto-generated (`evt_<ulid>`) if omitted. */
@@ -58,6 +59,19 @@ export function appendEvent(input: AppendInput): AppendResult {
   }
 }
 
+/**
+ * Releases `actor`'s lease on a run — call at run end (`run_finished`
+ * emitted, or the drive abandoned) so the dir doesn't sit held for the TTL.
+ * Best-effort: never throws.
+ */
+export function releaseRun(runId: string, actor: string, stateRoot?: string): void {
+  try {
+    releaseLease(runDir(stateRoot ?? resolveStateRoot(), runId), actor);
+  } catch {
+    // Best-effort — an unreleased lease self-expires within the TTL.
+  }
+}
+
 function appendEventOrThrow(input: AppendInput): Event {
   const stateRoot = input.stateRoot ?? resolveStateRoot();
   const rd = runDir(stateRoot, input.runId);
@@ -79,6 +93,11 @@ function appendLocked(stateRoot: string, rd: string, input: AppendInput): Event 
   const time = formatTime(input.time ?? new Date());
   const head = events.at(-1);
   assertMonotonic(head, time);
+  checkTransition(events, {
+    kind: input.kind,
+    stream: input.stream ?? "",
+    body: input.body,
+  });
 
   const draft: Event = {
     id,
@@ -175,7 +194,12 @@ function readAndHealLedger(path: string): Event[] {
 function appendLine(path: string, line: Uint8Array): void {
   const fd = openSync(path, "a");
   try {
-    writeSync(fd, line);
+    // writeSync may legally short-write; loop until the full line is down
+    // before the fsync seals it as committed.
+    let written = 0;
+    while (written < line.length) {
+      written += writeSync(fd, line, written);
+    }
     fsyncSync(fd);
   } finally {
     closeSync(fd);

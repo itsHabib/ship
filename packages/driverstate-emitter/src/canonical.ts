@@ -86,11 +86,21 @@ function encode(e: Event): Uint8Array {
   return new TextEncoder().encode(parts.join(""));
 }
 
+/**
+ * Encodes `body` once via JSON.stringify, then normalizes the two characters
+ * where its output diverges from Go's encoder with HTML escaping off:
+ * U+2028/U+2029 pass through JSON.stringify raw but Go always `\uXXXX`-escapes
+ * them. `<`, `>`, `&` already agree (both leave them unescaped). Without this,
+ * a body string containing a line/paragraph separator would hash differently
+ * in the two implementations and silently fork the chain.
+ */
 function rawBody(body: unknown): string {
   if (body === undefined || body === null) {
     return "null";
   }
-  return JSON.stringify(body);
+  return JSON.stringify(body)
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 const SINGLE_CHAR_ESCAPES: Readonly<Record<string, string>> = {

@@ -29,10 +29,10 @@ function acquireLock(lockFile: string, timeoutMs = DEFAULT_TIMEOUT_MS): void {
     if (tryCreateLock(lockFile)) {
       return;
     }
-    reclaimIfStale(lockFile);
     if (Date.now() > deadline) {
       throw new Error(`driverstate: lock timeout: ${lockFile}`);
     }
+    reclaimIfStale(lockFile);
     sleepSync(RETRY_DELAY_MS);
   }
 }

@@ -9,7 +9,7 @@ export type { Event } from "./canonical.js";
 export { SCHEMA_VERSION, canonicalBytes, computeHash, encodeEvent } from "./canonical.js";
 
 export type { AppendInput, AppendResult } from "./emitter.js";
-export { appendEvent, formatTime } from "./emitter.js";
+export { appendEvent, formatTime, releaseRun } from "./emitter.js";
 
 export { newEventId, newRunId } from "./id.js";
 
