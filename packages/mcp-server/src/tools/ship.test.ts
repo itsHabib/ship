@@ -181,6 +181,7 @@ describe("ship tool", () => {
   test("ship advertises portable single-repo array schemas", async () => {
     const list = await h.client.listTools();
     const ship = list.tools.find((tool) => tool.name === "ship");
+    expect(ship).toBeDefined();
     const inputSchema = ship?.inputSchema as {
       properties?: Record<string, { properties?: Record<string, SingleRepoJsonSchema> }>;
     };
@@ -189,6 +190,7 @@ describe("ship tool", () => {
       const repos = inputSchema.properties?.[field]?.properties?.["repos"];
       expect(repos?.minItems).toBe(1);
       expect(repos?.maxItems).toBe(1);
+      expect(repos?.items).toBeDefined();
       expect(Array.isArray(repos?.items)).toBe(false);
     }
   });
