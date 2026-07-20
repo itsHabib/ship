@@ -6,7 +6,10 @@ export default defineConfig({
     passWithNoTests: true,
     // Global safety net: never write park receipts to the real ship data-dir
     // file. See packages/receipt/test/receipts-isolation.ts.
-    setupFiles: ["./packages/receipt/test/receipts-isolation.ts"],
+    setupFiles: [
+      "./packages/receipt/test/receipts-isolation.ts",
+      "./packages/driverstate-emitter/test/driverstate-isolation.ts",
+    ],
     include: [
       "packages/*/src/**/*.test.ts",
       "packages/*/test/**/*.test.ts",

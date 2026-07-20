@@ -285,6 +285,9 @@ importers:
       '@ship/core':
         specifier: workspace:*
         version: link:../core
+      '@ship/driverstate-emitter':
+        specifier: workspace:*
+        version: link:../driverstate-emitter
       '@ship/logger':
         specifier: workspace:*
         version: link:../logger

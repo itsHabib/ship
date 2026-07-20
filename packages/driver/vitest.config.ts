@@ -5,7 +5,10 @@ export default defineConfig({
     globals: false,
     // Never write park receipts to the real ship data-dir file when a test
     // parks a run. See packages/receipt/test/receipts-isolation.ts.
-    setupFiles: ["../receipt/test/receipts-isolation.ts"],
+    setupFiles: [
+      "../receipt/test/receipts-isolation.ts",
+      "../driverstate-emitter/test/driverstate-isolation.ts",
+    ],
     include: ["src/**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/dist/**"],
     coverage: {

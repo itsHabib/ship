@@ -19,6 +19,7 @@ import type {
   RunOpts,
 } from "./types.js";
 
+import { withDriverStateEmission } from "./driverstate-emit.js";
 import { address as addressFn, flipStreamToCloud, resolveRunOpts, runTick } from "./engine.js";
 import { DecideError, DriverRunNotFoundEngineError } from "./errors.js";
 import { importManifest as importManifestFn } from "./import.js";
@@ -67,7 +68,11 @@ export interface CreateDriverServiceOpts {
 }
 
 export function createDriverService(opts: CreateDriverServiceOpts): DriverService {
-  const { store, ship, gh, clock, monotonicClock, rng, sleep, notifyExec, logger } = opts;
+  const { ship, gh, clock, monotonicClock, rng, sleep, notifyExec, logger } = opts;
+  // Every driver mutation flows through this store handle, so wrapping it here
+  // is the one seam that gives CLI and MCP callers ledger emission with no
+  // per-call-site hooks. Best-effort by construction (see driverstate-emit.ts).
+  const store = withDriverStateEmission(opts.store, logger);
 
   const now = (): string => new Date((clock ?? Date.now)()).toISOString();
 
