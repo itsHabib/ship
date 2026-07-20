@@ -24,6 +24,8 @@ import type {
 
 import { appendEvent, type AppendResult, releaseRun } from "@ship/driverstate-emitter";
 
+import { prNumberFromUrl } from "@ship/receipt";
+
 import { parseManifest } from "./manifest.js";
 
 /** Ship `drv_<ulid>` → ledger `dsr_<ulid>` — deterministic, no mapping table. */
@@ -65,6 +67,7 @@ export function withDriverStateEmission(store: Store, logger?: Logger): Store {
       const run = store.insertDriverRun(input);
       try {
         emit(run.id, emitRunImported(run, input.sourceJson, input.manifestPath));
+        closePreCompletedStreams(run, emit);
       } catch (err) {
         logger?.warn({ driverRunId: run.id, err: String(err) }, "driverstate: emission threw");
       }
@@ -149,6 +152,33 @@ function emitRunImported(run: DriverRun, sourceJson: string, manifestPath: strin
 
 type Emit = (driverRunId: string, result: AppendResult) => void;
 
+/**
+ * A manifest can import streams already `done` or `skipped` (absorbed
+ * progress). The ledger did not track that work, so record each as
+ * `stream_skipped` — pending → skipped, terminal — with the ship status in
+ * the reason; otherwise they block `run_finished` forever. Non-terminal
+ * absorbed statuses (landed, failed) are left pending: their live tail
+ * (land, retry, skip) emits real transitions from pending legally.
+ */
+function closePreCompletedStreams(run: DriverRun, emit: Emit): void {
+  for (const s of run.batches.flatMap((b) => b.streams)) {
+    if (s.status !== "done" && s.status !== "skipped") {
+      continue;
+    }
+    emit(
+      run.id,
+      appendEvent({
+        actor: `ship:${run.id}`,
+        body: { reason: `progress absorbed at import (ship status: ${s.status})` },
+        id: eventId(`${ledgerStreamId(s.id)}_import_absorbed`),
+        kind: "stream_skipped",
+        runId: ledgerRunId(run.id),
+        stream: ledgerStreamId(s.id),
+      }),
+    );
+  }
+}
+
 interface StreamEventCtx {
   actor: string;
   runId: string;
@@ -180,7 +210,7 @@ function emitStatusEvent(
   send: Send,
 ): void {
   if (patch.status === "dispatching") {
-    send(appendEvent(dispatchedEvent(ctx)));
+    send(appendEvent(dispatchedEvent(stream, ctx)));
     return;
   }
   if (patch.status === "landed" || patch.status === "failed") {
@@ -189,15 +219,35 @@ function emitStatusEvent(
   }
   if (patch.status === "skipped") {
     send(appendEvent(skippedEvent(stream, ctx)));
+    return;
+  }
+  // Dispatch-fallback hop: a terminal failed attempt arrives in the same patch
+  // that resets the stream to `pending` for the next target — record the
+  // attempt (ledger dispatched → failed) so the hop is not a silent gap; the
+  // re-dispatch then transitions failed → dispatched legally.
+  if (patch.status === "pending" && isTerminalFailedAttempt(patch)) {
+    send(appendEvent(attemptEvent(stream, "failed", ctx)));
   }
 }
 
-function dispatchedEvent(ctx: StreamEventCtx): Parameters<typeof appendEvent>[0] {
-  const { seq, ...base } = ctx;
+function isTerminalFailedAttempt(patch: UpdateDriverStreamInput): boolean {
+  const last = patch.attempts?.at(-1);
+  return last?.terminal === true && last.failureCategory !== undefined;
+}
+
+function dispatchedEvent(
+  stream: DriverStream,
+  ctx: StreamEventCtx,
+): Parameters<typeof appendEvent>[0] {
+  const base = { actor: ctx.actor, runId: ctx.runId, stream: ctx.stream };
+  // Keyed by the UPCOMING attempt (length + 1), not the last recorded one —
+  // a retry/hop re-dispatch must mint a fresh id or idempotent append would
+  // swallow it as a replay of the first dispatch.
+  const dispatchSeq = stream.attempts.length + 1;
   return {
     ...base,
     body: { engine: "ship" },
-    id: eventId(`${ctx.stream}_dispatch_${String(seq)}`),
+    id: eventId(`${ctx.stream}_dispatch_${String(dispatchSeq)}`),
     kind: "stream_dispatched",
   };
 }
@@ -243,18 +293,25 @@ function emitPrEvents(
   send: Send,
 ): void {
   const base = { actor: ctx.actor, runId: ctx.runId, stream: ctx.stream };
-  if (patch.prNumber !== undefined) {
-    send(
-      appendEvent({
-        ...base,
-        // head_sha is required by the contract but the driver model does not
-        // track a HEAD SHA at this seam — empty by design, meaning unknown.
-        body: { head_sha: "", pr: patch.prNumber, url: stream.prUrl ?? "" },
-        extRef: stream.prUrl ?? "",
-        id: eventId(`${ctx.stream}_pr_${String(patch.prNumber)}`),
-        kind: "stream_pr_opened",
-      }),
-    );
+  // The landed patch carries prUrl (buildLandedPatch); prNumber often only
+  // arrives at merge time — trigger on either, resolving the number from the
+  // URL, so pr_opened precedes review_cycle/stream_merged in the ledger.
+  if (patch.prUrl !== undefined || patch.prNumber !== undefined) {
+    const url = patch.prUrl ?? stream.prUrl ?? "";
+    const pr = patch.prNumber ?? stream.prNumber ?? prNumberFromUrl(url);
+    if (pr !== undefined) {
+      send(
+        appendEvent({
+          ...base,
+          // head_sha is required by the contract but the driver model does not
+          // track a HEAD SHA at this seam — empty by design, meaning unknown.
+          body: { head_sha: "", pr, url },
+          extRef: url,
+          id: eventId(`${ctx.stream}_pr_${String(pr)}`),
+          kind: "stream_pr_opened",
+        }),
+      );
+    }
   }
   if (patch.mergeCommit !== undefined && stream.prNumber !== undefined) {
     send(

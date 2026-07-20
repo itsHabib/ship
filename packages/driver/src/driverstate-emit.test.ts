@@ -41,12 +41,12 @@ function importFixture(): DriverRun {
   return importManifest(wrapped, join(fixturesDir, "synthetic-full.driver.md")).run;
 }
 
-function ledgerEvents(driverRunId: string): { kind: string; body: unknown }[] {
+function ledgerEvents(driverRunId: string): { kind: string; body: unknown; stream?: string }[] {
   const path = join(stateRoot, ledgerRunId(driverRunId), "events.jsonl");
   return readFileSync(path, "utf8")
     .split("\n")
     .filter((l) => l.trim() !== "")
-    .map((l) => JSON.parse(l) as { kind: string; body: unknown });
+    .map((l) => JSON.parse(l) as { kind: string; body: unknown; stream?: string });
 }
 
 function ledgerKinds(driverRunId: string): string[] {
@@ -64,7 +64,10 @@ function pendingStreamId(run: DriverRun): string {
 describe("withDriverStateEmission", () => {
   it("emits run_imported with the manifest snapshot on insertDriverRun", () => {
     const run = importFixture();
-    expect(ledgerKinds(run.id)).toEqual(["run_imported"]);
+    const kinds = ledgerKinds(run.id);
+    expect(kinds[0]).toBe("run_imported");
+    // Pre-completed manifest streams (done/skipped at import) close immediately.
+    expect(kinds.slice(1).every((k) => k === "stream_skipped")).toBe(true);
 
     const path = join(stateRoot, ledgerRunId(run.id), "events.jsonl");
     const first = JSON.parse(readFileSync(path, "utf8").split("\n")[0] ?? "") as {
@@ -92,8 +95,10 @@ describe("withDriverStateEmission", () => {
       status: "done",
     });
 
-    expect(ledgerKinds(run.id)).toEqual([
-      "run_imported",
+    const forStream = ledgerEvents(run.id)
+      .filter((e) => (e as { stream?: string }).stream === ledgerStreamId(streamId))
+      .map((e) => e.kind);
+    expect(forStream).toEqual([
       "stream_dispatched",
       "stream_attempt",
       "stream_pr_opened",
@@ -174,6 +179,30 @@ describe("withDriverStateEmission", () => {
     expect(ledgerKinds(run.id)).toContain("review_cycle");
   });
 
+  it("records the terminal failed attempt of a fallback hop (pending reset patch)", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    // decideFallbackHop's patch shape: terminal failed attempt + pending reset.
+    wrapped.updateDriverStream(streamId, {
+      attempts: [
+        {
+          dispatchedAt: "2026-07-20T00:00:00.000Z",
+          failureCategory: "sdk-throw",
+          terminal: true,
+        },
+      ],
+      status: "pending",
+    });
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+
+    const forStream = ledgerEvents(run.id)
+      .filter((e) => e.stream === ledgerStreamId(streamId))
+      .map((e) => e.kind);
+    expect(forStream).toEqual(["stream_dispatched", "stream_attempt", "stream_dispatched"]);
+  });
+
   it("emits a terminal failed attempt with a failure category", () => {
     const run = importFixture();
     const streamId = pendingStreamId(run);
@@ -200,7 +229,10 @@ describe("withDriverStateEmission", () => {
     wrapped.updateDriverStream(streamId, { status: "dispatching" });
     wrapped.updateDriverStream(streamId, { status: "dispatching" });
 
-    expect(ledgerKinds(run.id)).toEqual(["run_imported", "stream_dispatched"]);
+    const forStream = ledgerEvents(run.id).filter(
+      (e) => (e as { stream?: string }).stream === ledgerStreamId(streamId),
+    );
+    expect(forStream.map((e) => e.kind)).toEqual(["stream_dispatched"]);
   });
 
   it("derives dsr/dss ids from ship ids deterministically", () => {
