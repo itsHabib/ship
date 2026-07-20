@@ -17,11 +17,17 @@ import {
   buildFallbackExhaustionEscalationCopy,
   chainStillConsumable,
   decideFallbackHop,
+  decideTransientRetry,
   FALLBACK_ELIGIBLE_CATEGORIES,
+  hasCurrentTargetBeenRetried,
   hasExhaustedFallbackChain,
   hasNoWorkProducts,
   hasUnconsumedFallbackChain,
+  hasUnusedTransientRetry,
   isFallbackEligibleCategory,
+  isTransientBlipFailure,
+  matchesTransientErrorShape,
+  resolveDispatchModel,
 } from "./fallback-hop.js";
 
 function baseStream(overrides: Partial<DriverStream> = {}): DriverStream {
@@ -167,6 +173,7 @@ describe("FALLBACK_RESET_PATCH via decideFallbackHop", () => {
       {
         from: { provider: "cursor", runtime: "cloud" },
         to: { provider: "claude", runtime: "local" },
+        fromModel: "old",
         category: "sdk-throw",
         at: "2026-07-13T00:01:00.000Z",
       },
@@ -401,6 +408,290 @@ describe("chainStillConsumable (§7.2 step 0 breaker predicate)", () => {
 
   test("no attempts yet is benign (breaker only fires on failed streams)", () => {
     expect(chainStillConsumable(baseStream())).toBe(true);
+  });
+
+  test("unused transient retry on current target keeps the stream movement-capable", () => {
+    const stream = baseStream({
+      attempts: [failedAttempt("contention")],
+      errorMessage: "local run contention — reduce parallelism",
+    });
+    expect(hasUnusedTransientRetry(stream)).toBe(true);
+    expect(chainStillConsumable(stream)).toBe(true);
+  });
+
+  test("once retried and chain exhausted, chainStillConsumable is false", () => {
+    const stream = baseStream({
+      attempts: [failedAttempt("contention")],
+      errorMessage: "local run contention — reduce parallelism",
+      fallbackCursor: 1,
+      fallbackLog: [
+        {
+          retried: { provider: "cursor", runtime: "cloud" },
+          reason: "contention",
+          at: "2026-07-13T00:01:00.000Z",
+        },
+      ],
+    });
+    expect(hasUnusedTransientRetry(stream)).toBe(false);
+    expect(chainStillConsumable(stream)).toBe(false);
+  });
+});
+
+describe("transient-blip retry (§4.7)", () => {
+  test.each([
+    ["connect ETIMEDOUT", true],
+    ["read ECONNRESET", true],
+    ["connect timeout from api.cursor.com", true],
+    ["HTTP 429 rate_limit", true],
+    ["rate limited by provider", true],
+    ["fetch failed", true],
+    ["boom — permanent auth reject", false],
+    ["invalid_model", false],
+  ] as const)("shape %j → transient=%s", (message, expected) => {
+    expect(matchesTransientErrorShape(message)).toBe(expected);
+    expect(isTransientBlipFailure(message, "sdk-throw")).toBe(expected);
+  });
+
+  test("contention category is transient even without a shape match", () => {
+    expect(isTransientBlipFailure("local run contention — reduce parallelism", "contention")).toBe(
+      true,
+    );
+    expect(isTransientBlipFailure("busy", "contention")).toBe(true);
+  });
+
+  test("pre-work transient failure records one same-target retry", () => {
+    const stream = baseStream();
+    const decision = decideTransientRetry(stream, {
+      at: "2026-07-13T00:01:00.000Z",
+      category: "sdk-throw",
+      errorMessage: "connect ETIMEDOUT",
+      failedAttempts: [
+        {
+          dispatchedAt: "2026-07-13T00:00:00.000Z",
+          docPath: "/doc",
+          failureCategory: "sdk-throw",
+          terminal: true,
+        },
+      ],
+    });
+    expect(decision?.kind).toBe("retry");
+    if (decision?.kind !== "retry") return;
+    expect(decision.patch.status).toBe("pending");
+    expect(decision.patch.fallbackLog).toEqual([
+      {
+        retried: { provider: "cursor", runtime: "cloud" },
+        reason: "sdk-throw",
+        at: "2026-07-13T00:01:00.000Z",
+      },
+    ]);
+    expect(decision.patch.runtime).toBeUndefined();
+    expect(decision.patch.provider).toBeUndefined();
+  });
+
+  test("one retry per target per lifecycle — second failure does not retry", () => {
+    const stream = baseStream({
+      fallbackLog: [
+        {
+          retried: { provider: "cursor", runtime: "cloud" },
+          reason: "sdk-throw",
+          at: "2026-07-13T00:00:30.000Z",
+        },
+      ],
+    });
+    expect(hasCurrentTargetBeenRetried(stream)).toBe(true);
+    expect(
+      decideTransientRetry(stream, {
+        at: "2026-07-13T00:01:00.000Z",
+        category: "sdk-throw",
+        errorMessage: "connect ETIMEDOUT",
+        failedAttempts: [],
+      }),
+    ).toBeUndefined();
+  });
+
+  test("decide-retry round-trip keeps the retried record (no second transparent retry)", () => {
+    const afterRetry = baseStream({
+      fallbackLog: [
+        {
+          retried: { provider: "cursor", runtime: "cloud" },
+          reason: "sdk-throw",
+          at: "2026-07-13T00:00:30.000Z",
+        },
+      ],
+      status: "pending",
+    });
+    // Operator `decide retry` resets to pending but leaves fallbackLog intact.
+    expect(
+      decideTransientRetry(afterRetry, {
+        at: "2026-07-13T00:02:00.000Z",
+        category: "sdk-throw",
+        errorMessage: "connect ETIMEDOUT",
+        failedAttempts: [],
+      }),
+    ).toBeUndefined();
+  });
+
+  test("contention reaches retry before the category hop gate", () => {
+    const stream = baseStream();
+    const retry = decideTransientRetry(stream, {
+      at: "2026-07-13T00:01:00.000Z",
+      category: "contention",
+      errorMessage: "local run contention — reduce parallelism",
+      failedAttempts: [],
+    });
+    expect(retry?.kind).toBe("retry");
+  });
+
+  test("second contention escalates without consuming chain", async () => {
+    const stream = baseStream({
+      fallbackLog: [
+        {
+          retried: { provider: "cursor", runtime: "cloud" },
+          reason: "contention",
+          at: "2026-07-13T00:00:30.000Z",
+        },
+      ],
+    });
+    expect(
+      decideTransientRetry(stream, {
+        at: "2026-07-13T00:01:00.000Z",
+        category: "contention",
+        errorMessage: "local run contention — reduce parallelism",
+        failedAttempts: [],
+      }),
+    ).toBeUndefined();
+    const hop = await decideFallbackHop(stream, {
+      at: "2026-07-13T00:01:00.000Z",
+      category: "contention",
+      failedAttempts: [],
+      repoRoot: "/tmp",
+      repoUrl: "https://github.com/example/ship",
+      viability: viability(),
+    });
+    expect(hop.kind).toBe("ineligible");
+    expect(stream.fallbackCursor).toBe(0);
+  });
+
+  test("non-transient failures skip straight to the hop gate", () => {
+    expect(
+      decideTransientRetry(baseStream(), {
+        at: "2026-07-13T00:01:00.000Z",
+        category: "sdk-throw",
+        errorMessage: "boom",
+        failedAttempts: [],
+      }),
+    ).toBeUndefined();
+  });
+
+  test("work-carrying stream does not get a transparent retry", () => {
+    expect(
+      decideTransientRetry(baseStream({ reviewCycles: 1 }), {
+        at: "2026-07-13T00:01:00.000Z",
+        category: "sdk-throw",
+        errorMessage: "connect ETIMEDOUT",
+        failedAttempts: [],
+      }),
+    ).toBeUndefined();
+  });
+
+  test("after a hop, the new target can still receive its own one retry", () => {
+    const stream = baseStream({
+      fallbackCursor: 1,
+      fallbackLog: [
+        {
+          retried: { provider: "cursor", runtime: "cloud" },
+          reason: "sdk-throw",
+          at: "2026-07-13T00:00:30.000Z",
+        },
+        {
+          from: { provider: "cursor", runtime: "cloud" },
+          to: { provider: "claude", runtime: "local" },
+          category: "sdk-throw",
+          at: "2026-07-13T00:01:00.000Z",
+        },
+      ],
+      provider: "claude",
+      runtime: "local",
+    });
+    expect(hasCurrentTargetBeenRetried(stream)).toBe(false);
+    const decision = decideTransientRetry(stream, {
+      at: "2026-07-13T00:02:00.000Z",
+      category: "sdk-throw",
+      errorMessage: "ECONNRESET",
+      failedAttempts: [],
+    });
+    expect(decision?.kind).toBe("retry");
+    if (decision?.kind !== "retry") return;
+    expect(decision.patch.fallbackLog?.at(-1)).toMatchObject({
+      retried: { provider: "claude", runtime: "local" },
+    });
+  });
+});
+
+describe("hop-record model resolution (§4.1 residue)", () => {
+  test("resolveDispatchModel: pinned model_id wins over tier", () => {
+    expect(resolveDispatchModel("cursor", "opus", undefined, "grok-4.5")).toBe("grok-4.5");
+    expect(resolveDispatchModel("cursor", "opus")).toBe("claude-opus-4-8");
+    expect(resolveDispatchModel("claude", "opus")).toBe("claude-opus-4-8");
+  });
+
+  describe("hop records", () => {
+    let repoRoot: string;
+
+    afterEach(() => {
+      rmSync(repoRoot, { force: true, recursive: true });
+    });
+
+    test("hop record carries resolved fromModel/toModel for tier-mapped sides", async () => {
+      repoRoot = mkdtempSync(join(tmpdir(), "fallback-hop-models-"));
+      mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-a"), { recursive: true });
+
+      const stream = baseStream({
+        dispatchModel: "claude-opus-4-8",
+        modelTier: "opus",
+      });
+      const decision = await decideFallbackHop(stream, {
+        at: "2026-07-13T00:01:00.000Z",
+        category: "sdk-throw",
+        failedAttempts: [],
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        viability: viability(),
+      });
+      expect(decision.kind).toBe("hop");
+      if (decision.kind !== "hop") return;
+      expect(decision.patch.fallbackLog?.[0]).toMatchObject({
+        fromModel: "claude-opus-4-8",
+        toModel: "claude-opus-4-8",
+        category: "sdk-throw",
+      });
+    });
+
+    test("hop record resolves toModel from a pinned chain entry model_id", async () => {
+      repoRoot = mkdtempSync(join(tmpdir(), "fallback-hop-pinned-"));
+      mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-a"), { recursive: true });
+
+      const stream = baseStream({
+        dispatchModel: "composer-2.5",
+        fallbackChain: [{ modelId: "claude-haiku-4-5", provider: "claude", runtime: "local" }],
+        modelTier: "sonnet",
+      });
+      const decision = await decideFallbackHop(stream, {
+        at: "2026-07-13T00:01:00.000Z",
+        category: "sdk-throw",
+        failedAttempts: [],
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        viability: viability(),
+      });
+      expect(decision.kind).toBe("hop");
+      if (decision.kind !== "hop") return;
+      expect(decision.patch.fallbackLog?.[0]).toMatchObject({
+        fromModel: "composer-2.5",
+        toModel: "claude-haiku-4-5",
+      });
+      expect(decision.patch.modelId).toBe("claude-haiku-4-5");
+    });
   });
 });
 

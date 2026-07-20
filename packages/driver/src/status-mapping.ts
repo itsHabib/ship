@@ -216,7 +216,9 @@ export function formatStreamFallbackDiagnostic(
 
 function formatFallbackRecord(record: FallbackLogRecord): string {
   if ("from" in record) {
-    return `fallback: ${formatFallbackCell(record.from)} → ${formatFallbackCell(record.to)} on ${record.category}`;
+    const from = formatFallbackCell(record.from, record.fromModel);
+    const to = formatFallbackCell(record.to, record.toModel);
+    return `fallback: ${from} → ${to} on ${record.category}`;
   }
   if ("skipped" in record) {
     return `skipped ${formatFallbackCell(record.skipped)}: ${record.reason}`;
@@ -224,7 +226,8 @@ function formatFallbackRecord(record: FallbackLogRecord): string {
   return `retried ${formatFallbackCell(record.retried)} once on ${record.reason}`;
 }
 
-function formatFallbackCell(target: FallbackChainTarget): string {
+function formatFallbackCell(target: FallbackChainTarget, resolvedModel?: string): string {
   const cell = `${target.runtime}/${target.provider}`;
-  return target.modelId === undefined ? cell : `${cell}:${target.modelId}`;
+  const model = resolvedModel ?? target.modelId;
+  return model === undefined ? cell : `${cell}:${model}`;
 }

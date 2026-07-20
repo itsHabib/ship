@@ -44,7 +44,11 @@ import {
   writeAndDeliverEscalations,
   writeCycleExhaustedEscalation,
 } from "./escalation.js";
-import { decideFallbackHop, type FallbackHopDecision } from "./fallback-hop.js";
+import {
+  decideFallbackHop,
+  decideTransientRetry,
+  type FallbackHopDecision,
+} from "./fallback-hop.js";
 import { assertGhIdentity } from "./gh-identity.js";
 import { toGhRepo } from "./gh-port.js";
 import {
@@ -374,11 +378,16 @@ async function runDispatchPollLoop(state: PollLoopState): Promise<DriverTickResu
       });
     }
 
-    // Poll-seam hop leaves pending work with no in-flight — one immediate
-    // re-dispatch pass (not an unbounded continue) so maxWaitMs:0 ticks can
-    // finish the hop target without spinning when pending stays undispatchable.
-    current = loadRun(state.ctx.store, state.driverRunId);
-    if (!hasInFlightStreams(current) && runHasPendingDispatchable(current, state.opts)) {
+    // Poll-seam hop/retry leaves pending work with no in-flight — re-dispatch
+    // until the stream leaves pending or a small bound is hit so maxWaitMs:0
+    // ticks can finish a retry-then-hop without spinning when pending stays
+    // undispatchable (caps keep hasInFlight true and skip this block).
+    const maxRedispatches = 8;
+    for (let n = 0; n < maxRedispatches; n++) {
+      current = loadRun(state.ctx.store, state.driverRunId);
+      if (hasInFlightStreams(current) || !runHasPendingDispatchable(current, state.opts)) {
+        break;
+      }
       noteProgress();
       await dispatchEligible(buildDispatchContext(current, state.opts, state.ctx, noteProgress));
       current = loadRun(state.ctx.store, state.driverRunId);
@@ -989,7 +998,8 @@ async function dispatchStartShip(params: StartShipParams): Promise<boolean> {
 
 /**
  * Shared hop gate for both seams. Returns `hopped` when the stream was reset to
- * pending on a new target; `failed` when it stays (or becomes) failed.
+ * pending (same-target §4.7 retry or a new chain target); `failed` when it
+ * stays (or becomes) failed.
  */
 async function applyFallbackAfterFailure(params: {
   store: Store;
@@ -1003,6 +1013,17 @@ async function applyFallbackAfterFailure(params: {
   pollPrUrl?: string;
 }): Promise<"hopped" | "failed"> {
   const at = new Date(params.clock()).toISOString();
+  // §4.7 transient retry — checked FIRST, independent of the category allowlist.
+  const retry = decideTransientRetry(params.stream, {
+    at,
+    category: params.category,
+    errorMessage: params.errorMessage,
+    failedAttempts: params.failedAttempts,
+    ...(params.pollPrUrl !== undefined ? { pollPrUrl: params.pollPrUrl } : {}),
+  });
+  if (retry !== undefined) {
+    return commitFallbackDecision(params, retry);
+  }
   const decision = await decideFallbackHop(params.stream, {
     at,
     category: params.category,
@@ -1010,6 +1031,7 @@ async function applyFallbackAfterFailure(params: {
     repoRoot: params.repoRoot,
     repoUrl: params.repoUrl,
     viability: createViabilityDeps(process.env),
+    errorMessage: params.errorMessage,
     ...(params.pollPrUrl !== undefined ? { pollPrUrl: params.pollPrUrl } : {}),
   });
   return commitFallbackDecision(params, decision);
@@ -1025,7 +1047,7 @@ function commitFallbackDecision(
   },
   decision: FallbackHopDecision,
 ): "hopped" | "failed" {
-  if (decision.kind === "hop") {
+  if (decision.kind === "retry" || decision.kind === "hop") {
     params.store.updateDriverStream(params.stream.id, decision.patch);
     return "hopped";
   }

@@ -146,6 +146,22 @@ describe("formatStreamFallbackDiagnostic", () => {
     expect(line).toBe("retried cloud/cursor once on sdk-throw");
   });
 
+  it("renders resolved fromModel/toModel on a hop", () => {
+    const line = formatStreamFallbackDiagnostic([
+      {
+        from: { provider: "cursor", runtime: "cloud" },
+        to: { provider: "claude", runtime: "local" },
+        fromModel: "claude-opus-4-8",
+        toModel: "claude-sonnet-4-6",
+        category: "sdk-throw",
+        at: "2026-07-13T00:00:00.000Z",
+      },
+    ]);
+    expect(line).toBe(
+      "fallback: cloud/cursor:claude-opus-4-8 → local/claude:claude-sonnet-4-6 on sdk-throw",
+    );
+  });
+
   it("joins multiple records in order", () => {
     const line = formatStreamFallbackDiagnostic([
       {

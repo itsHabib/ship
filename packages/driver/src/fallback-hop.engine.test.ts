@@ -348,6 +348,260 @@ batches:
     store.close();
   });
 
+  test("sync transient blip → one retry → succeeds on same target", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        repo: "ship",
+        throwOnStart: new Error("connect ETIMEDOUT"),
+        workflowRunId: "wf_blip",
+      },
+      { docPath: cloudDoc, repo: "ship", workflowRunId: "wf_ok" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.provider).toBe("cursor");
+    expect(stream?.fallbackCursor).toBe(0);
+    expect(stream?.fallbackLog).toEqual([
+      expect.objectContaining({
+        retried: { provider: "cursor", runtime: "cloud" },
+        reason: "sdk-throw",
+      }),
+    ]);
+    const starts = fake.calls.filter((c) => c.kind === "startShip");
+    expect(starts).toHaveLength(2);
+    store.close();
+  });
+
+  test("sync transient retry then advance on second failure", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const localDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/tasks/a.md",
+    );
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        repo: "ship",
+        throwOnStart: new Error("connect ETIMEDOUT"),
+        workflowRunId: "wf1",
+      },
+      {
+        docPath: cloudDoc,
+        repo: "ship",
+        throwOnStart: new Error("connect ETIMEDOUT"),
+        workflowRunId: "wf2",
+      },
+      { docPath: localDoc, repo: "ship", workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("local");
+    expect(stream?.provider).toBe("claude");
+    expect(stream?.fallbackCursor).toBe(1);
+    expect(stream?.fallbackLog?.filter((r) => "retried" in r)).toHaveLength(1);
+    expect(stream?.fallbackLog?.filter((r) => "from" in r)).toHaveLength(1);
+    store.close();
+  });
+
+  test("poll-seam contention → one retry → succeed", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        failureCategory: "contention",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf_busy",
+      },
+      { docPath: cloudDoc, repo: "ship", workflowRunId: "wf_ok" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("cloud");
+    expect(stream?.fallbackCursor).toBe(0);
+    expect(stream?.fallbackLog?.[0]).toMatchObject({
+      retried: { provider: "cursor", runtime: "cloud" },
+      reason: "contention",
+    });
+    store.close();
+  });
+
+  test("poll-seam contention retry then second failure advances when eligible", async () => {
+    const manifest = writeCloudFallbackManifest();
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const localDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/tasks/a.md",
+    );
+    const fake = createFakeShipPort([
+      {
+        docPath: cloudDoc,
+        failureCategory: "contention",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf1",
+      },
+      {
+        docPath: cloudDoc,
+        failureCategory: "gateway-auth",
+        repo: "ship",
+        terminalStatus: "failed",
+        workflowRunId: "wf2",
+      },
+      { docPath: localDoc, repo: "ship", workflowRunId: "wf3" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(manifest).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.runtime).toBe("local");
+    expect(stream?.fallbackCursor).toBe(1);
+    expect(stream?.fallbackLog?.filter((r) => "retried" in r)).toHaveLength(1);
+    expect(stream?.fallbackLog?.filter((r) => "from" in r)).toHaveLength(1);
+    store.close();
+  });
+
+  test("cross-provider hop records resolved fromModel/toModel (tier-mapped, no pin)", async () => {
+    const path = join(repoRoot, "models.driver.md");
+    writeFileSync(
+      path,
+      `---
+driver_version: 1
+generated_at: 2026-07-13T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: fallback-models
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: cloud
+        provider: cursor
+        model: opus
+        status: pending
+        fallback:
+          - runtime: local
+            provider: claude
+---
+`,
+    );
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const localDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/tasks/a.md",
+    );
+    const fake = createFakeShipPort([
+      { docPath: cloudDoc, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf1" },
+      { docPath: localDoc, repo: "ship", workflowRunId: "wf2" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(path).run.id;
+
+    const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+    expect(result.status).toBe("blocked_on_merges");
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    const hop = stream?.fallbackLog?.find((r) => "from" in r);
+    expect(hop).toMatchObject({
+      fromModel: "claude-opus-4-8",
+      toModel: "claude-opus-4-8",
+    });
+    store.close();
+  });
+
+  test("cross-provider hop records pinned model_id as toModel", async () => {
+    const path = join(repoRoot, "pinned.driver.md");
+    writeFileSync(
+      path,
+      `---
+driver_version: 1
+generated_at: 2026-07-13T00:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: fallback-pinned
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: cloud
+        provider: cursor
+        model: sonnet
+        status: pending
+        fallback:
+          - runtime: local
+            provider: claude
+            model_id: claude-haiku-4-5
+---
+`,
+    );
+    const cloudDoc = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const localDoc = resolveDocPath(
+      join(repoRoot, ".claude", "worktrees", "feat-a"),
+      "docs/tasks/a.md",
+    );
+    const fake = createFakeShipPort([
+      { docPath: cloudDoc, repo: "ship", throwOnStart: new Error("boom"), workflowRunId: "wf1" },
+      { docPath: localDoc, repo: "ship", workflowRunId: "wf2" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const runId = driver.importManifest(path).run.id;
+
+    await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream?.modelId).toBe("claude-haiku-4-5");
+    expect(stream?.fallbackLog?.[0]).toMatchObject({
+      fromModel: "composer-2.5",
+      toModel: "claude-haiku-4-5",
+    });
+    const localStart = fake.calls
+      .filter((c) => c.kind === "startShip")
+      .map((c) => c.input as { model?: string; docPath?: string })
+      .find((i) => i.docPath === localDoc);
+    expect(localStart?.model).toBe("claude-haiku-4-5");
+    store.close();
+  });
+
   test("hop to a saturated runtime stays pending — caps hold across the redispatch", async () => {
     mkdirSync(join(repoRoot, ".claude", "worktrees", "feat-b"), { recursive: true });
     const path = join(repoRoot, "caps.driver.md");

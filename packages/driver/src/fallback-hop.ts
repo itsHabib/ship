@@ -1,9 +1,10 @@
 /**
- * Dispatch-fallback hop policy (spec §4.2–§4.6, §7.2) — eligibility, the
- * no-work-products gate, in-memory chain walk, and FALLBACK_RESET_PATCH.
+ * Dispatch-fallback hop policy (spec §4.2–§4.7, §7.2) — eligibility, the
+ * no-work-products gate, transient-blip retry, in-memory chain walk, and
+ * FALLBACK_RESET_PATCH.
  *
  * Mechanism stays dumb: callers (engine seams) supply stream + deps; this module
- * decides hop / exhaust / ineligible and builds the one atomic store patch.
+ * decides retry / hop / exhaust / ineligible and builds the one atomic store patch.
  */
 
 import type {
@@ -18,7 +19,10 @@ import type { AgentProvider, FailureCategory } from "@ship/workflow";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+import type { EffortTier, ModelTier } from "./manifest.js";
+
 import { cellStructuralIssue } from "./dispatch-cell.js";
+import { mapTierToDispatch } from "./tier-map.js";
 import { checkTargetViability, type DispatchTarget, type ViabilityDeps } from "./viability.js";
 
 /** Same default as `DEFAULT_DISPATCH_PROVIDER` in engine.ts — kept local to avoid a cycle. */
@@ -30,6 +34,16 @@ export const FALLBACK_ELIGIBLE_CATEGORIES: ReadonlySet<FailureCategory> = new Se
   "gateway-unreachable",
   "gateway-auth",
 ]);
+
+/**
+ * Spec §4.7 transient-shape allowlist — connect-timeout / transient-network /
+ * rate-limit class, classifiable from the error text in hand. There is no
+ * persisted `isRetryable` signal in packages/ today.
+ */
+const TRANSIENT_NETWORK_RE =
+  /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed|socket hang up/i;
+const TRANSIENT_CONNECT_TIMEOUT_RE = /connect(?:ion)?[- ]?timeout|connect(?:ion)? timed out/i;
+const TRANSIENT_RATE_LIMIT_RE = /\b429\b|rate[- _]?limit(?:ed)?/i;
 
 /** Columns PENDING_RESET_PATCH clears (judgment.ts) — shared with hop reset. */
 const PENDING_RESET_COLUMNS = {
@@ -43,6 +57,43 @@ const PENDING_RESET_COLUMNS = {
 
 export function isFallbackEligibleCategory(category: FailureCategory): boolean {
   return FALLBACK_ELIGIBLE_CATEGORIES.has(category);
+}
+
+/** True when the error text matches a known transient shape (§4.7). */
+export function matchesTransientErrorShape(errorMessage: string): boolean {
+  if (TRANSIENT_NETWORK_RE.test(errorMessage)) return true;
+  if (TRANSIENT_CONNECT_TIMEOUT_RE.test(errorMessage)) return true;
+  return TRANSIENT_RATE_LIMIT_RE.test(errorMessage);
+}
+
+/**
+ * §4.7 sensor: transient shape OR the inherently-transient `contention`
+ * category (non-hop; must still reach the one same-target retry).
+ */
+export function isTransientBlipFailure(errorMessage: string, category?: FailureCategory): boolean {
+  if (category === "contention") return true;
+  return matchesTransientErrorShape(errorMessage);
+}
+
+/** True when `fallbackLog` already records a §4.7 retry for the current target. */
+export function hasCurrentTargetBeenRetried(stream: DriverStream): boolean {
+  const current = currentTarget(stream);
+  for (const record of stream.fallbackLog ?? []) {
+    if (!("retried" in record)) continue;
+    if (sameCell(record.retried, current)) return true;
+  }
+  return false;
+}
+
+/**
+ * Unused §4.7 retry on the current target for a transient-shaped last failure —
+ * the stream is still movement-capable without consuming the chain.
+ */
+export function hasUnusedTransientRetry(stream: DriverStream): boolean {
+  if (!hasNoWorkProducts(stream)) return false;
+  if (hasCurrentTargetBeenRetried(stream)) return false;
+  const category = stream.attempts.at(-1)?.failureCategory as FailureCategory | undefined;
+  return isTransientBlipFailure(stream.errorMessage ?? "", category);
 }
 
 /**
@@ -67,13 +118,14 @@ export function hasUnconsumedFallbackChain(stream: DriverStream): boolean {
 }
 
 /**
- * Could a future failure of the same shape actually consume the chain? An
- * ineligible category or a work-carrying stream never hops, so its live chain
- * must not suppress the #199 breaker — that would silence the escalation
- * forever while the cursor sits below chain length.
+ * Could a future failure of the same shape still move the stream (retry or
+ * hop)? An unused §4.7 retry on a transient failure keeps the stream
+ * movement-capable; an ineligible category or a work-carrying stream never
+ * hops, so its live chain must not suppress the #199 breaker forever.
  */
 export function chainStillConsumable(stream: DriverStream): boolean {
   if (!hasNoWorkProducts(stream)) return false;
+  if (hasUnusedTransientRetry(stream)) return true;
   // Attempt rows persist the category as a plain string; an unrecognized value
   // is simply not in the allowlist.
   const category = stream.attempts.at(-1)?.failureCategory;
@@ -95,6 +147,10 @@ export function hasExhaustedFallbackChain(stream: DriverStream): boolean {
 export type FallbackHopDecision =
   | { kind: "ineligible" }
   | {
+      kind: "retry";
+      patch: UpdateDriverStreamInput;
+    }
+  | {
       kind: "hop";
       patch: UpdateDriverStreamInput;
     }
@@ -114,12 +170,50 @@ export interface FallbackHopContext {
   viability: ViabilityDeps;
   /** Poll-seam PR URL from the workflow run, if any. */
   pollPrUrl?: string;
+  /** Error text in hand — used by the §4.7 transient-shape sensor. */
+  errorMessage?: string;
+}
+
+export interface TransientRetryContext {
+  category: FailureCategory;
+  errorMessage: string;
+  failedAttempts: StreamAttempt[];
+  at: string;
+  pollPrUrl?: string;
+}
+
+/**
+ * Spec §4.7 — one same-target re-dispatch for a transient blip. Checked FIRST,
+ * independent of the §4.2 category allowlist (so `contention` still retries).
+ * Returns undefined when the retry does not apply.
+ */
+export function decideTransientRetry(
+  stream: DriverStream,
+  ctx: TransientRetryContext,
+): Extract<FallbackHopDecision, { kind: "retry" }> | undefined {
+  if (!isTransientBlipFailure(ctx.errorMessage, ctx.category)) return undefined;
+  if (!hasNoWorkProducts(stream, ctx.pollPrUrl)) return undefined;
+  if (hasCurrentTargetBeenRetried(stream)) return undefined;
+
+  const target = currentTarget(stream);
+  const log: FallbackLogRecord[] = [
+    ...(stream.fallbackLog ?? []),
+    { retried: target, reason: ctx.category, at: ctx.at },
+  ];
+  return {
+    kind: "retry",
+    patch: {
+      ...PENDING_RESET_COLUMNS,
+      attempts: ctx.failedAttempts,
+      fallbackLog: log,
+    },
+  };
 }
 
 /**
  * Decide hop / exhaust / ineligible for a terminal pre-work failure. Callers
  * apply the returned patch in one `updateDriverStream` (with the failed
- * attempts). Does not write.
+ * attempts). Does not write. Call `decideTransientRetry` first (§4.7).
  */
 export async function decideFallbackHop(
   stream: DriverStream,
@@ -154,6 +248,7 @@ export async function decideFallbackHop(
         cursor: walk.cursor,
         log: walk.log,
         at: ctx.at,
+        stream,
       }),
     };
   }
@@ -282,6 +377,33 @@ function currentTarget(stream: DriverStream): FallbackChainTarget {
   return target;
 }
 
+/**
+ * Resolved dispatch model for a (provider, tiers, modelId) triple — what
+ * `dispatchModel` was / will be after `mapTierToDispatch`.
+ */
+export function resolveDispatchModel(
+  provider: AgentProvider,
+  modelTier?: ModelTier,
+  effortTier?: EffortTier,
+  modelId?: string,
+): string | undefined {
+  return mapTierToDispatch(provider, modelTier, effortTier, modelId).model;
+}
+
+function resolveFromModel(stream: DriverStream): string | undefined {
+  if (stream.dispatchModel !== undefined) return stream.dispatchModel;
+  return resolveDispatchModel(
+    stream.provider ?? IMPLICIT_DISPATCH_PROVIDER,
+    stream.modelTier,
+    stream.effortTier,
+    stream.modelId,
+  );
+}
+
+function resolveToModel(stream: DriverStream, to: FallbackChainTarget): string | undefined {
+  return resolveDispatchModel(to.provider, stream.modelTier, stream.effortTier, to.modelId);
+}
+
 function buildFallbackResetPatch(params: {
   failedAttempts: StreamAttempt[];
   from: FallbackChainTarget;
@@ -290,12 +412,17 @@ function buildFallbackResetPatch(params: {
   cursor: number;
   log: FallbackLogRecord[];
   at: string;
+  stream: DriverStream;
 }): UpdateDriverStreamInput {
+  const fromModel = resolveFromModel(params.stream);
+  const toModel = resolveToModel(params.stream, params.to);
   const hopRecord: FallbackLogRecord = {
     from: params.from,
     to: params.to,
     category: params.category,
     at: params.at,
+    ...(fromModel !== undefined ? { fromModel } : {}),
+    ...(toModel !== undefined ? { toModel } : {}),
   };
   const log = [...params.log, hopRecord];
 
