@@ -48,6 +48,34 @@ describe("mapResultMessage", () => {
     });
   });
 
+  test("fractional SDK duration_ms is rounded to a whole ms on success and failure", () => {
+    // durationMs flows into the result.json artifact, the cursor_runs int
+    // column, and the MCP `.int()` diagnostics schema; the source must emit an
+    // integer so a failed terminal's artifact (read back by loadRunDiagnostics)
+    // does not carry a fraction the diagnostics schema rejects.
+    const success = {
+      duration_ms: 3_723_030.9877,
+      result: "done",
+      subtype: "success",
+      type: "result",
+      usage: {
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        input_tokens: 1,
+        output_tokens: 1,
+      },
+    } as SDKResultMessage;
+    expect(mapResultMessage(success, baseInput(), []).durationMs).toBe(3_723_031);
+
+    const failure = {
+      duration_ms: 100.4,
+      errors: ["turn cap hit"],
+      subtype: "error_max_turns",
+      type: "result",
+    } as SDKResultMessage;
+    expect(mapResultMessage(failure, baseInput(), []).durationMs).toBe(100);
+  });
+
   test("error maps to failed with joined errors and budget category", () => {
     const msg = {
       duration_ms: 100,

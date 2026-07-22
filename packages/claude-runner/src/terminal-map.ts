@@ -119,11 +119,17 @@ export function mapResultMessage(
   input: AgentRunInput,
   events: readonly SDKMessage[],
 ): AgentRunResult {
+  // The SDK reports fractional wall time; durationMs flows into the result.json
+  // artifact, the cursor_runs int column, and the MCP `.int()` diagnostics
+  // schema. Round once at the source so every downstream consumer sees a whole
+  // millisecond — success and failure alike (a failed terminal's artifact is
+  // read back by loadRunDiagnostics, so it must be normalized too).
+  const durationMs = Math.round(msg.duration_ms);
   if (msg.subtype === "success") {
     const usage = liftClaudeUsage(msg);
     return {
       branches: [],
-      durationMs: msg.duration_ms,
+      durationMs,
       status: "succeeded",
       summary: msg.result,
       ...(usage !== undefined && { usage }),
@@ -132,13 +138,11 @@ export function mapResultMessage(
   }
 
   const errorMessage = buildTerminalErrorMessage(msg, events);
-  const failureCategory = classifyFailure(
-    classifyInput(input, events, msg.subtype, msg.duration_ms),
-  );
+  const failureCategory = classifyFailure(classifyInput(input, events, msg.subtype, durationMs));
   const failureDetail = buildFailureDetail(
     detailInput({
       category: failureCategory,
-      durationMs: msg.duration_ms,
+      durationMs,
       events,
       input,
       rawErrorMessage: errorMessage,
@@ -149,7 +153,7 @@ export function mapResultMessage(
   return {
     branches: [],
     classificationEvents: events.slice(-MAX_CLASSIFICATION_EVENTS),
-    durationMs: msg.duration_ms,
+    durationMs,
     failureCategory,
     failureDetail,
     errorMessage,
