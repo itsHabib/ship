@@ -170,7 +170,11 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
     }
     if (patch.durationMs !== undefined) {
       sets.push("duration_ms = ?");
-      params.push(patch.durationMs);
+      // duration_ms is a whole-millisecond integer column; SDK terminals report
+      // fractional wall time (e.g. 3723030.98), which the read-back Zod parse
+      // (int) would reject and roll back. Round at the persistence boundary that
+      // owns the int contract so no caller path can strand a completed run.
+      params.push(Math.round(patch.durationMs));
     }
     if (patch.artifacts !== undefined) {
       sets.push("artifacts_json = ?");
