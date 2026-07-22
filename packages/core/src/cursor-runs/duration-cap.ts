@@ -184,7 +184,9 @@ export async function runWithDurationCap(args: DurationCapRunArgs): Promise<Agen
  * stays as-is so it still fails the store's nonnegative guard and rolls back.
  */
 function wholeMillisecondDuration(result: AgentRunResult): AgentRunResult {
-  if (result.durationMs === undefined || result.durationMs < 0) {
+  // A negative stays as-is so it still fails the store's nonnegative guard and
+  // rolls back rather than rounding to -0 and slipping through.
+  if (result.durationMs < 0) {
     return result;
   }
   const rounded = Math.round(result.durationMs);
