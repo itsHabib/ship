@@ -89,6 +89,21 @@ describe("runWithDurationCap", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  test("rounds a fractional runner durationMs to a whole ms before returning", async () => {
+    // SDK terminals report fractional wall time; the value flows into the
+    // result.json artifact, the int duration_ms column, and the MCP `.int()`
+    // diagnostics schema. runWithDurationCap is the single choke point every
+    // dispatched runner resolves through, so it normalizes once here.
+    const fractional: AgentRunResult = { ...succeededResult, durationMs: 3_723_030.9877 };
+    const { handle } = fakeHandle(Promise.resolve(fractional));
+    const out = await runCap({
+      maxRunDurationMs: CAP_MS,
+      onHandle: () => undefined,
+      start: () => Promise.resolve(handle),
+    });
+    expect(out.durationMs).toBe(3_723_031);
+  });
+
   test("propagates a result rejection unchanged and clears the timer", async () => {
     const boom = new Error("runner exploded");
     const { cancel, handle } = fakeHandle(Promise.reject(boom));

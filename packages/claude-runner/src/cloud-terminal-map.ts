@@ -120,9 +120,7 @@ function mapIdleEvent(
     const summary = state.agentMessageParts.join("\n\n").trim();
     return {
       branches: [],
-      // Whole-millisecond duration; see terminal-map — the artifact, the
-      // cursor_runs int column, and the MCP diagnostics schema all require it.
-      durationMs: Math.round(wallMs),
+      durationMs: wallMs,
       status: "succeeded",
       ...(summary.length > 0 && { summary }),
     };
@@ -196,7 +194,7 @@ function failResult(
   return {
     branches: [],
     classificationEvents: capturedEvents.slice(-MAX_CLASSIFICATION_EVENTS),
-    durationMs: Math.round(durationMs),
+    durationMs,
     errorMessage,
     failureCategory,
     sdkTerminalStatus,
