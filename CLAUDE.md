@@ -102,6 +102,7 @@ Follow this general workflow for implementing a feature
 - request Copilot as reviewer: `gh pr edit <N> --add-reviewer @copilot`. `gh pr view <n> --json reviewRequests` may be `[]` immediately — Copilot clears `requested_reviewers` on accept and account-level auto-review can do the same; empty does **not** mean the app is missing or the request was dropped. Confirm with `gh api repos/<owner>/<repo>/issues/<n>/timeline --jq '.[] | select(.event == "review_requested" or .event == "copilot_work_started")'` or, after a couple of minutes, `gh api repos/<owner>/<repo>/pulls/<n>/reviews --jq '.[] | select(.user.login == "copilot-pull-request-reviewer")'`. Fallback if the new form errors on a specific repo: `gh api -X POST repos/<owner>/<repo>/pulls/<n>/requested_reviewers -f 'reviewers[]=Copilot'` (expect HTTP 201). Nuance: `feedback_copilot_reviewer.md` (memory).
 - comment "@codex review"
 - comment "@claude review"
+- comment "@cursor review" — Cursor Bugbot no longer auto-fires (account-level auto-review was disabled 2026-07-22); request it explicitly like the others (alias: `bugbot run`). The `.ship.json` panel already lists cursor as `trigger: "mention"`, so ship-driven runs post this automatically; this line is for hand-driven PRs.
 - ensure CI is green
 - ensure review comments are addressed
   - it's ok to be opinionated, don't have to take all comments blindly
