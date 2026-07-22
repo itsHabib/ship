@@ -24,6 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import type { DriverGhPort, GhPullRequestView } from "./gh-port.js";
 import type { DispatchAmbiguity } from "./judgment.js";
 import type { DriverShipPort } from "./ship-port.js";
+import type { TriageClassifier, TriageOutcome } from "./triage.js";
 import type {
   AddressOpts,
   DriverTickResult,
@@ -134,6 +135,8 @@ export interface EngineDeps {
   gh?: DriverGhPort;
   notify?: NotifyPort;
   escalation?: EscalationConfig;
+  /** Review-risk classifier; when absent the engine records no triage tier. */
+  triage?: TriageClassifier;
   logger?: Logger;
   clock?: () => number;
   monotonicClock?: () => number;
@@ -163,6 +166,7 @@ interface TickContext {
   store: Store;
   notify?: NotifyPort | undefined;
   escalation?: EscalationConfig | undefined;
+  triage?: TriageClassifier | undefined;
   logger?: Logger | undefined;
 }
 
@@ -288,6 +292,9 @@ function buildTickContext(deps: EngineDeps): TickContext {
   };
   if (deps.gh !== undefined) {
     ctx.gh = deps.gh;
+  }
+  if (deps.triage !== undefined) {
+    ctx.triage = deps.triage;
   }
   return ctx;
 }
@@ -1893,6 +1900,98 @@ async function handleSucceededPoll(
     }
   }
   store.updateDriverStream(stream.id, buildLandedPatch(stream, wfRun));
+  await classifyLandedStreamTriage(ctx, run, store, stream.id);
+}
+
+interface TriageTarget {
+  triage: TriageClassifier;
+  gh: DriverGhPort;
+  repoSlug: string;
+  prNumber: number;
+  stream: DriverStream;
+}
+
+// Resolve everything classification needs, or undefined when the stream can't
+// be classified (no classifier/gh wired, no repo URL, no PR). Keeps the guard
+// branches out of the async caller so its complexity stays in budget.
+function resolveTriageTarget(
+  ctx: TickContext,
+  run: DriverRun,
+  store: Store,
+  streamId: string,
+): TriageTarget | undefined {
+  const triage = ctx.triage;
+  const gh = ctx.gh;
+  if (triage === undefined || gh === undefined) return undefined;
+  const repoUrl = extractRepoUrl(run);
+  if (repoUrl === undefined) return undefined;
+  const stream = findStream(loadRun(store, run.id), streamId);
+  if (stream?.prUrl === undefined) return undefined;
+  const prNumber = prNumberFromUrl(stream.prUrl);
+  if (prNumber === undefined) return undefined;
+  // `-R` wants the full owner/name slug, never the bare store label.
+  return { gh, prNumber, repoSlug: toGhRepo(repoUrl), stream, triage };
+}
+
+/**
+ * Classify the stream's PR via `triage-floor` and persist the outcome. Keyed on
+ * the live PR head SHA: a head already classified is left alone; a moved head
+ * (fix commits from a later review cycle) re-classifies. A classifier failure
+ * persists `classifier_error` with NO tier — never a fabricated one — and never
+ * crashes or blocks the landing. No-op when no classifier / gh port is wired.
+ */
+async function classifyLandedStreamTriage(
+  ctx: TickContext,
+  run: DriverRun,
+  store: Store,
+  streamId: string,
+): Promise<void> {
+  const target = resolveTriageTarget(ctx, run, store, streamId);
+  if (target === undefined) return;
+  const { gh, prNumber, repoSlug, stream, triage } = target;
+
+  try {
+    const view = await gh.viewPullRequest(repoSlug, prNumber);
+    const headSha = view.headRefOid.toLowerCase();
+    if (stream.triageHeadSha === headSha && stream.triageTierSource === "classified") return;
+    const outcome = await triage.classify(repoSlug, prNumber);
+    persistTriageOutcome(ctx, store, streamId, headSha, outcome);
+  } catch (err: unknown) {
+    // Telemetry, not load-bearing state: a failed head-SHA read or persist must
+    // not abort the tick's landing. Log and move on.
+    ctx.logger?.warn(
+      { err: String(err), prNumber, streamId },
+      "triage: classification step failed; continuing (telemetry only)",
+    );
+  }
+}
+
+function persistTriageOutcome(
+  ctx: TickContext,
+  store: Store,
+  streamId: string,
+  headSha: string,
+  outcome: TriageOutcome,
+): void {
+  if (outcome.kind === "classified") {
+    store.updateDriverStream(streamId, {
+      triageHeadSha: headSha,
+      triageTier: outcome.tier,
+      triageTierSource: "classified",
+    });
+    return;
+  }
+  ctx.logger?.warn(
+    { headSha, reason: outcome.reason, streamId },
+    "triage: classifier error; persisting classifier_error with no tier",
+  );
+  // Clear any prior tier: a broken classifier must not leave a stale routable
+  // tier standing for the current head.
+  store.updateDriverStream(streamId, {
+    triageHeadSha: headSha,
+    triageTier: null,
+    triageTierSource: "classifier_error",
+  });
 }
 
 /**

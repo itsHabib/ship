@@ -5,6 +5,12 @@
  * verbatim `modelId`, which wins over the tier for model selection); this
  * module maps them to concrete runner knobs. Unknown provider cells degrade
  * to engine defaults with a recorded reason.
+ *
+ * "tier" here is the model/effort DISPATCH tier (opus/sonnet/fable,
+ * extra/max/ultracode) — which model runs the work. It is NOT the review-risk
+ * "triage tier" (T0–T3) from triage.ts, which sizes how much review a PR needs
+ * and never touches dispatch. Two concepts, one overloaded word — kept apart by
+ * name (`ModelTier`/`EffortTier` here, `TriageTier` there).
  */
 
 import type { ShipInput } from "@ship/core";

@@ -31,6 +31,16 @@ export const driverRuntimeSchema = z.enum(["local", "cloud", "rooms"]);
 export const driverModelTierSchema = z.enum(["opus", "sonnet", "fable"]);
 export const driverEffortTierSchema = z.enum(["extra", "max", "ultracode"]);
 
+// Review-risk tier from the `triage-floor` classifier — distinct from the
+// model/effort tiers above (those pick a dispatch model; this sizes review).
+// See packages/driver/src/triage.ts for the classification mechanism.
+export const triageTierSchema = z.enum(["T0", "T1", "T2", "T3"]);
+
+// How a stream's triage state was reached: a parsed tier, or a classifier
+// failure (missing binary / non-zero exit / timeout / unparseable output). A
+// failure carries NO tier — never a fabricated one.
+export const triageTierSourceSchema = z.enum(["classified", "classifier_error"]);
+
 export const shipInputModelParamEntrySchema = z
   .object({
     id: z.string().min(1),
@@ -136,6 +146,13 @@ export const driverStreamSchema = z
     dispatchModelParams: z.array(shipInputModelParamEntrySchema).optional(),
     effortDegraded: z.boolean().optional(),
     tierDegradeReason: z.string().optional(),
+    // triage-floor classification (review-credit-tiering). Absent until the
+    // engine first observes the stream's PR. `triageTier` is set only when
+    // `triageTierSource` is "classified"; a "classifier_error" carries no tier.
+    triageTier: triageTierSchema.optional(),
+    triageTierSource: triageTierSourceSchema.optional(),
+    // The PR head the triage state binds to; a moved head re-classifies.
+    triageHeadSha: z.string().optional(),
     // Fallback dispatch chain, frozen at import (dispatch-fallback spec §5).
     // Absent for streams with no chain — the feature is opt-in. cursor/log are
     // meaningless without a chain, so all three travel together.
@@ -155,6 +172,23 @@ export const driverStreamSchema = z
       code: z.ZodIssueCode.custom,
       message: "fallbackChain, fallbackCursor, and fallbackLog must be set together",
     });
+  })
+  .superRefine((stream, ctx) => {
+    // "never a fabricated tier": a classified head carries a tier; an error
+    // head carries none. Enforced at the persistence boundary so no reader can
+    // observe a tier on a failed classification.
+    if (stream.triageTierSource === "classified" && stream.triageTier === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "triageTierSource 'classified' requires a triageTier",
+      });
+    }
+    if (stream.triageTierSource === "classifier_error" && stream.triageTier !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "triageTierSource 'classifier_error' must not carry a triageTier",
+      });
+    }
   });
 
 export const driverBatchSchema = z
@@ -190,6 +224,8 @@ export const driverRunSchema = z
 export type DriverRunStatus = z.infer<typeof driverRunStatusSchema>;
 export type DriverBatchStatus = z.infer<typeof driverBatchStatusSchema>;
 export type DriverStreamStatus = z.infer<typeof driverStreamStatusSchema>;
+export type TriageTier = z.infer<typeof triageTierSchema>;
+export type TriageTierSource = z.infer<typeof triageTierSourceSchema>;
 export type StreamAttempt = z.infer<typeof streamAttemptSchema>;
 export type FallbackChainTarget = z.infer<typeof fallbackChainTargetSchema>;
 export type FallbackLogRecord = z.infer<typeof fallbackLogRecordSchema>;

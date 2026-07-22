@@ -468,4 +468,48 @@ describe("formatDriverStatusOutput", () => {
     );
     store.close();
   });
+
+  test("renders the triage classification line", () => {
+    const store = createStore({ dbPath: ":memory:" });
+    const runId = newDriverRunId();
+    const streamId = newDriverStreamId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: newDriverBatchId(),
+          status: "running",
+          streams: [
+            {
+              attempts: [],
+              id: streamId,
+              runtime: "cloud",
+              specPath: "docs/a.md",
+              status: "landed",
+              streamIndex: 0,
+              taskSlug: "alpha",
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "running",
+    });
+    // Triage is engine-computed post-land — persisted via updateDriverStream.
+    store.updateDriverStream(streamId, {
+      triageHeadSha: "abc1234def",
+      triageTier: "T1",
+      triageTierSource: "classified",
+    });
+
+    const run = store.getDriverRun(runId);
+    const text = formatDriverStatusOutput(run!, false, false);
+    expect(text).toContain("stream[1] alpha: triage=T1 (classified, head abc1234)");
+    store.close();
+  });
 });

@@ -207,6 +207,49 @@ batches: []
     expect(stream?.dispatchModel).toBeUndefined();
   });
 
+  test("projects triage classification onto the stream view", () => {
+    const run: DriverRun = {
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          driverRunId: "drv_06",
+          id: "db_06",
+          status: "running",
+          streams: [
+            {
+              attempts: [],
+              createdAt: "2026-06-12T00:00:00.000Z",
+              driverBatchId: "db_06",
+              driverRunId: "drv_06",
+              id: "ds_06",
+              runtime: "cloud",
+              specPath: "docs/task.md",
+              status: "landed",
+              streamIndex: 0,
+              touches: [],
+              triageHeadSha: "abc1234",
+              triageTier: "T1",
+              triageTierSource: "classified",
+              updatedAt: "2026-06-12T00:00:00.000Z",
+            },
+          ],
+        },
+      ],
+      createdAt: "2026-06-12T00:00:00.000Z",
+      id: "drv_06",
+      manifestPath: "/tmp/driver.md",
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\n---\n",
+      status: "running",
+      updatedAt: "2026-06-12T00:00:00.000Z",
+    };
+    const stream = buildDriverListEnvelope([run]).runs[0]?.batches[0]?.streams[0];
+    expect(stream?.triageTier).toBe("T1");
+    expect(stream?.triageTierSource).toBe("classified");
+    expect(stream?.triageHeadSha).toBe("abc1234");
+  });
+
   test("redacts absolute paths from errorMessage", () => {
     const run: DriverRun = {
       batches: [

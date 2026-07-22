@@ -9,7 +9,7 @@
 // neither `core` nor `mcp-server` needs them.
 
 import type { DefaultShipServiceOpts, ShipServiceFactory } from "@ship/core";
-import type { DriverGhPort, DriverService } from "@ship/driver";
+import type { DriverGhPort, DriverService, TriageClassifier } from "@ship/driver";
 
 import { createDefaultShipService, getDefaultSharedStore } from "@ship/core";
 import { createDriverService } from "@ship/driver";
@@ -47,6 +47,7 @@ export function createCliDriverService(
   opts: CliPathOpts,
   shipFactory: ServiceFactory,
   ghPort?: DriverGhPort,
+  triage?: TriageClassifier,
 ): DriverServiceFactory {
   let cached: DriverService | undefined;
   return () => {
@@ -59,6 +60,9 @@ export function createCliDriverService(
     });
     cached = createDriverService({
       gh: ghPort ?? createExecGhPort(),
+      // Opt-in: bin.ts wires the real classifier (never in fake mode). Absent
+      // here means no triage classification — the safe default for tests.
+      ...(triage !== undefined ? { triage } : {}),
       ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
       ship,
       store,

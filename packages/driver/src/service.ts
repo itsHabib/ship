@@ -9,6 +9,7 @@ import type { DriverRun, DriverRunStatus, ListDriverRunsFilter } from "@ship/sto
 import type { DriverGhPort } from "./gh-port.js";
 import type { ImportManifestResult } from "./import.js";
 import type { DriverShipPort } from "./ship-port.js";
+import type { TriageClassifier } from "./triage.js";
 import type {
   AddressOpts,
   Decision,
@@ -57,6 +58,8 @@ export interface CreateDriverServiceOpts {
   store: Store;
   ship: DriverShipPort;
   gh?: DriverGhPort;
+  /** Review-risk classifier; wired in production, omitted (no triage) in tests. */
+  triage?: TriageClassifier;
   clock?: () => number;
   monotonicClock?: () => number;
   rng?: () => number;
@@ -68,7 +71,7 @@ export interface CreateDriverServiceOpts {
 }
 
 export function createDriverService(opts: CreateDriverServiceOpts): DriverService {
-  const { ship, gh, clock, monotonicClock, rng, sleep, notifyExec, logger } = opts;
+  const { ship, gh, triage, clock, monotonicClock, rng, sleep, notifyExec, logger } = opts;
   // Every driver mutation flows through this store handle, so wrapping it here
   // is the one seam that gives CLI and MCP callers ledger emission with no
   // per-call-site hooks. Best-effort by construction (see driverstate-emit.ts).
@@ -129,6 +132,7 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
           store,
           clock,
           gh,
+          triage,
           logger,
           monotonicClock,
           notifyExec,
@@ -147,6 +151,7 @@ function buildTickDeps(input: {
   ship: DriverShipPort;
   resolved: ReturnType<typeof resolveRunOpts>;
   gh?: DriverGhPort | undefined;
+  triage?: TriageClassifier | undefined;
   logger?: Logger | undefined;
   notifyExec?: NotifyExec | undefined;
   clock?: (() => number) | undefined;
@@ -156,6 +161,7 @@ function buildTickDeps(input: {
 }): Parameters<typeof runTick>[2] {
   const deps: Parameters<typeof runTick>[2] = { ship: input.ship, store: input.store };
   if (input.gh !== undefined) deps.gh = input.gh;
+  if (input.triage !== undefined) deps.triage = input.triage;
   if (input.logger !== undefined) deps.logger = input.logger;
   const notifyPort = createNotifyPort(input.resolved.notify, input.notifyExec);
   if (notifyPort !== undefined) deps.notify = notifyPort;

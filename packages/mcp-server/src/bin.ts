@@ -28,6 +28,7 @@ import type { AgentRunner } from "@ship/cursor-runner";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createDefaultShipService, ORPHAN_RESUME_STALENESS_MS } from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
+import { createExecTriageClassifier } from "@ship/driver";
 import { createLogger } from "@ship/logger";
 
 import { createMcpDriverServiceFactory } from "./driver-service.js";
@@ -63,7 +64,9 @@ async function main(): Promise<void> {
     Object.assign(opts, { cursor: fake, cloudCursor: fake });
   }
   const shipFactory = createDefaultShipService(opts);
-  const driverFactory = createMcpDriverServiceFactory(opts, shipFactory);
+  // Real triage classifier in production only — fake mode never shells out.
+  const triage = useFake ? undefined : createExecTriageClassifier();
+  const driverFactory = createMcpDriverServiceFactory(opts, shipFactory, undefined, triage);
   // The factory is lazy and tool registration never invokes it — construct
   // eagerly so the boot orphan sweep actually runs on an idle server.
   shipFactory();

@@ -36,6 +36,10 @@ export interface UpdateDriverStreamInput {
   dispatchModelParams?: DriverStream["dispatchModelParams"] | null;
   effortDegraded?: boolean;
   tierDegradeReason?: string | null;
+  /** triage-floor tier; `null` clears it (e.g. on a classifier error). */
+  triageTier?: DriverStream["triageTier"] | null;
+  triageTierSource?: DriverStream["triageTierSource"] | null;
+  triageHeadSha?: string | null;
   /** Rewrite (or `null`-clear) the model id when a hop changes the target. */
   modelId?: DriverStream["modelId"] | null;
   /** Advance the fallback cursor (dispatch-fallback hop); chain stays frozen. */
@@ -75,6 +79,9 @@ export interface DriverStreamRow {
   dispatch_model_params: string | null;
   effort_degraded: number | null;
   tier_degrade_reason: string | null;
+  triage_tier: string | null;
+  triage_tier_source: string | null;
+  triage_head_sha: string | null;
   work_on_current_branch: number | null;
   fallback_chain: string | null;
   fallback_cursor: number | null;
@@ -126,7 +133,7 @@ export interface DriverStreamOps {
 }
 
 const STREAM_COLUMNS =
-  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, model_id, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, work_on_current_branch, fallback_chain, fallback_cursor, fallback_log, created_at, updated_at";
+  "id, driver_run_id, driver_batch_id, stream_index, task_id, task_slug, spec_path, branch, runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url, merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, model_id, effort_tier, provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded, tier_degrade_reason, triage_tier, triage_tier_source, triage_head_sha, work_on_current_branch, fallback_chain, fallback_cursor, fallback_log, created_at, updated_at";
 
 function sqlNull<T>(value: T | undefined): T | null {
   return value ?? null;
@@ -147,9 +154,10 @@ export function createDriverStreamOps(
        runtime, rolls_up, touches, status, workflow_run_id, attempts, pr_number, pr_url,
        merge_commit, merged_at, cycles, review_cycles, error_message, model_tier, model_id, effort_tier,
        provider, dispatch_provider, dispatch_model, dispatch_model_params, effort_degraded,
-       tier_degrade_reason, work_on_current_branch, fallback_chain, fallback_cursor, fallback_log,
+       tier_degrade_reason, triage_tier, triage_tier_source, triage_head_sha,
+       work_on_current_branch, fallback_chain, fallback_cursor, fallback_log,
        created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectByIdStmt = db.prepare<[string], DriverStreamRow>(
     `SELECT ${STREAM_COLUMNS} FROM driver_streams WHERE id = ?`,
@@ -189,6 +197,10 @@ export function createDriverStreamOps(
       sqlNull(input.provider),
       null,
       null,
+      null,
+      null,
+      null,
+      // triage_tier, triage_tier_source, triage_head_sha — engine-set post-PR.
       null,
       null,
       null,
@@ -253,6 +265,9 @@ function applyStreamPatch(db: Db, id: string, patch: UpdateDriverStreamInput, no
   );
   appendStreamPatchColumn(sets, params, "effort_degraded = ?", patch.effortDegraded, boolToInt);
   appendStreamPatchColumn(sets, params, "tier_degrade_reason = ?", patch.tierDegradeReason);
+  appendStreamPatchColumn(sets, params, "triage_tier = ?", patch.triageTier);
+  appendStreamPatchColumn(sets, params, "triage_tier_source = ?", patch.triageTierSource);
+  appendStreamPatchColumn(sets, params, "triage_head_sha = ?", patch.triageHeadSha);
   appendStreamPatchColumn(
     sets,
     params,
@@ -365,6 +380,9 @@ function optionalStreamFields(row: DriverStreamRow): Record<string, string | num
     ["taskId", row.task_id],
     ["taskSlug", row.task_slug],
     ["tierDegradeReason", row.tier_degrade_reason],
+    ["triageTier", row.triage_tier],
+    ["triageTierSource", row.triage_tier_source],
+    ["triageHeadSha", row.triage_head_sha],
     [
       "workOnCurrentBranch",
       row.work_on_current_branch === null ? null : row.work_on_current_branch === 1,
