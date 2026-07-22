@@ -167,33 +167,9 @@ type TimerFireKind = "served" | "early" | "late";
  */
 export async function runWithDurationCap(args: DurationCapRunArgs): Promise<AgentRunResult> {
   if (!hasRemoteSignals(args)) {
-    return wholeMillisecondDuration(await runLocalDurationCap(args));
+    return runLocalDurationCap(args);
   }
-  return wholeMillisecondDuration(await runRemoteDurationCap(args));
-}
-
-/**
- * Round the terminal result's durationMs to a whole millisecond. Every
- * dispatched runner (claude / cursor / codex, local + remote) resolves through
- * `runWithDurationCap` before service.ts writes `result.json` and persists
- * `cursor_runs.duration_ms`. SDKs report fractional wall time, but that value
- * flows into the integer `duration_ms` column AND the MCP `runDurationMs`
- * `.int()` diagnostics schema (read back from `result.json` for failed runs) —
- * a fraction fails both. Normalizing here, at the single choke point, keeps
- * every per-runner source honest without patching each terminal map. A negative
- * stays as-is so it still fails the store's nonnegative guard and rolls back.
- */
-function wholeMillisecondDuration(result: AgentRunResult): AgentRunResult {
-  // A negative stays as-is so it still fails the store's nonnegative guard and
-  // rolls back rather than rounding to -0 and slipping through.
-  if (result.durationMs < 0) {
-    return result;
-  }
-  const rounded = Math.round(result.durationMs);
-  if (rounded === result.durationMs) {
-    return result;
-  }
-  return { ...result, durationMs: rounded };
+  return runRemoteDurationCap(args);
 }
 
 function hasRemoteSignals(args: DurationCapRunArgs): boolean {
