@@ -194,6 +194,24 @@ describe("cursor runs (via createStore)", () => {
     expect(store.getCursorRun(id)?.durationMs).toBe(3_723_031);
   });
 
+  test("updateCursorRunStatus: negative fractional durationMs still rolls back", () => {
+    // Rounding must not slip a negative past the nonnegative guard: -0.1 must
+    // NOT become -0 and commit. Left unrounded it fails int/nonnegative and the
+    // txn rolls back, preserving the negative-duration rejection invariant.
+    const runId = seedRun();
+    const id = newCursorRunId();
+    store.recordCursorRun({
+      agentId: "agent_neg",
+      artifactsDir: "/runs/wf_x",
+      id,
+      runtime: "local",
+      workflowRunId: runId,
+    });
+
+    expect(() => store.updateCursorRunStatus(id, { durationMs: -0.1 })).toThrow();
+    expect(store.getCursorRun(id)?.durationMs).toBeUndefined();
+  });
+
   test("updateCursorRunStatus persists artifacts; getCursorRun round-trips them", () => {
     const runId = seedRun();
     const id = newCursorRunId();
