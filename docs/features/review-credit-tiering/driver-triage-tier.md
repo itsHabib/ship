@@ -21,7 +21,7 @@ The driver consumes review findings but never classifies risk — every stream g
 
 ## Behavior / fix
 
-When the engine first observes a stream's PR (PR URL becomes known during poll/land), shell out `gh pr diff <N> -R <repo> | triage-floor`, parse the `T0–T3` tier, and persist it on the driver stream.
+When the engine first observes a stream's PR (PR URL becomes known during poll/land), shell out `gh pr diff <N> -R <owner>/<name> | triage-floor` — the `-R` argument is the full `owner/name` slug derived from the stream's repo URL (e.g. `itsHabib/ship`), never the bare store label — parse the `T0–T3` tier, and persist it on the driver stream.
 
 - **Tier binds to the head SHA, not the PR.** Classify once per head; re-classify whenever the head moves before land (fix commits from later review cycles can change the diff's risk class — a T1 PR that grows a gate-machinery fix must re-tier).
 - **Classifier failure is its own state, never a fabricated tier.** Missing binary, exit 1, timeout, or unparseable output persists `tier_source: "classifier_error"` with NO tier and a logged warning; a classified head persists `tier_source: "classified"`. A failure head is treated as the full-panel posture — strictly stronger than any tier's route. Never default to a routable tier (not T0/T1, and not T2 either: a broken classifier must not silently take any weakened route, and downstream spend data must be able to exclude failure cycles).

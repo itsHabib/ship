@@ -21,7 +21,7 @@ Which bot earns its slot at which tier can only be settled with data, and nothin
 
 ## Behavior / fix
 
-Append-only event lines in `~/.ship/review-spend.jsonl` (same state-dir convention as the ship store; a FRESH file — never touch any `labels/**` file, which is the classifier oracle). Two event shapes, keyed by `{repo, pr}`:
+Append-only event lines in `review-spend.jsonl` inside ship's *resolved* state dir — the same XDG/APPDATA resolver the store uses (`<UserConfigDir>/ship/`, honoring the existing env overrides), sibling to `state.db`. Not a hardcoded `~/.ship` (that is not ship's state-dir convention on any supported surface). A FRESH file — never touch any `labels/**` file, which is the classifier oracle. Two event shapes, keyed by `{repo, pr}`:
 
 - `review_cycle` — appended as each review cycle completes:
   `{ts, event:"review_cycle", repo, pr, head_sha, tier, tier_source, cycle, reviewers_requested[], findings_per_bot: {bot: {total, unique, critical}}, claude_cost_proxy}`
