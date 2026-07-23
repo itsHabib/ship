@@ -529,9 +529,13 @@ export function markMerged(
   };
   if (facts.mergedAt !== undefined) patch.mergedAt = facts.mergedAt;
   if (facts.cycles !== undefined) patch.cycles = facts.cycles;
+  // Capture before the update: only the first merge-record (a `landed` stream
+  // becoming `done`) emits a spend event. markMerged/land accept an already
+  // `done` stream for idempotent re-land, which must not double-count.
+  const firstMerge = stream.status === "landed";
   store.updateDriverStream(streamId, patch);
 
-  recordTerminalSpend(run, stream, facts);
+  if (firstMerge) recordTerminalSpend(run, stream, facts);
 
   return maybeCompleteRunAfterMerge(store, driverRunId, run, facts.mergedAt);
 }

@@ -14,7 +14,7 @@ import type { TriageTier, TriageTierSource } from "@ship/store";
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 /** A landed (or closed) PR's terminal spend record. */
 export interface TerminalSpendEvent {
@@ -47,7 +47,10 @@ export interface AppendSpendOpts {
  */
 export function resolveSpendLogPath(): string {
   const dbOverride = process.env["SHIP_DB_PATH"];
-  if (dbOverride !== undefined && dbOverride !== "") {
+  // Honor the override only when absolute — the store ignores a relative
+  // SHIP_DB_PATH and uses the default config-dir db, so a relative one here
+  // would strand spend events beside a db the run never touched.
+  if (dbOverride !== undefined && isAbsolute(dbOverride)) {
     return join(dirname(dbOverride), "review-spend.jsonl");
   }
   return join(userConfigDir(), "ship", "review-spend.jsonl");
@@ -56,11 +59,11 @@ export function resolveSpendLogPath(): string {
 function userConfigDir(): string {
   if (process.platform === "win32") {
     const appData = process.env["APPDATA"];
-    if (appData !== undefined && appData !== "") return appData;
+    if (appData !== undefined && isAbsolute(appData)) return appData;
     return join(homedir(), "AppData", "Roaming");
   }
   const xdg = process.env["XDG_CONFIG_HOME"];
-  if (xdg !== undefined && xdg !== "") return xdg;
+  if (xdg !== undefined && isAbsolute(xdg)) return xdg;
   return join(homedir(), ".config");
 }
 
@@ -69,10 +72,11 @@ function userConfigDir(): string {
  * for the spend record's join key. Undefined when the URL isn't parseable.
  */
 export function ownerNameFromRepoUrl(url: string): string | undefined {
-  const match = /github\.com[/:]([^/\s]+)\/([^/\s.]+)/u.exec(url);
+  // Name may contain dots (e.g. `service.api`); strip only a trailing `.git`.
+  const match = /github\.com[/:]([^/\s]+)\/([^/\s]+)/u.exec(url);
   const owner = match?.[1];
-  const name = match?.[2];
-  if (owner === undefined || name === undefined) return undefined;
+  const name = match?.[2]?.replace(/\.git$/u, "");
+  if (owner === undefined || name === undefined || name === "") return undefined;
   return `${owner}/${name}`;
 }
 

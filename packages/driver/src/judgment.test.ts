@@ -10,6 +10,9 @@ import {
   newDriverStreamId,
   newEscalationId,
 } from "@ship/store";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { CancelError, DecideError } from "./errors.js";
@@ -269,6 +272,55 @@ describe("judgment", () => {
     expect(stream?.prNumber).toBe(42);
     expect(run?.status).toBe("done");
     expect(run?.batches[0]?.status).toBe("done");
+  });
+
+  test("markMerged does not double-log terminal spend on idempotent re-land", () => {
+    const spendDir = mkdtempSync(join(tmpdir(), "ship-spend-jm-"));
+    const savedDbPath = process.env["SHIP_DB_PATH"];
+    process.env["SHIP_DB_PATH"] = join(spendDir, "state.db");
+    try {
+      const streamId = newDriverStreamId();
+      const runId = store.insertDriverRun({
+        batches: [
+          {
+            batchIndex: 1,
+            dependsOn: [],
+            id: newDriverBatchId(),
+            status: "running",
+            streams: [
+              {
+                attempts: [],
+                id: streamId,
+                runtime: "local",
+                specPath: "a.md",
+                status: "landed",
+                streamIndex: 0,
+                touches: [],
+              },
+            ],
+          },
+        ],
+        id: newDriverRunId(),
+        manifestPath: "/tmp/driver.md",
+        repo: "ship",
+        sourceJson: minimalSource(),
+        status: "running",
+      }).id;
+      const facts = { mergeCommit: "deadbeef", mergedAt: "2026-06-12T00:00:00.000Z", prNumber: 42 };
+
+      markMerged(store, runId, streamId, facts);
+      // Second call is an idempotent re-land of an already-`done` stream.
+      markMerged(store, runId, streamId, facts);
+
+      const spendPath = join(spendDir, "review-spend.jsonl");
+      const lines = readFileSync(spendPath, "utf-8").trim().split("\n").filter(Boolean);
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0] ?? "")).toMatchObject({ event: "terminal", pr: 42, merged: true });
+    } finally {
+      if (savedDbPath === undefined) delete process.env["SHIP_DB_PATH"];
+      else process.env["SHIP_DB_PATH"] = savedDbPath;
+      rmSync(spendDir, { force: true, recursive: true });
+    }
   });
 
   test("final mark-merged flips run to done and rolls every batch to done", () => {

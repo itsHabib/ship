@@ -93,9 +93,15 @@ describe("resolveSpendLogPath", () => {
     else process.env["SHIP_DB_PATH"] = saved;
   });
 
-  test("places the log beside SHIP_DB_PATH when set", () => {
+  test("places the log beside an absolute SHIP_DB_PATH", () => {
+    const dbPath = join(tmpdir(), "srv", "state", "state.db");
+    process.env["SHIP_DB_PATH"] = dbPath;
+    expect(resolveSpendLogPath()).toBe(join(tmpdir(), "srv", "state", "review-spend.jsonl"));
+  });
+
+  test("ignores a relative SHIP_DB_PATH (matches the store) and uses userConfigDir", () => {
     process.env["SHIP_DB_PATH"] = join("srv", "state", "state.db");
-    expect(resolveSpendLogPath()).toBe(join("srv", "state", "review-spend.jsonl"));
+    expect(resolveSpendLogPath().endsWith(join("ship", "review-spend.jsonl"))).toBe(true);
   });
 
   test("falls back to <userConfigDir>/ship when SHIP_DB_PATH is unset", () => {
@@ -105,9 +111,17 @@ describe("resolveSpendLogPath", () => {
 });
 
 describe("ownerNameFromRepoUrl", () => {
-  test("parses owner/name from an https GitHub URL", () => {
+  test("parses owner/name from https and ssh URLs, stripping a trailing .git", () => {
     expect(ownerNameFromRepoUrl("https://github.com/itsHabib/ship")).toBe("itsHabib/ship");
     expect(ownerNameFromRepoUrl("https://github.com/itsHabib/ship.git")).toBe("itsHabib/ship");
+    expect(ownerNameFromRepoUrl("git@github.com:itsHabib/ship.git")).toBe("itsHabib/ship");
+  });
+
+  test("preserves a dotted repository name (strips only the .git suffix)", () => {
+    expect(ownerNameFromRepoUrl("https://github.com/acme/service.api")).toBe("acme/service.api");
+    expect(ownerNameFromRepoUrl("https://github.com/acme/service.api.git")).toBe(
+      "acme/service.api",
+    );
   });
 
   test("returns undefined for an unparseable URL", () => {
