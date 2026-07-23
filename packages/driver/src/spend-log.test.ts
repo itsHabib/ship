@@ -1,5 +1,7 @@
 /** Tests for `spend-log.ts` — the append-only review-spend telemetry. */
 
+import type { Logger } from "@ship/logger";
+
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +44,7 @@ describe("appendSpendEvent", () => {
 
     const lines = readFileSync(path, "utf-8").trim().split("\n");
     expect(lines).toHaveLength(2);
-    expect(JSON.parse(lines[0])).toEqual(terminal());
+    expect(JSON.parse(lines[0] ?? "")).toEqual(terminal());
     expect(JSON.parse(lines[1] ?? "")).toMatchObject({ pr: 234, tier: "T1", event: "terminal" });
   });
 
@@ -54,8 +56,15 @@ describe("appendSpendEvent", () => {
 
   test("omits tier when the head was not classified (classifier_error)", () => {
     const path = join(dir, "review-spend.jsonl");
-    const ev = terminal({ tier: undefined, tier_source: "classifier_error" });
-    delete (ev as { tier?: unknown }).tier;
+    // Built without a `tier` key at all — a classifier_error head carries none.
+    const ev: TerminalSpendEvent = {
+      ts: "2026-07-23T00:00:00.000Z",
+      event: "terminal",
+      repo: "itsHabib/ship",
+      pr: 233,
+      tier_source: "classifier_error",
+      merged: true,
+    };
     appendSpendEvent(ev, { path });
     const parsed = JSON.parse(readFileSync(path, "utf-8").trim()) as Partial<TerminalSpendEvent>;
     expect(parsed.tier).toBeUndefined();
@@ -64,9 +73,7 @@ describe("appendSpendEvent", () => {
 
   test("a write failure warns and does not throw (best-effort)", () => {
     const warn = vi.fn();
-    const logger = { warn } as unknown as NonNullable<
-      Parameters<typeof appendSpendEvent>[1]
-    >["logger"];
+    const logger = { warn } as unknown as Logger;
     // Parent is a FILE, not a directory — mkdir/append must fail.
     const filePath = join(dir, "review-spend.jsonl");
     appendSpendEvent(terminal(), { path: filePath });
