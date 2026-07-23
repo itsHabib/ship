@@ -170,7 +170,14 @@ export function createCursorRunOps(db: Db, clock: () => string): CursorRunOps {
     }
     if (patch.durationMs !== undefined) {
       sets.push("duration_ms = ?");
-      params.push(patch.durationMs);
+      // duration_ms is a whole-millisecond integer column; SDK terminals report
+      // fractional wall time (e.g. 3723030.98), which the read-back Zod parse
+      // (int) would reject and roll back. Round non-negative durations at this
+      // boundary so no caller path strands a completed run on a fraction. A
+      // negative stays as-is — rounding it (e.g. -0.1 → -0) would slip past the
+      // schema's nonnegative guard; unrounded it still fails int/nonnegative and
+      // rolls back, preserving the negative-duration rejection invariant.
+      params.push(patch.durationMs >= 0 ? Math.round(patch.durationMs) : patch.durationMs);
     }
     if (patch.artifacts !== undefined) {
       sets.push("artifacts_json = ?");

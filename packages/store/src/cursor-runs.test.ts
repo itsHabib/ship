@@ -171,6 +171,47 @@ describe("cursor runs (via createStore)", () => {
     expect(updated.durationMs).toBe(60_000);
   });
 
+  test("updateCursorRunStatus: fractional durationMs is rounded to a whole ms", () => {
+    // SDK terminals report fractional wall time; duration_ms is an integer
+    // column and the read-back Zod parse is `.int()`. Without rounding at the
+    // persistence boundary the txn rolls back and strands a completed run.
+    const runId = seedRun();
+    const id = newCursorRunId();
+    store.recordCursorRun({
+      agentId: "agent_frac",
+      artifactsDir: "/runs/wf_x",
+      id,
+      runtime: "local",
+      workflowRunId: runId,
+    });
+
+    const updated = store.updateCursorRunStatus(id, {
+      durationMs: 3_723_030.9877,
+      endedAt: "2026-05-08T00:01:00.000Z",
+      status: "succeeded",
+    });
+    expect(updated.durationMs).toBe(3_723_031);
+    expect(store.getCursorRun(id)?.durationMs).toBe(3_723_031);
+  });
+
+  test("updateCursorRunStatus: negative fractional durationMs still rolls back", () => {
+    // Rounding must not slip a negative past the nonnegative guard: -0.1 must
+    // NOT become -0 and commit. Left unrounded it fails int/nonnegative and the
+    // txn rolls back, preserving the negative-duration rejection invariant.
+    const runId = seedRun();
+    const id = newCursorRunId();
+    store.recordCursorRun({
+      agentId: "agent_neg",
+      artifactsDir: "/runs/wf_x",
+      id,
+      runtime: "local",
+      workflowRunId: runId,
+    });
+
+    expect(() => store.updateCursorRunStatus(id, { durationMs: -0.1 })).toThrow();
+    expect(store.getCursorRun(id)?.durationMs).toBeUndefined();
+  });
+
   test("updateCursorRunStatus persists artifacts; getCursorRun round-trips them", () => {
     const runId = seedRun();
     const id = newCursorRunId();

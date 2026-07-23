@@ -1491,8 +1491,17 @@ type WriteOutcome = { ok: true } | { ok: false; err: unknown };
 // caller can route to `finalizeFailure` without a try block at this
 // layer, and without ambiguity over what counts as "success."
 function cursorRunResultForPersistence(result: AgentRunResult): AgentRunResult {
-  if (result.classificationEvents === undefined) return result;
-  const rest = { ...result };
+  // result.json is the read-back source for get_workflow_run's runDurationMs
+  // (the MCP `.int()` output schema) and for failed-run diagnostics; every
+  // dispatch and orphan-refresh finalize writes it through here. SDK terminals
+  // report fractional wall time, so round to a whole ms at this one shared
+  // artifact boundary — a negative stays as-is, mirroring the cursor_runs store
+  // guard, so it still fails the nonnegative schema rather than rounding to -0.
+  const durationMs = result.durationMs < 0 ? result.durationMs : Math.round(result.durationMs);
+  if (durationMs === result.durationMs && result.classificationEvents === undefined) {
+    return result;
+  }
+  const rest = { ...result, durationMs };
   Reflect.deleteProperty(rest, "classificationEvents");
   return rest;
 }
