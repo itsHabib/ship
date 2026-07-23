@@ -27,6 +27,12 @@ import {
   resolveStreamParkedEscalation,
 } from "./escalation.js";
 import { parseManifest } from "./manifest.js";
+import {
+  appendSpendEvent,
+  ownerNameFromRepoUrl,
+  spendLogPathForDb,
+  type TerminalSpendEvent,
+} from "./spend-log.js";
 
 const LIST_RUNS_LIMIT = 200;
 
@@ -528,9 +534,47 @@ export function markMerged(
   };
   if (facts.mergedAt !== undefined) patch.mergedAt = facts.mergedAt;
   if (facts.cycles !== undefined) patch.cycles = facts.cycles;
+  // Capture before the update: only the first merge-record (a `landed` stream
+  // becoming `done`) emits a spend event. markMerged/land accept an already
+  // `done` stream for idempotent re-land, which must not double-count.
+  const firstMerge = stream.status === "landed";
   store.updateDriverStream(streamId, patch);
 
+  if (firstMerge) recordTerminalSpend(store, run, stream, facts);
+
   return maybeCompleteRunAfterMerge(store, driverRunId, run, facts.mergedAt);
+}
+
+/**
+ * Append the terminal review-spend record for a merged stream — the engine-side
+ * slice of the spend log: tier, source, cycles, and outcome, which the driver
+ * has at merge-record time. Best-effort inside `appendSpendEvent`, so a spend
+ * write can never block the merge record.
+ */
+function recordTerminalSpend(
+  store: Store,
+  run: DriverRun,
+  stream: DriverStream,
+  facts: MergeFacts,
+): void {
+  // Land the log beside the store's own db; an in-memory/custom store has no
+  // sibling, so skip rather than leak telemetry into the default profile.
+  const spendPath = spendLogPathForDb(store.dbPath);
+  if (spendPath === undefined) return;
+  const repoUrl = extractRepoUrl(run);
+  const repo = (repoUrl === undefined ? undefined : ownerNameFromRepoUrl(repoUrl)) ?? run.repo;
+  const cyclesUsed = facts.cycles ?? stream.reviewCycles;
+  const event: TerminalSpendEvent = {
+    ts: facts.mergedAt ?? new Date().toISOString(),
+    event: "terminal",
+    repo,
+    pr: facts.prNumber,
+    merged: true,
+    ...(stream.triageTier !== undefined && { tier: stream.triageTier }),
+    ...(stream.triageTierSource !== undefined && { tier_source: stream.triageTierSource }),
+    ...(cyclesUsed !== undefined && { cycles_used: cyclesUsed }),
+  };
+  appendSpendEvent(event, { path: spendPath });
 }
 
 export async function cancelRun(
