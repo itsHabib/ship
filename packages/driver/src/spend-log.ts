@@ -56,6 +56,17 @@ export function resolveSpendLogPath(): string {
   return join(userConfigDir(), "ship", "review-spend.jsonl");
 }
 
+/**
+ * The spend-log path for a store opened at `dbPath` — its sibling
+ * `review-spend.jsonl`, so the log lands beside the exact `state.db` the run
+ * writes (not a re-resolved default). Undefined for an in-memory or empty
+ * store, which has no on-disk sibling; the caller then skips the append.
+ */
+export function spendLogPathForDb(dbPath: string): string | undefined {
+  if (dbPath === ":memory:" || dbPath === "") return undefined;
+  return join(dirname(dbPath), "review-spend.jsonl");
+}
+
 function userConfigDir(): string {
   if (process.platform === "win32") {
     const appData = process.env["APPDATA"];

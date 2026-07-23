@@ -275,12 +275,13 @@ describe("judgment", () => {
   });
 
   test("markMerged does not double-log terminal spend on idempotent re-land", () => {
+    // A file-backed store so the spend log lands beside its dbPath (an
+    // in-memory store has no sibling and is skipped — see spend-log tests).
     const spendDir = mkdtempSync(join(tmpdir(), "ship-spend-jm-"));
-    const savedDbPath = process.env["SHIP_DB_PATH"];
-    process.env["SHIP_DB_PATH"] = join(spendDir, "state.db");
+    const fileStore = createStore({ dbPath: join(spendDir, "state.db") });
     try {
       const streamId = newDriverStreamId();
-      const runId = store.insertDriverRun({
+      const runId = fileStore.insertDriverRun({
         batches: [
           {
             batchIndex: 1,
@@ -308,17 +309,18 @@ describe("judgment", () => {
       }).id;
       const facts = { mergeCommit: "deadbeef", mergedAt: "2026-06-12T00:00:00.000Z", prNumber: 42 };
 
-      markMerged(store, runId, streamId, facts);
+      markMerged(fileStore, runId, streamId, facts);
       // Second call is an idempotent re-land of an already-`done` stream.
-      markMerged(store, runId, streamId, facts);
+      markMerged(fileStore, runId, streamId, facts);
 
-      const spendPath = join(spendDir, "review-spend.jsonl");
-      const lines = readFileSync(spendPath, "utf-8").trim().split("\n").filter(Boolean);
+      const lines = readFileSync(join(spendDir, "review-spend.jsonl"), "utf-8")
+        .trim()
+        .split("\n")
+        .filter(Boolean);
       expect(lines).toHaveLength(1);
       expect(JSON.parse(lines[0] ?? "")).toMatchObject({ event: "terminal", pr: 42, merged: true });
     } finally {
-      if (savedDbPath === undefined) delete process.env["SHIP_DB_PATH"];
-      else process.env["SHIP_DB_PATH"] = savedDbPath;
+      fileStore.close();
       rmSync(spendDir, { force: true, recursive: true });
     }
   });

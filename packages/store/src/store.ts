@@ -64,6 +64,13 @@ export interface CreateStoreOptions {
  */
 export interface Store {
   /**
+   * The `dbPath` this store was opened with — an absolute file path, or the
+   * `:memory:` sentinel. Lets sibling artifacts (e.g. the review-spend log)
+   * land beside the same `state.db` the run actually writes, rather than
+   * re-resolving the location independently.
+   */
+  readonly dbPath: string;
+  /**
    * Insert a workflow run with `status = 'pending'`. Caller passes a
    * `wf_<ulid>` id from `@ship/workflow`'s `newWorkflowRunId`. Returns the
    * hydrated row with `phases: []`.
@@ -239,6 +246,7 @@ export function createStore(opts: CreateStoreOptions): Store {
     const reviewArtifactOps = createReviewArtifactOps(db, clock);
 
     return {
+      dbPath: opts.dbPath,
       appendPhase: (input) => withStoreContentionGuard(() => phaseOps.append(input)),
       cancelRun: (id) => withStoreContentionGuard(() => workflowRunOps.cancel(id)),
       deleteWorkflowRun: (id) => {

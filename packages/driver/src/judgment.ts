@@ -27,7 +27,12 @@ import {
   resolveStreamParkedEscalation,
 } from "./escalation.js";
 import { parseManifest } from "./manifest.js";
-import { appendSpendEvent, ownerNameFromRepoUrl, type TerminalSpendEvent } from "./spend-log.js";
+import {
+  appendSpendEvent,
+  ownerNameFromRepoUrl,
+  spendLogPathForDb,
+  type TerminalSpendEvent,
+} from "./spend-log.js";
 
 const LIST_RUNS_LIMIT = 200;
 
@@ -535,7 +540,7 @@ export function markMerged(
   const firstMerge = stream.status === "landed";
   store.updateDriverStream(streamId, patch);
 
-  if (firstMerge) recordTerminalSpend(run, stream, facts);
+  if (firstMerge) recordTerminalSpend(store, run, stream, facts);
 
   return maybeCompleteRunAfterMerge(store, driverRunId, run, facts.mergedAt);
 }
@@ -546,7 +551,16 @@ export function markMerged(
  * has at merge-record time. Best-effort inside `appendSpendEvent`, so a spend
  * write can never block the merge record.
  */
-function recordTerminalSpend(run: DriverRun, stream: DriverStream, facts: MergeFacts): void {
+function recordTerminalSpend(
+  store: Store,
+  run: DriverRun,
+  stream: DriverStream,
+  facts: MergeFacts,
+): void {
+  // Land the log beside the store's own db; an in-memory/custom store has no
+  // sibling, so skip rather than leak telemetry into the default profile.
+  const spendPath = spendLogPathForDb(store.dbPath);
+  if (spendPath === undefined) return;
   const repoUrl = extractRepoUrl(run);
   const repo = (repoUrl === undefined ? undefined : ownerNameFromRepoUrl(repoUrl)) ?? run.repo;
   const cyclesUsed = facts.cycles ?? stream.reviewCycles;
@@ -560,7 +574,7 @@ function recordTerminalSpend(run: DriverRun, stream: DriverStream, facts: MergeF
     ...(stream.triageTierSource !== undefined && { tier_source: stream.triageTierSource }),
     ...(cyclesUsed !== undefined && { cycles_used: cyclesUsed }),
   };
-  appendSpendEvent(event);
+  appendSpendEvent(event, { path: spendPath });
 }
 
 export async function cancelRun(

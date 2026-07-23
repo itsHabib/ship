@@ -11,6 +11,7 @@ import {
   appendSpendEvent,
   ownerNameFromRepoUrl,
   resolveSpendLogPath,
+  spendLogPathForDb,
   type TerminalSpendEvent,
 } from "./spend-log.js";
 
@@ -107,6 +108,19 @@ describe("resolveSpendLogPath", () => {
   test("falls back to <userConfigDir>/ship when SHIP_DB_PATH is unset", () => {
     delete process.env["SHIP_DB_PATH"];
     expect(resolveSpendLogPath().endsWith(join("ship", "review-spend.jsonl"))).toBe(true);
+  });
+});
+
+describe("spendLogPathForDb", () => {
+  test("returns the sibling review-spend.jsonl for a file-backed store", () => {
+    expect(spendLogPathForDb(join("srv", "state", "state.db"))).toBe(
+      join("srv", "state", "review-spend.jsonl"),
+    );
+  });
+
+  test("returns undefined for an in-memory or empty store (no on-disk sibling)", () => {
+    expect(spendLogPathForDb(":memory:")).toBeUndefined();
+    expect(spendLogPathForDb("")).toBeUndefined();
   });
 });
 
