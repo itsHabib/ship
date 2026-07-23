@@ -16,7 +16,13 @@
  * losslessly through import.
  */
 
-import type { DriverStreamStatus, FallbackChainTarget, FallbackLogRecord } from "@ship/store";
+import type {
+  DriverStreamStatus,
+  FallbackChainTarget,
+  FallbackLogRecord,
+  TriageTier,
+  TriageTierSource,
+} from "@ship/store";
 import type { AgentProvider } from "@ship/workflow";
 
 import type { EffortTier, ManifestStream, ModelTier } from "./manifest.js";
@@ -230,4 +236,27 @@ function formatFallbackCell(target: FallbackChainTarget, resolvedModel?: string)
   const cell = `${target.runtime}/${target.provider}`;
   const model = resolvedModel ?? target.modelId;
   return model === undefined ? cell : `${cell}:${model}`;
+}
+
+/**
+ * Render a stream's triage-floor classification (review-credit-tiering) for
+ * status output — `triage=T1 (classified, head abc1234)` for a classified head,
+ * `triage=classifier_error (head abc1234)` for a failed one. Undefined when the
+ * stream was never classified (no PR observed yet), so it adds no line. This is
+ * the review-risk tier — distinct from the model/effort `requested=`/`dispatch=`
+ * line above.
+ */
+export function formatStreamTriageDiagnostic(stream: {
+  triageTier?: TriageTier;
+  triageTierSource?: TriageTierSource;
+  triageHeadSha?: string;
+}): string | undefined {
+  if (stream.triageTierSource === undefined) return undefined;
+  const head =
+    stream.triageHeadSha === undefined ? "" : `, head ${stream.triageHeadSha.slice(0, 7)}`;
+  if (stream.triageTierSource === "classified" && stream.triageTier !== undefined) {
+    return `triage=${stream.triageTier} (classified${head})`;
+  }
+  // classifier_error carries no tier — never a fabricated one.
+  return `triage=classifier_error (${head === "" ? "no head" : head.replace(/^, /, "")})`;
 }

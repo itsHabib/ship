@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatStreamFallbackDiagnostic,
   formatStreamTierDiagnostic,
+  formatStreamTriageDiagnostic,
   resolveStreamProvider,
   resolveStreamTier,
 } from "./status-mapping.js";
@@ -70,6 +71,43 @@ describe("resolveStreamProvider", () => {
 
   it("returns empty when no provider is configured", () => {
     expect(resolveStreamProvider({ spec_path: "a.md", touches: [] })).toEqual({});
+  });
+});
+
+describe("formatStreamTriageDiagnostic", () => {
+  it("returns undefined when the stream was never classified", () => {
+    expect(formatStreamTriageDiagnostic({})).toBeUndefined();
+  });
+
+  it("renders a classified tier with a short head", () => {
+    expect(
+      formatStreamTriageDiagnostic({
+        triageTier: "T1",
+        triageTierSource: "classified",
+        triageHeadSha: "abc1234567890",
+      }),
+    ).toBe("triage=T1 (classified, head abc1234)");
+  });
+
+  it("renders a classified tier without a head", () => {
+    expect(formatStreamTriageDiagnostic({ triageTier: "T2", triageTierSource: "classified" })).toBe(
+      "triage=T2 (classified)",
+    );
+  });
+
+  it("renders a classifier error with a head and no tier", () => {
+    expect(
+      formatStreamTriageDiagnostic({
+        triageTierSource: "classifier_error",
+        triageHeadSha: "def4567890",
+      }),
+    ).toBe("triage=classifier_error (head def4567)");
+  });
+
+  it("renders a classifier error without a head", () => {
+    expect(formatStreamTriageDiagnostic({ triageTierSource: "classifier_error" })).toBe(
+      "triage=classifier_error (no head)",
+    );
   });
 });
 

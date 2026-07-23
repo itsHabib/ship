@@ -31,6 +31,8 @@ export type {
   FallbackChainTarget,
   FallbackLogRecord,
   StreamAttempt,
+  TriageTier,
+  TriageTierSource,
 } from "./driver-schemas.js";
 
 export type {

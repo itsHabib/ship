@@ -54,7 +54,7 @@ describe("runMigrations", () => {
     expect(tables).toContain("driver_review_artifacts");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(18);
+    expect(applied).toHaveLength(19);
     expect(applied.map((r) => r.name)).toEqual([
       "0001_init.sql",
       "0002_cursor_runs_run_id.sql",
@@ -74,6 +74,7 @@ describe("runMigrations", () => {
       "0017_workflow_runs_last_event_at.sql",
       "0018_driver_streams_model_id.sql",
       "0019_driver_streams_fallback.sql",
+      "0020_driver_streams_triage.sql",
     ]);
 
     const phaseColumns = db
@@ -102,6 +103,9 @@ describe("runMigrations", () => {
     expect(driverStreamColumns).toContain("fallback_chain");
     expect(driverStreamColumns).toContain("fallback_cursor");
     expect(driverStreamColumns).toContain("fallback_log");
+    expect(driverStreamColumns).toContain("triage_tier");
+    expect(driverStreamColumns).toContain("triage_tier_source");
+    expect(driverStreamColumns).toContain("triage_head_sha");
 
     const workflowRunColumns = db
       .prepare("PRAGMA table_info(workflow_runs)")
@@ -116,7 +120,7 @@ describe("runMigrations", () => {
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(18);
+    expect(applied).toHaveLength(19);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {

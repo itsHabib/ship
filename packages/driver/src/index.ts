@@ -56,9 +56,20 @@ export type { DispatchTarget, ViabilityDeps, ViabilityResult } from "./viability
 
 export { mapTierToDispatch } from "./tier-map.js";
 
+export { createExecTriageClassifier, parseTriageTier } from "./triage.js";
+export type {
+  CreateTriageClassifierOpts,
+  TriageClassifier,
+  TriageExec,
+  TriageFloorResult,
+  TriageOutcome,
+  TriageTier,
+} from "./triage.js";
+
 export {
   formatStreamFallbackDiagnostic,
   formatStreamTierDiagnostic,
+  formatStreamTriageDiagnostic,
   manifestBatchStatusToStore,
   manifestStatusToStore,
   resolveStreamTier,

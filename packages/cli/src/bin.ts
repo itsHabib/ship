@@ -9,6 +9,7 @@
 import type { AgentRunner } from "@ship/cursor-runner";
 
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
+import { createExecTriageClassifier } from "@ship/driver";
 import { createLogger } from "@ship/logger";
 import { CommanderError } from "commander";
 
@@ -39,7 +40,10 @@ async function main(): Promise<void> {
       : {}),
   };
   const factory = createCliService(serviceOpts);
-  const driverFactory = createCliDriverService(serviceOpts, factory);
+  // Real triage classifier in production only — fake mode never shells out to
+  // gh / triage-floor.
+  const triage = useFake ? undefined : createExecTriageClassifier();
+  const driverFactory = createCliDriverService(serviceOpts, factory, undefined, triage);
   const program = buildProgram(factory, driverFactory);
   await program.parseAsync(process.argv);
 }

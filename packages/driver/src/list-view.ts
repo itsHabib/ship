@@ -68,6 +68,9 @@ export interface DriverListStreamView {
   dispatchModelParams?: DriverStream["dispatchModelParams"];
   effortDegraded?: boolean;
   tierDegradeReason?: string;
+  triageTier?: DriverStream["triageTier"];
+  triageTierSource?: DriverStream["triageTierSource"];
+  triageHeadSha?: string;
   workflowRunId?: string;
   prUrl?: string;
   prNumber?: number;
@@ -138,8 +141,22 @@ function buildDriverListStreamView(stream: DriverStream): DriverListStreamView {
     ...optionalStreamIdentityFields(stream),
     ...optionalStreamRequestedFields(stream),
     ...optionalStreamProgressFields(stream),
+    ...optionalStreamTriageFields(stream),
     ...liveDispatchFields(stream),
   };
+}
+
+// Triage-floor classification (review-credit-tiering) — read surface for
+// /work-driver policy, which routes review off the tier without re-classifying.
+function optionalStreamTriageFields(
+  stream: DriverStream,
+): Pick<DriverListStreamView, "triageTier" | "triageTierSource" | "triageHeadSha"> {
+  const fields: Pick<DriverListStreamView, "triageTier" | "triageTierSource" | "triageHeadSha"> =
+    {};
+  if (stream.triageTier !== undefined) fields.triageTier = stream.triageTier;
+  if (stream.triageTierSource !== undefined) fields.triageTierSource = stream.triageTierSource;
+  if (stream.triageHeadSha !== undefined) fields.triageHeadSha = stream.triageHeadSha;
+  return fields;
 }
 
 function optionalStreamIdentityFields(

@@ -16,6 +16,7 @@ import { formatPruneAge } from "@ship/core";
 import {
   formatStreamFallbackDiagnostic,
   formatStreamTierDiagnostic,
+  formatStreamTriageDiagnostic,
   poolMemberToString,
 } from "@ship/driver";
 
@@ -301,6 +302,8 @@ function pushStreamDiagnosticLines(
 ): void {
   const tierLine = formatStreamTierLine(stream, batchIndex);
   if (tierLine !== undefined) lines.push(tierLine);
+  const triageLine = formatStreamTriageLine(stream, batchIndex);
+  if (triageLine !== undefined) lines.push(triageLine);
   const fallbackLine = formatStreamFallbackLine(stream, batchIndex);
   if (fallbackLine !== undefined) lines.push(fallbackLine);
 }
@@ -319,7 +322,7 @@ function requestedTierFields(stream: DriverStream): StreamTierDiagnosticInput {
 // A stream reset to pending (retry / recovery) has no live dispatch — showing
 // a prior attempt's dispatch mapping would read as if dispatch already
 // succeeded. Requested tiers are manifest config and always show.
-function liveDispatchFields(stream: DriverStream): StreamTierDiagnosticInput {
+function liveDispatchDiagnosticFields(stream: DriverStream): StreamTierDiagnosticInput {
   if (stream.status === "pending") return {};
   return {
     ...(stream.dispatchProvider !== undefined && { dispatchProvider: stream.dispatchProvider }),
@@ -335,7 +338,20 @@ function liveDispatchFields(stream: DriverStream): StreamTierDiagnosticInput {
 function formatStreamTierLine(stream: DriverStream, batchIndex: number): string | undefined {
   const diagnostic = formatStreamTierDiagnostic({
     ...requestedTierFields(stream),
-    ...liveDispatchFields(stream),
+    ...liveDispatchDiagnosticFields(stream),
+  });
+  if (diagnostic === undefined) {
+    return undefined;
+  }
+  const label = stream.taskSlug ?? stream.specPath;
+  return `stream[${String(batchIndex)}] ${label}: ${diagnostic}`;
+}
+
+function formatStreamTriageLine(stream: DriverStream, batchIndex: number): string | undefined {
+  const diagnostic = formatStreamTriageDiagnostic({
+    ...(stream.triageTier !== undefined && { triageTier: stream.triageTier }),
+    ...(stream.triageTierSource !== undefined && { triageTierSource: stream.triageTierSource }),
+    ...(stream.triageHeadSha !== undefined && { triageHeadSha: stream.triageHeadSha }),
   });
   if (diagnostic === undefined) {
     return undefined;
