@@ -27,6 +27,7 @@ import {
   resolveStreamParkedEscalation,
 } from "./escalation.js";
 import { parseManifest } from "./manifest.js";
+import { appendSpendEvent, ownerNameFromRepoUrl, type TerminalSpendEvent } from "./spend-log.js";
 
 const LIST_RUNS_LIMIT = 200;
 
@@ -530,7 +531,32 @@ export function markMerged(
   if (facts.cycles !== undefined) patch.cycles = facts.cycles;
   store.updateDriverStream(streamId, patch);
 
+  recordTerminalSpend(run, stream, facts);
+
   return maybeCompleteRunAfterMerge(store, driverRunId, run, facts.mergedAt);
+}
+
+/**
+ * Append the terminal review-spend record for a merged stream — the engine-side
+ * slice of the spend log: tier, source, cycles, and outcome, which the driver
+ * has at merge-record time. Best-effort inside `appendSpendEvent`, so a spend
+ * write can never block the merge record.
+ */
+function recordTerminalSpend(run: DriverRun, stream: DriverStream, facts: MergeFacts): void {
+  const repoUrl = extractRepoUrl(run);
+  const repo = (repoUrl === undefined ? undefined : ownerNameFromRepoUrl(repoUrl)) ?? run.repo;
+  const cyclesUsed = facts.cycles ?? stream.reviewCycles;
+  const event: TerminalSpendEvent = {
+    ts: facts.mergedAt ?? new Date().toISOString(),
+    event: "terminal",
+    repo,
+    pr: facts.prNumber,
+    merged: true,
+    ...(stream.triageTier !== undefined && { tier: stream.triageTier }),
+    ...(stream.triageTierSource !== undefined && { tier_source: stream.triageTierSource }),
+    ...(cyclesUsed !== undefined && { cycles_used: cyclesUsed }),
+  };
+  appendSpendEvent(event);
 }
 
 export async function cancelRun(
