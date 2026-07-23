@@ -208,6 +208,32 @@ batches:
     store.close();
   });
 
+  test("a classifier_error on the same head is retried", async () => {
+    const manifest = writeCloudManifest();
+    const fake = cloudShipPort(9);
+    const gh = createFakeGhPort({ 9: { headRefOid: "steady", isDraft: false, state: "OPEN" } });
+    const triage = recordingTriage(() => ({ kind: "classified", tier: "T2" }));
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ gh, ship: fake.port, store, triage: triage.classifier });
+    const runId = driver.importManifest(manifest).run.id;
+    // A prior classifier_error on this same head — the guard skips only
+    // `classified`, so the classifier must re-run (it may have been transiently
+    // unavailable) rather than leaving the head permanently unclassified.
+    const seedId = landedStream(store, runId).id;
+    store.updateDriverStream(seedId, {
+      triageHeadSha: "steady",
+      triageTierSource: "classifier_error",
+    });
+
+    await driver.run({ driverRunId: runId }, { maxWaitMs: 0 });
+
+    const stream = landedStream(store, runId);
+    expect(triage.calls).toHaveLength(1);
+    expect(stream.triageTier).toBe("T2");
+    expect(stream.triageTierSource).toBe("classified");
+    store.close();
+  });
+
   test("a moved head re-classifies", async () => {
     const manifest = writeCloudManifest();
     const fake = cloudShipPort(9);

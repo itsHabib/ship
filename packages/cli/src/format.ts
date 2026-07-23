@@ -322,7 +322,7 @@ function requestedTierFields(stream: DriverStream): StreamTierDiagnosticInput {
 // A stream reset to pending (retry / recovery) has no live dispatch — showing
 // a prior attempt's dispatch mapping would read as if dispatch already
 // succeeded. Requested tiers are manifest config and always show.
-function liveDispatchFields(stream: DriverStream): StreamTierDiagnosticInput {
+function liveDispatchDiagnosticFields(stream: DriverStream): StreamTierDiagnosticInput {
   if (stream.status === "pending") return {};
   return {
     ...(stream.dispatchProvider !== undefined && { dispatchProvider: stream.dispatchProvider }),
@@ -338,7 +338,7 @@ function liveDispatchFields(stream: DriverStream): StreamTierDiagnosticInput {
 function formatStreamTierLine(stream: DriverStream, batchIndex: number): string | undefined {
   const diagnostic = formatStreamTierDiagnostic({
     ...requestedTierFields(stream),
-    ...liveDispatchFields(stream),
+    ...liveDispatchDiagnosticFields(stream),
   });
   if (diagnostic === undefined) {
     return undefined;

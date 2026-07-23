@@ -1953,6 +1953,9 @@ async function classifyLandedStreamTriage(
   try {
     const view = await gh.viewPullRequest(repoSlug, prNumber);
     const headSha = view.headRefOid.toLowerCase();
+    // Skip only a head already *classified* — a prior `classifier_error` on the
+    // same head is deliberately retried (the classifier may have been transiently
+    // unavailable), so it must not match this guard.
     if (stream.triageHeadSha === headSha && stream.triageTierSource === "classified") return;
     const outcome = await triage.classify(repoSlug, prNumber);
     persistTriageOutcome(ctx, store, streamId, headSha, outcome);
