@@ -155,6 +155,32 @@ describe("reconcileSingleInstance", () => {
     expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(true);
   });
 
+  test("an entry for a different SHIP_DB_PATH in the same dir is left untouched (store scoping)", () => {
+    const dir = registryDirFor(dbPath);
+    mkdirSync(dir, { recursive: true });
+    const otherDbPath = join(tmpDir, "other.db"); // same dir, different store
+    writeFileSync(
+      join(dir, "2000.json"),
+      JSON.stringify({
+        pid: 2000,
+        startedAt: new Date(NOW - 10_000).toISOString(),
+        heartbeatAt: new Date(NOW - 10_000).toISOString(),
+        dbPath: otherDbPath,
+      }),
+    );
+    const inspector = fakeInspector(new Set([2000])); // alive + fresh
+    const result = reconcileSingleInstance({
+      dbPath,
+      selfPid: 1000,
+      startedAtMs: NOW,
+      nowMs: NOW,
+      inspector,
+    });
+    expect(inspector.terminated).toEqual([]); // never reaps another store's server
+    expect(result.reapedPids).toEqual([]);
+    expect(existsSync(join(dir, "2000.json"))).toBe(true); // and leaves its entry alone
+  });
+
   test("alive but stale-heartbeat entry is left untouched (PID-reuse guard)", () => {
     seedEntry(2000, NOW - (INSTANCE_FRESHNESS_MS + 60_000)); // well past freshness
     const inspector = fakeInspector(new Set([2000]));

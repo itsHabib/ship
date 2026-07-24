@@ -316,6 +316,10 @@ function classifyEntry(path: string, opts: ReconcileOptions, freshnessMs: number
     return { kind: "remove", pid: Number.parseInt(basename(path, ".json"), 10) };
   }
   if (entry.pid === opts.selfPid) return { kind: "skip" };
+  // The registry dir is keyed by the store *directory*, so two distinct
+  // SHIP_DB_PATH files in one dir share it. An entry for a different db belongs
+  // to a separate store's server — never our sibling; leave it entirely alone.
+  if (entry.dbPath !== "" && entry.dbPath !== opts.dbPath) return { kind: "skip" };
   if (!opts.inspector.isAlive(entry.pid)) return { kind: "remove", pid: entry.pid };
 
   const heartbeatMs = Date.parse(entry.heartbeatAt);

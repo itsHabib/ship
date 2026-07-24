@@ -111,7 +111,7 @@ async function main(): Promise<void> {
     // Self-exit on client disconnect / signals: restores the 1:1 session↔server
     // lifecycle so a dead session's server doesn't linger holding the db. Wired
     // BEFORE connect so an immediate transport close can't race an unset hook.
-    installLifecycleShutdown(server, dbPath, selfEntryPath, logger);
+    installLifecycleShutdown(server, shipFactory, dbPath, selfEntryPath, logger);
     const transport = new StdioServerTransport();
     await server.connect(transport);
   } catch (err: unknown) {
@@ -176,27 +176,42 @@ function startHeartbeat(selfEntryPath: string): void {
   timer.unref();
 }
 
+/** Bound on how long shutdown waits for in-flight `ship` starts to settle. */
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
+
 /**
  * Wire graceful shutdown to transport close + SIGTERM/SIGINT. Idempotent (a
- * disconnect and a signal can both fire): release the registry entry, close the
- * store cleanly (checkpoints the WAL), then exit. On Windows SIGTERM is a hard
- * kill, so the reaper also removes the reaped entry itself — this path is the
- * clean-disconnect and POSIX-signal case.
+ * disconnect and a signal can both fire): drain in-flight `ship` starts (a
+ * `ship` returns `running` and finishes its persistence on a background
+ * continuation — closing the store first would strand a just-started local run
+ * with no resumable cursor row), then release the registry entry, close the
+ * store (checkpoints the WAL), and exit. Draining is a no-op when nothing is
+ * pending, so an idle disconnect exits promptly. On Windows SIGTERM is a hard
+ * kill (no drain possible); the reaper removes the reaped entry itself — this
+ * path is the clean-disconnect and POSIX-signal case.
  */
 function installLifecycleShutdown(
   server: McpServer,
+  shipFactory: ReturnType<typeof createDefaultShipService>,
   dbPath: string,
   selfEntryPath: string | undefined,
   logger: Logger,
 ): void {
   let closing = false;
+  const finishShutdown = async (code: number): Promise<void> => {
+    await drainQuietly(shipFactory, logger);
+    releaseSelf(selfEntryPath);
+    closeStoreQuietly(dbPath, logger);
+    process.exit(code);
+  };
   const shutdown = (code: number, reason: string): void => {
     if (closing) return;
     closing = true;
     logger.info({ reason }, "ship mcp-server shutting down");
-    releaseSelf(selfEntryPath);
-    closeStoreQuietly(dbPath, logger);
-    process.exit(code);
+    finishShutdown(code).catch((err: unknown) => {
+      logger.error({ err: errorText(err) }, "shutdown finalize failed; exiting anyway");
+      process.exit(code);
+    });
   };
   const lowLevel = server.server;
   lowLevel.onclose = () => {
@@ -207,6 +222,29 @@ function installLifecycleShutdown(
   });
   process.once("SIGINT", () => {
     shutdown(0, "SIGINT");
+  });
+}
+
+/**
+ * Await `drainBackground()` (in-flight `ship` starts finishing their
+ * persistence), bounded by {@link SHUTDOWN_DRAIN_TIMEOUT_MS} so a wedged
+ * background task can't hang shutdown. Never throws.
+ */
+async function drainQuietly(
+  shipFactory: ReturnType<typeof createDefaultShipService>,
+  logger: Logger,
+): Promise<void> {
+  try {
+    await Promise.race([shipFactory().drainBackground(), sleep(SHUTDOWN_DRAIN_TIMEOUT_MS)]);
+  } catch (err: unknown) {
+    logger.warn({ err: errorText(err) }, "drainBackground during shutdown failed; closing anyway");
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref();
   });
 }
 
