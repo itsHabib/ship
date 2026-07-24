@@ -48,8 +48,9 @@ export function openDatabase(dbPath: string, logger?: Logger): Db {
     if (err instanceof StoreIntegrityError) throw err;
     // Corruption bad enough to fault a pragma read surfaces as a raw
     // SQLITE_CORRUPT ("database disk image is malformed"); map it to the same
-    // operator-facing integrity error.
-    if (isSqliteCorruptError(err)) throw new StoreIntegrityError(dbPath, errorDetail(err));
+    // operator-facing integrity error. `isSqliteCorruptError` implies
+    // `err instanceof Error`, so `.message` is safe.
+    if (isSqliteCorruptError(err)) throw new StoreIntegrityError(dbPath, (err as Error).message);
     // The PRAGMA setup (and migrations on open) can hit lock contention under
     // concurrent local runs; surface the operator-facing hint instead of a raw
     // SQLITE_BUSY on the startup path.
@@ -77,12 +78,9 @@ function assertIntegrity(db: Db, dbPath: string): void {
     .map((row) => (typeof row.quick_check === "string" ? row.quick_check : String(row.quick_check)))
     .filter((message) => message.length > 0);
   if (messages.length === 1 && messages[0] === "ok") return;
-  const detail = messages.length > 0 ? messages.join("; ") : "quick_check returned no rows";
-  throw new StoreIntegrityError(dbPath, detail);
-}
-
-function errorDetail(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  // The clean case returned above; reaching here means quick_check reported at
+  // least one corruption message.
+  throw new StoreIntegrityError(dbPath, messages.join("; "));
 }
 
 /**
