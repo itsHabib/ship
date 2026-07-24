@@ -34,7 +34,13 @@ afterEach(() => {
 
 const NOW = Date.parse("2026-07-23T22:00:00.000Z");
 
-function fakeInspector(alivePids: Set<number>): ProcessInspector & { terminated: number[] } {
+// A ship-server-looking command line (contains both "ship" and "mcp-server").
+const SHIP_CMDLINE = "node C:/Users/x/pers/ship/packages/mcp-server/src/bin.ts";
+
+function fakeInspector(
+  alivePids: Set<number>,
+  cmdlines?: Map<number, string | undefined>,
+): ProcessInspector & { terminated: number[] } {
   const terminated: number[] = [];
   return {
     terminated,
@@ -43,6 +49,9 @@ function fakeInspector(alivePids: Set<number>): ProcessInspector & { terminated:
       terminated.push(pid);
       alivePids.delete(pid);
     },
+    // Default: every live pid looks like a ship server, so the existing reap
+    // cases still reap. Per-pid overrides drive the identity-gate tests.
+    commandLine: (pid) => (cmdlines?.has(pid) ? cmdlines.get(pid) : SHIP_CMDLINE),
   };
 }
 
@@ -111,6 +120,39 @@ describe("reconcileSingleInstance", () => {
     expect(result.removedStalePids).toEqual([2000]);
     expect(inspector.terminated).toEqual([]);
     expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(false);
+  });
+
+  test("fresh entry whose PID was reused by a non-ship process is swept, not killed", () => {
+    seedEntry(2000, NOW - 10_000); // fresh heartbeat
+    // PID 2000 is alive but its command line is some unrelated process.
+    const inspector = fakeInspector(new Set([2000]), new Map([[2000, "C:/Windows/explorer.exe"]]));
+    const result = reconcileSingleInstance({
+      dbPath,
+      selfPid: 1000,
+      startedAtMs: NOW,
+      nowMs: NOW,
+      inspector,
+    });
+    expect(inspector.terminated).toEqual([]); // never killed the innocent process
+    expect(result.reapedPids).toEqual([]);
+    expect(result.removedStalePids).toEqual([2000]); // stale entry cleaned up
+    expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(false);
+  });
+
+  test("fresh entry whose identity cannot be read is left untouched (fail-safe)", () => {
+    seedEntry(2000, NOW - 10_000); // fresh heartbeat
+    const inspector = fakeInspector(new Set([2000]), new Map([[2000, undefined]]));
+    const result = reconcileSingleInstance({
+      dbPath,
+      selfPid: 1000,
+      startedAtMs: NOW,
+      nowMs: NOW,
+      inspector,
+    });
+    expect(inspector.terminated).toEqual([]);
+    expect(result.reapedPids).toEqual([]);
+    // Unconfirmable → we neither kill nor delete; leave it for the operator.
+    expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(true);
   });
 
   test("alive but stale-heartbeat entry is left untouched (PID-reuse guard)", () => {

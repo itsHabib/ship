@@ -78,8 +78,11 @@ function assertIntegrity(db: Db, dbPath: string): void {
     .map((row) => (typeof row.quick_check === "string" ? row.quick_check : String(row.quick_check)))
     .filter((message) => message.length > 0);
   if (messages.length === 1 && messages[0] === "ok") return;
-  // The clean case returned above; reaching here means quick_check reported at
-  // least one corruption message.
+  // Fail OPEN on an inconclusive result (no usable rows): quick_check always
+  // returns at least an "ok" row in practice, so an empty read is a pragma
+  // anomaly, not proof of corruption — never brick a healthy db on ambiguity.
+  if (messages.length === 0) return;
+  // Reaching here means quick_check reported at least one corruption message.
   throw new StoreIntegrityError(dbPath, messages.join("; "));
 }
 
@@ -97,14 +100,11 @@ function configureConnection(db: Db, dbPath: string, logger?: Logger): void {
   db.pragma("foreign_keys = ON");
 
   const journalMode = db.pragma("journal_mode", { simple: true }) as string;
-  if (journalMode !== "wal" && journalMode !== "memory") {
-    const log = logger ?? undefined;
-    if (log !== undefined) {
-      log.warn(
-        { dbPath, journalMode },
-        "PRAGMA journal_mode = WAL was not honored; cross-process writes are more likely to hit lock contention",
-      );
-    }
+  if (journalMode !== "wal" && journalMode !== "memory" && logger !== undefined) {
+    logger.warn(
+      { dbPath, journalMode },
+      "PRAGMA journal_mode = WAL was not honored; cross-process writes are more likely to hit lock contention",
+    );
   }
 }
 

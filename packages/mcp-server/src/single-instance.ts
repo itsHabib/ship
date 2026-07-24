@@ -15,10 +15,20 @@
  * the SAME store, then registers itself. Short-lived CLI processes never
  * register here, so the intended CLI+server concurrency is untouched.
  *
- * Liveness is decided by a heartbeat the running server refreshes on a timer —
- * NOT by PID alone. A reaped-and-reused PID therefore reads as stale-heartbeat
- * and is never terminated; only a genuinely-live sibling ship server (fresh
- * heartbeat) is reaped. This is the PID-reuse guard.
+ * PID-reuse safety is a two-stage guard. A heartbeat the running server
+ * refreshes on a timer is the cheap first filter — a long-dead entry reads as
+ * stale and isn't even a reap candidate. But a *crashed* server (uncaught
+ * throw, OOM, kill -9, power loss) never removes its entry and leaves a
+ * still-fresh heartbeat behind, so freshness alone is not enough: before
+ * terminating, the reaper verifies the live PID is actually a ship mcp-server
+ * by matching its command line ({@link ProcessInspector.commandLine}). A reused
+ * PID running something else fails that check and is never killed; an
+ * unconfirmable identity fails safe (skip, don't kill).
+ *
+ * Boot is not serialized: two servers starting against one store within each
+ * other's list→register window can both survive (or reap each other). Layer 1
+ * (self-exit on disconnect) still bounds each session to one server, so this is
+ * a bounded, self-correcting residual — not the original unbounded accumulation.
  *
  * This module is pure mechanism + a small policy (which siblings to reap). The
  * process primitives are injected via {@link ProcessInspector} so the policy is
@@ -27,8 +37,9 @@
 
 import type { Logger } from "@ship/logger";
 
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /** Registry subdirectory under the store dir; one JSON file per live server. */
 const REGISTRY_DIRNAME = "mcp-server-instances";
@@ -51,7 +62,15 @@ export const INSTANCE_HEARTBEAT_MS = 60_000;
  * enough that an immediate reopen faults with a transient "disk I/O error".
  * Waiting for the PID to disappear closes that race.
  */
-export const PID_EXIT_TIMEOUT_MS = 3_000;
+const PID_EXIT_TIMEOUT_MS = 3_000;
+
+/**
+ * A live PID is only reaped when its command line contains BOTH markers — it is
+ * a ship mcp-server (`mcp-server`) AND it is *this* family's, not some other
+ * repo's connector (`ship`). A reused PID running anything else fails the match
+ * and is left alone.
+ */
+const SHIP_SERVER_CMDLINE_MARKERS = ["mcp-server", "ship"] as const;
 
 /** On-disk shape of a registry entry. */
 interface InstanceEntry {
@@ -71,6 +90,12 @@ export interface ProcessInspector {
   isAlive: (pid: number) => boolean;
   /** Ask `pid` to terminate (SIGTERM → graceful on POSIX; hard on Windows). */
   terminate: (pid: number) => void;
+  /**
+   * The command line of `pid`, or `undefined` when it can't be determined. Used
+   * to confirm a reap target is genuinely a ship mcp-server (not a reused PID)
+   * before killing it; `undefined` fails safe (the caller does not kill).
+   */
+  commandLine: (pid: number) => string | undefined;
 }
 
 /** Options for {@link reconcileSingleInstance}. */
@@ -126,7 +151,63 @@ export const systemProcessInspector: ProcessInspector = {
       // Already gone, or not permitted — nothing to reap.
     }
   },
+  commandLine(pid: number): string | undefined {
+    return readCommandLine(pid);
+  },
 };
+
+/**
+ * Best-effort process command line, per platform. Only runs for an actual reap
+ * candidate (rare — usually zero at boot), so a one-shot shell-out is fine. Any
+ * failure returns `undefined`, which the reap policy treats as "cannot confirm
+ * → don't kill".
+ */
+function readCommandLine(pid: number): string | undefined {
+  try {
+    if (process.platform === "linux") {
+      return readFileSync(`/proc/${String(pid)}/cmdline`, "utf8")
+        .replace(/\0/g, " ")
+        .trim();
+    }
+    // Fixed absolute binaries (never PATH-resolved) so a hijacked PATH can't
+    // substitute the process the reaper trusts for identity.
+    if (process.platform === "win32") {
+      const powershell = join(
+        process.env["SystemRoot"] ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      return runForCmdline(powershell, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${String(pid)}").CommandLine`,
+      ]);
+    }
+    // darwin / other POSIX: ps lives at a fixed path.
+    return runForCmdline("/bin/ps", ["-p", String(pid), "-o", "command="]);
+  } catch {
+    return undefined;
+  }
+}
+
+function runForCmdline(command: string, args: readonly string[]): string | undefined {
+  const out = execFileSync(command, args, {
+    encoding: "utf8",
+    timeout: 5_000,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const trimmed = out.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** True when a command line looks like a ship mcp-server (all markers present). */
+function looksLikeShipServer(commandLine: string): boolean {
+  const haystack = commandLine.toLowerCase();
+  return SHIP_SERVER_CMDLINE_MARKERS.every((marker) => haystack.includes(marker));
+}
 
 /**
  * Ensure this process is the only live ship server bound to `dbPath`'s store,
@@ -147,7 +228,7 @@ export function reconcileSingleInstance(opts: ReconcileOptions): ReconcileResult
     if (action.kind === "skip") continue;
     if (action.kind === "remove") {
       removeEntry(path);
-      removedStalePids.push(action.pid);
+      if (Number.isFinite(action.pid)) removedStalePids.push(action.pid);
       continue;
     }
     opts.inspector.terminate(action.pid);
@@ -230,20 +311,47 @@ function classifyEntry(path: string, opts: ReconcileOptions, freshnessMs: number
   const entry = readEntry(path);
   if (entry === undefined) {
     opts.logger?.warn({ path }, "removing unreadable ship mcp-server registry entry");
-    return { kind: "remove", pid: Number.NaN };
+    // The entry body is unreadable; recover the pid from the `<pid>.json` name
+    // for the swept-stale log rather than emitting NaN.
+    return { kind: "remove", pid: Number.parseInt(basename(path, ".json"), 10) };
   }
   if (entry.pid === opts.selfPid) return { kind: "skip" };
   if (!opts.inspector.isAlive(entry.pid)) return { kind: "remove", pid: entry.pid };
 
   const heartbeatMs = Date.parse(entry.heartbeatAt);
   const fresh = Number.isFinite(heartbeatMs) && opts.nowMs - heartbeatMs <= freshnessMs;
-  if (fresh) return { kind: "reap", pid: entry.pid };
+  if (!fresh) {
+    opts.logger?.warn(
+      { pid: entry.pid, heartbeatAt: entry.heartbeatAt },
+      "alive ship mcp-server registry entry has a stale heartbeat; not reaping (possible hung server or reused PID)",
+    );
+    return { kind: "skip" };
+  }
+  return confirmReapTarget(entry.pid, opts);
+}
 
-  opts.logger?.warn(
-    { pid: entry.pid, heartbeatAt: entry.heartbeatAt },
-    "alive ship mcp-server registry entry has a stale heartbeat; not reaping (possible hung server or reused PID)",
-  );
-  return { kind: "skip" };
+/**
+ * Fresh + alive is only a *candidate*: a crashed sibling leaves a fresh entry
+ * behind too. Confirm the live PID is actually a ship mcp-server before killing
+ * it — a reused PID must never be reaped. Unconfirmable identity fails safe.
+ */
+function confirmReapTarget(pid: number, opts: ReconcileOptions): EntryAction {
+  const cmdline = opts.inspector.commandLine(pid);
+  if (cmdline === undefined) {
+    opts.logger?.warn(
+      { pid },
+      "could not read reap target's command line; not reaping (fail-safe against PID reuse)",
+    );
+    return { kind: "skip" };
+  }
+  if (!looksLikeShipServer(cmdline)) {
+    opts.logger?.warn(
+      { pid, cmdline },
+      "registry PID was reused by a non-ship process; sweeping the stale entry without a kill",
+    );
+    return { kind: "remove", pid };
+  }
+  return { kind: "reap", pid };
 }
 
 function listEntryFiles(dir: string): string[] {

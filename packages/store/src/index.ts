@@ -7,6 +7,8 @@
 export { createStore } from "./store.js";
 export type { CreateStoreOptions, Store } from "./store.js";
 
+export { isSqliteCorruptError } from "./db.js";
+
 export type {
   CreateWorkflowRunInput,
   ListRunsFilter,

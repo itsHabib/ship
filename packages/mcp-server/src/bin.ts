@@ -36,7 +36,6 @@ import {
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createExecTriageClassifier } from "@ship/driver";
 import { createLogger } from "@ship/logger";
-import { StoreIntegrityError } from "@ship/store";
 
 import { createMcpDriverServiceFactory } from "./driver-service.js";
 import { buildServer } from "./server.js";
@@ -48,6 +47,7 @@ import {
   releaseInstance,
   systemProcessInspector,
 } from "./single-instance.js";
+import { openStoreWithRetry } from "./store-open.js";
 import { resolveDbPath, resolveRunsDir } from "./store-paths.js";
 
 async function main(): Promise<void> {
@@ -90,25 +90,35 @@ async function main(): Promise<void> {
   // Real triage classifier in production only — fake mode never shells out.
   const triage = useFake ? undefined : createExecTriageClassifier();
   const driverFactory = createMcpDriverServiceFactory(opts, shipFactory, undefined, triage);
-  // The factory is lazy and tool registration never invokes it — construct
-  // eagerly so the boot orphan sweep actually runs on an idle server. This is
-  // also where the store's integrity gate (quick_check) fires; on a corrupt db
-  // it throws (terminal), and we release our registry entry before the
-  // bootstrap handler exits so a retry sees a clean registry.
+  // Everything from opening the store onward shares one failure path: on any
+  // bootstrap error (corrupt db, or a throw from buildServer/connect after the
+  // store opened) release our registry entry and close the store so a retry
+  // sees a clean registry and no leaked handle. The lifecycle handlers only
+  // fire on a *successful* connect's later disconnect, so they can't cover this.
   try {
-    await openStoreWithRetry(shipFactory, logger);
+    // The factory is lazy and tool registration never invokes it — open eagerly
+    // so the boot orphan sweep runs on an idle server. This is also where the
+    // integrity gate (quick_check) fires; corruption is terminal (never retried).
+    await openStoreWithRetry(
+      () => {
+        shipFactory();
+      },
+      dbPath,
+      { logger },
+    );
+    startOrphanResweep(shipFactory, logger);
+    const server = buildServer(shipFactory, driverFactory);
+    // Self-exit on client disconnect / signals: restores the 1:1 session↔server
+    // lifecycle so a dead session's server doesn't linger holding the db. Wired
+    // BEFORE connect so an immediate transport close can't race an unset hook.
+    installLifecycleShutdown(server, dbPath, selfEntryPath, logger);
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
   } catch (err: unknown) {
     releaseSelf(selfEntryPath);
+    closeStoreQuietly(dbPath, logger);
     throw err;
   }
-  startOrphanResweep(shipFactory, logger);
-  const server = buildServer(shipFactory, driverFactory);
-  // Self-exit on client disconnect / signals: restores the 1:1 session↔server
-  // lifecycle so a dead session's server doesn't linger holding the db. Wired
-  // BEFORE connect so an immediate transport close can't race an unset hook.
-  installLifecycleShutdown(server, dbPath, selfEntryPath, logger);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
 }
 
 /**
@@ -154,43 +164,6 @@ async function installSingleInstance(dbPath: string, logger: Logger): Promise<st
   }
 }
 
-/**
- * Open the store, retrying a transient reopen race a few times. A just-reaped
- * sibling can leave the WAL file briefly unopenable ("disk I/O error") or
- * locked; those clear within a beat. A {@link StoreIntegrityError} is terminal
- * (real corruption) and is never retried.
- */
-async function openStoreWithRetry(shipFactory: () => unknown, logger: Logger): Promise<void> {
-  const maxAttempts = 5;
-  const backoffMs = 100;
-  for (let attempt = 1; ; attempt++) {
-    try {
-      shipFactory();
-      return;
-    } catch (err: unknown) {
-      if (err instanceof StoreIntegrityError) throw err;
-      if (attempt >= maxAttempts || !isTransientOpenError(err)) throw err;
-      logger.warn(
-        { attempt, err: errorText(err) },
-        "transient store-open error after reaping a sibling; retrying",
-      );
-      await sleep(backoffMs * attempt);
-    }
-  }
-}
-
-/** A store-open error that a brief wait-and-retry is expected to clear. */
-function isTransientOpenError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  if (err.name === "StoreContentionError") return true;
-  const message = err.message.toLowerCase();
-  return message.includes("disk i/o error") || message.includes("database is locked");
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
 /** Refresh this server's heartbeat on a timer. `unref()` never holds the process open. */
 function startHeartbeat(selfEntryPath: string): void {
   const timer = setInterval(() => {
@@ -222,11 +195,7 @@ function installLifecycleShutdown(
     closing = true;
     logger.info({ reason }, "ship mcp-server shutting down");
     releaseSelf(selfEntryPath);
-    try {
-      closeDefaultSharedStore(dbPath);
-    } catch (err: unknown) {
-      logger.warn({ err: errorText(err) }, "store close during shutdown failed");
-    }
+    closeStoreQuietly(dbPath, logger);
     process.exit(code);
   };
   const lowLevel = server.server;
@@ -243,6 +212,19 @@ function installLifecycleShutdown(
 
 function releaseSelf(selfEntryPath: string | undefined): void {
   if (selfEntryPath !== undefined) releaseInstance(selfEntryPath);
+}
+
+/**
+ * Close the shared store, swallowing (but logging) failure. No-op when the
+ * store never opened — `closeDefaultSharedStore` is a map-miss guard — so it is
+ * safe on both the shutdown path and the bootstrap-failure path.
+ */
+function closeStoreQuietly(dbPath: string, logger: Logger): void {
+  try {
+    closeDefaultSharedStore(dbPath);
+  } catch (err: unknown) {
+    logger.warn({ err: errorText(err) }, "store close failed");
+  }
 }
 
 function errorText(err: unknown): string {

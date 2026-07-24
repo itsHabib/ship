@@ -204,7 +204,8 @@ export class StoreIntegrityError extends Error {
     super(
       `ship store integrity check failed for ${dbPath}: ${detail}. ` +
         `Refusing to open — writing to a corrupt SQLite b-tree destroys recoverable history. ` +
-        `Move the corrupt state.db (+ its -wal/-shm sidecars) aside and restore a known-good copy, then restart ship.`,
+        `Move the corrupt state.db (+ its -wal/-shm sidecars) aside and restore a known-good copy, then restart ship. ` +
+        `With no backup, deleting state.db and its -wal/-shm sidecars starts a fresh empty store (all history is lost).`,
     );
     this.dbPath = dbPath;
     this.detail = detail;
