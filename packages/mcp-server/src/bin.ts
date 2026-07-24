@@ -23,16 +23,31 @@
  * equivalence.
  */
 
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AgentRunner } from "@ship/cursor-runner";
+import type { Logger } from "@ship/logger";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createDefaultShipService, ORPHAN_RESUME_STALENESS_MS } from "@ship/core";
+import {
+  closeDefaultSharedStore,
+  createDefaultShipService,
+  ORPHAN_RESUME_STALENESS_MS,
+} from "@ship/core";
 import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createExecTriageClassifier } from "@ship/driver";
 import { createLogger } from "@ship/logger";
+import { StoreIntegrityError } from "@ship/store";
 
 import { createMcpDriverServiceFactory } from "./driver-service.js";
 import { buildServer } from "./server.js";
+import {
+  awaitPidsGone,
+  heartbeatInstance,
+  INSTANCE_HEARTBEAT_MS,
+  reconcileSingleInstance,
+  releaseInstance,
+  systemProcessInspector,
+} from "./single-instance.js";
 import { resolveDbPath, resolveRunsDir } from "./store-paths.js";
 
 async function main(): Promise<void> {
@@ -41,6 +56,14 @@ async function main(): Promise<void> {
 
   const dbPath = resolveDbPath();
   const runsDir = resolveRunsDir();
+
+  // Single-instance guard BEFORE the store opens: reap any prior / orphaned
+  // ship mcp-server bound to THIS store so we don't add another long-lived WAL
+  // writer. Unbounded accumulation of these (sessions that never exited) is
+  // what rotted state.db. Never fatal — a guard failure must not stop a fresh
+  // server from serving. Awaits reaped siblings' actual exit so the open below
+  // doesn't race the WAL-handle release.
+  const selfEntryPath = await installSingleInstance(dbPath, logger);
 
   const opts: Parameters<typeof createDefaultShipService>[0] = {
     dbPath,
@@ -68,12 +91,162 @@ async function main(): Promise<void> {
   const triage = useFake ? undefined : createExecTriageClassifier();
   const driverFactory = createMcpDriverServiceFactory(opts, shipFactory, undefined, triage);
   // The factory is lazy and tool registration never invokes it — construct
-  // eagerly so the boot orphan sweep actually runs on an idle server.
-  shipFactory();
+  // eagerly so the boot orphan sweep actually runs on an idle server. This is
+  // also where the store's integrity gate (quick_check) fires; on a corrupt db
+  // it throws (terminal), and we release our registry entry before the
+  // bootstrap handler exits so a retry sees a clean registry.
+  try {
+    await openStoreWithRetry(shipFactory, logger);
+  } catch (err: unknown) {
+    releaseSelf(selfEntryPath);
+    throw err;
+  }
   startOrphanResweep(shipFactory, logger);
   const server = buildServer(shipFactory, driverFactory);
+  // Self-exit on client disconnect / signals: restores the 1:1 session↔server
+  // lifecycle so a dead session's server doesn't linger holding the db. Wired
+  // BEFORE connect so an immediate transport close can't race an unset hook.
+  installLifecycleShutdown(server, dbPath, selfEntryPath, logger);
   const transport = new StdioServerTransport();
   await server.connect(transport);
+}
+
+/**
+ * Reap prior/orphaned ship servers on this store, register self, and start the
+ * heartbeat that lets a future server tell this live process apart from a
+ * reused PID. Returns the registry entry path (for later heartbeat/release), or
+ * `undefined` if the guard could not run — availability beats the guard.
+ */
+async function installSingleInstance(dbPath: string, logger: Logger): Promise<string | undefined> {
+  try {
+    const startedAtMs = Date.now() - Math.round(process.uptime() * 1000);
+    const result = reconcileSingleInstance({
+      dbPath,
+      selfPid: process.pid,
+      startedAtMs,
+      nowMs: Date.now(),
+      inspector: systemProcessInspector,
+      logger,
+    });
+    if (result.reapedPids.length > 0 || result.removedStalePids.length > 0) {
+      logger.info(
+        { reaped: result.reapedPids, sweptStale: result.removedStalePids, dbPath },
+        "single-instance guard reconciled prior ship mcp-server registry entries",
+      );
+    }
+    // Wait for reaped siblings to actually exit before the store opens — a
+    // just-killed WAL holder still owns the file for a beat on Windows.
+    const stillAlive = await awaitPidsGone(result.reapedPids, systemProcessInspector);
+    if (stillAlive.length > 0) {
+      logger.warn(
+        { stillAlive, dbPath },
+        "reaped sibling(s) did not exit before timeout; opening store anyway (open retry guards the race)",
+      );
+    }
+    startHeartbeat(result.selfEntryPath);
+    return result.selfEntryPath;
+  } catch (err: unknown) {
+    logger.warn(
+      { err: errorText(err), dbPath },
+      "single-instance guard failed; continuing without a registry entry",
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Open the store, retrying a transient reopen race a few times. A just-reaped
+ * sibling can leave the WAL file briefly unopenable ("disk I/O error") or
+ * locked; those clear within a beat. A {@link StoreIntegrityError} is terminal
+ * (real corruption) and is never retried.
+ */
+async function openStoreWithRetry(shipFactory: () => unknown, logger: Logger): Promise<void> {
+  const maxAttempts = 5;
+  const backoffMs = 100;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      shipFactory();
+      return;
+    } catch (err: unknown) {
+      if (err instanceof StoreIntegrityError) throw err;
+      if (attempt >= maxAttempts || !isTransientOpenError(err)) throw err;
+      logger.warn(
+        { attempt, err: errorText(err) },
+        "transient store-open error after reaping a sibling; retrying",
+      );
+      await sleep(backoffMs * attempt);
+    }
+  }
+}
+
+/** A store-open error that a brief wait-and-retry is expected to clear. */
+function isTransientOpenError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "StoreContentionError") return true;
+  const message = err.message.toLowerCase();
+  return message.includes("disk i/o error") || message.includes("database is locked");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/** Refresh this server's heartbeat on a timer. `unref()` never holds the process open. */
+function startHeartbeat(selfEntryPath: string): void {
+  const timer = setInterval(() => {
+    try {
+      heartbeatInstance(selfEntryPath, Date.now());
+    } catch {
+      // Best-effort — a missed heartbeat only risks a slower reap next boot.
+    }
+  }, INSTANCE_HEARTBEAT_MS);
+  timer.unref();
+}
+
+/**
+ * Wire graceful shutdown to transport close + SIGTERM/SIGINT. Idempotent (a
+ * disconnect and a signal can both fire): release the registry entry, close the
+ * store cleanly (checkpoints the WAL), then exit. On Windows SIGTERM is a hard
+ * kill, so the reaper also removes the reaped entry itself — this path is the
+ * clean-disconnect and POSIX-signal case.
+ */
+function installLifecycleShutdown(
+  server: McpServer,
+  dbPath: string,
+  selfEntryPath: string | undefined,
+  logger: Logger,
+): void {
+  let closing = false;
+  const shutdown = (code: number, reason: string): void => {
+    if (closing) return;
+    closing = true;
+    logger.info({ reason }, "ship mcp-server shutting down");
+    releaseSelf(selfEntryPath);
+    try {
+      closeDefaultSharedStore(dbPath);
+    } catch (err: unknown) {
+      logger.warn({ err: errorText(err) }, "store close during shutdown failed");
+    }
+    process.exit(code);
+  };
+  const lowLevel = server.server;
+  lowLevel.onclose = () => {
+    shutdown(0, "transport closed");
+  };
+  process.once("SIGTERM", () => {
+    shutdown(0, "SIGTERM");
+  });
+  process.once("SIGINT", () => {
+    shutdown(0, "SIGINT");
+  });
+}
+
+function releaseSelf(selfEntryPath: string | undefined): void {
+  if (selfEntryPath !== undefined) releaseInstance(selfEntryPath);
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**

@@ -188,6 +188,29 @@ export class SchemaAheadError extends Error {
   }
 }
 
+/**
+ * Thrown by `openDatabase` when `PRAGMA quick_check` reports the on-disk
+ * b-tree is corrupt. The handle is closed before this throws, so the caller
+ * never writes onto a rotting database (which is what turned a recoverable
+ * corruption into total data loss — see the store-lifecycle-guard fix). The
+ * message carries the failing detail plus the operator recovery path.
+ */
+export class StoreIntegrityError extends Error {
+  override readonly name = "StoreIntegrityError";
+  readonly dbPath: string;
+  readonly detail: string;
+
+  constructor(dbPath: string, detail: string) {
+    super(
+      `ship store integrity check failed for ${dbPath}: ${detail}. ` +
+        `Refusing to open — writing to a corrupt SQLite b-tree destroys recoverable history. ` +
+        `Move the corrupt state.db (+ its -wal/-shm sidecars) aside and restore a known-good copy, then restart ship.`,
+    );
+    this.dbPath = dbPath;
+    this.detail = detail;
+  }
+}
+
 // Re-exported from @ship/workflow so the hint string is shared with
 // cursor-runner (which can't depend on @ship/store) without duplicating the
 // literal, which would drift.

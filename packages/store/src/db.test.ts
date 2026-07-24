@@ -3,7 +3,8 @@
  * contention tolerance on a file-backed `state.db`.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import Database from "better-sqlite3";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -14,7 +15,7 @@ import {
   openDatabase,
   withStoreContentionGuard,
 } from "./db.js";
-import { LOCAL_RUN_CONTENTION_HINT, StoreContentionError } from "./errors.js";
+import { LOCAL_RUN_CONTENTION_HINT, StoreContentionError, StoreIntegrityError } from "./errors.js";
 import { runMigrations } from "./migrations.js";
 
 let tmpDir: string;
@@ -39,6 +40,44 @@ describe("openDatabase PRAGMAs (file-backed)", () => {
       }
     } finally {
       for (const d of dbs) d.close();
+    }
+  });
+});
+
+describe("integrity gate (quick_check on open)", () => {
+  test("a clean db opens; a corrupt b-tree page is refused with StoreIntegrityError", () => {
+    // Build a db with several pages of data, then checkpoint into the main
+    // file so the corruption we inject can't hide in a -wal sidecar.
+    const seed = new Database(dbPath);
+    seed.pragma("journal_mode = WAL");
+    seed.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, blob TEXT NOT NULL)");
+    const insert = seed.prepare("INSERT INTO t (blob) VALUES (?)");
+    for (let i = 0; i < 500; i++) insert.run("x".repeat(200));
+    seed.pragma("wal_checkpoint(TRUNCATE)");
+    seed.close();
+
+    // Clean file opens fine and passes the gate.
+    const ok = openDatabase(dbPath);
+    expect(ok.pragma("quick_check", { simple: true })).toBe("ok");
+    ok.close();
+
+    // Corrupt a table b-tree page (well past the 100-byte header / page 1
+    // schema page) so the file still opens but quick_check reports damage.
+    const bytes = readFileSync(dbPath);
+    const pageSize = bytes.readUInt16BE(16) || 4096;
+    const corruptStart = pageSize * 2;
+    expect(bytes.length).toBeGreaterThan(corruptStart + pageSize);
+    bytes.fill(0xee, corruptStart, corruptStart + pageSize);
+    writeFileSync(dbPath, bytes);
+
+    expect(() => openDatabase(dbPath)).toThrow(StoreIntegrityError);
+    try {
+      openDatabase(dbPath);
+    } catch (err: unknown) {
+      expect(err).toBeInstanceOf(StoreIntegrityError);
+      expect((err as StoreIntegrityError).dbPath).toBe(dbPath);
+      expect((err as Error).message).toContain("integrity check failed");
+      expect((err as Error).message).toContain("Refusing to open");
     }
   });
 });

@@ -77,6 +77,7 @@ export {
   SchemaAheadError,
   SchemaSkewError,
   StoreContentionError,
+  StoreIntegrityError,
   StoreSchemaError,
   WorkflowRunNotFoundError,
 } from "./errors.js";
