@@ -30,7 +30,7 @@ export interface RunOpts {
   /** Absolute monotonic ceiling for a tick; overrides the derived default when set. */
   runawayBackstopMs?: number;
   pollIntervalMs?: number;
-  maxParallel?: { local?: number; cloud?: number };
+  maxParallel?: { local?: number; cloud?: number; rooms?: number };
   force?: boolean;
   /** Optional notify command for page-tier escalation delivery. */
   notify?: NotifyConfig;

@@ -94,6 +94,9 @@ const DEFAULT_RUNAWAY_BACKSTOP_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_PARALLEL_LOCAL = 1;
 const DEFAULT_MAX_PARALLEL_CLOUD = 4;
+// A Firecracker microVM is heavier than a cloud dispatch — start conservative;
+// the operator raises `maxParallel.rooms` once the rooms-host proves out.
+const DEFAULT_MAX_PARALLEL_ROOMS = 2;
 const RUNAWAY_BACKSTOP_MULTIPLIER = 6;
 
 // Review-cycle cap for `address` re-dispatch (TDD §7 Flow B). A policy value
@@ -151,9 +154,17 @@ export interface ResolvedRunOpts {
   pollIntervalMs: number;
   maxParallelLocal: number;
   maxParallelCloud: number;
+  maxParallelRooms: number;
   force: boolean;
   notify?: NotifyConfig | undefined;
   escalation?: EscalationConfig | undefined;
+}
+
+/** In-flight dispatch counts, per runtime lane — threaded through one tick's dispatch loop. */
+interface InFlightByRuntime {
+  local: number;
+  cloud: number;
+  rooms: number;
 }
 
 interface TickContext {
@@ -194,6 +205,7 @@ interface DispatchContext {
   cloudInFlight: number;
   gh?: DriverGhPort;
   localInFlight: number;
+  roomsInFlight: number;
   onProgress: () => void;
   opts: ResolvedRunOpts;
   repoRoot: string;
@@ -212,6 +224,7 @@ export function resolveRunOpts(opts?: RunOpts): ResolvedRunOpts {
     force: opts?.force === true,
     maxParallelCloud: parallel.cloud,
     maxParallelLocal: parallel.local,
+    maxParallelRooms: parallel.rooms,
     maxWaitMs,
     pollIntervalMs: opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     runawayBackstopMs: opts?.runawayBackstopMs ?? resolveRunawayBackstopMs(maxWaitMs),
@@ -243,11 +256,12 @@ export function shouldGiveUpTick(
   return false;
 }
 
-function defaultParallelLimits(opts?: RunOpts): { cloud: number; local: number } {
+function defaultParallelLimits(opts?: RunOpts): { cloud: number; local: number; rooms: number } {
   const parallel = opts?.maxParallel;
   return {
     cloud: parallel?.cloud ?? DEFAULT_MAX_PARALLEL_CLOUD,
     local: parallel?.local ?? DEFAULT_MAX_PARALLEL_LOCAL,
+    rooms: parallel?.rooms ?? DEFAULT_MAX_PARALLEL_ROOMS,
   };
 }
 
@@ -609,9 +623,8 @@ function collectStreamPreflightErrors(
   if (stream.status !== "pending") return;
   assertStreamWithinPolicy(stream, policy);
   if (stream.runtime === "rooms") {
-    throw new PreconditionError(
-      `rooms stream ${stream.id} is not supported by the engine yet — dispatch rooms work via ship.ship directly`,
-    );
+    collectRoomsPreflightErrors(stream, repoUrl);
+    return;
   }
   if (stream.runtime === "cloud" && repoUrl === undefined) {
     throw new PreconditionError(
@@ -624,6 +637,20 @@ function collectStreamPreflightErrors(
   }
   const worktreePath = join(repoRoot, ".claude", "worktrees", stream.branch);
   if (!existsSync(worktreePath)) missing.push(worktreePath);
+}
+
+// Rooms dispatches remotely (like cloud) but must push a NAMED branch the driver
+// opens the PR from downstream — so it needs both a repo URL to clone and a branch
+// to push. No local worktree (nothing added to `missing`).
+function collectRoomsPreflightErrors(stream: DriverStream, repoUrl: string | undefined): void {
+  if (repoUrl === undefined) {
+    throw new PreconditionError(
+      `rooms stream ${stream.id} requires repo_url in manifest — add repo_url to the driver frontmatter`,
+    );
+  }
+  if (stream.branch === undefined) {
+    throw new PreconditionError(`rooms stream ${stream.id} requires branch_name in manifest`);
+  }
 }
 
 // The stored runtime/provider re-checked against the repo ceiling at dispatch
@@ -718,6 +745,7 @@ function buildDispatchContext(
     clock: ctx.clock,
     cloudInFlight: countInFlight(run, "cloud"),
     localInFlight: countInFlight(run, "local"),
+    roomsInFlight: countInFlight(run, "rooms"),
     onProgress,
     opts,
     repoRoot: resolveRepoRoot(run.manifestPath),
@@ -732,12 +760,14 @@ function buildDispatchContext(
 
 async function dispatchEligible(ctx: DispatchContext): Promise<void> {
   const run = loadRun(ctx.store, ctx.runId);
-  let localInFlight = ctx.localInFlight;
-  let cloudInFlight = ctx.cloudInFlight;
+  let inFlight: InFlightByRuntime = {
+    cloud: ctx.cloudInFlight,
+    local: ctx.localInFlight,
+    rooms: ctx.roomsInFlight,
+  };
 
   for (const batch of run.batches) {
-    localInFlight = await dispatchBatchStreams(batch, run, ctx, localInFlight, cloudInFlight);
-    cloudInFlight = countInFlight(loadRun(ctx.store, ctx.runId), "cloud");
+    inFlight = await dispatchBatchStreams(batch, run, ctx, inFlight);
   }
 }
 
@@ -745,54 +775,49 @@ async function dispatchBatchStreams(
   batch: DriverBatch,
   run: DriverRun,
   ctx: DispatchContext,
-  localInFlight: number,
-  cloudInFlight: number,
-): Promise<number> {
-  if (!batchHasPendingDispatchable(batch, run.batches)) return localInFlight;
-  if (ctx.opts.batch !== undefined && batch.batchIndex !== ctx.opts.batch) return localInFlight;
+  inFlight: InFlightByRuntime,
+): Promise<InFlightByRuntime> {
+  if (!batchHasPendingDispatchable(batch, run.batches)) return inFlight;
+  if (ctx.opts.batch !== undefined && batch.batchIndex !== ctx.opts.batch) return inFlight;
 
-  let local = localInFlight;
-  let cloud = cloudInFlight;
+  let counts = inFlight;
   for (const stream of batch.streams) {
     if (stream.status !== "pending") continue;
-    if (!canDispatchStream(stream, local, cloud, ctx.opts)) continue;
+    if (!canDispatchStream(stream, counts, ctx.opts)) continue;
     const dispatched = await dispatchStream(ctx, stream);
     // A failed dispatch holds no slot — only live work counts against the caps.
     if (!dispatched) continue;
     ctx.onProgress();
-    const bumped = bumpInFlightAfterDispatch(ctx, stream, local, cloud);
-    local = bumped.local;
-    cloud = bumped.cloud;
+    counts = bumpInFlightAfterDispatch(ctx, stream, counts);
   }
-  return local;
+  return counts;
 }
 
 /** Count the post-dispatch runtime — a hop may have rewritten it mid-call. */
 function bumpInFlightAfterDispatch(
   ctx: DispatchContext,
   stream: DriverStream,
-  local: number,
-  cloud: number,
-): { local: number; cloud: number } {
+  inFlight: InFlightByRuntime,
+): InFlightByRuntime {
   const live = findStream(loadRun(ctx.store, ctx.runId), stream.id);
   const runtime = live?.runtime ?? stream.runtime;
-  if (runtime === "local") return { cloud, local: local + 1 };
-  if (runtime === "cloud") return { cloud: cloud + 1, local };
-  return { cloud, local };
+  if (runtime === "local") return { ...inFlight, local: inFlight.local + 1 };
+  if (runtime === "cloud") return { ...inFlight, cloud: inFlight.cloud + 1 };
+  return { ...inFlight, rooms: inFlight.rooms + 1 };
 }
 
 function canDispatchStream(
   stream: DriverStream,
-  localInFlight: number,
-  cloudInFlight: number,
+  inFlight: InFlightByRuntime,
   opts: ResolvedRunOpts,
 ): boolean {
-  if (stream.runtime === "local" && localInFlight >= opts.maxParallelLocal) return false;
-  if (stream.runtime === "cloud" && cloudInFlight >= opts.maxParallelCloud) return false;
+  if (stream.runtime === "local" && inFlight.local >= opts.maxParallelLocal) return false;
+  if (stream.runtime === "cloud" && inFlight.cloud >= opts.maxParallelCloud) return false;
+  if (stream.runtime === "rooms" && inFlight.rooms >= opts.maxParallelRooms) return false;
   return true;
 }
 
-function countInFlight(run: DriverRun, runtime: "local" | "cloud"): number {
+function countInFlight(run: DriverRun, runtime: "local" | "cloud" | "rooms"): number {
   return allStreams(run).filter((s) => {
     if (s.status !== "dispatching" && s.status !== "dispatched") return false;
     return s.runtime === runtime;
@@ -824,9 +849,12 @@ async function dispatchStream(
     // A hop may have rewritten the runtime — the redispatch must clear the
     // same caps a fresh dispatch would; a saturated target waits for a later
     // tick instead of overshooting maxParallel*.
-    const local = countInFlight(refreshed, "local");
-    const cloud = countInFlight(refreshed, "cloud");
-    if (!canDispatchStream(next, local, cloud, ctx.opts)) return false;
+    const inFlight: InFlightByRuntime = {
+      cloud: countInFlight(refreshed, "cloud"),
+      local: countInFlight(refreshed, "local"),
+      rooms: countInFlight(refreshed, "rooms"),
+    };
+    if (!canDispatchStream(next, inFlight, ctx.opts)) return false;
     current = next;
   }
 }
@@ -1100,15 +1128,21 @@ function buildShipInput(params: {
   continuation?: CloudContinuation;
 }): ShipInput {
   const { ctx, stream, docPath, tierMapping, continuation } = params;
-  if (stream.runtime === "rooms") {
-    throw new PreconditionError(`rooms stream ${stream.id} is not supported by the engine yet`);
-  }
-  const base =
-    stream.runtime === "cloud"
-      ? buildCloudShipInput(ctx, stream, docPath, continuation)
-      : buildLocalShipInput(ctx, stream, docPath);
+  const base = buildRuntimeShipInput(ctx, stream, docPath, continuation);
   const input = stream.provider !== undefined ? { ...base, provider: stream.provider } : base;
   return applyTierMapping(input, tierMapping);
+}
+
+/** Route to the per-runtime builder; provider + tier mapping layer on downstream. */
+function buildRuntimeShipInput(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  docPath: string,
+  continuation?: CloudContinuation,
+): ShipInput {
+  if (stream.runtime === "rooms") return buildRoomShipInput(ctx, stream, docPath);
+  if (stream.runtime === "cloud") return buildCloudShipInput(ctx, stream, docPath, continuation);
+  return buildLocalShipInput(ctx, stream, docPath);
 }
 
 function buildCloudShipInput(
@@ -1188,6 +1222,39 @@ function buildLocalShipInput(
   };
 }
 
+// Rooms is "our self-hosted cloud" (spec ED-2): the runner clones the repo URL
+// inside a microVM, the agent edits, then rooms commits + pushes `pushBranch`;
+// the driver opens the PR from that branch downstream (ED-3). So the input mirrors
+// the cloud builder — a repo URL + starting ref — plus the deterministic push
+// branch. `workdir` carries the local repo root as the policy-resolution cwd (the
+// credential guard + dispatch-policy ceiling resolve `.ship.json` from this
+// checkout), exactly as `buildCloudShipInput` documents.
+function buildRoomShipInput(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  docPath: string,
+): ShipInput {
+  const repoUrl = ctx.repoUrl;
+  if (repoUrl === undefined) {
+    throw new PreconditionError(`rooms stream ${stream.id} requires repo_url in manifest`);
+  }
+  const pushBranch = stream.branch;
+  if (pushBranch === undefined) {
+    throw new PreconditionError(`rooms stream ${stream.id} requires branch_name in manifest`);
+  }
+  const run = loadRun(ctx.store, ctx.runId);
+  const startingRef = extractStreamBaseBranch(run, stream.specPath);
+  const repoEntry: NonNullable<ShipInput["room"]>["repos"][0] =
+    startingRef !== undefined ? { startingRef, url: repoUrl } : { url: repoUrl };
+  return {
+    docPath,
+    repo: run.repo,
+    room: { pushBranch, repos: [repoEntry] },
+    runtime: "rooms",
+    workdir: ctx.repoRoot,
+  };
+}
+
 function resolveCloudContinuation(
   stream: DriverStream,
   override?: CloudContinuation,
@@ -1249,6 +1316,7 @@ export async function flipStreamToCloud(
     clock,
     cloudInFlight: 0,
     localInFlight: 0,
+    roomsInFlight: 0,
     onProgress: () => undefined,
     opts: resolveRunOpts(),
     repoRoot: resolveRepoRoot(refreshed.manifestPath),
@@ -1545,6 +1613,7 @@ async function dispatchAddress(params: {
     clock,
     cloudInFlight: 0,
     localInFlight: 0,
+    roomsInFlight: 0,
     onProgress: () => undefined,
     opts: resolveRunOpts(),
     repoRoot: resolveRepoRoot(refreshed.manifestPath),
