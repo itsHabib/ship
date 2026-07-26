@@ -34,6 +34,7 @@ import type {
   TierDispatchResult,
 } from "./types.js";
 
+import { isLegalCell } from "./dispatch-cell.js";
 import {
   AddressError,
   DriverRunNotFoundEngineError,
@@ -641,8 +642,18 @@ function collectStreamPreflightErrors(
 
 // Rooms dispatches remotely (like cloud) but must push a NAMED branch the driver
 // opens the PR from downstream — so it needs both a repo URL to clone and a branch
-// to push. No local worktree (nothing added to `missing`).
+// to push. No local worktree (nothing added to `missing`). Rooms is a cursor-only
+// cell: import's provider validation doesn't reject claude/rooms or codex/rooms
+// (it only special-cases codex-non-local + claude-cloud), so reject the unwired
+// cell here — before dispatch — instead of letting core's selectRunner fail it
+// mid-flight with an opaque IllegalProviderRuntimeError.
 function collectRoomsPreflightErrors(stream: DriverStream, repoUrl: string | undefined): void {
+  const provider = stream.provider ?? DEFAULT_DISPATCH_PROVIDER;
+  if (!isLegalCell(provider, "rooms")) {
+    throw new PreconditionError(
+      `rooms stream ${stream.id} uses provider '${provider}' — rooms supports only the cursor provider`,
+    );
+  }
   if (repoUrl === undefined) {
     throw new PreconditionError(
       `rooms stream ${stream.id} requires repo_url in manifest — add repo_url to the driver frontmatter`,

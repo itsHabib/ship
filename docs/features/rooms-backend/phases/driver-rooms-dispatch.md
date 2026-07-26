@@ -49,6 +49,7 @@ The in-flight accounting threads two scalars (`local`, `cloud`) through the disp
 ### Pre-flight
 
 - `collectStreamPreflightErrors`: replace the rooms `throw` with the same repo_url + branch checks the builder enforces (fail closed at import-adjacent preflight, not deep in dispatch).
+- **Reject non-cursor rooms cells.** Rooms is cursor-only, but import's provider validation only special-cases codex-non-local + claude-cloud — a claude/rooms or codex/rooms cell (including via `default_provider`) passes import. The rooms preflight rejects it via the `isLegalCell` matrix (an `"unwired-cell"`) before dispatch, instead of letting core's `selectRunner` fail it mid-flight with an opaque `IllegalProviderRuntimeError`.
 
 ## Tradeoffs / decisions
 
@@ -70,7 +71,7 @@ The in-flight accounting threads two scalars (`local`, `cloud`) through the disp
 - `engine.test.ts` (L2, rooms-CLI double via `createFakeShipPort`):
   - **input shape** — `buildShipInputForTest` on a rooms stream emits `{ runtime: "rooms", room: { repos: [{ url, startingRef }], pushBranch: <branch> }, workdir: repoRoot }`.
   - **cap** — a two-rooms-stream batch under `{ maxParallel: { rooms: 1 } }` dispatches exactly one `startShip` in the tick (peer of the existing "cloud cap limits dispatch" test).
-  - **preflight** — a rooms manifest without `repo_url` fails preflight; a rooms stream without `branch_name` fails preflight.
+  - **preflight** — a rooms manifest without `repo_url` fails preflight; a rooms stream without `branch_name` fails preflight; a rooms stream with a non-cursor provider (`claude`) is rejected at preflight and nothing dispatches.
   - **branch** — the dispatched rooms `ShipInput` carries the top-level `branch` (= stream branch), so core persists a matching `worktree.branch` and recovery adopts the live VM instead of duplicating it.
 - The runner-level `defaultImage` fallback is already covered by `room-runner.test.ts` ("falls back to constructor defaultImage" / `MissingRoomImageError` when neither set). The `SHIP_ROOMS_IMAGE` → `defaultImage` passthrough at the composition root is a trivial env read validated by the e2e (a real `RoomCursorRunner` can't be exercised in a unit test without spawning `sudo rooms`).
 - `make check` green (typecheck + lint + format + test) on ubuntu + windows.
