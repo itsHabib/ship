@@ -654,16 +654,17 @@ function collectRoomsPreflightErrors(stream: DriverStream, repoUrl: string | und
       `rooms stream ${stream.id} uses provider '${provider}' — rooms supports only the cursor provider`,
     );
   }
-  if (repoUrl === undefined) {
+  // Blank counts as missing throughout: `repo_url` / `branch_name` are
+  // `z.string().optional()` (no min), so `""`/whitespace parses; the values are
+  // forwarded to rooms as `--repo` / `--push-branch`, and `RoomCursorRunner`'s
+  // nullish fallbacks don't re-derive a blank, so the VM boots against no repo /
+  // an empty branch and fails mid-run. Reject blanks here (matches the flip
+  // path's `undefined || ""` guard).
+  if (repoUrl === undefined || repoUrl.trim() === "") {
     throw new PreconditionError(
       `rooms stream ${stream.id} requires repo_url in manifest — add repo_url to the driver frontmatter`,
     );
   }
-  // Blank counts as missing: `branch_name` is `z.string().optional()` (no min),
-  // so `""`/whitespace parses; `RoomCursorRunner` uses a nullish fallback, so a
-  // blank pushBranch is NOT re-derived — it invokes rooms with `--push-branch ""`
-  // and the VM does its work only to fail on push. Reject it here (matches the
-  // flip path's `undefined || ""` guard).
   if (stream.branch === undefined || stream.branch.trim() === "") {
     throw new PreconditionError(`rooms stream ${stream.id} requires branch_name in manifest`);
   }
@@ -1260,7 +1261,7 @@ function buildRoomShipInput(
   docPath: string,
 ): ShipInput {
   const repoUrl = ctx.repoUrl;
-  if (repoUrl === undefined) {
+  if (repoUrl === undefined || repoUrl.trim() === "") {
     throw new PreconditionError(`rooms stream ${stream.id} requires repo_url in manifest`);
   }
   const pushBranch = stream.branch;
@@ -1268,7 +1269,10 @@ function buildRoomShipInput(
     throw new PreconditionError(`rooms stream ${stream.id} requires branch_name in manifest`);
   }
   const run = loadRun(ctx.store, ctx.runId);
-  const startingRef = extractStreamBaseBranch(run, stream.specPath);
+  // A blank `base_branch` must normalize to undefined, not forward as an empty
+  // `--base-sha` — the runner falls back to HEAD only on a nullish startingRef.
+  const rawRef = extractStreamBaseBranch(run, stream.specPath);
+  const startingRef = rawRef !== undefined && rawRef.trim() !== "" ? rawRef : undefined;
   const repoEntry: NonNullable<ShipInput["room"]>["repos"][0] =
     startingRef !== undefined ? { startingRef, url: repoUrl } : { url: repoUrl };
   return {

@@ -1312,6 +1312,83 @@ batches:
     store.close();
   });
 
+  test("rooms stream with a blank repo_url fails preflight, nothing dispatches", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-blank-url.driver.md");
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T06:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: ""
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+
+    const fake = createFakeShipPort([]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /repo_url/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    store.close();
+  });
+
+  test("rooms blank base_branch normalizes to undefined (no empty startingRef)", async () => {
+    const manifest = join(repoRoot, "rooms-blank-base.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T07:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        base_branch: ""
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    const room = (start?.input as { room?: { repos: { url: string; startingRef?: string }[] } })
+      .room;
+    expect(room?.repos[0]).toEqual({ url: "https://github.com/example/ship" });
+    store.close();
+  });
+
   test("post-dispatch persistence failure leaves the stream dispatching for recovery", async () => {
     const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_live" }]);
