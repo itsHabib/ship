@@ -9,7 +9,7 @@
 
 | Bucket | Files | Weighted |
 |---|---|---|
-| source (1×) | `packages/driver/src/engine.ts` (`buildRoomShipInput` + `buildShipInput` rooms branch, rooms preflight, rooms concurrency lane: `InFlightByRuntime` + `canDispatchStream` + `bumpInFlightAfterDispatch` + `countInFlight` widen + `maxParallelRooms`), `packages/driver/src/types.ts` (`RunOpts.maxParallel.rooms`) | ~150 |
+| source (1×) | `packages/driver/src/engine.ts` (`buildRoomShipInput` + `buildShipInput` rooms branch, rooms preflight, rooms concurrency lane: `InFlightByRuntime` + `canDispatchStream` + `bumpInFlightAfterDispatch` + `countInFlight` widen + `maxParallelRooms`), `packages/driver/src/types.ts` (`RunOpts.maxParallel.rooms`), `packages/core/src/default-wiring.ts` (`SHIP_ROOMS_IMAGE` → runner `defaultImage`) | ~155 |
 | tests (0.5×) | `engine.test.ts` (rooms dispatch input, rooms cap, rooms preflight, rooms park) | ~80 |
 | docs (0×) | this doc | 0 |
 
@@ -28,7 +28,12 @@ New builder alongside `buildCloudShipInput` / `buildLocalShipInput`. Rooms is mo
 - Requires `ctx.repoUrl` (rooms clones from a URL, like cloud) — `PreconditionError` when absent, matching the cloud message shape.
 - Requires `stream.branch` (rooms **pushes** a branch; the driver opens the PR from it downstream) — `PreconditionError` when absent, matching the local message shape. This is the `room.pushBranch`, so the driver names the branch deterministically instead of letting the runner derive one (which would defeat downstream PR-open-by-branch).
 - `startingRef` from the stream's manifest `base_branch` (via `extractStreamBaseBranch`), same resolution as cloud, threaded into `room.repos[0].startingRef`.
-- Emits `{ docPath, repo, runtime: "rooms", workdir: ctx.repoRoot, room: { repos: [{ url, startingRef? }], pushBranch } }`. `workdir` carries the local repo root as the policy-resolution cwd (the credential guard + dispatch-policy ceiling resolve `.ship.json` from this checkout), exactly as the cloud builder documents.
+- Emits `{ branch, docPath, repo, runtime: "rooms", workdir: ctx.repoRoot, room: { repos: [{ url, startingRef? }], pushBranch } }`. `workdir` carries the local repo root as the policy-resolution cwd (the credential guard + dispatch-policy ceiling resolve `.ship.json` from this checkout), exactly as the cloud builder documents.
+- **The branch is set twice, on purpose.** `room.pushBranch` tells the runner which branch to push inside the VM; the top-level `branch` is what core persists as the run's `worktree.branch`. The recovery filter (`filterRecoveryCandidates`) already special-cases rooms alongside local — it matches a live rooms workflow on `worktree.branch === stream.branch`. Unlike cloud (cursor picks the branch, so recovery can't match on it), rooms knows its branch up front. Omitting the top-level `branch` persists it as `"(unknown)"`, so a post-dispatch store-write failure would make recovery reject the live VM and dispatch a **duplicate** microVM against the same push branch.
+
+### Supply the rooms image (`default-wiring.ts`)
+
+The `rooms` CLI requires `--image` and `RoomCursorRunner` has no built-in default, so a rooms dispatch fails synchronously (`MissingRoomImageError`) unless an image is supplied. The image is a property of the KVM host, not the task, so the composition root reads `SHIP_ROOMS_IMAGE` and passes it as the runner's `defaultImage` (`new RoomCursorRunner({ defaultImage: process.env["SHIP_ROOMS_IMAGE"] })`). A per-run `room.image` still overrides it; an injected `roomCursor` (tests) is untouched. The runner stays a pure mechanism configured by its opts.
 
 `buildShipInput` replaces its rooms `throw` with a third branch: `runtime === "rooms" ? buildRoomShipInput(…) : …`. `provider` + tier mapping flow downstream unchanged (`applyTierMapping`), so a rooms stream picks its cursor model the same way local/cloud do.
 
@@ -66,8 +71,10 @@ The in-flight accounting threads two scalars (`local`, `cloud`) through the disp
   - **input shape** — `buildShipInputForTest` on a rooms stream emits `{ runtime: "rooms", room: { repos: [{ url, startingRef }], pushBranch: <branch> }, workdir: repoRoot }`.
   - **cap** — a two-rooms-stream batch under `{ maxParallel: { rooms: 1 } }` dispatches exactly one `startShip` in the tick (peer of the existing "cloud cap limits dispatch" test).
   - **preflight** — a rooms manifest without `repo_url` fails preflight; a rooms stream without `branch_name` fails preflight.
+  - **branch** — the dispatched rooms `ShipInput` carries the top-level `branch` (= stream branch), so core persists a matching `worktree.branch` and recovery adopts the live VM instead of duplicating it.
+- The runner-level `defaultImage` fallback is already covered by `room-runner.test.ts` ("falls back to constructor defaultImage" / `MissingRoomImageError` when neither set). The `SHIP_ROOMS_IMAGE` → `defaultImage` passthrough at the composition root is a trivial env read validated by the e2e (a real `RoomCursorRunner` can't be exercised in a unit test without spawning `sudo rooms`).
 - `make check` green (typecheck + lint + format + test) on ubuntu + windows.
-- **Validation gate (deferred, tracked):** live `ship.ship { runtime: "rooms" }` fan-out (N≥2) against a fixture on the rooms-host — the spec's portfolio-hypothesis gate. Blocked on rooms-host access refresh; not part of this PR.
+- **Validation gate (deferred, tracked):** live `ship.ship { runtime: "rooms" }` fan-out (N≥2) against a fixture on the rooms-host, with `SHIP_ROOMS_IMAGE` set on the host — the spec's portfolio-hypothesis gate. Blocked on rooms-host access refresh; not part of this PR.
 
 ## Implementation-plan (PR boundaries)
 

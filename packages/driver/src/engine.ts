@@ -1229,6 +1229,15 @@ function buildLocalShipInput(
 // branch. `workdir` carries the local repo root as the policy-resolution cwd (the
 // credential guard + dispatch-policy ceiling resolve `.ship.json` from this
 // checkout), exactly as `buildCloudShipInput` documents.
+//
+// The branch is set BOTH as `room.pushBranch` (which branch the runner pushes
+// inside the VM) AND as the top-level `branch` (persisted as the run's
+// `worktree.branch`). Unlike cloud — where cursor picks the branch, so recovery
+// can't match on it — rooms knows its branch up front, and the recovery filter
+// (`filterRecoveryCandidates`) matches a live rooms workflow on
+// `worktree.branch === stream.branch`. Omitting the top-level branch persists it
+// as "(unknown)", so a post-dispatch store-write failure would make recovery
+// reject the live VM and dispatch a duplicate.
 function buildRoomShipInput(
   ctx: DispatchContext,
   stream: DriverStream,
@@ -1247,6 +1256,7 @@ function buildRoomShipInput(
   const repoEntry: NonNullable<ShipInput["room"]>["repos"][0] =
     startingRef !== undefined ? { startingRef, url: repoUrl } : { url: repoUrl };
   return {
+    branch: pushBranch,
     docPath,
     repo: run.repo,
     room: { pushBranch, repos: [repoEntry] },

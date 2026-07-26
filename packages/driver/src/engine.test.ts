@@ -1143,6 +1143,9 @@ batches:
     const starts = fake.calls.filter((c) => c.kind === "startShip");
     expect(starts).toHaveLength(2);
     expect(starts[0]?.input).toMatchObject({
+      // top-level `branch` is what core persists as worktree.branch — recovery
+      // matches a live rooms VM on it, so it must equal the stream branch.
+      branch: "feat-a",
       room: { pushBranch: "feat-a", repos: [{ url: "https://github.com/example/ship" }] },
       runtime: "rooms",
     });
@@ -1841,6 +1844,7 @@ describe("buildShipInputForTest", () => {
     // Rooms carries the local repo root as the policy-resolution cwd (like cloud),
     // pushes the stream's branch, and clones the manifest repo_url.
     expect(input).toMatchObject({
+      branch: "feat-rooms",
       repo: "ship",
       room: { pushBranch: "feat-rooms", repos: [{ url: "https://github.com/example/ship" }] },
       runtime: "rooms",
