@@ -810,7 +810,12 @@ async function dispatchBatchStreams(
   return counts;
 }
 
-/** Count the post-dispatch runtime — a hop may have rewritten it mid-call. */
+/**
+ * Count the post-dispatch runtime — a hop may have rewritten it mid-call. The
+ * runtime IS the in-flight lane key, so bump it directly: a runtime added to the
+ * union but not to `InFlightByRuntime` fails to compile here rather than silently
+ * polluting an unrelated lane.
+ */
 function bumpInFlightAfterDispatch(
   ctx: DispatchContext,
   stream: DriverStream,
@@ -818,9 +823,7 @@ function bumpInFlightAfterDispatch(
 ): InFlightByRuntime {
   const live = findStream(loadRun(ctx.store, ctx.runId), stream.id);
   const runtime = live?.runtime ?? stream.runtime;
-  if (runtime === "local") return { ...inFlight, local: inFlight.local + 1 };
-  if (runtime === "cloud") return { ...inFlight, cloud: inFlight.cloud + 1 };
-  return { ...inFlight, rooms: inFlight.rooms + 1 };
+  return { ...inFlight, [runtime]: inFlight[runtime] + 1 };
 }
 
 function canDispatchStream(

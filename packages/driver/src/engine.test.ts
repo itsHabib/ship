@@ -1149,6 +1149,13 @@ batches:
       room: { pushBranch: "feat-a", repos: [{ url: "https://github.com/example/ship" }] },
       runtime: "rooms",
     });
+    // Assert the second stream distinctly — an identity-swap (both dispatches
+    // using feat-a) would otherwise satisfy the length-2 check.
+    expect(starts[1]?.input).toMatchObject({
+      branch: "feat-b",
+      room: { pushBranch: "feat-b", repos: [{ url: "https://github.com/example/ship" }] },
+      runtime: "rooms",
+    });
     store.close();
   });
 
@@ -1386,6 +1393,50 @@ batches:
     const room = (start?.input as { room?: { repos: { url: string; startingRef?: string }[] } })
       .room;
     expect(room?.repos[0]).toEqual({ url: "https://github.com/example/ship" });
+    store.close();
+  });
+
+  test("rooms forwards a non-blank base_branch as startingRef", async () => {
+    const manifest = join(repoRoot, "rooms-base.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T08:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        base_branch: main
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    const room = (start?.input as { room?: { repos: { url: string; startingRef?: string }[] } })
+      .room;
+    expect(room?.repos[0]).toEqual({
+      startingRef: "main",
+      url: "https://github.com/example/ship",
+    });
     store.close();
   });
 
