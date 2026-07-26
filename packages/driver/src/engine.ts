@@ -659,7 +659,12 @@ function collectRoomsPreflightErrors(stream: DriverStream, repoUrl: string | und
       `rooms stream ${stream.id} requires repo_url in manifest — add repo_url to the driver frontmatter`,
     );
   }
-  if (stream.branch === undefined) {
+  // Blank counts as missing: `branch_name` is `z.string().optional()` (no min),
+  // so `""`/whitespace parses; `RoomCursorRunner` uses a nullish fallback, so a
+  // blank pushBranch is NOT re-derived — it invokes rooms with `--push-branch ""`
+  // and the VM does its work only to fail on push. Reject it here (matches the
+  // flip path's `undefined || ""` guard).
+  if (stream.branch === undefined || stream.branch.trim() === "") {
     throw new PreconditionError(`rooms stream ${stream.id} requires branch_name in manifest`);
   }
 }
@@ -1259,7 +1264,7 @@ function buildRoomShipInput(
     throw new PreconditionError(`rooms stream ${stream.id} requires repo_url in manifest`);
   }
   const pushBranch = stream.branch;
-  if (pushBranch === undefined) {
+  if (pushBranch === undefined || pushBranch.trim() === "") {
     throw new PreconditionError(`rooms stream ${stream.id} requires branch_name in manifest`);
   }
   const run = loadRun(ctx.store, ctx.runId);
