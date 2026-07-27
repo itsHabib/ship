@@ -1,8 +1,18 @@
 # claude-in-rooms runner — Technical Design Document
 
-**Status:** draft / proposal (v3) — NOT a build commitment. The artifact we decide from.
+**Status:** **PARKED / TABLED (2026-07-27)** — reviewed and sound, but not being built. See the banner below.
 **Owner:** @michael (human:mh) / claude-code
 **Date:** 2026-07-26 (v2 + v3: 2026-07-27, two design-review fold-in passes)
+
+> ## ⛔ Parked / tabled (2026-07-27)
+>
+> This design is **complete and review-settled** (two full passes, codex + claude[bot], all §4 decisions confirmed — see the changelogs). It is **not being built**, by operator decision:
+>
+> 1. **Operational claude-in-rooms fights rooms' actual differentiator.** Rooms' novel, shipped feature is **zero-egress containment** (#82). An operational `claude -p` runner *requires* egress to `api.anthropic.com` — punching a controlled hole in the one thing that makes rooms interesting, dragging in the broker/keyproxy apparatus. That's a lot of infra to build a worse entry in a crowded space (background coding agents are commoditized).
+> 2. **The aligned, novel use of this substrate is adversarial containment, not operational agent-running.** The runner mechanics, credential handling, and containment reasoning here largely carry over to the **guardbench / honeypot** frontier — an adversarial agent in a zero-egress box, seeded honeytokens (sentinel #85/#88), self-play measuring whether the guard holds. There, egress-blocked is the *point*. That's where this energy is redirected.
+> 3. **Per-VM rootfs / snapshot isolation (§8, §10.1) is owned in a separate thread** — struck from this doc's scope; do not design it here.
+>
+> Kept on `main` as a reference artifact: the §4 credential/OAuth-carriage analysis, the §6 runner contract, and the §7 driver no-branch-success fix (a real latent driver bug, worth extracting independently) all remain useful. **Redirect:** guardbench-in-rooms (see the continuation handoff from this session).
 **Related:** `docs/features/rooms-backend/spec.md` (the rooms substrate + `RoomCursorRunner`), `docs/features/rooms-backend/phases/driver-rooms-dispatch.md` (#238 — the driver→N-rooms wiring this unlocks the agent for), itsHabib/rooms (the `rooms` CLI / Firecracker jailer).
 
 > **Reviewers — focus areas:** §4 Decision 1 (rooms-side `--runner claude` backend vs ship-side orchestration) is the load-bearing call — it decides whether this is a cross-repo change. §4 Decision 2 (OAuth cred flow into the guest) is the security-sensitive one. §7 the push/no-changes flow. §9 the validation gate (the live 2-VM claude/rooms run) is what closes the portfolio hypothesis.
