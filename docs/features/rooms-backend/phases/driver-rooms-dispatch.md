@@ -1,6 +1,6 @@
 # Phase: driver → N concurrent rooms dispatch
 
-**Status**: in progress
+**Status**: shipped (driver wiring; the live rooms-host N-room e2e remains the tracked validation gate — see Validation)
 **Owner**: claude-code (Opus 4.8)
 **Date**: 2026-07-25
 **Spec**: [`../spec.md`](../spec.md) — the contract. This is the driver-side wiring for Implementation-plan step 4 ("e2e: `ship.ship { runtime: "rooms" }` … the full loop"). Stacks on PR-S1 (`RoomCursorRunner`) + PR-S2 (rooms routing + MCP surface), both merged: `ship.ship { runtime: "rooms" }` already reaches the runner. This phase teaches the **driver engine** to build that input and drive N of them concurrently through its existing dispatch→poll→judgment→land loop.
