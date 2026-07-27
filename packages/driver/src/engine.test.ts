@@ -798,7 +798,7 @@ batches:
     store.close();
   });
 
-  test("rooms runtime is rejected at pre-flight, nothing dispatches", async () => {
+  test("a well-formed rooms stream dispatches (engine hard-stop removed)", async () => {
     const manifest = join(repoRoot, "rooms.driver.md");
     writeFileSync(
       manifest,
@@ -822,14 +822,18 @@ batches:
 ---
 `,
     );
-    const fake = createFakeShipPort([]);
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+    ]);
     const store = createStore({ dbPath: ":memory:" });
     const driver = createDriverService({ ship: fake.port, store });
     const imported = driver.importManifest(manifest);
-    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
-      /rooms stream .* not supported/,
-    );
-    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const starts = fake.calls.filter((c) => c.kind === "startShip");
+    expect(starts).toHaveLength(1);
+    expect(starts[0]?.input).toMatchObject({ runtime: "rooms" });
     store.close();
   });
 
@@ -1118,6 +1122,321 @@ batches:
     await driver.run({ driverRunId: imported.run.id }, { maxParallel: { cloud: 1 }, maxWaitMs: 0 });
 
     expect(fake.calls.filter((c) => c.kind === "startShip")).toHaveLength(1);
+    store.close();
+  });
+
+  test("rooms dispatches both streams and forwards the room spec", async () => {
+    const manifest = join(repoRoot, "two-rooms.driver.md");
+    writeFileSync(manifest, twoRoomsStreamManifest("2026-07-25T00:00:00Z"));
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docB = resolveDocPath(repoRoot, "docs/tasks/b.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+      { docPath: docB, repo: "ship", terminalStatus: "running", workflowRunId: "wf_b" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxParallel: { rooms: 2 }, maxWaitMs: 0 });
+
+    const starts = fake.calls.filter((c) => c.kind === "startShip");
+    expect(starts).toHaveLength(2);
+    expect(starts[0]?.input).toMatchObject({
+      // top-level `branch` is what core persists as worktree.branch — recovery
+      // matches a live rooms VM on it, so it must equal the stream branch.
+      branch: "feat-a",
+      room: { pushBranch: "feat-a", repos: [{ url: "https://github.com/example/ship" }] },
+      runtime: "rooms",
+    });
+    // Assert the second stream distinctly — an identity-swap (both dispatches
+    // using feat-a) would otherwise satisfy the length-2 check.
+    expect(starts[1]?.input).toMatchObject({
+      branch: "feat-b",
+      room: { pushBranch: "feat-b", repos: [{ url: "https://github.com/example/ship" }] },
+      runtime: "rooms",
+    });
+    store.close();
+  });
+
+  test("rooms cap limits dispatch within a multi-stream batch", async () => {
+    const manifest = join(repoRoot, "capped-rooms.driver.md");
+    writeFileSync(manifest, twoRoomsStreamManifest("2026-07-25T01:00:00Z"));
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docB = resolveDocPath(repoRoot, "docs/tasks/b.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+      { docPath: docB, repo: "ship", terminalStatus: "running", workflowRunId: "wf_b" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxParallel: { rooms: 1 }, maxWaitMs: 0 });
+
+    expect(fake.calls.filter((c) => c.kind === "startShip")).toHaveLength(1);
+    store.close();
+  });
+
+  test("rooms stream without repo_url fails preflight", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-no-url.driver.md");
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T02:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: createFakeShipPort([]).port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /repo_url/,
+    );
+    store.close();
+  });
+
+  test("rooms stream without branch_name fails preflight", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-no-branch.driver.md");
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T03:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: createFakeShipPort([]).port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /branch_name/,
+    );
+    store.close();
+  });
+
+  test("rooms stream with a non-cursor provider is rejected at preflight, nothing dispatches", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-claude.driver.md");
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T04:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: rooms
+        provider: claude
+        status: pending
+---
+`,
+    );
+
+    const fake = createFakeShipPort([]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /provider 'claude'.*cursor/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    store.close();
+  });
+
+  test("rooms stream with a blank branch_name fails preflight, nothing dispatches", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-blank-branch.driver.md");
+    // branch_name is z.string().optional() (no min), so "" parses; the blank
+    // must be rejected here, not forwarded to rooms as `--push-branch ""`.
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T05:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: ""
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+
+    const fake = createFakeShipPort([]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /branch_name/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    store.close();
+  });
+
+  test("rooms stream with a blank repo_url fails preflight, nothing dispatches", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-blank-url.driver.md");
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T06:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: ""
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+
+    const fake = createFakeShipPort([]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /repo_url/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    store.close();
+  });
+
+  test("rooms blank base_branch normalizes to undefined (no empty startingRef)", async () => {
+    const manifest = join(repoRoot, "rooms-blank-base.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T07:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        base_branch: ""
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    const room = (start?.input as { room?: { repos: { url: string; startingRef?: string }[] } })
+      .room;
+    expect(room?.repos[0]).toEqual({ url: "https://github.com/example/ship" });
+    store.close();
+  });
+
+  test("rooms forwards a non-blank base_branch as startingRef", async () => {
+    const manifest = join(repoRoot, "rooms-base.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T08:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        base_branch: main
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    const room = (start?.input as { room?: { repos: { url: string; startingRef?: string }[] } })
+      .room;
+    expect(room?.repos[0]).toEqual({
+      startingRef: "main",
+      url: "https://github.com/example/ship",
+    });
     store.close();
   });
 
@@ -1655,6 +1974,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1670,6 +1990,68 @@ describe("buildShipInputForTest", () => {
       provider: "claude",
       runtime: "cloud",
       cloud: { repos: [{ url: "https://github.com/example/ship", prBranch: "feat-claude" }] },
+    });
+  });
+
+  test("builds a rooms ShipInput mirroring the cloud shape", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              branch: "feat-rooms",
+              id: streamId,
+              runtime: "rooms",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: join(repoRoot, "driver.md"),
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\nrepo_url: https://github.com/example/ship\n---\n",
+      status: "pending",
+    });
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream).toBeDefined();
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        roomsInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId,
+        ship: createFakeShipPort([]).port,
+        store,
+      },
+      stream!,
+      "docs/a.md",
+    );
+    // Rooms carries the local repo root as the policy-resolution cwd (like cloud),
+    // pushes the stream's branch, and clones the manifest repo_url.
+    expect(input).toMatchObject({
+      branch: "feat-rooms",
+      repo: "ship",
+      room: { pushBranch: "feat-rooms", repos: [{ url: "https://github.com/example/ship" }] },
+      runtime: "rooms",
+      workdir: repoRoot,
     });
   });
 
@@ -1713,6 +2095,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1774,6 +2157,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1833,6 +2217,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1914,6 +2299,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1994,6 +2380,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -2129,6 +2516,7 @@ batches:
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -2182,6 +2570,7 @@ batches:
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -2909,6 +3298,7 @@ batches:
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -3391,6 +3781,32 @@ batches:
         status: pending
       - spec_path: docs/tasks/b.md
         runtime: cloud
+        status: pending
+---
+`;
+}
+
+function twoRoomsStreamManifest(generatedAt: string): string {
+  return `---
+driver_version: 1
+generated_at: ${generatedAt}
+generated_by: test
+source:
+  project: ship
+  phase: rooms-pair
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: rooms
+        status: pending
+      - spec_path: docs/tasks/b.md
+        branch_name: feat-b
+        runtime: rooms
         status: pending
 ---
 `;
