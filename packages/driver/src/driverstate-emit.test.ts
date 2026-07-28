@@ -67,10 +67,10 @@ function pendingStreamId(run: DriverRun): string {
   return stream.id;
 }
 
-function insertImportedLandedRun(): { run: DriverRun; streamId: string } {
+function insertImportedLandedRun(target: Store = wrapped): { run: DriverRun; streamId: string } {
   const runId = "drv_01IMPORTEDLANDED";
   const streamId = "ds_01IMPORTEDLANDED";
-  const run = wrapped.insertDriverRun({
+  const run = target.insertDriverRun({
     batches: [
       {
         batchIndex: 1,
@@ -326,6 +326,69 @@ describe("withDriverStateEmission", () => {
       opening_head_sha: headSha,
       review_artifact_digest: artifactDigest,
       review_artifact_id: "rf_legacy_repair",
+      review_head_sha: headSha,
+    });
+  });
+
+  it("repairs a persisted pre-upgrade landed ledger on first address without duplicates", () => {
+    const { run, streamId } = insertImportedLandedRun(store);
+    const headSha = "e".repeat(40);
+    const artifactDigest = "f".repeat(64);
+    const eventPath = join(stateRoot, ledgerRunId(run.id), "events.jsonl");
+    const imported = appendEvent({
+      actor: `ship:${run.id}`,
+      body: {
+        generated_at: "2026-06-10T12:00:00Z",
+        manifest: {},
+        repo: run.repo,
+        ship_run_ref: run.id,
+        source: run.manifestPath,
+        streams: [{ stream: ledgerStreamId(streamId) }],
+      },
+      id: `evt_${ledgerRunId(run.id)}_imported`,
+      kind: "run_imported",
+      runId: ledgerRunId(run.id),
+    });
+    expect(imported.ok).toBe(true);
+
+    const input = {
+      addressCycle: 1,
+      artifactId: "rf_persisted_repair",
+      attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
+      canonicalSha256: artifactDigest,
+      dispatchProvider: "codex" as const,
+      docPath: "C:/repo/address.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    };
+    wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+    const afterFirst = readFileSync(eventPath, "utf8");
+    expect(() => {
+      wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+    }).toThrow();
+    expect(readFileSync(eventPath, "utf8")).toBe(afterFirst);
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.map((event) => event.kind)).toEqual([
+      "stream_dispatched",
+      "stream_attempt",
+      "stream_pr_opened",
+      "closure_facts",
+      "review_cycle",
+    ]);
+    expect(events.filter((event) => event.kind === "stream_attempt")).toHaveLength(1);
+    expect(events.find((event) => event.kind === "closure_facts")?.body).toMatchObject({
+      opening_head_sha: headSha,
+      review_artifact_digest: artifactDigest,
+      review_artifact_id: "rf_persisted_repair",
       review_head_sha: headSha,
     });
   });

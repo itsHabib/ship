@@ -55,6 +55,9 @@ an empty `head_sha`. Address therefore also records `opening_head_sha` in its
 cycle-keyed closure facts. That additive fact is the authoritative exact head
 for receipt reduction when the legacy opening event cannot be replaced; a
 retry reuses the closure event identity and cannot duplicate the repair.
+If the persisted landed row also predates import-time ledger reconciliation,
+the first address transaction replays the same deterministic synthetic
+dispatch/landed history before appending those receipt facts.
 
 ## Tradeoffs
 

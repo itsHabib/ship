@@ -115,6 +115,7 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
   if (stream === undefined) {
     return;
   }
+  reconcileImportedLandedAddress(stream, input, emit);
   emitPROpened({
     driverRunId: input.driverRunId,
     emit,
@@ -162,6 +163,25 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
       stream: ledgerStreamId(input.streamId),
     }),
   );
+}
+
+/**
+ * Upgrade repair for a run that was persisted before landed-at-import
+ * reconciliation existed. Address preparation has appended its new
+ * non-terminal attempt to the store input; when that is the stream's first
+ * attempt, the landed state was absorbed rather than observed by this ledger.
+ * Replaying the import-keyed events is safe both for a legacy pending ledger
+ * and for a current ledger that already wrote them during insert.
+ */
+function reconcileImportedLandedAddress(
+  stream: DriverStream,
+  input: ConsumeReviewArtifactInput,
+  emit: Emit,
+): void {
+  if (input.attempts.length !== 1) {
+    return;
+  }
+  openImportedLandedStream(input.driverRunId, stream, emit);
 }
 
 function compactFacts(facts: Record<string, string | undefined>): Record<string, string> {
