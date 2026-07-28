@@ -3,7 +3,7 @@
  * resolves to a readable file inside the workdir, no symlink escape.
  */
 
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative as pathRelative, sep as pathSep } from "node:path";
 
 import type { DocSource } from "./doc-source/doc-source.js";
 import type { ShipFs } from "./fs/shape.js";
@@ -63,6 +63,7 @@ async function resolveRemoteDoc(
   options: CloudDocResolveOptions,
 ): Promise<ValidatedDoc> {
   const { owner, repo } = splitRepoSlug(repoSlug);
+  const remotePath = repoRelativeDocPath(docPath, options.workdir);
   let ref: string;
   try {
     ref = await docSource.resolveRef(buildResolveRefParams(owner, repo, options));
@@ -76,8 +77,8 @@ async function resolveRemoteDoc(
   }
 
   try {
-    const content = await docSource.fetch({ owner, repo, path: docPath, ref });
-    return { absoluteDocPath: docPath, content };
+    const content = await docSource.fetch({ owner, repo, path: remotePath, ref });
+    return { absoluteDocPath: remotePath, content };
   } catch (err) {
     if (err instanceof RemoteDocFetchError && err.suggestToken) {
       throw err;
@@ -89,6 +90,16 @@ async function resolveRemoteDoc(
     }
     throw toCloudDocNotFound(docPath, repoSlug, ref, err);
   }
+}
+
+function repoRelativeDocPath(docPath: string, workdir?: string): string {
+  if (!isAbsolute(docPath) || workdir === undefined) return docPath;
+  const candidate = pathRelative(workdir, docPath);
+  if (candidate === "" || candidate === ".." || candidate.startsWith(`..${pathSep}`)) {
+    return docPath;
+  }
+  if (isAbsolute(candidate)) return docPath;
+  return candidate.split(pathSep).join("/");
 }
 
 function buildResolveRefParams(

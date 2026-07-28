@@ -129,6 +129,25 @@ describe("resolveValidatedDocForCloud", () => {
     expect(out.content).toBe("# from remote\n");
   });
 
+  test("remote fallback converts an absolute in-workdir doc to a repo-relative path", async () => {
+    const fs = createMemoryShipFs();
+    const fetch = vi.fn(() => Promise.resolve("# from remote\n"));
+    const out = await resolveValidatedDocForCloud(fs, "/work/docs/task.md", {
+      workdir: "/work",
+      repoSlug: "acme/sandbox",
+      docSource: makeFakeDocSource({ fetch }),
+    });
+
+    expect(fetch).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "sandbox",
+      path: "docs/task.md",
+      ref: "main",
+    });
+    expect(out.absoluteDocPath).toBe("docs/task.md");
+    expect(out.content).toBe("# from remote\n");
+  });
+
   test("both-miss names local + remote causes", async () => {
     const fs = createMemoryShipFs();
     const docSource = makeFakeDocSource({
