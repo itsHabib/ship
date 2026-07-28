@@ -3401,6 +3401,24 @@ batches:
     expect(gh.markReadyCalls).toHaveLength(0);
   });
 
+  test("configured service logger observes refusal-ledger append failures", async () => {
+    const { runId, streamId } = landedSeed();
+    const warnings: string[] = [];
+    const logger = makeCapturingLogger(warnings);
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    writeFileSync(findingsPath, "{}", "utf8");
+    const driver = createDriverService({ gh, logger, ship: fake.port, store });
+
+    await expectRefusal(
+      () => driver.address(runId, { findingsPath, streamId }),
+      "findings-invalid",
+    );
+
+    expect(warnings).toContain("driverstate: address intervention emission failed; continuing");
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
   test("call at maxCycles refuses cycle-exhausted and writes one escalation row", async () => {
     const { runId, streamId } = landedSeed({ reviewCycles: 3 });
     const fake = createFakeShipPort([]);

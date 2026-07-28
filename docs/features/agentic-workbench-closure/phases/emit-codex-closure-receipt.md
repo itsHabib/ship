@@ -43,9 +43,11 @@ ship driver land <drv_id> --pr <n> --stream <ds_id> \
 The equivalent `driver_land` MCP fields are `reviewedHeadSha` and
 `gateRunRef`. They are optional only for legacy callers and must be supplied
 together. Ship verifies the reviewed head equals GitHub's live PR head before
-any merge write. GitHub's merge readback supplies the authoritative merged
-head. Replayed address and land calls reuse deterministic event identities, so
-they cannot duplicate consumption or terminal closure.
+any merge write, then pins the write itself with
+`gh pr merge --match-head-commit <reviewedHeadSha>`. GitHub's merge readback
+supplies the authoritative merged head. Replayed address and land calls reuse
+deterministic event identities, so they cannot duplicate consumption or
+terminal closure.
 
 ## Tradeoffs
 
@@ -66,7 +68,8 @@ they cannot duplicate consumption or terminal closure.
    an exact head. Emitting a placeholder would make the immutable PR event
    unusable for the receipt join, so address supplies the first exact value.
 3. **Gate handoff is explicit and paired.** `reviewedHeadSha` and `gateRunRef`
-   are accepted together or refused. The live-head check runs before merge.
+   are accepted together or refused. The live-head check runs before merge and
+   the merge adapter atomically matches the same commit at its write boundary.
 4. **Refusals never become clean evidence.** Malformed, mismatched, and stale
    address inputs emit a typed `mechanism-repair` intervention when the ledger
    can record it; they emit no closure completion or merge event.

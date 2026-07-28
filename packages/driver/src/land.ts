@@ -103,7 +103,7 @@ async function fetchMergedPrView(
       // gh-identity guard immediately before the write — a mismatched gh login
       // must not merge under a repo that pins its identity.
       await assertGhIdentity(gh, run);
-      await gh.mergePullRequest(repo, prNumber, { admin: opts.admin });
+      await gh.mergePullRequest(repo, prNumber, mergeOpts(opts));
       prView = await readMergedViewWithRetry(gh, repo, prNumber, { sleep });
     }
 
@@ -122,6 +122,16 @@ async function fetchMergedPrView(
     const detail = err instanceof Error ? err.message : String(err);
     throw new DecideError(`gh operation failed for PR #${String(prNumber)}: ${detail}`);
   }
+}
+
+function mergeOpts(opts: { admin: boolean; reviewedHeadSha?: string }): {
+  admin: boolean;
+  expectedHeadSha?: string;
+} {
+  if (opts.reviewedHeadSha === undefined) {
+    return { admin: opts.admin };
+  }
+  return { admin: opts.admin, expectedHeadSha: opts.reviewedHeadSha };
 }
 
 function assertClosureHandoff(

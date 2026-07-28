@@ -1406,6 +1406,7 @@ export interface AddressDeps {
   store: Store;
   ship: DriverShipPort;
   gh: DriverGhPort;
+  logger?: Logger;
   clock?: () => number;
   files?: AddressFilePort;
 }
@@ -1451,10 +1452,10 @@ export async function address(
   try {
     artifact = readFindings(files, opts.findingsPath);
   } catch (error: unknown) {
-    emitAddressRefusal(run, stream, pr, "malformed-review-artifact");
+    emitAddressRefusal(run, stream, pr, "malformed-review-artifact", deps.logger);
     throw error;
   }
-  assertArtifactMatchesPr(artifact, pr, run, stream);
+  assertArtifactMatchesPr(artifact, pr, run, stream, deps.logger);
   const nextCycle = nextAddressCycle(
     store,
     run,
@@ -1519,16 +1520,17 @@ function assertArtifactMatchesPr(
   pr: AddressPr,
   run: DriverRun,
   stream: DriverStream,
+  logger?: Logger,
 ): void {
   if (artifact.subject.repo !== pr.repo || artifact.subject.number !== pr.prNumber) {
-    emitAddressRefusal(run, stream, pr, "review-subject-mismatch");
+    emitAddressRefusal(run, stream, pr, "review-subject-mismatch", logger);
     throw new AddressError(
       "findings-subject-mismatch",
       `findings target ${artifact.subject.repo}#${String(artifact.subject.number)} does not match ${pr.repo}#${String(pr.prNumber)}`,
     );
   }
   if (artifact.subject.head_sha !== pr.view.headRefOid.toLowerCase()) {
-    emitAddressRefusal(run, stream, pr, "stale-review-head");
+    emitAddressRefusal(run, stream, pr, "stale-review-head", logger);
     throw new AddressError(
       "findings-stale-head",
       `findings head ${artifact.subject.head_sha} does not match live head ${pr.view.headRefOid}`,
@@ -1541,15 +1543,19 @@ function emitAddressRefusal(
   stream: DriverStream,
   pr: AddressPr,
   reasonCode: string,
+  logger?: Logger,
 ): void {
-  emitAddressIntervention({
-    driverRunId: run.id,
-    liveHeadSha: pr.view.headRefOid.toLowerCase(),
-    prNumber: pr.prNumber,
-    reasonCode,
-    repo: pr.repo,
-    streamId: stream.id,
-  });
+  emitAddressIntervention(
+    {
+      driverRunId: run.id,
+      liveHeadSha: pr.view.headRefOid.toLowerCase(),
+      prNumber: pr.prNumber,
+      reasonCode,
+      repo: pr.repo,
+      streamId: stream.id,
+    },
+    logger,
+  );
 }
 
 function nextAddressCycle(
