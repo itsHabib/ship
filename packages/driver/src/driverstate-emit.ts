@@ -134,6 +134,7 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
     catalog_revision: input.producerCatalogRevision,
     review_artifact_id: input.artifactId,
     review_artifact_digest: input.canonicalSha256,
+    opening_head_sha: input.headSha,
     review_head_sha: input.headSha,
     ship_run_ref: input.driverRunId,
   });

@@ -2,6 +2,7 @@
 
 import type { DriverRun, Store } from "@ship/store";
 
+import { appendEvent } from "@ship/driverstate-emitter";
 import { createStore } from "@ship/store";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -64,6 +65,44 @@ function pendingStreamId(run: DriverRun): string {
     .find((s) => s.status === "pending" && s.taskSlug === "cloud-stream");
   if (stream === undefined) throw new Error("fixture has no pending cloud-stream");
   return stream.id;
+}
+
+function insertImportedLandedRun(): { run: DriverRun; streamId: string } {
+  const runId = "drv_01IMPORTEDLANDED";
+  const streamId = "ds_01IMPORTEDLANDED";
+  const run = wrapped.insertDriverRun({
+    batches: [
+      {
+        batchIndex: 1,
+        dependsOn: [],
+        id: "db_01IMPORTEDLANDED",
+        status: "running",
+        streams: [
+          {
+            attempts: [],
+            branch: "codex/imported-landed",
+            id: streamId,
+            prNumber: 41,
+            prUrl: "https://github.com/example/ship/pull/41",
+            runtime: "cloud",
+            specPath: "docs/imported-landed.md",
+            status: "landed",
+            streamIndex: 0,
+            taskId: "tsk_01IMPORTEDLANDED",
+            touches: [],
+          },
+        ],
+      },
+    ],
+    id: runId,
+    manifestPath: join(fixturesDir, "synthetic-full.driver.md"),
+    phase: "driver-extraction",
+    project: "ship",
+    repo: "example/ship",
+    sourceJson: readFileSync(join(fixturesDir, "synthetic-full.driver.md"), "utf8"),
+    status: "running",
+  });
+  return { run, streamId };
 }
 
 describe("withDriverStateEmission", () => {
@@ -187,42 +226,9 @@ describe("withDriverStateEmission", () => {
   });
 
   it("persists address receipt facts for a resumed stream imported as landed", () => {
-    const runId = "drv_01IMPORTEDLANDED";
-    const streamId = "ds_01IMPORTEDLANDED";
     const headSha = "b".repeat(40);
     const artifactDigest = "a".repeat(64);
-    const run = wrapped.insertDriverRun({
-      batches: [
-        {
-          batchIndex: 1,
-          dependsOn: [],
-          id: "db_01IMPORTEDLANDED",
-          status: "running",
-          streams: [
-            {
-              attempts: [],
-              branch: "codex/imported-landed",
-              id: streamId,
-              prNumber: 41,
-              prUrl: "https://github.com/example/ship/pull/41",
-              runtime: "cloud",
-              specPath: "docs/imported-landed.md",
-              status: "landed",
-              streamIndex: 0,
-              taskId: "tsk_01IMPORTEDLANDED",
-              touches: [],
-            },
-          ],
-        },
-      ],
-      id: runId,
-      manifestPath: join(fixturesDir, "synthetic-full.driver.md"),
-      phase: "driver-extraction",
-      project: "ship",
-      repo: "example/ship",
-      sourceJson: readFileSync(join(fixturesDir, "synthetic-full.driver.md"), "utf8"),
-      status: "running",
-    });
+    const { run, streamId } = insertImportedLandedRun();
 
     wrapped.consumeReviewArtifactAndPrepareDispatch({
       addressCycle: 1,
@@ -260,12 +266,67 @@ describe("withDriverStateEmission", () => {
       review_artifact_digest: artifactDigest,
       review_artifact_id: "rf_imported_landed",
       review_head_sha: headSha,
+      opening_head_sha: headSha,
       review_producer: "codex:reviewfindings-github",
       task_ref: "tsk_01IMPORTEDLANDED",
     });
     expect(events.find((event) => event.kind === "review_cycle")?.body).toMatchObject({
       cycle: 1,
       panel_settled: true,
+    });
+  });
+
+  it("repairs a legacy empty PR head through an idempotent authoritative closure fact", () => {
+    const { run, streamId } = insertImportedLandedRun();
+    const headSha = "c".repeat(40);
+    const artifactDigest = "d".repeat(64);
+    const eventPath = join(stateRoot, ledgerRunId(run.id), "events.jsonl");
+    const legacyOpening = appendEvent({
+      actor: `ship:${run.id}`,
+      body: { head_sha: "", pr: 41, url: "https://github.com/example/ship/pull/41" },
+      id: `evt_${ledgerStreamId(streamId)}_pr_41`,
+      kind: "stream_pr_opened",
+      runId: ledgerRunId(run.id),
+      stream: ledgerStreamId(streamId),
+    });
+    expect(legacyOpening.ok).toBe(true);
+
+    const input = {
+      addressCycle: 1,
+      artifactId: "rf_legacy_repair",
+      attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
+      canonicalSha256: artifactDigest,
+      dispatchProvider: "codex" as const,
+      docPath: "C:/repo/address.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    };
+    wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+    const afterFirst = readFileSync(eventPath, "utf8");
+    expect(() => {
+      wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+    }).toThrow();
+    expect(readFileSync(eventPath, "utf8")).toBe(afterFirst);
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    const openings = events.filter((event) => event.kind === "stream_pr_opened");
+    const closures = events.filter((event) => event.kind === "closure_facts");
+    expect(openings).toHaveLength(1);
+    expect(openings[0]?.body).toMatchObject({ head_sha: "", pr: 41 });
+    expect(closures).toHaveLength(1);
+    expect(closures[0]?.body).toMatchObject({
+      opening_head_sha: headSha,
+      review_artifact_digest: artifactDigest,
+      review_artifact_id: "rf_legacy_repair",
+      review_head_sha: headSha,
     });
   });
 
@@ -332,6 +393,7 @@ describe("withDriverStateEmission", () => {
       review_artifact_digest: "a".repeat(64),
       review_artifact_id: "rf_exact",
       review_head_sha: openingHead,
+      opening_head_sha: openingHead,
       review_producer: "codex:reviewfindings-github",
       ship_run_ref: run.id,
     });

@@ -49,6 +49,13 @@ supplies the authoritative merged head. Replayed address and land calls reuse
 deterministic event identities, so they cannot duplicate consumption or
 terminal closure.
 
+For ledgers created by an older Ship emitter, an immutable
+`stream_pr_opened` event may already own the PR's deterministic identity with
+an empty `head_sha`. Address therefore also records `opening_head_sha` in its
+cycle-keyed closure facts. That additive fact is the authoritative exact head
+for receipt reduction when the legacy opening event cannot be replaced; a
+retry reuses the closure event identity and cannot duplicate the repair.
+
 ## Tradeoffs
 
 - Gate remains the authorization boundary. Ship records the explicit Gate
@@ -65,8 +72,9 @@ terminal closure.
    producer fields travel in `ConsumeReviewArtifactInput`; the store transaction
    remains the at-most-once winner, and emission occurs only after it commits.
 2. **Opening-head emission waits for address.** PR landing alone does not know
-   an exact head. Emitting a placeholder would make the immutable PR event
-   unusable for the receipt join, so address supplies the first exact value.
+   an exact head. Address supplies the first exact value and repeats it as the
+   additive `opening_head_sha` closure fact so pre-upgrade placeholder events
+   cannot permanently poison the receipt join.
 3. **Gate handoff is explicit and paired.** `reviewedHeadSha` and `gateRunRef`
    are accepted together or refused. The live-head check runs before merge and
    the merge adapter atomically matches the same commit at its write boundary.
