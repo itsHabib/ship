@@ -93,6 +93,18 @@ const evAssistant: SDKMessage = {
   uuid: "asst-1",
 } as unknown as SDKMessage;
 
+function initEvent(permissionMode: string): SDKMessage {
+  return {
+    cwd: "/tmp/test-workdir",
+    permissionMode,
+    session_id: "sess-1",
+    subtype: "init",
+    tools: ["Read", "Write"],
+    type: "system",
+    uuid: "init-1",
+  } as unknown as SDKMessage;
+}
+
 function baseInput(
   overrides: Partial<Parameters<LocalClaudeRunner["run"]>[0]> = {},
 ): Parameters<LocalClaudeRunner["run"]>[0] {
@@ -362,10 +374,49 @@ describe("LocalClaudeRunner — query options", () => {
           mcpServers: { docs: { type: "http", url: "https://example.com/mcp" } },
           model: "claude-sonnet-4-20250514",
           permissionMode: "bypassPermissions",
+          settings: {
+            permissions: {
+              defaultMode: "bypassPermissions",
+            },
+          },
         }) as NonNullable<Parameters<typeof query>[0]["options"]>,
         prompt: "do the thing",
       }),
     );
+  });
+
+  test("fails fast when the SDK runtime does not honor bypassPermissions", async () => {
+    const { queryInstance } = makeMockQuery({
+      events: [initEvent("default"), evAssistant, successResult],
+    });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const onEvent = vi.fn();
+    const runner = new LocalClaudeRunner();
+    const handle = await runner.run(baseInput({ onEvent }));
+    const result = await handle.result;
+
+    expect(result.status).toBe("failed");
+    expect(result.failureCategory).toBe("sdk-throw");
+    expect(result.errorMessage).toContain(
+      'Claude SDK started with permissionMode "default"; expected "bypassPermissions"',
+    );
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test("accepts an SDK runtime initialized in bypassPermissions", async () => {
+    const { queryInstance } = makeMockQuery({
+      events: [initEvent("bypassPermissions"), evAssistant, successResult],
+    });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    const handle = await runner.run(baseInput());
+
+    await expect(handle.result).resolves.toMatchObject({
+      status: "succeeded",
+      summary: "implementation done",
+    });
   });
 
   test("PATH sentinel from process.env reaches options.env (replace-merge)", async () => {
