@@ -65,6 +65,8 @@ interface LandCommandOpts {
   stream?: string;
   cycles?: string;
   admin?: boolean;
+  reviewedHead?: string;
+  gateRun?: string;
 }
 
 interface AddressCommandOpts {
@@ -202,6 +204,8 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     .requiredOption("--pr <n>", "PR number to merge and record")
     .option("--stream <ds_id>", "driver stream id (required when prUrl is absent or ambiguous)")
     .option("--cycles <n>", "review cycles completed")
+    .option("--reviewed-head <sha>", "exact post-address head that passed fresh review")
+    .option("--gate-run <run_id>", "Gate run that authorized --reviewed-head")
     .option("--admin", "merge with --admin (bypass branch protection)")
     .action(async (driverRunId: string, rawOpts: LandCommandOpts) => {
       await runDriverActionAsync(async () => {
@@ -441,6 +445,8 @@ function buildLandOpts(opts: LandCommandOpts): LandOpts {
     landOpts.cycles = parseIntOptionAtLeast(opts.cycles, "--cycles", 0);
   }
   if (opts.admin === true) landOpts.admin = true;
+  if (opts.reviewedHead !== undefined) landOpts.reviewedHeadSha = opts.reviewedHead;
+  if (opts.gateRun !== undefined) landOpts.gateRunRef = opts.gateRun;
   return landOpts;
 }
 

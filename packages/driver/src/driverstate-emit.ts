@@ -22,8 +22,7 @@ import type {
   UpdateDriverStreamInput,
 } from "@ship/store";
 
-import { appendEvent, type AppendResult, releaseRun } from "@ship/driverstate-emitter";
-import { prNumberFromUrl } from "@ship/receipt";
+import { appendEvent, type AppendResult, formatTime, releaseRun } from "@ship/driverstate-emitter";
 
 import { parseManifest } from "./manifest.js";
 
@@ -93,7 +92,7 @@ export function withDriverStateEmission(store: Store, logger?: Logger): Store {
     consumeReviewArtifactAndPrepareDispatch: (input) => {
       store.consumeReviewArtifactAndPrepareDispatch(input);
       try {
-        emitReviewCycle(input, emit);
+        emitAddressFacts(store, input, emit);
       } catch (err) {
         logger?.warn({ streamId: input.streamId, err: String(err) }, "driverstate: emission threw");
       }
@@ -108,7 +107,49 @@ export function withDriverStateEmission(store: Store, logger?: Logger): Store {
  * findings is -1: the count is not known at this seam, only that a settled
  * review round is being addressed.
  */
-function emitReviewCycle(input: ConsumeReviewArtifactInput, emit: Emit): void {
+function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit: Emit): void {
+  const run = store.getDriverRun(input.driverRunId);
+  const stream = run?.batches
+    .flatMap((batch) => batch.streams)
+    .find((candidate) => candidate.id === input.streamId);
+  if (stream === undefined) {
+    return;
+  }
+  emitPROpened({
+    driverRunId: input.driverRunId,
+    emit,
+    headSha: input.headSha,
+    pr: input.prNumber,
+    streamId: input.streamId,
+    url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}`,
+  });
+  const closureFacts = compactFacts({
+    task_ref: stream.taskId,
+    seat: input.producerHarness,
+    harness: input.producerHarness,
+    model: stream.modelId ?? input.dispatchModel,
+    provider: stream.provider ?? input.dispatchProvider,
+    effort: stream.effortTier,
+    review_producer: input.producerId,
+    catalog_revision: input.producerCatalogRevision,
+    review_artifact_id: input.artifactId,
+    review_artifact_digest: input.canonicalSha256,
+    review_head_sha: input.headSha,
+    ship_run_ref: input.driverRunId,
+  });
+  emit(
+    input.driverRunId,
+    appendEvent({
+      actor: `ship:${input.driverRunId}`,
+      body: closureFacts,
+      id: eventId(
+        `${ledgerStreamId(input.streamId)}_closure_address_${String(input.addressCycle)}`,
+      ),
+      kind: "closure_facts",
+      runId: ledgerRunId(input.driverRunId),
+      stream: ledgerStreamId(input.streamId),
+    }),
+  );
   emit(
     input.driverRunId,
     appendEvent({
@@ -120,6 +161,16 @@ function emitReviewCycle(input: ConsumeReviewArtifactInput, emit: Emit): void {
       stream: ledgerStreamId(input.streamId),
     }),
   );
+}
+
+function compactFacts(facts: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(facts)) {
+    if (value !== undefined && value !== "") {
+      out[name] = value;
+    }
+  }
+  return out;
 }
 
 function emitRunImported(run: DriverRun, sourceJson: string, manifestPath: string): AppendResult {
@@ -139,6 +190,7 @@ function emitRunImported(run: DriverRun, sourceJson: string, manifestPath: strin
       generated_at: generatedAt,
       manifest,
       repo: run.repo,
+      ship_run_ref: run.id,
       source: manifestPath,
       streams,
     },
@@ -291,40 +343,7 @@ function emitPrEvents(
   ctx: StreamEventCtx,
   send: Send,
 ): void {
-  emitPrOpened(stream, patch, ctx, send);
   emitMerged(stream, patch, ctx, send);
-}
-
-// The landed patch carries prUrl (buildLandedPatch); prNumber often only
-// arrives at merge time — trigger on either, resolving the number from the
-// URL, so pr_opened precedes review_cycle/stream_merged in the ledger.
-function emitPrOpened(
-  stream: DriverStream,
-  patch: UpdateDriverStreamInput,
-  ctx: StreamEventCtx,
-  send: Send,
-): void {
-  if (patch.prUrl === undefined && patch.prNumber === undefined) {
-    return;
-  }
-  const url = patch.prUrl ?? stream.prUrl ?? "";
-  const pr = patch.prNumber ?? stream.prNumber ?? prNumberFromUrl(url);
-  if (pr === undefined) {
-    return;
-  }
-  send(
-    appendEvent({
-      actor: ctx.actor,
-      // head_sha is required by the contract but the driver model does not
-      // track a HEAD SHA at this seam — empty by design, meaning unknown.
-      body: { head_sha: "", pr, url },
-      extRef: url,
-      id: eventId(`${ctx.stream}_pr_${String(pr)}`),
-      kind: "stream_pr_opened",
-      runId: ctx.runId,
-      stream: ctx.stream,
-    }),
-  );
 }
 
 function emitMerged(
@@ -336,18 +355,119 @@ function emitMerged(
   if (patch.mergeCommit === undefined || stream.prNumber === undefined) {
     return;
   }
+  emitPROpened({
+    driverRunId: stream.driverRunId,
+    emit: (_driverRunId, result) => {
+      send(result);
+    },
+    headSha: patch.mergeHeadSha ?? "",
+    pr: stream.prNumber,
+    streamId: stream.id,
+    url: stream.prUrl ?? "",
+  });
+  if (patch.finalReviewedHeadSha !== undefined && patch.gateRunRef !== undefined) {
+    send(
+      appendEvent({
+        actor: ctx.actor,
+        body: {
+          final_reviewed_head_sha: patch.finalReviewedHeadSha,
+          gate_head_sha: patch.finalReviewedHeadSha,
+          gate_run_ref: patch.gateRunRef,
+        },
+        id: eventId(`${ctx.stream}_closure_gate_${patch.finalReviewedHeadSha}`),
+        kind: "closure_facts",
+        runId: ctx.runId,
+        stream: ctx.stream,
+      }),
+    );
+  }
   send(
     appendEvent({
       actor: ctx.actor,
       body: {
         merge_commit: patch.mergeCommit,
         merged_at: stream.mergedAt ?? new Date().toISOString(),
+        ...(patch.mergeHeadSha === undefined ? {} : { head_sha: patch.mergeHeadSha }),
         pr: stream.prNumber,
       },
       id: eventId(`${ctx.stream}_merged`),
       kind: "stream_merged",
       runId: ctx.runId,
       stream: ctx.stream,
+    }),
+  );
+}
+
+function emitPROpened(input: {
+  driverRunId: string;
+  streamId: string;
+  pr: number;
+  url: string;
+  headSha: string;
+  emit: Emit;
+}): void {
+  const stream = ledgerStreamId(input.streamId);
+  input.emit(
+    input.driverRunId,
+    appendEvent({
+      actor: `ship:${input.driverRunId}`,
+      body: { head_sha: input.headSha, pr: input.pr, url: input.url },
+      extRef: input.url,
+      id: eventId(`${stream}_pr_${String(input.pr)}`),
+      kind: "stream_pr_opened",
+      runId: ledgerRunId(input.driverRunId),
+      stream,
+    }),
+  );
+}
+
+/**
+ * Record an address refusal that requires mechanism repair. The caller supplies
+ * only live GitHub facts; this helper does not infer producer or panel state.
+ * Best-effort, like every other driver-state write.
+ */
+export function emitAddressIntervention(
+  input: {
+    driverRunId: string;
+    streamId: string;
+    prNumber: number;
+    repo: string;
+    liveHeadSha: string;
+    reasonCode: string;
+  },
+  logger?: Logger,
+): void {
+  const emit: Emit = (driverRunId, result) => {
+    if (result.ok) return;
+    logger?.warn(
+      { driverRunId, err: result.error },
+      "driverstate: address intervention emission failed; continuing",
+    );
+  };
+  emitPROpened({
+    driverRunId: input.driverRunId,
+    emit,
+    headSha: input.liveHeadSha,
+    pr: input.prNumber,
+    streamId: input.streamId,
+    url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}`,
+  });
+  emit(
+    input.driverRunId,
+    appendEvent({
+      actor: `ship:${input.driverRunId}`,
+      body: {
+        actor: `ship:${input.driverRunId}`,
+        kind: "mechanism-repair",
+        reason_code: input.reasonCode,
+        time: formatTime(new Date()),
+      },
+      id: eventId(
+        `${ledgerStreamId(input.streamId)}_intervention_${input.reasonCode}_${input.liveHeadSha}`,
+      ),
+      kind: "intervention",
+      runId: ledgerRunId(input.driverRunId),
+      stream: ledgerStreamId(input.streamId),
     }),
   );
 }

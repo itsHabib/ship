@@ -80,6 +80,8 @@ describe("review artifact consumption", () => {
         driverRunId: runId,
         expectedReviewCycle: 0,
         headSha: "b".repeat(40),
+        producerHarness: "codex",
+        producerId: "codex:reviewfindings-github",
         prNumber: 1,
         repo: "example/ship",
         streamId,

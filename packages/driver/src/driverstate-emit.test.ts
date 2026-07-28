@@ -9,7 +9,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ledgerRunId, ledgerStreamId, withDriverStateEmission } from "./driverstate-emit.js";
+import {
+  emitAddressIntervention,
+  ledgerRunId,
+  ledgerStreamId,
+  withDriverStateEmission,
+} from "./driverstate-emit.js";
 import { importManifest } from "./import.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -171,12 +176,124 @@ describe("withDriverStateEmission", () => {
       driverRunId: run.id,
       expectedReviewCycle: 0,
       headSha: "b".repeat(40),
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
       prNumber: 41,
       repo: "example/ship",
       streamId,
     });
 
     expect(ledgerKinds(run.id)).toContain("review_cycle");
+  });
+
+  it("emits one exact-head closure sequence from address through Gate handoff and merge", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+    const openingHead = "b".repeat(40);
+    const finalHead = "c".repeat(40);
+    const catalogRevision = "d".repeat(40);
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+    wrapped.updateDriverStream(streamId, {
+      prNumber: 41,
+      prUrl: "https://github.com/example/ship/pull/41",
+    });
+
+    wrapped.consumeReviewArtifactAndPrepareDispatch({
+      addressCycle: 1,
+      artifactId: "rf_exact",
+      attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
+      canonicalSha256: "a".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha: openingHead,
+      prNumber: 41,
+      producerCatalogRevision: catalogRevision,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+    wrapped.updateDriverStream(streamId, {
+      finalReviewedHeadSha: finalHead,
+      gateRunRef: "run_01ab",
+      mergeCommit: "merge-commit",
+      mergeHeadSha: finalHead,
+      mergedAt: "2026-07-20T01:00:00.000Z",
+      prNumber: 41,
+      status: "done",
+    });
+    // Idempotent re-land does not append a second terminal closure.
+    wrapped.updateDriverStream(streamId, {
+      finalReviewedHeadSha: finalHead,
+      gateRunRef: "run_01ab",
+      mergeCommit: "merge-commit",
+      mergeHeadSha: finalHead,
+      prNumber: 41,
+      status: "done",
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    const opening = events.find((event) => event.kind === "stream_pr_opened");
+    const closures = events.filter((event) => event.kind === "closure_facts");
+    const merged = events.filter((event) => event.kind === "stream_merged");
+    expect(opening?.body).toMatchObject({ head_sha: openingHead, pr: 41 });
+    expect(closures).toHaveLength(2);
+    expect(closures[0]?.body).toMatchObject({
+      catalog_revision: catalogRevision,
+      review_artifact_digest: "a".repeat(64),
+      review_artifact_id: "rf_exact",
+      review_head_sha: openingHead,
+      review_producer: "codex:reviewfindings-github",
+      ship_run_ref: run.id,
+    });
+    expect(closures[1]?.body).toMatchObject({
+      final_reviewed_head_sha: finalHead,
+      gate_head_sha: finalHead,
+      gate_run_ref: "run_01ab",
+    });
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.body).toMatchObject({ head_sha: finalHead, merge_commit: "merge-commit" });
+  });
+
+  it("keeps legacy missing catalog provenance incomplete and records stale repair once", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+    const liveHead = "e".repeat(40);
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+
+    emitAddressIntervention({
+      driverRunId: run.id,
+      liveHeadSha: liveHead,
+      prNumber: 41,
+      reasonCode: "stale-review-head",
+      repo: "example/ship",
+      streamId,
+    });
+    emitAddressIntervention({
+      driverRunId: run.id,
+      liveHeadSha: liveHead,
+      prNumber: 41,
+      reasonCode: "stale-review-head",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.filter((event) => event.kind === "intervention")).toHaveLength(1);
+    expect(events.find((event) => event.kind === "intervention")?.body).toMatchObject({
+      kind: "mechanism-repair",
+      reason_code: "stale-review-head",
+    });
+    expect(events.some((event) => event.kind === "stream_merged")).toBe(false);
   });
 
   it("records the terminal failed attempt of a fallback hop (pending reset patch)", () => {

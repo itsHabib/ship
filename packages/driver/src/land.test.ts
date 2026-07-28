@@ -79,6 +79,37 @@ describe("land", () => {
     expect(run.batches[0]?.streams[0]?.mergedAt).toBe("2026-06-12T01:00:00.000Z");
   });
 
+  test("requires an exact live reviewed head with every Gate handoff", async () => {
+    const streamId = newDriverStreamId();
+    const head = "a".repeat(40);
+    const runId = seedLandedRun(store, streamId, {
+      prUrl: "https://github.com/org/ship/pull/8",
+    });
+    const gh = createFakeGhPort({
+      8: { headRefOid: head, mergeCommit: null, mergedAt: null, state: "OPEN" },
+    });
+
+    await expect(land(store, gh, runId, { gateRunRef: "run_01ab", prNumber: 8 })).rejects.toThrow(
+      /requires both/,
+    );
+    await expect(
+      land(store, gh, runId, {
+        gateRunRef: "run_01ab",
+        prNumber: 8,
+        reviewedHeadSha: "b".repeat(40),
+      }),
+    ).rejects.toThrow(/does not match live head/);
+    expect(gh.mergeCalls).toEqual([]);
+
+    const result = await land(store, gh, runId, {
+      gateRunRef: "run_01ab",
+      prNumber: 8,
+      reviewedHeadSha: head,
+    });
+    expect(result.batches[0]?.streams[0]?.status).toBe("done");
+    expect(gh.mergeCalls).toHaveLength(1);
+  });
+
   test("resolves the stream from --pr via prUrl parsing", async () => {
     const streamId = newDriverStreamId();
     const runId = seedLandedRun(store, streamId, {

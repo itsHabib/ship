@@ -527,13 +527,7 @@ export function markMerged(
     throw new DecideError(`stream ${streamId} is not landed (status=${stream.status})`);
   }
 
-  const patch: Parameters<Store["updateDriverStream"]>[1] = {
-    mergeCommit: facts.mergeCommit,
-    prNumber: facts.prNumber,
-    status: "done",
-  };
-  if (facts.mergedAt !== undefined) patch.mergedAt = facts.mergedAt;
-  if (facts.cycles !== undefined) patch.cycles = facts.cycles;
+  const patch = mergePatch(facts);
   // Capture before the update: only the first merge-record (a `landed` stream
   // becoming `done`) emits a spend event. markMerged/land accept an already
   // `done` stream for idempotent re-land, which must not double-count.
@@ -543,6 +537,22 @@ export function markMerged(
   if (firstMerge) recordTerminalSpend(store, run, stream, facts);
 
   return maybeCompleteRunAfterMerge(store, driverRunId, run, facts.mergedAt);
+}
+
+function mergePatch(facts: MergeFacts): Parameters<Store["updateDriverStream"]>[1] {
+  const patch: Parameters<Store["updateDriverStream"]>[1] = {
+    mergeCommit: facts.mergeCommit,
+    prNumber: facts.prNumber,
+    status: "done",
+  };
+  if (facts.mergeHeadSha !== undefined) patch.mergeHeadSha = facts.mergeHeadSha;
+  if (facts.finalReviewedHeadSha !== undefined) {
+    patch.finalReviewedHeadSha = facts.finalReviewedHeadSha;
+  }
+  if (facts.gateRunRef !== undefined) patch.gateRunRef = facts.gateRunRef;
+  if (facts.mergedAt !== undefined) patch.mergedAt = facts.mergedAt;
+  if (facts.cycles !== undefined) patch.cycles = facts.cycles;
+  return patch;
 }
 
 /**

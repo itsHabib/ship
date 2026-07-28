@@ -35,6 +35,7 @@ import type {
 } from "./types.js";
 
 import { isLegalCell } from "./dispatch-cell.js";
+import { emitAddressIntervention } from "./driverstate-emit.js";
 import {
   AddressError,
   DriverRunNotFoundEngineError,
@@ -1446,8 +1447,14 @@ export async function address(
   const files = deps.files ?? DEFAULT_ADDRESS_FILES;
   const { branch, run, stream } = loadAddressTarget(store, driverRunId, opts.streamId);
   const pr = await loadAddressPr(gh, run, stream);
-  const artifact = readFindings(files, opts.findingsPath);
-  assertArtifactMatchesPr(artifact, pr);
+  let artifact: ReviewFindingsV1;
+  try {
+    artifact = readFindings(files, opts.findingsPath);
+  } catch (error: unknown) {
+    emitAddressRefusal(run, stream, pr, "malformed-review-artifact");
+    throw error;
+  }
+  assertArtifactMatchesPr(artifact, pr, run, stream);
   const nextCycle = nextAddressCycle(
     store,
     run,
@@ -1507,19 +1514,42 @@ interface AddressPr {
   view: GhPullRequestView;
 }
 
-function assertArtifactMatchesPr(artifact: ReviewFindingsV1, pr: AddressPr): void {
+function assertArtifactMatchesPr(
+  artifact: ReviewFindingsV1,
+  pr: AddressPr,
+  run: DriverRun,
+  stream: DriverStream,
+): void {
   if (artifact.subject.repo !== pr.repo || artifact.subject.number !== pr.prNumber) {
+    emitAddressRefusal(run, stream, pr, "review-subject-mismatch");
     throw new AddressError(
       "findings-subject-mismatch",
       `findings target ${artifact.subject.repo}#${String(artifact.subject.number)} does not match ${pr.repo}#${String(pr.prNumber)}`,
     );
   }
   if (artifact.subject.head_sha !== pr.view.headRefOid.toLowerCase()) {
+    emitAddressRefusal(run, stream, pr, "stale-review-head");
     throw new AddressError(
       "findings-stale-head",
       `findings head ${artifact.subject.head_sha} does not match live head ${pr.view.headRefOid}`,
     );
   }
+}
+
+function emitAddressRefusal(
+  run: DriverRun,
+  stream: DriverStream,
+  pr: AddressPr,
+  reasonCode: string,
+): void {
+  emitAddressIntervention({
+    driverRunId: run.id,
+    liveHeadSha: pr.view.headRefOid.toLowerCase(),
+    prNumber: pr.prNumber,
+    reasonCode,
+    repo: pr.repo,
+    streamId: stream.id,
+  });
 }
 
 function nextAddressCycle(
@@ -1577,9 +1607,14 @@ function consumePreparedAddress(params: {
       driverRunId,
       expectedReviewCycle: nextCycle - 1,
       headSha: artifact.subject.head_sha,
+      producerHarness: artifact.producer.harness,
+      producerId: artifact.producer.id,
       prNumber: pr.prNumber,
       repo: pr.repo,
       streamId: stream.id,
+      ...(artifact.producer.catalog_revision === undefined
+        ? {}
+        : { producerCatalogRevision: artifact.producer.catalog_revision }),
       ...(typeof dispatchPatch.dispatchModel === "string"
         ? { dispatchModel: dispatchPatch.dispatchModel }
         : {}),

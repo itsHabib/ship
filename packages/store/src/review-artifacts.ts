@@ -13,6 +13,9 @@ export interface ConsumeReviewArtifactInput {
   repo: string;
   prNumber: number;
   headSha: string;
+  producerId: string;
+  producerHarness: string;
+  producerCatalogRevision?: string;
   expectedReviewCycle: number;
   addressCycle: number;
   docPath: string;
