@@ -186,6 +186,89 @@ describe("withDriverStateEmission", () => {
     expect(ledgerKinds(run.id)).toContain("review_cycle");
   });
 
+  it("persists address receipt facts for a resumed stream imported as landed", () => {
+    const runId = "drv_01IMPORTEDLANDED";
+    const streamId = "ds_01IMPORTEDLANDED";
+    const headSha = "b".repeat(40);
+    const artifactDigest = "a".repeat(64);
+    const run = wrapped.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: "db_01IMPORTEDLANDED",
+          status: "running",
+          streams: [
+            {
+              attempts: [],
+              branch: "codex/imported-landed",
+              id: streamId,
+              prNumber: 41,
+              prUrl: "https://github.com/example/ship/pull/41",
+              runtime: "cloud",
+              specPath: "docs/imported-landed.md",
+              status: "landed",
+              streamIndex: 0,
+              taskId: "tsk_01IMPORTEDLANDED",
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: join(fixturesDir, "synthetic-full.driver.md"),
+      phase: "driver-extraction",
+      project: "ship",
+      repo: "example/ship",
+      sourceJson: readFileSync(join(fixturesDir, "synthetic-full.driver.md"), "utf8"),
+      status: "running",
+    });
+
+    wrapped.consumeReviewArtifactAndPrepareDispatch({
+      addressCycle: 1,
+      artifactId: "rf_imported_landed",
+      attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
+      canonicalSha256: artifactDigest,
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.map((event) => event.kind)).toEqual([
+      "stream_dispatched",
+      "stream_attempt",
+      "stream_pr_opened",
+      "closure_facts",
+      "review_cycle",
+    ]);
+    expect(events.filter((event) => event.kind === "stream_attempt")).toHaveLength(1);
+    expect(events.find((event) => event.kind === "stream_pr_opened")?.body).toMatchObject({
+      head_sha: headSha,
+      pr: 41,
+    });
+    expect(events.find((event) => event.kind === "closure_facts")?.body).toMatchObject({
+      review_artifact_digest: artifactDigest,
+      review_artifact_id: "rf_imported_landed",
+      review_head_sha: headSha,
+      review_producer: "codex:reviewfindings-github",
+      task_ref: "tsk_01IMPORTEDLANDED",
+    });
+    expect(events.find((event) => event.kind === "review_cycle")?.body).toMatchObject({
+      cycle: 1,
+      panel_settled: true,
+    });
+  });
+
   it("emits one exact-head closure sequence from address through Gate handoff and merge", () => {
     const run = importFixture();
     const streamId = pendingStreamId(run);

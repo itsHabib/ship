@@ -204,15 +204,22 @@ function emitRunImported(run: DriverRun, sourceJson: string, manifestPath: strin
 type Emit = (driverRunId: string, result: AppendResult) => void;
 
 /**
- * A manifest can import streams already `done` or `skipped` (absorbed
- * progress). The ledger did not track that work, so record each as
- * `stream_skipped` — pending → skipped, terminal — with the ship status in
- * the reason; otherwise they block `run_finished` forever. Non-terminal
- * absorbed statuses (landed, failed) are left pending: their live tail
- * (land, retry, skip) emits real transitions from pending legally.
+ * A manifest can import streams with progress the ledger did not observe.
+ * Completed streams close as skipped because their prior attempt history is
+ * unavailable. A landed stream needs the smallest honest legal history before
+ * address can attach its PR and review receipt: one deterministic synthetic
+ * dispatch followed by one terminal landed attempt. Stable event ids make an
+ * import replay idempotent and avoid minting duplicate attempts.
+ *
+ * Failed streams stay pending: their live retry/skip tail can transition from
+ * pending legally without inventing a failed attempt and failure category.
  */
 function closePreCompletedStreams(run: DriverRun, emit: Emit): void {
   for (const s of run.batches.flatMap((b) => b.streams)) {
+    if (s.status === "landed") {
+      openImportedLandedStream(run.id, s, emit);
+      continue;
+    }
     if (s.status !== "done" && s.status !== "skipped") {
       continue;
     }
@@ -228,6 +235,39 @@ function closePreCompletedStreams(run: DriverRun, emit: Emit): void {
       }),
     );
   }
+}
+
+function openImportedLandedStream(driverRunId: string, stream: DriverStream, emit: Emit): void {
+  const actor = `ship:${driverRunId}`;
+  const runId = ledgerRunId(driverRunId);
+  const streamId = ledgerStreamId(stream.id);
+  emit(
+    driverRunId,
+    appendEvent({
+      actor,
+      body: { engine: "ship", imported: true },
+      id: eventId(`${streamId}_import_dispatch`),
+      kind: "stream_dispatched",
+      runId,
+      stream: streamId,
+    }),
+  );
+  emit(
+    driverRunId,
+    appendEvent({
+      actor,
+      body: {
+        doc_path: stream.specPath,
+        imported: true,
+        seq: Math.max(1, stream.attempts.length),
+        terminal: true,
+      },
+      id: eventId(`${streamId}_import_landed`),
+      kind: "stream_attempt",
+      runId,
+      stream: streamId,
+    }),
+  );
 }
 
 interface StreamEventCtx {
