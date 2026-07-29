@@ -120,14 +120,31 @@ export function emitValidatedAddressFacts(
     if (run === null) {
       return;
     }
-    // `address()` is a public engine API and may be called with an undecorated
-    // store. Deterministically bootstrap the ledger so receipt publication
-    // cannot be omitted by forgetting a service-layer callback.
-    emit(run.id, emitRunImported(run, run.sourceJson, run.manifestPath));
-    closePreCompletedStreams(run, emit);
+    ensureDriverStateRun(run, logger);
     emitAddressFacts(store, input, emit);
   } catch (err) {
     logger?.warn({ streamId: input.streamId, err: String(err) }, "driverstate: emission threw");
+  }
+}
+
+/**
+ * Deterministically bootstrap one run's ledger. Public engine verbs may be
+ * called with an undecorated store, so this seam must run before either clean
+ * address evidence or refusal evidence is emitted.
+ */
+export function ensureDriverStateRun(run: DriverRun, logger?: Logger): void {
+  const emit: Emit = (driverRunId, result) => {
+    if (result.ok) return;
+    logger?.warn(
+      { driverRunId, err: result.error },
+      "driverstate: run bootstrap emission failed; continuing",
+    );
+  };
+  try {
+    emit(run.id, emitRunImported(run, run.sourceJson, run.manifestPath));
+    closePreCompletedStreams(run, emit);
+  } catch (err) {
+    logger?.warn({ driverRunId: run.id, err: String(err) }, "driverstate: emission threw");
   }
 }
 

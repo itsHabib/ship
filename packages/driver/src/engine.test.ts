@@ -3202,6 +3202,41 @@ batches:
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
   });
 
+  test("direct malformed refusal bootstraps headless intervention evidence", async () => {
+    const stateRoot = join(tmpDir, "driverstate-direct-refusal");
+    process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { headRefOid: HEAD_SHA, state: "OPEN" } });
+    writeFileSync(findingsPath, "{}");
+
+    await expectRefusal(
+      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "findings-invalid",
+    );
+
+    const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            body: Record<string, unknown>;
+            kind: string;
+            stream?: string;
+          },
+      );
+    const streamEvents = events.filter((event) => event.stream === ledgerStreamId(streamId));
+    expect(events[0]?.kind).toBe("run_imported");
+    expect(streamEvents.find((event) => event.kind === "stream_pr_opened")?.body["head_sha"]).toBe(
+      "",
+    );
+    expect(streamEvents.some((event) => event.kind === "intervention")).toBe(true);
+    expect(streamEvents.some((event) => event.kind === "closure_facts")).toBe(false);
+    expect(streamEvents.some((event) => event.kind === "review_cycle")).toBe(false);
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
   test("stale refusal does not seal a head before a later valid cycle", async () => {
     const stateRoot = join(tmpDir, "driverstate-refusal-retry");
     process.env["WORKBENCH_STATE_DIR"] = stateRoot;
@@ -3494,7 +3529,7 @@ batches:
     expect(gh.markReadyCalls).toHaveLength(0);
   });
 
-  test("configured service logger observes refusal-ledger append failures", async () => {
+  test("configured service refusal bootstraps without ledger warnings", async () => {
     const { runId, streamId } = landedSeed();
     const warnings: string[] = [];
     const logger = makeCapturingLogger(warnings);
@@ -3508,7 +3543,7 @@ batches:
       "findings-invalid",
     );
 
-    expect(warnings).toContain("driverstate: address intervention emission failed; continuing");
+    expect(warnings).toHaveLength(0);
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
   });
 

@@ -94,8 +94,10 @@ dispatch/landed history before appending those receipt facts.
    can record it; they emit no closure completion, settled review cycle, or
    merge event. A refusal may create the transition-required PR-open placeholder,
    but its head stays empty until a valid first cycle supplies
-   `opening_head_sha`. This includes a head advance between consumption and
-   dispatch.
+   `opening_head_sha`. The public engine path deterministically bootstraps the
+   run ledger before validation, so direct callers receive the same refusal
+   evidence as service callers. This includes a head advance between
+   consumption and dispatch.
 
 ## Validation
 

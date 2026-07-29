@@ -35,7 +35,11 @@ import type {
 } from "./types.js";
 
 import { isLegalCell } from "./dispatch-cell.js";
-import { emitAddressIntervention, emitValidatedAddressFacts } from "./driverstate-emit.js";
+import {
+  emitAddressIntervention,
+  emitValidatedAddressFacts,
+  ensureDriverStateRun,
+} from "./driverstate-emit.js";
 import {
   AddressError,
   DriverRunNotFoundEngineError,
@@ -1454,6 +1458,7 @@ export async function address(
   const clock = deps.clock ?? Date.now;
   const files = deps.files ?? DEFAULT_ADDRESS_FILES;
   const { branch, run, stream } = loadAddressTarget(store, driverRunId, opts.streamId);
+  ensureDriverStateRun(run, deps.logger);
   const pr = await loadAddressPr(gh, run, stream);
   let artifact: ReviewFindingsV1;
   try {
