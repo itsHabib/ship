@@ -23,7 +23,7 @@ import type {
   ListEscalationsFilter,
 } from "./escalations.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
-import type { ConsumeReviewArtifactInput } from "./review-artifacts.js";
+import type { ConsumeReviewArtifactInput, ReviewArtifactReceiptFacts } from "./review-artifacts.js";
 import type {
   CreateWorkflowRunInput,
   ListRunsFilter,
@@ -185,6 +185,12 @@ export interface Store {
     streamId: string,
     cycle: number,
   ) => string | undefined;
+  /** Return durable facts needed to recover exact-head address receipt emission. */
+  getConsumedReviewArtifactReceipt: (
+    driverRunId: string,
+    streamId: string,
+    cycle: number,
+  ) => ReviewArtifactReceiptFacts | undefined;
   /** Insert an escalation row; rejects when an open row exists for the dedup key. */
   insertEscalation: (input: InsertEscalationInput) => Escalation;
   /** Hydrated escalation row, or `null` if unknown. Does not throw. */
@@ -278,6 +284,10 @@ export function createStore(opts: CreateStoreOptions): Store {
       getConsumedArtifactHeadSha: (driverRunId, streamId, cycle) =>
         withStoreContentionGuard(() =>
           reviewArtifactOps.getConsumedHeadSha(driverRunId, streamId, cycle),
+        ),
+      getConsumedReviewArtifactReceipt: (driverRunId, streamId, cycle) =>
+        withStoreContentionGuard(() =>
+          reviewArtifactOps.getReceiptFacts(driverRunId, streamId, cycle),
         ),
       getEscalation: (id) => withStoreContentionGuard(() => escalationOps.get(id)),
       getOpenEscalation: (key) => withStoreContentionGuard(() => escalationOps.getOpenByKey(key)),

@@ -75,12 +75,14 @@ describe("review artifact consumption", () => {
           },
         ],
         canonicalSha256: "a".repeat(64),
+        dispatchModel: "gpt-5.6-codex",
         dispatchProvider: "cursor",
         docPath: "C:/repo/address.md",
         driverRunId: runId,
         expectedReviewCycle: 0,
         headSha: "b".repeat(40),
         producerHarness: "codex",
+        producerCatalogRevision: "catalog-v7",
         producerId: "codex:reviewfindings-github",
         prNumber: 1,
         repo: "example/ship",
@@ -104,6 +106,22 @@ describe("review artifact consumption", () => {
       workOnCurrentBranch: true,
     });
     expect(stream?.workflowRunId).toBeUndefined();
+    expect(store.getConsumedReviewArtifactReceipt(input.driverRunId, streamId, 1)).toEqual({
+      addressCycle: 1,
+      artifactId: "rf_one",
+      canonicalSha256: "a".repeat(64),
+      dispatchModel: "gpt-5.6-codex",
+      dispatchProvider: "cursor",
+      docPath: "C:/repo/address.md",
+      driverRunId: input.driverRunId,
+      headSha: "b".repeat(40),
+      producerCatalogRevision: "catalog-v7",
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      prNumber: 1,
+      repo: "example/ship",
+      streamId,
+    });
     expect(() => {
       store.consumeReviewArtifactAndPrepareDispatch(input);
     }).toThrow(ReviewArtifactDuplicateError);
@@ -130,6 +148,42 @@ describe("review artifact consumption", () => {
     expect(() => {
       store.consumeReviewArtifactAndPrepareDispatch(input);
     }).not.toThrow();
+  });
+
+  test("receipt recovery omits optional facts and refuses incomplete legacy rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ship-review-receipt-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "state.db");
+    const store = open(dbPath);
+    const { input } = seed(store);
+    delete input.dispatchModel;
+    delete input.producerCatalogRevision;
+
+    expect(
+      store.getConsumedReviewArtifactReceipt(input.driverRunId, input.streamId, 1),
+    ).toBeUndefined();
+    store.consumeReviewArtifactAndPrepareDispatch(input);
+    expect(store.getConsumedReviewArtifactReceipt(input.driverRunId, input.streamId, 1)).toEqual({
+      addressCycle: 1,
+      artifactId: "rf_one",
+      canonicalSha256: "a".repeat(64),
+      dispatchProvider: "cursor",
+      docPath: "C:/repo/address.md",
+      driverRunId: input.driverRunId,
+      headSha: "b".repeat(40),
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      prNumber: 1,
+      repo: "example/ship",
+      streamId: input.streamId,
+    });
+
+    const db = new Database(dbPath);
+    db.prepare("UPDATE driver_review_artifacts SET producer_id = NULL").run();
+    db.close();
+    expect(
+      store.getConsumedReviewArtifactReceipt(input.driverRunId, input.streamId, 1),
+    ).toBeUndefined();
   });
 
   test("a real SQLite abort trigger rolls back both artifact and stream writes", () => {

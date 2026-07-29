@@ -211,6 +211,7 @@ interface DispatchContext {
   cloudInFlight: number;
   gh?: DriverGhPort;
   localInFlight: number;
+  logger?: Logger;
   roomsInFlight: number;
   onProgress: () => void;
   opts: ResolvedRunOpts;
@@ -767,6 +768,7 @@ function buildDispatchContext(
     clock: ctx.clock,
     cloudInFlight: countInFlight(run, "cloud"),
     localInFlight: countInFlight(run, "local"),
+    ...(ctx.logger === undefined ? {} : { logger: ctx.logger }),
     roomsInFlight: countInFlight(run, "rooms"),
     onProgress,
     opts,
@@ -900,6 +902,7 @@ async function dispatchStreamOnce(
 ): Promise<boolean> {
   const headOk = await checkTickAddressHead(ctx, stream);
   if (!headOk) return false;
+  emitRecoveredAddressFacts(ctx, stream);
   const docPath = opts.docPath ?? resolveDispatchDocPath(ctx.repoRoot, stream);
   const attempt: StreamAttempt = {
     dispatchedAt: new Date(ctx.clock()).toISOString(),
@@ -938,6 +941,24 @@ async function dispatchStreamOnce(
     stream,
     clock: ctx.clock,
   });
+}
+
+/**
+ * Replay the durable transaction-to-ledger handoff after a recovered or
+ * retried address dispatch passes exact-head revalidation. Deterministic event
+ * ids make repeated retries idempotent; legacy rows without receipt columns
+ * remain intentionally incomplete.
+ */
+function emitRecoveredAddressFacts(ctx: DispatchContext, stream: DriverStream): void {
+  const cycle = stream.reviewCycles;
+  if (cycle === undefined || cycle === 0) {
+    return;
+  }
+  const facts = ctx.store.getConsumedReviewArtifactReceipt(ctx.runId, stream.id, cycle);
+  if (facts === undefined) {
+    return;
+  }
+  emitValidatedAddressFacts(ctx.store, facts, ctx.logger);
 }
 
 /**

@@ -50,6 +50,14 @@ supplies the authoritative merged head. Replayed address and land calls reuse
 deterministic event identities, so they cannot duplicate consumption or
 terminal closure.
 
+The artifact-consumption transaction also persists the typed producer,
+catalog, and dispatch fields needed to reconstruct the address receipt. If a
+process exits or the live-head read fails after that commit but before ledger
+emission, the next tick revalidates the consumed head, reloads those durable
+facts, and emits the same deterministic closure/review-cycle identities before
+dispatch. A stale recovery remains fail-closed and emits no clean review
+evidence.
+
 For ledgers created by an older Ship emitter, an immutable
 `stream_pr_opened` event may already own the PR's deterministic identity with
 an empty `head_sha`. Address therefore also records `opening_head_sha` in its
@@ -70,8 +78,9 @@ only when the ledger still lacks an authoritative `opening_head_sha`.
 - Gate remains the authorization boundary. Ship records the explicit Gate
   reference and exact head but does not infer or recreate Gate's verdict.
 - Closure facts are additive driver-state events rather than columns in Ship's
-  SQLite store. This keeps the existing artifact/store transaction intact and
-  avoids a second source of receipt truth.
+  SQLite stream rows. The existing consumed-artifact row retains the minimal
+  typed handoff projection needed for crash recovery; the ledger remains the
+  only closure receipt.
 - Execution `seat`/`harness` come from the dispatched stream metadata, never
   from the independent review artifact producer. `review_producer` retains the
   reviewer/coordinator identity.
@@ -95,6 +104,9 @@ only when the ledger still lacks an authoritative `opening_head_sha`.
 3. **Gate handoff is explicit and paired.** `reviewedHeadSha` and `gateRunRef`
    are accepted together or refused. The live-head check runs before merge and
    the merge adapter atomically matches the same commit at its write boundary.
+   The exported `markMerged` path applies the same paired and syntactic checks
+   before mutating the stream, while still allowing a legacy call that omits
+   both.
 4. **Refusals never become clean evidence.** Malformed, mismatched, and stale
    address inputs emit a typed `mechanism-repair` intervention when the ledger
    can record it; they emit no closure completion, settled review cycle, or
@@ -116,6 +128,9 @@ only when the ledger still lacks an authoritative `opening_head_sha`.
 - Exported-path matrix covers service-decorated and direct bare-store address,
   land, and markMerged calls across absent, pending, landed, empty-head, and
   consumed-cycle-one ledger states, including idempotent terminal replay.
+- Crash recovery covers consumption committed before receipt emission:
+  producer/catalog/artifact facts survive, exact-head revalidation precedes
+  replay, and closure/review-cycle events appear exactly once.
 - `make check`.
 
 ## Risks

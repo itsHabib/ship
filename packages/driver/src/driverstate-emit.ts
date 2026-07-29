@@ -17,9 +17,9 @@
 
 import type { Logger } from "@ship/logger";
 import type {
-  ConsumeReviewArtifactInput,
   DriverRun,
   DriverStream,
+  ReviewArtifactReceiptFacts,
   Store,
   UpdateDriverStreamInput,
 } from "@ship/store";
@@ -113,7 +113,7 @@ export function withDriverStateEmission(store: Store, logger?: Logger): Store {
  */
 export function emitValidatedAddressFacts(
   store: Store,
-  input: ConsumeReviewArtifactInput,
+  input: ReviewArtifactReceiptFacts,
   logger?: Logger,
 ): void {
   const emit: Emit = (driverRunId, result) => {
@@ -219,7 +219,7 @@ export function emitValidatedMergeFacts(
  * `review_cycle`. findings is -1: the count is not known at this seam, only
  * that a settled review round is being addressed.
  */
-function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit: Emit): void {
+function emitAddressFacts(store: Store, input: ReviewArtifactReceiptFacts, emit: Emit): void {
   const run = store.getDriverRun(input.driverRunId);
   const stream = run?.batches
     .flatMap((batch) => batch.streams)
@@ -237,7 +237,7 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
     url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}`,
   });
   const openingHeadSha = resolveOpeningHeadSha(store, input);
-  const executionHarness = stream.provider ?? stream.dispatchProvider;
+  const executionHarness = stream.provider ?? stream.dispatchProvider ?? input.dispatchProvider;
   const closureFacts = compactFacts({
     task_ref: stream.taskId,
     seat: executionHarness,
@@ -288,7 +288,7 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
  */
 function resolveOpeningHeadSha(
   store: Store,
-  input: ConsumeReviewArtifactInput,
+  input: ReviewArtifactReceiptFacts,
 ): string | undefined {
   if (input.addressCycle === 1) {
     return input.headSha;
@@ -357,20 +357,16 @@ function hasStreamLedgerEvent(driverRunId: string, streamId: string): boolean {
 
 /**
  * Upgrade repair for a run that was persisted before landed-at-import
- * reconciliation existed. Address preparation has appended its new
- * non-terminal attempt to the store input; when that is the stream's first
- * attempt, the landed state was absorbed rather than observed by this ledger.
- * Replaying the import-keyed events is safe both for a legacy pending ledger
- * and for a current ledger that already wrote them during insert.
+ * reconciliation existed. When no stream event exists, the landed state was
+ * absorbed rather than observed by this ledger. Replaying the import-keyed
+ * events is safe both for a legacy pending ledger and for a current ledger
+ * that already wrote them during insert.
  */
 function reconcileImportedLandedAddress(
   stream: DriverStream,
-  input: ConsumeReviewArtifactInput,
+  input: ReviewArtifactReceiptFacts,
   emit: Emit,
 ): void {
-  if (input.attempts.length !== 1) {
-    return;
-  }
   if (hasStreamLedgerEvent(input.driverRunId, input.streamId)) {
     return;
   }

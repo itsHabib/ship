@@ -161,6 +161,29 @@ batches:
     store.close();
   });
 
+  test("DriverService.markMerged refuses a partial closure handoff", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_a" }]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+    const result = await driver.run({ driverRunId: imported.run.id }, { batch: 1, maxWaitMs: 0 });
+    const streamId = result.unmerged[0]?.streamId;
+    if (streamId === undefined) {
+      throw new Error("expected landed stream");
+    }
+
+    expect(() => {
+      driver.markMerged(imported.run.id, streamId, {
+        gateRunRef: "run_ab12",
+        mergeCommit: "abc123",
+        prNumber: 1,
+      });
+    }).toThrow(/requires both gateRunRef and finalReviewedHeadSha/u);
+    expect(store.getDriverRun(imported.run.id)?.batches[0]?.streams[0]?.status).toBe("landed");
+    store.close();
+  });
+
   test("failed-retry path: fail → judgment → retry → re-dispatch", async () => {
     const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
     const { port } = createFakeShipPort([
@@ -3725,6 +3748,67 @@ batches:
         .map((event) => event.kind);
       expect(streamKinds).toContain("closure_facts");
       expect(streamKinds).toContain("review_cycle");
+    });
+
+    test("tick recovery publishes durable address provenance after post-consumption crash", async () => {
+      const stateRoot = join(tmpDir, "driverstate-consumption-crash");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+      writeFileSync(
+        findingsPath,
+        validFindingsArtifact({
+          producer: {
+            catalog_revision: "c".repeat(40),
+            generated_at: "2026-07-10T00:00:00Z",
+            harness: "codex",
+            id: "codex:reviewfindings-github",
+          },
+        }),
+      );
+      const { runId, streamId } = landedSeed();
+      const fake = createFakeShipPort([]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      const crashStore: Store = {
+        ...store,
+        consumeReviewArtifactAndPrepareDispatch: (input) => {
+          store.consumeReviewArtifactAndPrepareDispatch(input);
+          throw new Error("simulated process exit after commit");
+        },
+      };
+
+      await expect(
+        address({ clock: () => 0, gh, ship: fake.port, store: crashStore }, runId, {
+          findingsPath,
+          streamId,
+        }),
+      ).rejects.toThrow(/simulated process exit/u);
+      expect(firstStream(runId)).toMatchObject({ reviewCycles: 1, status: "dispatching" });
+      expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+
+      const driver = createDriverService({ clock: () => 1, gh, ship: fake.port, store });
+      await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+
+      const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              body: Record<string, unknown>;
+              kind: string;
+              stream: string;
+            },
+        )
+        .filter((event) => event.stream === ledgerStreamId(streamId));
+      const closure = events.filter((event) => event.kind === "closure_facts");
+      expect(closure).toHaveLength(1);
+      expect(closure[0]?.body).toMatchObject({
+        catalog_revision: "c".repeat(40),
+        review_artifact_id: "rf_test",
+        review_head_sha: HEAD_SHA,
+        review_producer: "codex:reviewfindings-github",
+      });
+      expect(events.filter((event) => event.kind === "review_cycle")).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.kind === "startShip")).toHaveLength(1);
     });
 
     test("parks stream on tick re-dispatch when head has moved (covers recovery and retry paths)", async () => {
