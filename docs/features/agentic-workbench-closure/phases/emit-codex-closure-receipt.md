@@ -21,7 +21,8 @@ receipt database. The existing driver-state JSONL ledger remains authoritative.
 
 At `driver address`, Ship validates the optional
 `producer.catalog_revision`, commits the existing artifact-consumption and
-dispatch preparation transaction, then emits:
+dispatch preparation transaction, revalidates that the live PR head still
+matches the consumed artifact, then emits:
 
 - the opening PR number and exact reviewed head;
 - producer, catalog, artifact id/digest/head, Ship run, task, and execution
@@ -87,7 +88,8 @@ dispatch/landed history before appending those receipt facts.
    the merge adapter atomically matches the same commit at its write boundary.
 4. **Refusals never become clean evidence.** Malformed, mismatched, and stale
    address inputs emit a typed `mechanism-repair` intervention when the ledger
-   can record it; they emit no closure completion or merge event.
+   can record it; they emit no closure completion, settled review cycle, or
+   merge event. This includes a head advance between consumption and dispatch.
 
 ## Validation
 

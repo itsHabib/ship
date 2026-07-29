@@ -4,7 +4,7 @@
 
 import type { GetWorkflowRunOutput, ShipInput, ShipStartOutput } from "@ship/core";
 import type { Logger } from "@ship/logger";
-import type { Store } from "@ship/store";
+import type { ConsumeReviewArtifactInput, Store } from "@ship/store";
 import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/store";
 import type { AgentProvider, FailureCategory } from "@ship/workflow";
 
@@ -1406,6 +1406,7 @@ export interface AddressDeps {
   store: Store;
   ship: DriverShipPort;
   gh: DriverGhPort;
+  emitAddressFacts?: (input: ConsumeReviewArtifactInput) => void;
   logger?: Logger;
   clock?: () => number;
   files?: AddressFilePort;
@@ -1472,7 +1473,7 @@ export async function address(
     manifestPath: run.manifestPath,
     streamId: stream.id,
   });
-  const tierMapping = consumePreparedAddress({
+  const prepared = consumePreparedAddress({
     artifact,
     canonicalSha256,
     clock,
@@ -1488,8 +1489,10 @@ export async function address(
     deps: { clock, gh, ship, store },
     docPath,
     driverRunId,
+    ...(deps.emitAddressFacts === undefined ? {} : { emitAddressFacts: deps.emitAddressFacts }),
     streamId: stream.id,
-    tierMapping,
+    addressFacts: prepared.addressFacts,
+    tierMapping: prepared.tierMapping,
   });
 }
 
@@ -1586,7 +1589,7 @@ function consumePreparedAddress(params: {
   pr: AddressPr;
   store: Store;
   stream: DriverStream;
-}): TierDispatchResult {
+}): { addressFacts: ConsumeReviewArtifactInput; tierMapping: TierDispatchResult } {
   const { artifact, canonicalSha256, clock, docPath, driverRunId, nextCycle, pr, store, stream } =
     params;
   const attempt: StreamAttempt = {
@@ -1602,36 +1605,37 @@ function consumePreparedAddress(params: {
     stream.modelId,
   );
   const dispatchPatch = tierDispatchPatch(provider, tierMapping);
+  const addressFacts: ConsumeReviewArtifactInput = {
+    addressCycle: nextCycle,
+    artifactId: artifact.artifact_id,
+    attempts: [...stream.attempts, attempt],
+    canonicalSha256,
+    dispatchProvider: provider,
+    docPath,
+    driverRunId,
+    expectedReviewCycle: nextCycle - 1,
+    headSha: artifact.subject.head_sha,
+    producerHarness: artifact.producer.harness,
+    producerId: artifact.producer.id,
+    prNumber: pr.prNumber,
+    repo: pr.repo,
+    streamId: stream.id,
+    ...(artifact.producer.catalog_revision === undefined
+      ? {}
+      : { producerCatalogRevision: artifact.producer.catalog_revision }),
+    ...(typeof dispatchPatch.dispatchModel === "string"
+      ? { dispatchModel: dispatchPatch.dispatchModel }
+      : {}),
+    ...(Array.isArray(dispatchPatch.dispatchModelParams)
+      ? { dispatchModelParams: dispatchPatch.dispatchModelParams }
+      : {}),
+    effortDegraded: dispatchPatch.effortDegraded ?? false,
+    ...(typeof dispatchPatch.tierDegradeReason === "string"
+      ? { tierDegradeReason: dispatchPatch.tierDegradeReason }
+      : {}),
+  };
   try {
-    store.consumeReviewArtifactAndPrepareDispatch({
-      addressCycle: nextCycle,
-      artifactId: artifact.artifact_id,
-      attempts: [...stream.attempts, attempt],
-      canonicalSha256,
-      dispatchProvider: provider,
-      docPath,
-      driverRunId,
-      expectedReviewCycle: nextCycle - 1,
-      headSha: artifact.subject.head_sha,
-      producerHarness: artifact.producer.harness,
-      producerId: artifact.producer.id,
-      prNumber: pr.prNumber,
-      repo: pr.repo,
-      streamId: stream.id,
-      ...(artifact.producer.catalog_revision === undefined
-        ? {}
-        : { producerCatalogRevision: artifact.producer.catalog_revision }),
-      ...(typeof dispatchPatch.dispatchModel === "string"
-        ? { dispatchModel: dispatchPatch.dispatchModel }
-        : {}),
-      ...(Array.isArray(dispatchPatch.dispatchModelParams)
-        ? { dispatchModelParams: dispatchPatch.dispatchModelParams }
-        : {}),
-      effortDegraded: dispatchPatch.effortDegraded ?? false,
-      ...(typeof dispatchPatch.tierDegradeReason === "string"
-        ? { tierDegradeReason: dispatchPatch.tierDegradeReason }
-        : {}),
-    });
+    store.consumeReviewArtifactAndPrepareDispatch(addressFacts);
   } catch (error: unknown) {
     if (error instanceof ReviewArtifactDuplicateError) {
       throw new AddressError("findings-duplicate", error.message);
@@ -1641,7 +1645,7 @@ function consumePreparedAddress(params: {
     }
     throw error;
   }
-  return tierMapping;
+  return { addressFacts, tierMapping };
 }
 
 async function dispatchAddress(params: {
@@ -1649,10 +1653,21 @@ async function dispatchAddress(params: {
   deps: { store: Store; ship: DriverShipPort; clock: () => number; gh: DriverGhPort };
   docPath: string;
   driverRunId: string;
+  emitAddressFacts?: (input: ConsumeReviewArtifactInput) => void;
   streamId: string;
+  addressFacts: ConsumeReviewArtifactInput;
   tierMapping: TierDispatchResult;
 }): Promise<DriverRun> {
-  const { branch, deps, docPath, driverRunId, streamId, tierMapping } = params;
+  const {
+    addressFacts,
+    branch,
+    deps,
+    docPath,
+    driverRunId,
+    emitAddressFacts,
+    streamId,
+    tierMapping,
+  } = params;
   const { gh, store, ship, clock } = deps;
   const refreshed = store.getDriverRun(driverRunId);
   if (refreshed === null) {
@@ -1683,6 +1698,7 @@ async function dispatchAddress(params: {
       `address attempt blocked for stream ${streamId}: consumed head does not match live PR head — decide retry or skip`,
     );
   }
+  emitAddressFacts?.(addressFacts);
   const ctx: DispatchContext = {
     clock,
     cloudInFlight: 0,

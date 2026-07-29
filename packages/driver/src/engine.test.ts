@@ -1,7 +1,7 @@
 /** Engine tick loop tests — fake clock, fake port, in-memory store. */
 
 import type { LogFields, Logger } from "@ship/logger";
-import type { DriverStream } from "@ship/store";
+import type { DriverStream, Store } from "@ship/store";
 
 import { parseReceiptsJsonl } from "@ship/receipt";
 import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
@@ -12,6 +12,12 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { DriverStreamView } from "./types.js";
 
+import {
+  emitValidatedAddressFacts,
+  ledgerRunId,
+  ledgerStreamId,
+  withDriverStateEmission,
+} from "./driverstate-emit.js";
 import {
   address,
   buildShipInputForTest,
@@ -43,6 +49,14 @@ function restoreReceiptsPath(prior: string | undefined): void {
     return;
   }
   process.env["SHIP_RECEIPTS_PATH"] = prior;
+}
+
+function restoreStateDir(prior: string | undefined): void {
+  if (prior === undefined) {
+    delete process.env["WORKBENCH_STATE_DIR"];
+    return;
+  }
+  process.env["WORKBENCH_STATE_DIR"] = prior;
 }
 
 /** A minimal logger that records the messages passed to `warn`/`error`. */
@@ -2968,6 +2982,7 @@ describe("driver address", () => {
   let manifestPath: string;
   let findingsPath: string;
   let store: ReturnType<typeof createStore>;
+  let priorStateDir: string | undefined;
 
   const PR_URL = "https://github.com/example/ship/pull/77";
   const HEAD_SHA = "0000000000000000000000000000000000000000";
@@ -2998,9 +3013,11 @@ batches:
     findingsPath = join(repoRoot, "findings.json");
     writeFileSync(findingsPath, validFindingsArtifact());
     store = createStore({ dbPath: ":memory:" });
+    priorStateDir = process.env["WORKBENCH_STATE_DIR"];
   });
 
   afterEach(() => {
+    restoreStateDir(priorStateDir);
     store.close();
     rmSync(tmpDir, { force: true, recursive: true });
   });
@@ -3015,11 +3032,14 @@ batches:
     reviewCycles?: number;
   }
 
-  function seed(opts: SeedOpts = {}): { runId: string; streamId: string } {
+  function seed(
+    opts: SeedOpts = {},
+    targetStore: Store = store,
+  ): { runId: string; streamId: string } {
     const runId = newDriverRunId();
     const batchId = newDriverBatchId();
     const streamId = newDriverStreamId();
-    store.insertDriverRun({
+    targetStore.insertDriverRun({
       batches: [
         {
           batchIndex: 1,
@@ -3049,13 +3069,16 @@ batches:
       status: (opts.runStatus ?? "running") as "running",
     });
     if (opts.reviewCycles !== undefined) {
-      store.updateDriverStream(streamId, { reviewCycles: opts.reviewCycles });
+      targetStore.updateDriverStream(streamId, { reviewCycles: opts.reviewCycles });
     }
     return { runId, streamId };
   }
 
-  function landedSeed(over: SeedOpts = {}): { runId: string; streamId: string } {
-    return seed({ branch: "feat-a", prUrl: PR_URL, ...over });
+  function landedSeed(
+    over: SeedOpts = {},
+    targetStore: Store = store,
+  ): { runId: string; streamId: string } {
+    return seed({ branch: "feat-a", prUrl: PR_URL, ...over }, targetStore);
   }
 
   // Single accessor for the seeded run's first stream — keeps the assertion
@@ -3517,7 +3540,10 @@ batches:
     const NEW_HEAD = `aaaa${"0".repeat(36)}`;
 
     test("parks stream and does not dispatch when head advances between consumption and fresh address dispatch", async () => {
-      const { runId, streamId } = landedSeed();
+      const stateRoot = join(tmpDir, "driverstate-race");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+      const emittingStore = withDriverStateEmission(store);
+      const { runId, streamId } = landedSeed({}, emittingStore);
       const fake = createFakeShipPort([]);
       // First viewPullRequest (loadAddressPr) returns HEAD_SHA; second
       // (checkAddressAttemptHead inside dispatchAddress) returns NEW_HEAD.
@@ -3540,7 +3566,19 @@ batches:
       };
 
       await expect(
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address(
+          {
+            clock: () => 0,
+            emitAddressFacts: (input) => {
+              emitValidatedAddressFacts(emittingStore, input);
+            },
+            gh,
+            ship: fake.port,
+            store: emittingStore,
+          },
+          runId,
+          { findingsPath, streamId },
+        ),
       ).rejects.toThrow(/consumed head does not match/);
 
       const stream = firstStream(runId);
@@ -3550,6 +3588,15 @@ batches:
       expect(stream?.reviewCycles).toBe(1);
       expect(store.getDriverRun(runId)?.status).toBe("awaiting_judgment");
       expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+      const ledger = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as { kind: string; stream: string });
+      const streamKinds = ledger
+        .filter((event) => event.stream === ledgerStreamId(streamId))
+        .map((event) => event.kind);
+      expect(streamKinds).not.toContain("closure_facts");
+      expect(streamKinds).not.toContain("review_cycle");
     });
 
     test("dispatches normally when head is unchanged at fresh address dispatch", async () => {

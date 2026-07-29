@@ -1,6 +1,6 @@
 /** Tests for the best-effort driver-state ledger emission decorator. */
 
-import type { DriverRun, Store } from "@ship/store";
+import type { ConsumeReviewArtifactInput, DriverRun, Store } from "@ship/store";
 
 import { appendEvent } from "@ship/driverstate-emitter";
 import { createStore } from "@ship/store";
@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   emitAddressIntervention,
+  emitValidatedAddressFacts,
   ledgerRunId,
   ledgerStreamId,
   withDriverStateEmission,
@@ -103,6 +104,11 @@ function insertImportedLandedRun(target: Store = wrapped): { run: DriverRun; str
     status: "running",
   });
   return { run, streamId };
+}
+
+function consumeValidated(input: ConsumeReviewArtifactInput): void {
+  wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+  emitValidatedAddressFacts(wrapped, input);
 }
 
 describe("withDriverStateEmission", () => {
@@ -234,7 +240,7 @@ describe("withDriverStateEmission", () => {
     wrapped.updateDriverStream(streamId, { status: "landed" });
     wrapped.updateDriverStream(streamId, { prNumber: 41, prUrl: "https://x/pull/41" });
 
-    wrapped.consumeReviewArtifactAndPrepareDispatch({
+    consumeValidated({
       addressCycle: 1,
       artifactId: "rf_one",
       attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
@@ -259,7 +265,7 @@ describe("withDriverStateEmission", () => {
     const artifactDigest = "a".repeat(64);
     const { run, streamId } = insertImportedLandedRun();
 
-    wrapped.consumeReviewArtifactAndPrepareDispatch({
+    consumeValidated({
       addressCycle: 1,
       artifactId: "rf_imported_landed",
       attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
@@ -336,7 +342,7 @@ describe("withDriverStateEmission", () => {
       repo: "example/ship",
       streamId,
     };
-    wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+    consumeValidated(input);
     const afterFirst = readFileSync(eventPath, "utf8");
     expect(() => {
       wrapped.consumeReviewArtifactAndPrepareDispatch(input);
@@ -396,7 +402,7 @@ describe("withDriverStateEmission", () => {
       repo: "example/ship",
       streamId,
     };
-    wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+    consumeValidated(input);
     const afterFirst = readFileSync(eventPath, "utf8");
     expect(() => {
       wrapped.consumeReviewArtifactAndPrepareDispatch(input);
@@ -427,7 +433,7 @@ describe("withDriverStateEmission", () => {
     const openingHead = "1".repeat(40);
     const laterHead = "2".repeat(40);
     const firstAttempt = { dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false };
-    wrapped.consumeReviewArtifactAndPrepareDispatch({
+    consumeValidated({
       addressCycle: 1,
       artifactId: "rf_cycle_one",
       attempts: [firstAttempt],
@@ -449,7 +455,7 @@ describe("withDriverStateEmission", () => {
       attempts: [completedFirstAttempt],
       status: "landed",
     });
-    wrapped.consumeReviewArtifactAndPrepareDispatch({
+    consumeValidated({
       addressCycle: 2,
       artifactId: "rf_cycle_two",
       attempts: [
@@ -494,7 +500,7 @@ describe("withDriverStateEmission", () => {
       prUrl: "https://github.com/example/ship/pull/41",
     });
 
-    wrapped.consumeReviewArtifactAndPrepareDispatch({
+    consumeValidated({
       addressCycle: 1,
       artifactId: "rf_exact",
       attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],

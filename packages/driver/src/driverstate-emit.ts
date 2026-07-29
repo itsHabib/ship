@@ -11,6 +11,8 @@
  * in `@ship/driverstate-emitter`; this module only maps store deltas to event
  * kinds. The emitter's own state machine rejects an out-of-order emission —
  * that rejection is logged and swallowed, never retrofitted onto ship's flow.
+ * Address receipt facts are the one explicit hook: they publish only after
+ * the engine's post-consumption live-head revalidation succeeds.
  */
 
 import type { Logger } from "@ship/logger";
@@ -91,21 +93,39 @@ export function withDriverStateEmission(store: Store, logger?: Logger): Store {
     },
     consumeReviewArtifactAndPrepareDispatch: (input) => {
       store.consumeReviewArtifactAndPrepareDispatch(input);
-      try {
-        emitAddressFacts(store, input, emit);
-      } catch (err) {
-        logger?.warn({ streamId: input.streamId, err: String(err) }, "driverstate: emission threw");
-      }
     },
   };
 }
 
 /**
- * The address flow moves a stream back to `dispatching` through this atomic
- * store op, bypassing `updateDriverStream` — in ledger terms the stream stays
- * `pr_open` and the round is a `review_cycle` (the only legal pr_open event).
- * findings is -1: the count is not known at this seam, only that a settled
- * review round is being addressed.
+ * Publish a consumed address artifact only after the engine's fresh-head
+ * revalidation succeeds. Consumption and emission are deliberately separate:
+ * the store transaction wins at-most-once first, but a head that advances
+ * before dispatch must not leave settled stale review evidence in the ledger.
+ */
+export function emitValidatedAddressFacts(
+  store: Store,
+  input: ConsumeReviewArtifactInput,
+  logger?: Logger,
+): void {
+  const emit: Emit = (driverRunId, result) => {
+    if (result.ok) return;
+    logger?.warn(
+      { driverRunId, err: result.error },
+      "driverstate: address receipt emission failed; continuing",
+    );
+  };
+  try {
+    emitAddressFacts(store, input, emit);
+  } catch (err) {
+    logger?.warn({ streamId: input.streamId, err: String(err) }, "driverstate: emission threw");
+  }
+}
+
+/**
+ * In ledger terms the stream stays `pr_open` and the round is a
+ * `review_cycle`. findings is -1: the count is not known at this seam, only
+ * that a settled review round is being addressed.
  */
 function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit: Emit): void {
   const run = store.getDriverRun(input.driverRunId);
