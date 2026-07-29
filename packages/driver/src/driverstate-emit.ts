@@ -24,7 +24,15 @@ import type {
   UpdateDriverStreamInput,
 } from "@ship/store";
 
-import { appendEvent, type AppendResult, formatTime, releaseRun } from "@ship/driverstate-emitter";
+import {
+  appendEvent,
+  type AppendResult,
+  formatTime,
+  releaseRun,
+  resolveStateRoot,
+} from "@ship/driverstate-emitter";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { parseManifest } from "./manifest.js";
 
@@ -170,6 +178,7 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
     streamId: input.streamId,
     url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}`,
   });
+  const openingHeadSha = resolveOpeningHeadSha(store, input);
   const closureFacts = compactFacts({
     task_ref: stream.taskId,
     seat: input.producerHarness,
@@ -181,7 +190,7 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
     catalog_revision: input.producerCatalogRevision,
     review_artifact_id: input.artifactId,
     review_artifact_digest: input.canonicalSha256,
-    opening_head_sha: input.addressCycle === 1 ? input.headSha : undefined,
+    opening_head_sha: openingHeadSha,
     review_head_sha: input.headSha,
     ship_run_ref: input.driverRunId,
   });
@@ -209,6 +218,58 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
       stream: ledgerStreamId(input.streamId),
     }),
   );
+}
+
+/**
+ * Cycle one normally supplies the authoritative opening head. A persisted
+ * pre-upgrade run may have consumed cycle one before closure-fact emission
+ * existed, leaving only an immutable empty PR-open placeholder. On a later
+ * cycle, recover that exact consumed head from SQLite only when the ledger
+ * still has no authoritative opening fact.
+ */
+function resolveOpeningHeadSha(
+  store: Store,
+  input: ConsumeReviewArtifactInput,
+): string | undefined {
+  if (input.addressCycle === 1) {
+    return input.headSha;
+  }
+  if (hasAuthoritativeOpeningHead(input.driverRunId, input.streamId)) {
+    return undefined;
+  }
+  return store.getConsumedArtifactHeadSha(input.driverRunId, input.streamId, 1);
+}
+
+function hasAuthoritativeOpeningHead(driverRunId: string, streamId: string): boolean {
+  const path = join(resolveStateRoot(), ledgerRunId(driverRunId), "events.jsonl");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return false;
+  }
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") {
+      continue;
+    }
+    try {
+      const event = JSON.parse(line) as {
+        body?: { opening_head_sha?: unknown };
+        kind?: unknown;
+        stream?: unknown;
+      };
+      if (event.kind !== "closure_facts" || event.stream !== ledgerStreamId(streamId)) {
+        continue;
+      }
+      const openingHead = event.body?.opening_head_sha;
+      if (typeof openingHead === "string" && openingHead !== "") {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 /**

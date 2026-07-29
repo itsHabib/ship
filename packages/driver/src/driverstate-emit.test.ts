@@ -487,6 +487,80 @@ describe("withDriverStateEmission", () => {
     expect(closures[1]?.body).not.toHaveProperty("opening_head_sha");
   });
 
+  it("recovers a pre-upgrade consumed cycle-one head on a later cycle", () => {
+    const { run, streamId } = insertImportedLandedRun();
+    const openingHead = "5".repeat(40);
+    const laterHead = "6".repeat(40);
+    const ledgerStream = ledgerStreamId(streamId);
+    const legacyOpen = appendEvent({
+      actor: `ship:${run.id}`,
+      body: {
+        head_sha: "",
+        pr: 41,
+        url: "https://github.com/example/ship/pull/41",
+      },
+      extRef: "https://github.com/example/ship/pull/41",
+      id: `evt_${ledgerStream}_pr_41`,
+      kind: "stream_pr_opened",
+      runId: ledgerRunId(run.id),
+      stream: ledgerStream,
+    });
+    expect(legacyOpen.ok).toBe(true);
+    const firstAttempt = { dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false };
+    wrapped.consumeReviewArtifactAndPrepareDispatch({
+      addressCycle: 1,
+      artifactId: "rf_pre_upgrade_cycle_one",
+      attempts: [firstAttempt],
+      canonicalSha256: "7".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address-pre-upgrade-1.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha: openingHead,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+    const completedFirstAttempt = { ...firstAttempt, terminal: true };
+    store.updateDriverStream(streamId, {
+      attempts: [completedFirstAttempt],
+      status: "landed",
+    });
+    consumeValidated({
+      addressCycle: 2,
+      artifactId: "rf_post_upgrade_cycle_two",
+      attempts: [
+        completedFirstAttempt,
+        { dispatchedAt: "2026-07-20T01:00:00.000Z", terminal: false },
+      ],
+      canonicalSha256: "8".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address-post-upgrade-2.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 1,
+      headSha: laterHead,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    const opening = events.find((event) => event.kind === "stream_pr_opened");
+    const closures = events.filter((event) => event.kind === "closure_facts");
+    expect(opening?.body).toMatchObject({ head_sha: "" });
+    expect(closures).toHaveLength(1);
+    expect(closures[0]?.body).toMatchObject({
+      opening_head_sha: openingHead,
+      review_head_sha: laterHead,
+    });
+  });
+
   it("emits one exact-head closure sequence from address through Gate handoff and merge", () => {
     const run = importFixture();
     const streamId = pendingStreamId(run);

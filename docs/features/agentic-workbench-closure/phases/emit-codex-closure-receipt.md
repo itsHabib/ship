@@ -61,6 +61,9 @@ and cannot duplicate the repair.
 If the persisted landed row also predates import-time ledger reconciliation,
 the first address transaction replays the same deterministic synthetic
 dispatch/landed history before appending those receipt facts.
+If that row already consumed cycle one before closure-fact emission existed,
+a later cycle recovers cycle one's exact head from the consumed-artifact row
+only when the ledger still lacks an authoritative `opening_head_sha`.
 
 ## Tradeoffs
 
