@@ -56,7 +56,8 @@ process exits or the live-head read fails after that commit but before ledger
 emission, the next tick revalidates the consumed head, reloads those durable
 facts, and emits the same deterministic closure/review-cycle identities before
 dispatch. A stale recovery remains fail-closed and emits no clean review
-evidence.
+evidence; it emits the same deterministic `mechanism-repair` intervention as
+the direct address path.
 
 For ledgers created by an older Ship emitter, an immutable
 `stream_pr_opened` event may already own the PR's deterministic identity with
@@ -130,7 +131,8 @@ only when the ledger still lacks an authoritative `opening_head_sha`.
   consumed-cycle-one ledger states, including idempotent terminal replay.
 - Crash recovery covers consumption committed before receipt emission:
   producer/catalog/artifact facts survive, exact-head revalidation precedes
-  replay, and closure/review-cycle events appear exactly once.
+  replay, closure/review-cycle events appear exactly once on success, and stale
+  recovery emits exactly one intervention with no dispatch.
 - `make check`.
 
 ## Risks

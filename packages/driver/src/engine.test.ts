@@ -3811,6 +3811,59 @@ batches:
       expect(fake.calls.filter((call) => call.kind === "startShip")).toHaveLength(1);
     });
 
+    test("tick recovery emits one stale-head intervention and does not dispatch", async () => {
+      const stateRoot = join(tmpDir, "driverstate-consumption-crash-stale");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+      const { runId, streamId } = landedSeed();
+      const fake = createFakeShipPort([]);
+      const initialGh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      const crashStore: Store = {
+        ...store,
+        consumeReviewArtifactAndPrepareDispatch: (input) => {
+          store.consumeReviewArtifactAndPrepareDispatch(input);
+          throw new Error("simulated process exit after commit");
+        },
+      };
+
+      await expect(
+        address({ clock: () => 0, gh: initialGh, ship: fake.port, store: crashStore }, runId, {
+          findingsPath,
+          streamId,
+        }),
+      ).rejects.toThrow(/simulated process exit/u);
+
+      const staleGh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: NEW_HEAD } });
+      const driver = createDriverService({ clock: () => 1, gh: staleGh, ship: fake.port, store });
+      const first = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+      expect(first.status).toBe("awaiting_judgment");
+      expect(firstStream(runId)?.status).toBe("failed");
+      expect(firstStream(runId)?.errorMessage).toMatch(/stale-head/u);
+      expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+
+      await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+      const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              body: Record<string, unknown>;
+              kind: string;
+              stream: string;
+            },
+        )
+        .filter((event) => event.stream === ledgerStreamId(streamId));
+      const interventions = events.filter((event) => event.kind === "intervention");
+      expect(interventions).toHaveLength(1);
+      expect(interventions[0]?.body).toMatchObject({
+        kind: "mechanism-repair",
+        reason_code: "stale-review-head-post-consumption",
+      });
+      expect(events.some((event) => event.kind === "closure_facts")).toBe(false);
+      expect(events.some((event) => event.kind === "review_cycle")).toBe(false);
+      expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+    });
+
     test("parks stream on tick re-dispatch when head has moved (covers recovery and retry paths)", async () => {
       const { runId, streamId } = landedSeed();
       // Initial address dispatch succeeds with matching head.

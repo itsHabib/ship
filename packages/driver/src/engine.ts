@@ -979,7 +979,35 @@ async function checkTickAddressHead(ctx: DispatchContext, stream: DriverStream):
     });
     return false;
   }
-  return checkAddressAttemptHead(ctx.store, ctx.gh, ctx.repoUrl, ctx.runId, { stream });
+  const onStaleHead = recoveredStaleHeadIntervention(ctx, stream, cycle);
+  return checkAddressAttemptHead(ctx.store, ctx.gh, ctx.repoUrl, ctx.runId, {
+    stream,
+    ...(onStaleHead === undefined ? {} : { onStaleHead }),
+  });
+}
+
+function recoveredStaleHeadIntervention(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  cycle: number,
+): ((liveHeadSha: string) => void) | undefined {
+  const facts = ctx.store.getConsumedReviewArtifactReceipt(ctx.runId, stream.id, cycle);
+  if (facts === undefined) {
+    return undefined;
+  }
+  return (liveHeadSha) => {
+    emitAddressIntervention(
+      {
+        driverRunId: ctx.runId,
+        liveHeadSha,
+        prNumber: facts.prNumber,
+        reasonCode: "stale-review-head-post-consumption",
+        repo: facts.repo,
+        streamId: stream.id,
+      },
+      ctx.logger,
+    );
+  };
 }
 
 interface AddressHeadCheckOpts {
