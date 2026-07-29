@@ -110,6 +110,9 @@ only when the ledger still lacks an authoritative `opening_head_sha`.
   head, including deterministic duplicate address/land behavior.
 - Refusal examples cover stale head, malformed artifact, incomplete legacy
   provenance, and paired exact-head Gate handoff.
+- Exported-path matrix covers service-decorated and direct bare-store address,
+  land, and markMerged calls across absent, pending, landed, empty-head, and
+  consumed-cycle-one ledger states, including idempotent terminal replay.
 - `make check`.
 
 ## Risks

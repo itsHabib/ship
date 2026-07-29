@@ -18,6 +18,7 @@ import {
   withDriverStateEmission,
 } from "./driverstate-emit.js";
 import { importManifest } from "./import.js";
+import { markMerged } from "./judgment.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(here, "../test/fixtures");
@@ -154,6 +155,42 @@ describe("withDriverStateEmission", () => {
       "stream_pr_opened",
       "stream_merged",
     ]);
+  });
+
+  it("makes direct bare-store markMerged receipt-complete and idempotent", () => {
+    const { run, streamId } = insertImportedLandedRun(store);
+    const head = "9".repeat(40);
+    const facts = {
+      finalReviewedHeadSha: head,
+      gateRunRef: "run_09ab",
+      mergeCommit: "merge-direct",
+      mergeHeadSha: head,
+      mergedAt: "2026-07-20T00:00:00.000Z",
+      prNumber: 41,
+    };
+
+    markMerged(store, run.id, streamId, facts);
+    markMerged(store, run.id, streamId, facts);
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.map((event) => event.kind)).toEqual([
+      "stream_dispatched",
+      "stream_attempt",
+      "stream_pr_opened",
+      "closure_facts",
+      "stream_merged",
+    ]);
+    expect(events.find((event) => event.kind === "closure_facts")?.body).toMatchObject({
+      final_reviewed_head_sha: head,
+      gate_head_sha: head,
+      gate_run_ref: "run_09ab",
+    });
+    expect(events.find((event) => event.kind === "stream_merged")?.body).toMatchObject({
+      head_sha: head,
+      merge_commit: "merge-direct",
+    });
   });
 
   it("falls back to merged_at now when the patch carries only the merge commit", () => {

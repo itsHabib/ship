@@ -157,6 +157,64 @@ export function ensureDriverStateRun(run: DriverRun, logger?: Logger): void {
 }
 
 /**
+ * Bootstrap the exact stream prefix required by markMerged/land when a
+ * persisted pre-upgrade run has only run_imported in its ledger. Existing
+ * stream history is authoritative and is never supplemented synthetically.
+ */
+export function ensureDriverStateMergeRun(
+  run: DriverRun,
+  stream: DriverStream,
+  logger?: Logger,
+): void {
+  const emit: Emit = (driverRunId, result) => {
+    if (result.ok) return;
+    logger?.warn(
+      { driverRunId, err: result.error },
+      "driverstate: merge bootstrap emission failed; continuing",
+    );
+  };
+  try {
+    emit(run.id, emitRunImported(run, run.sourceJson, run.manifestPath));
+    if (hasStreamLedgerEvent(run.id, stream.id)) {
+      return;
+    }
+    openImportedLandedStream(run.id, stream, emit);
+  } catch (err) {
+    logger?.warn({ driverRunId: run.id, err: String(err) }, "driverstate: emission threw");
+  }
+}
+
+/**
+ * Publish merge facts after the store update. markMerged calls this
+ * intrinsically; a decorated store may already have emitted the same
+ * deterministic ids, in which case append idempotency absorbs the replay.
+ */
+export function emitValidatedMergeFacts(
+  store: Store,
+  driverRunId: string,
+  streamId: string,
+  patch: UpdateDriverStreamInput,
+  logger?: Logger,
+): void {
+  const run = store.getDriverRun(driverRunId);
+  const stream = run?.batches
+    .flatMap((batch) => batch.streams)
+    .find((candidate) => candidate.id === streamId);
+  if (stream === undefined) {
+    return;
+  }
+  const emit: Emit = (id, result) => {
+    if (result.ok) return;
+    logger?.warn({ driverRunId: id, err: result.error }, "driverstate: merge emission failed");
+  };
+  try {
+    emitStreamDelta(stream, patch, emit);
+  } catch (err) {
+    logger?.warn({ streamId, err: String(err) }, "driverstate: emission threw");
+  }
+}
+
+/**
  * In ledger terms the stream stays `pr_open` and the round is a
  * `review_cycle`. findings is -1: the count is not known at this seam, only
  * that a settled review round is being addressed.
@@ -263,6 +321,30 @@ function hasAuthoritativeOpeningHead(driverRunId: string, streamId: string): boo
       }
       const openingHead = event.body?.opening_head_sha;
       if (typeof openingHead === "string" && openingHead !== "") {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function hasStreamLedgerEvent(driverRunId: string, streamId: string): boolean {
+  const path = join(resolveStateRoot(), ledgerRunId(driverRunId), "events.jsonl");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return false;
+  }
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") {
+      continue;
+    }
+    try {
+      const event = JSON.parse(line) as { stream?: unknown };
+      if (event.stream === ledgerStreamId(streamId)) {
         return true;
       }
     } catch {

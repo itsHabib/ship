@@ -18,6 +18,7 @@ import type {
   MergeFacts,
 } from "./types.js";
 
+import { emitValidatedMergeFacts, ensureDriverStateMergeRun } from "./driverstate-emit.js";
 import { CancelError, DecideError } from "./errors.js";
 import {
   resolveAllDispatchFailingEscalations,
@@ -532,7 +533,9 @@ export function markMerged(
   // becoming `done`) emits a spend event. markMerged/land accept an already
   // `done` stream for idempotent re-land, which must not double-count.
   const firstMerge = stream.status === "landed";
+  ensureDriverStateMergeRun(run, stream);
   store.updateDriverStream(streamId, patch);
+  emitValidatedMergeFacts(store, driverRunId, streamId, patch);
 
   if (firstMerge) recordTerminalSpend(store, run, stream, facts);
 
