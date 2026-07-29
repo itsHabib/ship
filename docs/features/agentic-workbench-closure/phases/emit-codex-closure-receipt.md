@@ -92,7 +92,10 @@ dispatch/landed history before appending those receipt facts.
 4. **Refusals never become clean evidence.** Malformed, mismatched, and stale
    address inputs emit a typed `mechanism-repair` intervention when the ledger
    can record it; they emit no closure completion, settled review cycle, or
-   merge event. This includes a head advance between consumption and dispatch.
+   merge event. A refusal may create the transition-required PR-open placeholder,
+   but its head stays empty until a valid first cycle supplies
+   `opening_head_sha`. This includes a head advance between consumption and
+   dispatch.
 
 ## Validation
 

@@ -541,7 +541,12 @@ export function emitAddressIntervention(
   emitPROpened({
     driverRunId: input.driverRunId,
     emit,
-    headSha: input.liveHeadSha,
+    // A refusal has not accepted any review head. The transition still needs
+    // a PR-open predecessor, but sealing the current live head here would
+    // misstate it as the cycle-one opening head if the PR later advances.
+    // Valid address evidence repairs this legacy-compatible placeholder via
+    // closure_facts.opening_head_sha.
+    headSha: "",
     pr: input.prNumber,
     streamId: input.streamId,
     url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}`,

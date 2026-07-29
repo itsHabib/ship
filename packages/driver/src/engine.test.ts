@@ -3202,6 +3202,81 @@ batches:
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
   });
 
+  test("stale refusal does not seal a head before a later valid cycle", async () => {
+    const stateRoot = join(tmpDir, "driverstate-refusal-retry");
+    process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+    const emittingStore = withDriverStateEmission(store);
+    const { runId, streamId } = landedSeed({}, emittingStore);
+    const fake = createFakeShipPort([]);
+    const refusedHead = "1".repeat(40);
+    const acceptedHead = "2".repeat(40);
+    writeFileSync(
+      findingsPath,
+      validFindingsArtifact({
+        subject: {
+          type: "pull_request",
+          repo: "example/ship",
+          number: 77,
+          head_sha: refusedHead,
+        },
+      }),
+    );
+    await expectRefusal(
+      () =>
+        address(
+          {
+            gh: createFakeGhPort({ 77: { headRefOid: HEAD_SHA, state: "OPEN" } }),
+            ship: fake.port,
+            store: emittingStore,
+          },
+          runId,
+          { findingsPath, streamId },
+        ),
+      "findings-stale-head",
+    );
+
+    writeFileSync(
+      findingsPath,
+      validFindingsArtifact({
+        subject: {
+          type: "pull_request",
+          repo: "example/ship",
+          number: 77,
+          head_sha: acceptedHead,
+        },
+      }),
+    );
+    await address(
+      {
+        gh: createFakeGhPort({ 77: { headRefOid: acceptedHead, state: "OPEN" } }),
+        ship: fake.port,
+        store: emittingStore,
+      },
+      runId,
+      { findingsPath, streamId },
+    );
+
+    const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            body: Record<string, unknown>;
+            kind: string;
+            stream: string;
+          },
+      )
+      .filter((event) => event.stream === ledgerStreamId(streamId));
+    const opening = events.find((event) => event.kind === "stream_pr_opened");
+    const closure = events.find((event) => event.kind === "closure_facts");
+    expect(opening?.body["head_sha"]).toBe("");
+    expect(closure?.body).toMatchObject({
+      opening_head_sha: acceptedHead,
+      review_head_sha: acceptedHead,
+    });
+  });
+
   test("canonical replay with regenerated envelope dispatches at most once", async () => {
     const { runId, streamId } = landedSeed();
     const fake = createFakeShipPort([]);
