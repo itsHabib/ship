@@ -1,5 +1,6 @@
 /** Tests for the best-effort driver-state ledger emission decorator. */
 
+import type { LogFields, Logger } from "@ship/logger";
 import type { ConsumeReviewArtifactInput, DriverRun, Store } from "@ship/store";
 
 import { appendEvent } from "@ship/driverstate-emitter";
@@ -13,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   emitAddressIntervention,
   emitValidatedAddressFacts,
+  ensureDriverStateRun,
   ledgerRunId,
   ledgerStreamId,
   withDriverStateEmission,
@@ -110,6 +112,20 @@ function insertImportedLandedRun(target: Store = wrapped): { run: DriverRun; str
 function consumeValidated(input: ConsumeReviewArtifactInput): void {
   wrapped.consumeReviewArtifactAndPrepareDispatch(input);
   emitValidatedAddressFacts(wrapped, input);
+}
+
+function makeCapturingLogger(sink: string[]): Logger {
+  const record = (_fields: LogFields, msg: string): void => {
+    sink.push(msg);
+  };
+  const logger: Logger = {
+    child: () => logger,
+    debug: () => undefined,
+    error: record,
+    info: () => undefined,
+    warn: record,
+  };
+  return logger;
 }
 
 describe("withDriverStateEmission", () => {
@@ -295,6 +311,32 @@ describe("withDriverStateEmission", () => {
     });
 
     expect(ledgerKinds(run.id)).toContain("review_cycle");
+    expect(
+      ledgerEvents(run.id).find((event) => event.kind === "closure_facts")?.body,
+    ).toMatchObject({
+      harness: "cursor",
+      review_producer: "codex:reviewfindings-github",
+      seat: "cursor",
+    });
+  });
+
+  it("does not synthetic-bootstrap a normal decorated landed stream", () => {
+    const warnings: string[] = [];
+    const emittingStore = withDriverStateEmission(store, makeCapturingLogger(warnings));
+    const run = importManifest(emittingStore, join(fixturesDir, "synthetic-full.driver.md")).run;
+    const streamId = pendingStreamId(run);
+    emittingStore.updateDriverStream(streamId, { status: "dispatching" });
+    emittingStore.updateDriverStream(streamId, { status: "landed" });
+    const before = ledgerEvents(run.id);
+    const refreshed = emittingStore.getDriverRun(run.id);
+    if (refreshed === null) {
+      throw new Error("decorated run missing");
+    }
+
+    ensureDriverStateRun(refreshed, makeCapturingLogger(warnings));
+
+    expect(ledgerEvents(run.id)).toEqual(before);
+    expect(warnings).toHaveLength(0);
   });
 
   it("persists address receipt facts for a resumed stream imported as landed", () => {

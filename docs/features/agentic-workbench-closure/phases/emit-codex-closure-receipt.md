@@ -72,6 +72,9 @@ only when the ledger still lacks an authoritative `opening_head_sha`.
 - Closure facts are additive driver-state events rather than columns in Ship's
   SQLite store. This keeps the existing artifact/store transaction intact and
   avoids a second source of receipt truth.
+- Execution `seat`/`harness` come from the dispatched stream metadata, never
+  from the independent review artifact producer. `review_producer` retains the
+  reviewer/coordinator identity.
 - A legacy land call remains supported, but its receipt is visibly incomplete
   because no Gate/final-reviewed join was supplied.
 - A land call with no preceding address leaves the PR opening head unknown;

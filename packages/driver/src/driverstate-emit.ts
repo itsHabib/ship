@@ -237,10 +237,11 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
     url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}`,
   });
   const openingHeadSha = resolveOpeningHeadSha(store, input);
+  const executionHarness = stream.provider ?? stream.dispatchProvider;
   const closureFacts = compactFacts({
     task_ref: stream.taskId,
-    seat: input.producerHarness,
-    harness: input.producerHarness,
+    seat: executionHarness,
+    harness: executionHarness,
     model: stream.modelId ?? input.dispatchModel,
     provider: stream.provider ?? input.dispatchProvider,
     effort: stream.effortTier,
@@ -370,6 +371,9 @@ function reconcileImportedLandedAddress(
   if (input.attempts.length !== 1) {
     return;
   }
+  if (hasStreamLedgerEvent(input.driverRunId, input.streamId)) {
+    return;
+  }
   openImportedLandedStream(input.driverRunId, stream, emit);
 }
 
@@ -426,6 +430,9 @@ type Emit = (driverRunId: string, result: AppendResult) => void;
  */
 function closePreCompletedStreams(run: DriverRun, emit: Emit): void {
   for (const s of run.batches.flatMap((b) => b.streams)) {
+    if (hasStreamLedgerEvent(run.id, s.id)) {
+      continue;
+    }
     if (s.status === "landed") {
       openImportedLandedStream(run.id, s, emit);
       continue;
