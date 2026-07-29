@@ -20,7 +20,7 @@ import type {
   RunOpts,
 } from "./types.js";
 
-import { emitValidatedAddressFacts, withDriverStateEmission } from "./driverstate-emit.js";
+import { withDriverStateEmission } from "./driverstate-emit.js";
 import { address as addressFn, flipStreamToCloud, resolveRunOpts, runTick } from "./engine.js";
 import { DecideError, DriverRunNotFoundEngineError } from "./errors.js";
 import { importManifest as importManifestFn } from "./import.js";
@@ -87,9 +87,6 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
       return addressFn(
         {
           clock: clock ?? Date.now,
-          emitAddressFacts: (input) => {
-            emitValidatedAddressFacts(store, input, logger);
-          },
           gh,
           ship,
           store,

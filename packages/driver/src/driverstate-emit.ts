@@ -11,8 +11,8 @@
  * in `@ship/driverstate-emitter`; this module only maps store deltas to event
  * kinds. The emitter's own state machine rejects an out-of-order emission —
  * that rejection is logged and swallowed, never retrofitted onto ship's flow.
- * Address receipt facts are the one explicit hook: they publish only after
- * the engine's post-consumption live-head revalidation succeeds.
+ * Address receipt facts publish intrinsically from the public address path,
+ * only after the engine's post-consumption live-head revalidation succeeds.
  */
 
 import type { Logger } from "@ship/logger";
@@ -116,6 +116,15 @@ export function emitValidatedAddressFacts(
     );
   };
   try {
+    const run = store.getDriverRun(input.driverRunId);
+    if (run === null) {
+      return;
+    }
+    // `address()` is a public engine API and may be called with an undecorated
+    // store. Deterministically bootstrap the ledger so receipt publication
+    // cannot be omitted by forgetting a service-layer callback.
+    emit(run.id, emitRunImported(run, run.sourceJson, run.manifestPath));
+    closePreCompletedStreams(run, emit);
     emitAddressFacts(store, input, emit);
   } catch (err) {
     logger?.warn({ streamId: input.streamId, err: String(err) }, "driverstate: emission threw");

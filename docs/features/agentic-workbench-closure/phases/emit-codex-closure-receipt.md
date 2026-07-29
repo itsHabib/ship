@@ -78,7 +78,10 @@ dispatch/landed history before appending those receipt facts.
 
 1. **Producer provenance crosses the existing transactional seam.** The parsed
    producer fields travel in `ConsumeReviewArtifactInput`; the store transaction
-   remains the at-most-once winner, and emission occurs only after it commits.
+   remains the at-most-once winner, and emission occurs intrinsically in the
+   public `address()` path only after the post-consumption live-head check
+   succeeds. Direct engine callers cannot omit it by failing to wire an
+   optional service callback.
 2. **Opening-head emission waits for address.** PR landing alone does not know
    an exact head. Address supplies the first exact value and repeats it as the
    additive `opening_head_sha` closure fact so pre-upgrade placeholder events

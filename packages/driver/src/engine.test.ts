@@ -12,12 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { DriverStreamView } from "./types.js";
 
-import {
-  emitValidatedAddressFacts,
-  ledgerRunId,
-  ledgerStreamId,
-  withDriverStateEmission,
-} from "./driverstate-emit.js";
+import { ledgerRunId, ledgerStreamId, withDriverStateEmission } from "./driverstate-emit.js";
 import {
   address,
   buildShipInputForTest,
@@ -3569,9 +3564,6 @@ batches:
         address(
           {
             clock: () => 0,
-            emitAddressFacts: (input) => {
-              emitValidatedAddressFacts(emittingStore, input);
-            },
             gh,
             ship: fake.port,
             store: emittingStore,
@@ -3597,9 +3589,12 @@ batches:
         .map((event) => event.kind);
       expect(streamKinds).not.toContain("closure_facts");
       expect(streamKinds).not.toContain("review_cycle");
+      expect(streamKinds).toContain("intervention");
     });
 
-    test("dispatches normally when head is unchanged at fresh address dispatch", async () => {
+    test("direct address call emits validated receipt intrinsically when head is unchanged", async () => {
+      const stateRoot = join(tmpDir, "driverstate-direct");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
       const { runId, streamId } = landedSeed();
       const fake = createFakeShipPort([]);
       const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
@@ -3611,6 +3606,15 @@ batches:
 
       expect(firstStream(runId)?.status).toBe("dispatched");
       expect(fake.calls.some((c) => c.kind === "startShip")).toBe(true);
+      const ledger = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as { kind: string; stream: string });
+      const streamKinds = ledger
+        .filter((event) => event.stream === ledgerStreamId(streamId))
+        .map((event) => event.kind);
+      expect(streamKinds).toContain("closure_facts");
+      expect(streamKinds).toContain("review_cycle");
     });
 
     test("parks stream on tick re-dispatch when head has moved (covers recovery and retry paths)", async () => {

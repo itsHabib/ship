@@ -35,7 +35,7 @@ import type {
 } from "./types.js";
 
 import { isLegalCell } from "./dispatch-cell.js";
-import { emitAddressIntervention } from "./driverstate-emit.js";
+import { emitAddressIntervention, emitValidatedAddressFacts } from "./driverstate-emit.js";
 import {
   AddressError,
   DriverRunNotFoundEngineError,
@@ -954,7 +954,12 @@ async function checkTickAddressHead(ctx: DispatchContext, stream: DriverStream):
     });
     return false;
   }
-  return checkAddressAttemptHead(ctx.store, ctx.gh, ctx.repoUrl, ctx.runId, stream);
+  return checkAddressAttemptHead(ctx.store, ctx.gh, ctx.repoUrl, ctx.runId, { stream });
+}
+
+interface AddressHeadCheckOpts {
+  stream: DriverStream;
+  onStaleHead?: (liveHeadSha: string) => void;
 }
 
 /**
@@ -973,8 +978,9 @@ async function checkAddressAttemptHead(
   gh: DriverGhPort,
   repoUrl: string | undefined,
   runId: string,
-  stream: DriverStream,
+  opts: AddressHeadCheckOpts,
 ): Promise<boolean> {
+  const { onStaleHead, stream } = opts;
   const cycle = stream.reviewCycles;
   if (cycle === undefined || cycle === 0) return true;
   const consumedHead = store.getConsumedArtifactHeadSha(runId, stream.id, cycle);
@@ -989,6 +995,7 @@ async function checkAddressAttemptHead(
   const view = await gh.viewPullRequest(toGhRepo(repoUrl), prNumber);
   const liveHead = view.headRefOid.toLowerCase();
   if (consumedHead.toLowerCase() === liveHead) return true;
+  onStaleHead?.(liveHead);
   return failStreamHeadCheck(
     store,
     stream.id,
@@ -1406,7 +1413,6 @@ export interface AddressDeps {
   store: Store;
   ship: DriverShipPort;
   gh: DriverGhPort;
-  emitAddressFacts?: (input: ConsumeReviewArtifactInput) => void;
   logger?: Logger;
   clock?: () => number;
   files?: AddressFilePort;
@@ -1486,10 +1492,15 @@ export async function address(
   });
   return dispatchAddress({
     branch,
-    deps: { clock, gh, ship, store },
+    deps: {
+      clock,
+      gh,
+      ship,
+      store,
+      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+    },
     docPath,
     driverRunId,
-    ...(deps.emitAddressFacts === undefined ? {} : { emitAddressFacts: deps.emitAddressFacts }),
     streamId: stream.id,
     addressFacts: prepared.addressFacts,
     tierMapping: prepared.tierMapping,
@@ -1650,25 +1661,21 @@ function consumePreparedAddress(params: {
 
 async function dispatchAddress(params: {
   branch: string;
-  deps: { store: Store; ship: DriverShipPort; clock: () => number; gh: DriverGhPort };
+  deps: {
+    store: Store;
+    ship: DriverShipPort;
+    clock: () => number;
+    gh: DriverGhPort;
+    logger?: Logger;
+  };
   docPath: string;
   driverRunId: string;
-  emitAddressFacts?: (input: ConsumeReviewArtifactInput) => void;
   streamId: string;
   addressFacts: ConsumeReviewArtifactInput;
   tierMapping: TierDispatchResult;
 }): Promise<DriverRun> {
-  const {
-    addressFacts,
-    branch,
-    deps,
-    docPath,
-    driverRunId,
-    emitAddressFacts,
-    streamId,
-    tierMapping,
-  } = params;
-  const { gh, store, ship, clock } = deps;
+  const { addressFacts, branch, deps, docPath, driverRunId, streamId, tierMapping } = params;
+  const { gh, store, ship, clock, logger } = deps;
   const refreshed = store.getDriverRun(driverRunId);
   if (refreshed === null) {
     throw new DriverRunNotFoundEngineError(driverRunId);
@@ -1685,20 +1692,29 @@ async function dispatchAddress(params: {
   }
   // Re-validate the consumed head against the live PR before dispatching.
   // This guards the window between consumption and dispatch startup.
-  const headOk = await checkAddressAttemptHead(
-    store,
-    gh,
-    extractRepoUrl(refreshed),
-    driverRunId,
-    flipped,
-  );
+  const headOk = await checkAddressAttemptHead(store, gh, extractRepoUrl(refreshed), driverRunId, {
+    stream: flipped,
+    onStaleHead: (liveHeadSha) => {
+      emitAddressIntervention(
+        {
+          driverRunId,
+          liveHeadSha,
+          prNumber: addressFacts.prNumber,
+          reasonCode: "stale-review-head-post-consumption",
+          repo: addressFacts.repo,
+          streamId,
+        },
+        logger,
+      );
+    },
+  });
   if (!headOk) {
     store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
     throw new PreconditionError(
       `address attempt blocked for stream ${streamId}: consumed head does not match live PR head — decide retry or skip`,
     );
   }
-  emitAddressFacts?.(addressFacts);
+  emitValidatedAddressFacts(store, addressFacts, logger);
   const ctx: DispatchContext = {
     clock,
     cloudInFlight: 0,
