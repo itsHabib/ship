@@ -52,9 +52,11 @@ terminal closure.
 For ledgers created by an older Ship emitter, an immutable
 `stream_pr_opened` event may already own the PR's deterministic identity with
 an empty `head_sha`. Address therefore also records `opening_head_sha` in its
-cycle-keyed closure facts. That additive fact is the authoritative exact head
-for receipt reduction when the legacy opening event cannot be replaced; a
-retry reuses the closure event identity and cannot duplicate the repair.
+first-cycle closure facts. That additive fact is the authoritative exact head
+for receipt reduction when the legacy opening event cannot be replaced; later
+cycles record only their cycle-specific `review_head_sha`, so a changed review
+head cannot redefine the opening. A retry reuses the closure event identity
+and cannot duplicate the repair.
 If the persisted landed row also predates import-time ledger reconciliation,
 the first address transaction replays the same deterministic synthetic
 dispatch/landed history before appending those receipt facts.
@@ -68,6 +70,8 @@ dispatch/landed history before appending those receipt facts.
   avoids a second source of receipt truth.
 - A legacy land call remains supported, but its receipt is visibly incomplete
   because no Gate/final-reviewed join was supplied.
+- A land call with no preceding address leaves the PR opening head unknown;
+  its exact merge head appears only on `stream_merged`.
 
 ## EDs
 

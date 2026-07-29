@@ -164,6 +164,35 @@ describe("withDriverStateEmission", () => {
     expect((merged?.body as { merged_at: string }).merged_at).not.toBe("");
   });
 
+  it("does not mislabel a no-address merge head as the PR opening head", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+    const mergeHead = "a".repeat(40);
+
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+    wrapped.updateDriverStream(streamId, {
+      mergeCommit: "merge-commit",
+      mergeHeadSha: mergeHead,
+      prNumber: 41,
+      prUrl: "https://github.com/example/ship/pull/41",
+      status: "done",
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.find((event) => event.kind === "stream_pr_opened")?.body).toMatchObject({
+      head_sha: "",
+      pr: 41,
+    });
+    expect(events.find((event) => event.kind === "stream_merged")?.body).toMatchObject({
+      head_sha: mergeHead,
+      merge_commit: "merge-commit",
+      pr: 41,
+    });
+  });
+
   it("prefers the latest attempt's structured failureCategory over errorMessage", () => {
     const run = importFixture();
     const streamId = pendingStreamId(run);
@@ -391,6 +420,65 @@ describe("withDriverStateEmission", () => {
       review_artifact_id: "rf_persisted_repair",
       review_head_sha: headSha,
     });
+  });
+
+  it("preserves the cycle-one opening head across later address cycles", () => {
+    const { run, streamId } = insertImportedLandedRun();
+    const openingHead = "1".repeat(40);
+    const laterHead = "2".repeat(40);
+    const firstAttempt = { dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false };
+    wrapped.consumeReviewArtifactAndPrepareDispatch({
+      addressCycle: 1,
+      artifactId: "rf_cycle_one",
+      attempts: [firstAttempt],
+      canonicalSha256: "3".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address-1.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha: openingHead,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const completedFirstAttempt = { ...firstAttempt, terminal: true };
+    wrapped.updateDriverStream(streamId, {
+      attempts: [completedFirstAttempt],
+      status: "landed",
+    });
+    wrapped.consumeReviewArtifactAndPrepareDispatch({
+      addressCycle: 2,
+      artifactId: "rf_cycle_two",
+      attempts: [
+        completedFirstAttempt,
+        { dispatchedAt: "2026-07-20T01:00:00.000Z", terminal: false },
+      ],
+      canonicalSha256: "4".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address-2.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 1,
+      headSha: laterHead,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const closures = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId) && event.kind === "closure_facts",
+    );
+    expect(closures).toHaveLength(2);
+    expect(closures[0]?.body).toMatchObject({
+      opening_head_sha: openingHead,
+      review_head_sha: openingHead,
+    });
+    expect(closures[1]?.body).toMatchObject({ review_head_sha: laterHead });
+    expect(closures[1]?.body).not.toHaveProperty("opening_head_sha");
   });
 
   it("emits one exact-head closure sequence from address through Gate handoff and merge", () => {

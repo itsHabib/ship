@@ -135,7 +135,7 @@ function emitAddressFacts(store: Store, input: ConsumeReviewArtifactInput, emit:
     catalog_revision: input.producerCatalogRevision,
     review_artifact_id: input.artifactId,
     review_artifact_digest: input.canonicalSha256,
-    opening_head_sha: input.headSha,
+    opening_head_sha: input.addressCycle === 1 ? input.headSha : undefined,
     review_head_sha: input.headSha,
     ship_run_ref: input.driverRunId,
   });
@@ -421,7 +421,11 @@ function emitMerged(
     emit: (_driverRunId, result) => {
       send(result);
     },
-    headSha: patch.mergeHeadSha ?? "",
+    // A legacy land without address never observed the opening head. Keep the
+    // lifecycle placeholder unknown; mergeHeadSha belongs only to the merged
+    // event below. If address already emitted the exact opening, deterministic
+    // PR-event idempotency preserves that committed body.
+    headSha: "",
     pr: stream.prNumber,
     streamId: stream.id,
     url: stream.prUrl ?? "",
