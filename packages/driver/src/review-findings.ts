@@ -49,6 +49,13 @@ const artifactSchema = z.object({
   producer: z.object({
     id: bounded("producer id", 128),
     harness: bounded("producer harness", 128),
+    catalog_revision: z
+      .string()
+      .regex(
+        /^([0-9a-f]{40}|[0-9a-f]{64}|sha256:[0-9a-f]{64})$/,
+        "producer catalog_revision must be a full source commit SHA or sha256:<64 lowercase hexadecimal characters>",
+      )
+      .optional(),
     generated_at: z.string().datetime({ offset: true }),
   }),
   panel: z.object({

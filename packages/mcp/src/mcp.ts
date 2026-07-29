@@ -790,6 +790,14 @@ export const driverLandInputSchema = z
     cycles: z.number().int().nonnegative().optional(),
     /** Merge with `--admin` (bypass branch protection). Default false. */
     admin: z.boolean().optional(),
+    reviewedHeadSha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/, "reviewedHeadSha must be 40 lowercase hexadecimal characters")
+      .optional(),
+    gateRunRef: z
+      .string()
+      .regex(/^run_[0-9a-f]+$/, "gateRunRef must match run_<lowercase-hex>")
+      .optional(),
   })
   .strict();
 export type DriverLandInput = z.infer<typeof driverLandInputSchema>;

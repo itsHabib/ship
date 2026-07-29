@@ -31,6 +31,8 @@ export interface GhPullRequestView {
 export interface GhMergeOpts {
   /** Append `--admin` to the merge (bypass branch protection). Default off. */
   admin?: boolean;
+  /** Refuse the merge if the PR head no longer equals this exact commit. */
+  expectedHeadSha?: string;
 }
 
 /** One status check from a PR's `statusCheckRollup`, normalized for the guard. */
@@ -112,6 +114,9 @@ export function createExecGhPort(exec: GhExec = defaultGhExec): DriverGhPort {
       ];
       if (opts?.admin === true) {
         args.splice(4, 0, "--admin");
+      }
+      if (opts?.expectedHeadSha !== undefined) {
+        args.splice(4, 0, "--match-head-commit", opts.expectedHeadSha);
       }
       await exec("gh", args);
     },

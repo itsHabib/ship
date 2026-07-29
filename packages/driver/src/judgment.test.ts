@@ -274,6 +274,25 @@ describe("judgment", () => {
     expect(run?.batches[0]?.status).toBe("done");
   });
 
+  test.each([{ finalReviewedHeadSha: "a".repeat(40) }, { gateRunRef: "run_ab12" }])(
+    "direct markMerged rejects a partial closure handoff before mutation",
+    (partial) => {
+      const { runId, streamId } = seedLandedRun(store);
+
+      expect(() => {
+        markMerged(store, runId, streamId, {
+          mergeCommit: "deadbeef",
+          prNumber: 42,
+          ...partial,
+        });
+      }).toThrow(/requires both gateRunRef and finalReviewedHeadSha/u);
+
+      expect(store.getDriverRun(runId)?.batches[0]?.streams[0]).toMatchObject({
+        status: "landed",
+      });
+    },
+  );
+
   test("markMerged does not double-log terminal spend on idempotent re-land", () => {
     // A file-backed store so the spend log lands beside its dbPath (an
     // in-memory store has no sibling and is skipped — see spend-log tests).
@@ -951,6 +970,41 @@ function seedDispatchingRun(store: ReturnType<typeof createStore>, docPath: stri
     status: "running",
   });
   return runId;
+}
+
+function seedLandedRun(store: ReturnType<typeof createStore>): {
+  runId: string;
+  streamId: string;
+} {
+  const runId = newDriverRunId();
+  const streamId = newDriverStreamId();
+  store.insertDriverRun({
+    batches: [
+      {
+        batchIndex: 1,
+        dependsOn: [],
+        id: newDriverBatchId(),
+        status: "running",
+        streams: [
+          {
+            attempts: [],
+            id: streamId,
+            runtime: "local",
+            specPath: "a.md",
+            status: "landed",
+            streamIndex: 0,
+            touches: [],
+          },
+        ],
+      },
+    ],
+    id: runId,
+    manifestPath: "/tmp/driver.md",
+    repo: "ship",
+    sourceJson: minimalSource(),
+    status: "running",
+  });
+  return { runId, streamId };
 }
 
 function minimalSource(): string {

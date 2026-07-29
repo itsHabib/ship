@@ -54,7 +54,7 @@ describe("runMigrations", () => {
     expect(tables).toContain("driver_review_artifacts");
 
     const applied = db.prepare<[], MigrationRow>("SELECT name, applied_at FROM _migrations").all();
-    expect(applied).toHaveLength(19);
+    expect(applied).toHaveLength(20);
     expect(applied.map((r) => r.name)).toEqual([
       "0001_init.sql",
       "0002_cursor_runs_run_id.sql",
@@ -75,6 +75,7 @@ describe("runMigrations", () => {
       "0018_driver_streams_model_id.sql",
       "0019_driver_streams_fallback.sql",
       "0020_driver_streams_triage.sql",
+      "0021_review_artifact_receipt_facts.sql",
     ]);
 
     const phaseColumns = db
@@ -103,6 +104,16 @@ describe("runMigrations", () => {
     expect(driverStreamColumns).toContain("fallback_chain");
     expect(driverStreamColumns).toContain("fallback_cursor");
     expect(driverStreamColumns).toContain("fallback_log");
+
+    const reviewArtifactColumns = db
+      .prepare("PRAGMA table_info(driver_review_artifacts)")
+      .all()
+      .map((r) => (r as { name: string }).name);
+    expect(reviewArtifactColumns).toContain("producer_id");
+    expect(reviewArtifactColumns).toContain("producer_harness");
+    expect(reviewArtifactColumns).toContain("producer_catalog_revision");
+    expect(reviewArtifactColumns).toContain("dispatch_provider");
+    expect(reviewArtifactColumns).toContain("dispatch_model");
     expect(driverStreamColumns).toContain("triage_tier");
     expect(driverStreamColumns).toContain("triage_tier_source");
     expect(driverStreamColumns).toContain("triage_head_sha");
@@ -120,7 +131,7 @@ describe("runMigrations", () => {
     runMigrations(db);
 
     const applied = db.prepare<[], MigrationRow>("SELECT name FROM _migrations").all();
-    expect(applied).toHaveLength(19);
+    expect(applied).toHaveLength(20);
   });
 
   test("synthetic 0002 migration applies on top of 0001 via temp directory", () => {

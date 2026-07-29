@@ -1,7 +1,7 @@
 /** Engine tick loop tests — fake clock, fake port, in-memory store. */
 
 import type { LogFields, Logger } from "@ship/logger";
-import type { DriverStream } from "@ship/store";
+import type { DriverStream, Store } from "@ship/store";
 
 import { parseReceiptsJsonl } from "@ship/receipt";
 import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { DriverStreamView } from "./types.js";
 
+import { ledgerRunId, ledgerStreamId, withDriverStateEmission } from "./driverstate-emit.js";
 import {
   address,
   buildShipInputForTest,
@@ -43,6 +44,14 @@ function restoreReceiptsPath(prior: string | undefined): void {
     return;
   }
   process.env["SHIP_RECEIPTS_PATH"] = prior;
+}
+
+function restoreStateDir(prior: string | undefined): void {
+  if (prior === undefined) {
+    delete process.env["WORKBENCH_STATE_DIR"];
+    return;
+  }
+  process.env["WORKBENCH_STATE_DIR"] = prior;
 }
 
 /** A minimal logger that records the messages passed to `warn`/`error`. */
@@ -149,6 +158,29 @@ batches:
     });
 
     await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0, pollIntervalMs: 1000 });
+    store.close();
+  });
+
+  test("DriverService.markMerged refuses a partial closure handoff", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_a" }]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+    const result = await driver.run({ driverRunId: imported.run.id }, { batch: 1, maxWaitMs: 0 });
+    const streamId = result.unmerged[0]?.streamId;
+    if (streamId === undefined) {
+      throw new Error("expected landed stream");
+    }
+
+    expect(() => {
+      driver.markMerged(imported.run.id, streamId, {
+        gateRunRef: "run_ab12",
+        mergeCommit: "abc123",
+        prNumber: 1,
+      });
+    }).toThrow(/requires both gateRunRef and finalReviewedHeadSha/u);
+    expect(store.getDriverRun(imported.run.id)?.batches[0]?.streams[0]?.status).toBe("landed");
     store.close();
   });
 
@@ -2968,6 +3000,7 @@ describe("driver address", () => {
   let manifestPath: string;
   let findingsPath: string;
   let store: ReturnType<typeof createStore>;
+  let priorStateDir: string | undefined;
 
   const PR_URL = "https://github.com/example/ship/pull/77";
   const HEAD_SHA = "0000000000000000000000000000000000000000";
@@ -2998,9 +3031,11 @@ batches:
     findingsPath = join(repoRoot, "findings.json");
     writeFileSync(findingsPath, validFindingsArtifact());
     store = createStore({ dbPath: ":memory:" });
+    priorStateDir = process.env["WORKBENCH_STATE_DIR"];
   });
 
   afterEach(() => {
+    restoreStateDir(priorStateDir);
     store.close();
     rmSync(tmpDir, { force: true, recursive: true });
   });
@@ -3015,11 +3050,14 @@ batches:
     reviewCycles?: number;
   }
 
-  function seed(opts: SeedOpts = {}): { runId: string; streamId: string } {
+  function seed(
+    opts: SeedOpts = {},
+    targetStore: Store = store,
+  ): { runId: string; streamId: string } {
     const runId = newDriverRunId();
     const batchId = newDriverBatchId();
     const streamId = newDriverStreamId();
-    store.insertDriverRun({
+    targetStore.insertDriverRun({
       batches: [
         {
           batchIndex: 1,
@@ -3049,13 +3087,16 @@ batches:
       status: (opts.runStatus ?? "running") as "running",
     });
     if (opts.reviewCycles !== undefined) {
-      store.updateDriverStream(streamId, { reviewCycles: opts.reviewCycles });
+      targetStore.updateDriverStream(streamId, { reviewCycles: opts.reviewCycles });
     }
     return { runId, streamId };
   }
 
-  function landedSeed(over: SeedOpts = {}): { runId: string; streamId: string } {
-    return seed({ branch: "feat-a", prUrl: PR_URL, ...over });
+  function landedSeed(
+    over: SeedOpts = {},
+    targetStore: Store = store,
+  ): { runId: string; streamId: string } {
+    return seed({ branch: "feat-a", prUrl: PR_URL, ...over }, targetStore);
   }
 
   // Single accessor for the seeded run's first stream — keeps the assertion
@@ -3182,6 +3223,116 @@ batches:
       "findings-stale-head",
     );
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test("direct malformed refusal bootstraps headless intervention evidence", async () => {
+    const stateRoot = join(tmpDir, "driverstate-direct-refusal");
+    process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { headRefOid: HEAD_SHA, state: "OPEN" } });
+    writeFileSync(findingsPath, "{}");
+
+    await expectRefusal(
+      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      "findings-invalid",
+    );
+
+    const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            body: Record<string, unknown>;
+            kind: string;
+            stream?: string;
+          },
+      );
+    const streamEvents = events.filter((event) => event.stream === ledgerStreamId(streamId));
+    expect(events[0]?.kind).toBe("run_imported");
+    expect(streamEvents.find((event) => event.kind === "stream_pr_opened")?.body["head_sha"]).toBe(
+      "",
+    );
+    expect(streamEvents.some((event) => event.kind === "intervention")).toBe(true);
+    expect(streamEvents.some((event) => event.kind === "closure_facts")).toBe(false);
+    expect(streamEvents.some((event) => event.kind === "review_cycle")).toBe(false);
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test("stale refusal does not seal a head before a later valid cycle", async () => {
+    const stateRoot = join(tmpDir, "driverstate-refusal-retry");
+    process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+    const emittingStore = withDriverStateEmission(store);
+    const { runId, streamId } = landedSeed({}, emittingStore);
+    const fake = createFakeShipPort([]);
+    const refusedHead = "1".repeat(40);
+    const acceptedHead = "2".repeat(40);
+    writeFileSync(
+      findingsPath,
+      validFindingsArtifact({
+        subject: {
+          type: "pull_request",
+          repo: "example/ship",
+          number: 77,
+          head_sha: refusedHead,
+        },
+      }),
+    );
+    await expectRefusal(
+      () =>
+        address(
+          {
+            gh: createFakeGhPort({ 77: { headRefOid: HEAD_SHA, state: "OPEN" } }),
+            ship: fake.port,
+            store: emittingStore,
+          },
+          runId,
+          { findingsPath, streamId },
+        ),
+      "findings-stale-head",
+    );
+
+    writeFileSync(
+      findingsPath,
+      validFindingsArtifact({
+        subject: {
+          type: "pull_request",
+          repo: "example/ship",
+          number: 77,
+          head_sha: acceptedHead,
+        },
+      }),
+    );
+    await address(
+      {
+        gh: createFakeGhPort({ 77: { headRefOid: acceptedHead, state: "OPEN" } }),
+        ship: fake.port,
+        store: emittingStore,
+      },
+      runId,
+      { findingsPath, streamId },
+    );
+
+    const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            body: Record<string, unknown>;
+            kind: string;
+            stream: string;
+          },
+      )
+      .filter((event) => event.stream === ledgerStreamId(streamId));
+    const opening = events.find((event) => event.kind === "stream_pr_opened");
+    const closure = events.find((event) => event.kind === "closure_facts");
+    expect(opening?.body["head_sha"]).toBe("");
+    expect(closure?.body).toMatchObject({
+      opening_head_sha: acceptedHead,
+      review_head_sha: acceptedHead,
+    });
   });
 
   test("canonical replay with regenerated envelope dispatches at most once", async () => {
@@ -3401,6 +3552,24 @@ batches:
     expect(gh.markReadyCalls).toHaveLength(0);
   });
 
+  test("configured service refusal bootstraps without ledger warnings", async () => {
+    const { runId, streamId } = landedSeed();
+    const warnings: string[] = [];
+    const logger = makeCapturingLogger(warnings);
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    writeFileSync(findingsPath, "{}", "utf8");
+    const driver = createDriverService({ gh, logger, ship: fake.port, store });
+
+    await expectRefusal(
+      () => driver.address(runId, { findingsPath, streamId }),
+      "findings-invalid",
+    );
+
+    expect(warnings).toHaveLength(0);
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
   test("call at maxCycles refuses cycle-exhausted and writes one escalation row", async () => {
     const { runId, streamId } = landedSeed({ reviewCycles: 3 });
     const fake = createFakeShipPort([]);
@@ -3499,7 +3668,10 @@ batches:
     const NEW_HEAD = `aaaa${"0".repeat(36)}`;
 
     test("parks stream and does not dispatch when head advances between consumption and fresh address dispatch", async () => {
-      const { runId, streamId } = landedSeed();
+      const stateRoot = join(tmpDir, "driverstate-race");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+      const emittingStore = withDriverStateEmission(store);
+      const { runId, streamId } = landedSeed({}, emittingStore);
       const fake = createFakeShipPort([]);
       // First viewPullRequest (loadAddressPr) returns HEAD_SHA; second
       // (checkAddressAttemptHead inside dispatchAddress) returns NEW_HEAD.
@@ -3522,7 +3694,16 @@ batches:
       };
 
       await expect(
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address(
+          {
+            clock: () => 0,
+            gh,
+            ship: fake.port,
+            store: emittingStore,
+          },
+          runId,
+          { findingsPath, streamId },
+        ),
       ).rejects.toThrow(/consumed head does not match/);
 
       const stream = firstStream(runId);
@@ -3532,9 +3713,21 @@ batches:
       expect(stream?.reviewCycles).toBe(1);
       expect(store.getDriverRun(runId)?.status).toBe("awaiting_judgment");
       expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+      const ledger = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as { kind: string; stream: string });
+      const streamKinds = ledger
+        .filter((event) => event.stream === ledgerStreamId(streamId))
+        .map((event) => event.kind);
+      expect(streamKinds).not.toContain("closure_facts");
+      expect(streamKinds).not.toContain("review_cycle");
+      expect(streamKinds).toContain("intervention");
     });
 
-    test("dispatches normally when head is unchanged at fresh address dispatch", async () => {
+    test("direct address call emits validated receipt intrinsically when head is unchanged", async () => {
+      const stateRoot = join(tmpDir, "driverstate-direct");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
       const { runId, streamId } = landedSeed();
       const fake = createFakeShipPort([]);
       const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
@@ -3546,6 +3739,129 @@ batches:
 
       expect(firstStream(runId)?.status).toBe("dispatched");
       expect(fake.calls.some((c) => c.kind === "startShip")).toBe(true);
+      const ledger = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as { kind: string; stream: string });
+      const streamKinds = ledger
+        .filter((event) => event.stream === ledgerStreamId(streamId))
+        .map((event) => event.kind);
+      expect(streamKinds).toContain("closure_facts");
+      expect(streamKinds).toContain("review_cycle");
+    });
+
+    test("tick recovery publishes durable address provenance after post-consumption crash", async () => {
+      const stateRoot = join(tmpDir, "driverstate-consumption-crash");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+      writeFileSync(
+        findingsPath,
+        validFindingsArtifact({
+          producer: {
+            catalog_revision: "c".repeat(40),
+            generated_at: "2026-07-10T00:00:00Z",
+            harness: "codex",
+            id: "codex:reviewfindings-github",
+          },
+        }),
+      );
+      const { runId, streamId } = landedSeed();
+      const fake = createFakeShipPort([]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      const crashStore: Store = {
+        ...store,
+        consumeReviewArtifactAndPrepareDispatch: (input) => {
+          store.consumeReviewArtifactAndPrepareDispatch(input);
+          throw new Error("simulated process exit after commit");
+        },
+      };
+
+      await expect(
+        address({ clock: () => 0, gh, ship: fake.port, store: crashStore }, runId, {
+          findingsPath,
+          streamId,
+        }),
+      ).rejects.toThrow(/simulated process exit/u);
+      expect(firstStream(runId)).toMatchObject({ reviewCycles: 1, status: "dispatching" });
+      expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+
+      const driver = createDriverService({ clock: () => 1, gh, ship: fake.port, store });
+      await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+
+      const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              body: Record<string, unknown>;
+              kind: string;
+              stream: string;
+            },
+        )
+        .filter((event) => event.stream === ledgerStreamId(streamId));
+      const closure = events.filter((event) => event.kind === "closure_facts");
+      expect(closure).toHaveLength(1);
+      expect(closure[0]?.body).toMatchObject({
+        catalog_revision: "c".repeat(40),
+        review_artifact_id: "rf_test",
+        review_head_sha: HEAD_SHA,
+        review_producer: "codex:reviewfindings-github",
+      });
+      expect(events.filter((event) => event.kind === "review_cycle")).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.kind === "startShip")).toHaveLength(1);
+    });
+
+    test("tick recovery emits one stale-head intervention and does not dispatch", async () => {
+      const stateRoot = join(tmpDir, "driverstate-consumption-crash-stale");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+      const { runId, streamId } = landedSeed();
+      const fake = createFakeShipPort([]);
+      const initialGh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      const crashStore: Store = {
+        ...store,
+        consumeReviewArtifactAndPrepareDispatch: (input) => {
+          store.consumeReviewArtifactAndPrepareDispatch(input);
+          throw new Error("simulated process exit after commit");
+        },
+      };
+
+      await expect(
+        address({ clock: () => 0, gh: initialGh, ship: fake.port, store: crashStore }, runId, {
+          findingsPath,
+          streamId,
+        }),
+      ).rejects.toThrow(/simulated process exit/u);
+
+      const staleGh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: NEW_HEAD } });
+      const driver = createDriverService({ clock: () => 1, gh: staleGh, ship: fake.port, store });
+      const first = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+      expect(first.status).toBe("awaiting_judgment");
+      expect(firstStream(runId)?.status).toBe("failed");
+      expect(firstStream(runId)?.errorMessage).toMatch(/stale-head/u);
+      expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+
+      await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+      const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              body: Record<string, unknown>;
+              kind: string;
+              stream: string;
+            },
+        )
+        .filter((event) => event.stream === ledgerStreamId(streamId));
+      const interventions = events.filter((event) => event.kind === "intervention");
+      expect(interventions).toHaveLength(1);
+      expect(interventions[0]?.body).toMatchObject({
+        kind: "mechanism-repair",
+        reason_code: "stale-review-head-post-consumption",
+      });
+      expect(events.some((event) => event.kind === "closure_facts")).toBe(false);
+      expect(events.some((event) => event.kind === "review_cycle")).toBe(false);
+      expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
     });
 
     test("parks stream on tick re-dispatch when head has moved (covers recovery and retry paths)", async () => {

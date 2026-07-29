@@ -60,6 +60,26 @@ describe("createExecGhPort — mergePullRequest", () => {
     expect(calls[0]?.args).not.toContain("--admin");
   });
 
+  test("pins a merge to the exact reviewed head", async () => {
+    const { calls, exec } = fakeExec();
+    const gh = createExecGhPort(exec);
+    const head = "a".repeat(40);
+
+    await gh.mergePullRequest("org/repo", 10, { expectedHeadSha: head });
+
+    expect(calls[0]?.args).toEqual([
+      "pr",
+      "merge",
+      "10",
+      "--squash",
+      "--match-head-commit",
+      head,
+      "--delete-branch",
+      "-R",
+      "org/repo",
+    ]);
+  });
+
   test("normalizes a full github URL repo to OWNER/REPO for -R", async () => {
     const { calls, exec } = fakeExec();
     const gh = createExecGhPort(exec);

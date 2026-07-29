@@ -11,19 +11,28 @@
  * in `@ship/driverstate-emitter`; this module only maps store deltas to event
  * kinds. The emitter's own state machine rejects an out-of-order emission —
  * that rejection is logged and swallowed, never retrofitted onto ship's flow.
+ * Address receipt facts publish intrinsically from the public address path,
+ * only after the engine's post-consumption live-head revalidation succeeds.
  */
 
 import type { Logger } from "@ship/logger";
 import type {
-  ConsumeReviewArtifactInput,
   DriverRun,
   DriverStream,
+  ReviewArtifactReceiptFacts,
   Store,
   UpdateDriverStreamInput,
 } from "@ship/store";
 
-import { appendEvent, type AppendResult, releaseRun } from "@ship/driverstate-emitter";
-import { prNumberFromUrl } from "@ship/receipt";
+import {
+  appendEvent,
+  type AppendResult,
+  formatTime,
+  releaseRun,
+  resolveStateRoot,
+} from "@ship/driverstate-emitter";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { parseManifest } from "./manifest.js";
 
@@ -92,23 +101,171 @@ export function withDriverStateEmission(store: Store, logger?: Logger): Store {
     },
     consumeReviewArtifactAndPrepareDispatch: (input) => {
       store.consumeReviewArtifactAndPrepareDispatch(input);
-      try {
-        emitReviewCycle(input, emit);
-      } catch (err) {
-        logger?.warn({ streamId: input.streamId, err: String(err) }, "driverstate: emission threw");
-      }
     },
   };
 }
 
 /**
- * The address flow moves a stream back to `dispatching` through this atomic
- * store op, bypassing `updateDriverStream` — in ledger terms the stream stays
- * `pr_open` and the round is a `review_cycle` (the only legal pr_open event).
- * findings is -1: the count is not known at this seam, only that a settled
- * review round is being addressed.
+ * Publish a consumed address artifact only after the engine's fresh-head
+ * revalidation succeeds. Consumption and emission are deliberately separate:
+ * the store transaction wins at-most-once first, but a head that advances
+ * before dispatch must not leave settled stale review evidence in the ledger.
  */
-function emitReviewCycle(input: ConsumeReviewArtifactInput, emit: Emit): void {
+export function emitValidatedAddressFacts(
+  store: Store,
+  input: ReviewArtifactReceiptFacts,
+  logger?: Logger,
+): void {
+  const emit: Emit = (driverRunId, result) => {
+    if (result.ok) return;
+    logger?.warn(
+      { driverRunId, err: result.error },
+      "driverstate: address receipt emission failed; continuing",
+    );
+  };
+  try {
+    const run = store.getDriverRun(input.driverRunId);
+    if (run === null) {
+      return;
+    }
+    ensureDriverStateRun(run, logger);
+    emitAddressFacts(store, input, emit);
+  } catch (err) {
+    logger?.warn({ streamId: input.streamId, err: String(err) }, "driverstate: emission threw");
+  }
+}
+
+/**
+ * Deterministically bootstrap one run's ledger. Public engine verbs may be
+ * called with an undecorated store, so this seam must run before either clean
+ * address evidence or refusal evidence is emitted.
+ */
+export function ensureDriverStateRun(run: DriverRun, logger?: Logger): void {
+  const emit: Emit = (driverRunId, result) => {
+    if (result.ok) return;
+    logger?.warn(
+      { driverRunId, err: result.error },
+      "driverstate: run bootstrap emission failed; continuing",
+    );
+  };
+  try {
+    emit(run.id, emitRunImported(run, run.sourceJson, run.manifestPath));
+    closePreCompletedStreams(run, emit);
+  } catch (err) {
+    logger?.warn({ driverRunId: run.id, err: String(err) }, "driverstate: emission threw");
+  }
+}
+
+/**
+ * Bootstrap the exact stream prefix required by markMerged/land when a
+ * persisted pre-upgrade run has only run_imported in its ledger. Existing
+ * stream history is authoritative and is never supplemented synthetically.
+ */
+export function ensureDriverStateMergeRun(
+  run: DriverRun,
+  stream: DriverStream,
+  logger?: Logger,
+): void {
+  const emit: Emit = (driverRunId, result) => {
+    if (result.ok) return;
+    logger?.warn(
+      { driverRunId, err: result.error },
+      "driverstate: merge bootstrap emission failed; continuing",
+    );
+  };
+  try {
+    emit(run.id, emitRunImported(run, run.sourceJson, run.manifestPath));
+    if (hasStreamLedgerEvent(run.id, stream.id)) {
+      return;
+    }
+    openImportedLandedStream(run.id, stream, emit);
+  } catch (err) {
+    logger?.warn({ driverRunId: run.id, err: String(err) }, "driverstate: emission threw");
+  }
+}
+
+/**
+ * Publish merge facts after the store update. markMerged calls this
+ * intrinsically; a decorated store may already have emitted the same
+ * deterministic ids, in which case append idempotency absorbs the replay.
+ */
+export function emitValidatedMergeFacts(
+  store: Store,
+  driverRunId: string,
+  streamId: string,
+  patch: UpdateDriverStreamInput,
+  logger?: Logger,
+): void {
+  const run = store.getDriverRun(driverRunId);
+  const stream = run?.batches
+    .flatMap((batch) => batch.streams)
+    .find((candidate) => candidate.id === streamId);
+  if (stream === undefined) {
+    return;
+  }
+  const emit: Emit = (id, result) => {
+    if (result.ok) return;
+    logger?.warn({ driverRunId: id, err: result.error }, "driverstate: merge emission failed");
+  };
+  try {
+    emitStreamDelta(stream, patch, emit);
+  } catch (err) {
+    logger?.warn({ streamId, err: String(err) }, "driverstate: emission threw");
+  }
+}
+
+/**
+ * In ledger terms the stream stays `pr_open` and the round is a
+ * `review_cycle`. findings is -1: the count is not known at this seam, only
+ * that a settled review round is being addressed.
+ */
+function emitAddressFacts(store: Store, input: ReviewArtifactReceiptFacts, emit: Emit): void {
+  const run = store.getDriverRun(input.driverRunId);
+  const stream = run?.batches
+    .flatMap((batch) => batch.streams)
+    .find((candidate) => candidate.id === input.streamId);
+  if (stream === undefined) {
+    return;
+  }
+  reconcileImportedLandedAddress(stream, input, emit);
+  emitPROpened({
+    driverRunId: input.driverRunId,
+    emit,
+    headSha: input.headSha,
+    pr: input.prNumber,
+    streamId: input.streamId,
+    url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}`,
+  });
+  const openingHeadSha = resolveOpeningHeadSha(store, input);
+  const executionHarness = stream.provider ?? stream.dispatchProvider ?? input.dispatchProvider;
+  const closureFacts = compactFacts({
+    task_ref: stream.taskId,
+    seat: executionHarness,
+    harness: executionHarness,
+    model: stream.modelId ?? input.dispatchModel,
+    provider: stream.provider ?? input.dispatchProvider,
+    effort: stream.effortTier,
+    review_producer: input.producerId,
+    catalog_revision: input.producerCatalogRevision,
+    review_artifact_id: input.artifactId,
+    review_artifact_digest: input.canonicalSha256,
+    opening_head_sha: openingHeadSha,
+    review_head_sha: input.headSha,
+    ship_run_ref: input.driverRunId,
+  });
+  emit(
+    input.driverRunId,
+    appendEvent({
+      actor: `ship:${input.driverRunId}`,
+      body: closureFacts,
+      id: eventId(
+        `${ledgerStreamId(input.streamId)}_closure_address_${String(input.addressCycle)}`,
+      ),
+      kind: "closure_facts",
+      runId: ledgerRunId(input.driverRunId),
+      stream: ledgerStreamId(input.streamId),
+    }),
+  );
   emit(
     input.driverRunId,
     appendEvent({
@@ -120,6 +277,110 @@ function emitReviewCycle(input: ConsumeReviewArtifactInput, emit: Emit): void {
       stream: ledgerStreamId(input.streamId),
     }),
   );
+}
+
+/**
+ * Cycle one normally supplies the authoritative opening head. A persisted
+ * pre-upgrade run may have consumed cycle one before closure-fact emission
+ * existed, leaving only an immutable empty PR-open placeholder. On a later
+ * cycle, recover that exact consumed head from SQLite only when the ledger
+ * still has no authoritative opening fact.
+ */
+function resolveOpeningHeadSha(
+  store: Store,
+  input: ReviewArtifactReceiptFacts,
+): string | undefined {
+  if (input.addressCycle === 1) {
+    return input.headSha;
+  }
+  if (hasAuthoritativeOpeningHead(input.driverRunId, input.streamId)) {
+    return undefined;
+  }
+  return store.getConsumedArtifactHeadSha(input.driverRunId, input.streamId, 1);
+}
+
+function hasAuthoritativeOpeningHead(driverRunId: string, streamId: string): boolean {
+  const path = join(resolveStateRoot(), ledgerRunId(driverRunId), "events.jsonl");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return false;
+  }
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") {
+      continue;
+    }
+    try {
+      const event = JSON.parse(line) as {
+        body?: { opening_head_sha?: unknown };
+        kind?: unknown;
+        stream?: unknown;
+      };
+      if (event.kind !== "closure_facts" || event.stream !== ledgerStreamId(streamId)) {
+        continue;
+      }
+      const openingHead = event.body?.opening_head_sha;
+      if (typeof openingHead === "string" && openingHead !== "") {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function hasStreamLedgerEvent(driverRunId: string, streamId: string): boolean {
+  const path = join(resolveStateRoot(), ledgerRunId(driverRunId), "events.jsonl");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return false;
+  }
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") {
+      continue;
+    }
+    try {
+      const event = JSON.parse(line) as { stream?: unknown };
+      if (event.stream === ledgerStreamId(streamId)) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Upgrade repair for a run that was persisted before landed-at-import
+ * reconciliation existed. When no stream event exists, the landed state was
+ * absorbed rather than observed by this ledger. Replaying the import-keyed
+ * events is safe both for a legacy pending ledger and for a current ledger
+ * that already wrote them during insert.
+ */
+function reconcileImportedLandedAddress(
+  stream: DriverStream,
+  input: ReviewArtifactReceiptFacts,
+  emit: Emit,
+): void {
+  if (hasStreamLedgerEvent(input.driverRunId, input.streamId)) {
+    return;
+  }
+  openImportedLandedStream(input.driverRunId, stream, emit);
+}
+
+function compactFacts(facts: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(facts)) {
+    if (value !== undefined && value !== "") {
+      out[name] = value;
+    }
+  }
+  return out;
 }
 
 function emitRunImported(run: DriverRun, sourceJson: string, manifestPath: string): AppendResult {
@@ -139,6 +400,7 @@ function emitRunImported(run: DriverRun, sourceJson: string, manifestPath: strin
       generated_at: generatedAt,
       manifest,
       repo: run.repo,
+      ship_run_ref: run.id,
       source: manifestPath,
       streams,
     },
@@ -152,15 +414,25 @@ function emitRunImported(run: DriverRun, sourceJson: string, manifestPath: strin
 type Emit = (driverRunId: string, result: AppendResult) => void;
 
 /**
- * A manifest can import streams already `done` or `skipped` (absorbed
- * progress). The ledger did not track that work, so record each as
- * `stream_skipped` — pending → skipped, terminal — with the ship status in
- * the reason; otherwise they block `run_finished` forever. Non-terminal
- * absorbed statuses (landed, failed) are left pending: their live tail
- * (land, retry, skip) emits real transitions from pending legally.
+ * A manifest can import streams with progress the ledger did not observe.
+ * Completed streams close as skipped because their prior attempt history is
+ * unavailable. A landed stream needs the smallest honest legal history before
+ * address can attach its PR and review receipt: one deterministic synthetic
+ * dispatch followed by one terminal landed attempt. Stable event ids make an
+ * import replay idempotent and avoid minting duplicate attempts.
+ *
+ * Failed streams stay pending: their live retry/skip tail can transition from
+ * pending legally without inventing a failed attempt and failure category.
  */
 function closePreCompletedStreams(run: DriverRun, emit: Emit): void {
   for (const s of run.batches.flatMap((b) => b.streams)) {
+    if (hasStreamLedgerEvent(run.id, s.id)) {
+      continue;
+    }
+    if (s.status === "landed") {
+      openImportedLandedStream(run.id, s, emit);
+      continue;
+    }
     if (s.status !== "done" && s.status !== "skipped") {
       continue;
     }
@@ -176,6 +448,39 @@ function closePreCompletedStreams(run: DriverRun, emit: Emit): void {
       }),
     );
   }
+}
+
+function openImportedLandedStream(driverRunId: string, stream: DriverStream, emit: Emit): void {
+  const actor = `ship:${driverRunId}`;
+  const runId = ledgerRunId(driverRunId);
+  const streamId = ledgerStreamId(stream.id);
+  emit(
+    driverRunId,
+    appendEvent({
+      actor,
+      body: { engine: "ship", imported: true },
+      id: eventId(`${streamId}_import_dispatch`),
+      kind: "stream_dispatched",
+      runId,
+      stream: streamId,
+    }),
+  );
+  emit(
+    driverRunId,
+    appendEvent({
+      actor,
+      body: {
+        doc_path: stream.specPath,
+        imported: true,
+        seq: Math.max(1, stream.attempts.length),
+        terminal: true,
+      },
+      id: eventId(`${streamId}_import_landed`),
+      kind: "stream_attempt",
+      runId,
+      stream: streamId,
+    }),
+  );
 }
 
 interface StreamEventCtx {
@@ -291,40 +596,7 @@ function emitPrEvents(
   ctx: StreamEventCtx,
   send: Send,
 ): void {
-  emitPrOpened(stream, patch, ctx, send);
   emitMerged(stream, patch, ctx, send);
-}
-
-// The landed patch carries prUrl (buildLandedPatch); prNumber often only
-// arrives at merge time — trigger on either, resolving the number from the
-// URL, so pr_opened precedes review_cycle/stream_merged in the ledger.
-function emitPrOpened(
-  stream: DriverStream,
-  patch: UpdateDriverStreamInput,
-  ctx: StreamEventCtx,
-  send: Send,
-): void {
-  if (patch.prUrl === undefined && patch.prNumber === undefined) {
-    return;
-  }
-  const url = patch.prUrl ?? stream.prUrl ?? "";
-  const pr = patch.prNumber ?? stream.prNumber ?? prNumberFromUrl(url);
-  if (pr === undefined) {
-    return;
-  }
-  send(
-    appendEvent({
-      actor: ctx.actor,
-      // head_sha is required by the contract but the driver model does not
-      // track a HEAD SHA at this seam — empty by design, meaning unknown.
-      body: { head_sha: "", pr, url },
-      extRef: url,
-      id: eventId(`${ctx.stream}_pr_${String(pr)}`),
-      kind: "stream_pr_opened",
-      runId: ctx.runId,
-      stream: ctx.stream,
-    }),
-  );
 }
 
 function emitMerged(
@@ -336,18 +608,128 @@ function emitMerged(
   if (patch.mergeCommit === undefined || stream.prNumber === undefined) {
     return;
   }
+  emitPROpened({
+    driverRunId: stream.driverRunId,
+    emit: (_driverRunId, result) => {
+      send(result);
+    },
+    // A legacy land without address never observed the opening head. Keep the
+    // lifecycle placeholder unknown; mergeHeadSha belongs only to the merged
+    // event below. If address already emitted the exact opening, deterministic
+    // PR-event idempotency preserves that committed body.
+    headSha: "",
+    pr: stream.prNumber,
+    streamId: stream.id,
+    url: stream.prUrl ?? "",
+  });
+  if (patch.finalReviewedHeadSha !== undefined && patch.gateRunRef !== undefined) {
+    send(
+      appendEvent({
+        actor: ctx.actor,
+        body: {
+          final_reviewed_head_sha: patch.finalReviewedHeadSha,
+          gate_head_sha: patch.finalReviewedHeadSha,
+          gate_run_ref: patch.gateRunRef,
+        },
+        id: eventId(`${ctx.stream}_closure_gate_${patch.finalReviewedHeadSha}`),
+        kind: "closure_facts",
+        runId: ctx.runId,
+        stream: ctx.stream,
+      }),
+    );
+  }
   send(
     appendEvent({
       actor: ctx.actor,
       body: {
         merge_commit: patch.mergeCommit,
         merged_at: stream.mergedAt ?? new Date().toISOString(),
+        ...(patch.mergeHeadSha === undefined ? {} : { head_sha: patch.mergeHeadSha }),
         pr: stream.prNumber,
       },
       id: eventId(`${ctx.stream}_merged`),
       kind: "stream_merged",
       runId: ctx.runId,
       stream: ctx.stream,
+    }),
+  );
+}
+
+function emitPROpened(input: {
+  driverRunId: string;
+  streamId: string;
+  pr: number;
+  url: string;
+  headSha: string;
+  emit: Emit;
+}): void {
+  const stream = ledgerStreamId(input.streamId);
+  input.emit(
+    input.driverRunId,
+    appendEvent({
+      actor: `ship:${input.driverRunId}`,
+      body: { head_sha: input.headSha, pr: input.pr, url: input.url },
+      extRef: input.url,
+      id: eventId(`${stream}_pr_${String(input.pr)}`),
+      kind: "stream_pr_opened",
+      runId: ledgerRunId(input.driverRunId),
+      stream,
+    }),
+  );
+}
+
+/**
+ * Record an address refusal that requires mechanism repair. The caller supplies
+ * only live GitHub facts; this helper does not infer producer or panel state.
+ * Best-effort, like every other driver-state write.
+ */
+export function emitAddressIntervention(
+  input: {
+    driverRunId: string;
+    streamId: string;
+    prNumber: number;
+    repo: string;
+    liveHeadSha: string;
+    reasonCode: string;
+  },
+  logger?: Logger,
+): void {
+  const emit: Emit = (driverRunId, result) => {
+    if (result.ok) return;
+    logger?.warn(
+      { driverRunId, err: result.error },
+      "driverstate: address intervention emission failed; continuing",
+    );
+  };
+  emitPROpened({
+    driverRunId: input.driverRunId,
+    emit,
+    // A refusal has not accepted any review head. The transition still needs
+    // a PR-open predecessor, but sealing the current live head here would
+    // misstate it as the cycle-one opening head if the PR later advances.
+    // Valid address evidence repairs this legacy-compatible placeholder via
+    // closure_facts.opening_head_sha.
+    headSha: "",
+    pr: input.prNumber,
+    streamId: input.streamId,
+    url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}`,
+  });
+  emit(
+    input.driverRunId,
+    appendEvent({
+      actor: `ship:${input.driverRunId}`,
+      body: {
+        actor: `ship:${input.driverRunId}`,
+        kind: "mechanism-repair",
+        reason_code: input.reasonCode,
+        time: formatTime(new Date()),
+      },
+      id: eventId(
+        `${ledgerStreamId(input.streamId)}_intervention_${input.reasonCode}_${input.liveHeadSha}`,
+      ),
+      kind: "intervention",
+      runId: ledgerRunId(input.driverRunId),
+      stream: ledgerStreamId(input.streamId),
     }),
   );
 }

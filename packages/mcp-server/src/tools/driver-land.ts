@@ -26,6 +26,10 @@ export function registerDriverLandTool(server: McpServer, factory: DriverService
           ...(validated.streamId !== undefined ? { streamId: validated.streamId } : {}),
           ...(validated.cycles !== undefined ? { cycles: validated.cycles } : {}),
           ...(validated.admin !== undefined ? { admin: validated.admin } : {}),
+          ...(validated.reviewedHeadSha !== undefined
+            ? { reviewedHeadSha: validated.reviewedHeadSha }
+            : {}),
+          ...(validated.gateRunRef !== undefined ? { gateRunRef: validated.gateRunRef } : {}),
         });
         const validatedOut = driverLandOutputSchema.parse({
           driverRunId: run.id,

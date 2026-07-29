@@ -46,6 +46,12 @@ export interface UpdateDriverStreamInput {
   fallbackCursor?: number;
   /** Replace the append-only fallback log (caller concatenates). */
   fallbackLog?: FallbackLogRecord[];
+  /** Receipt-only exact merged PR head; not persisted in the stream table. */
+  mergeHeadSha?: string;
+  /** Receipt-only exact head that passed fresh review; not persisted. */
+  finalReviewedHeadSha?: string;
+  /** Receipt-only Gate run reference; not persisted. */
+  gateRunRef?: string;
 }
 
 export interface DriverStreamRow {
