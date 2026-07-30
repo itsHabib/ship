@@ -5,6 +5,7 @@
  */
 
 import type {
+  PermissionMode,
   Query,
   McpServerConfig as SdkMcpServerConfig,
   SDKMessage,
@@ -45,7 +46,7 @@ const API_KEY_ENV = "ANTHROPIC_API_KEY";
 const AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN";
 const CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
-const REQUIRED_PERMISSION_MODE = "bypassPermissions";
+const REQUIRED_PERMISSION_MODE: PermissionMode = "auto";
 
 const SUPPORTED_PLATFORM_KEYS = new Set([
   "darwin-arm64",
@@ -189,7 +190,6 @@ function buildQueryOptions(
   const effort = effortFromParams(input.model.params);
   return {
     abortController,
-    allowDangerouslySkipPermissions: true,
     cwd: input.cwd,
     ...(effort !== undefined && { effort }),
     env: buildQueryEnv(dispatchEnv),
@@ -209,9 +209,14 @@ function buildQueryOptions(
   } as NonNullable<Parameters<typeof query>[0]["options"]>;
 }
 
-function assertRuntimePermissionMode(ev: SDKMessage): void {
-  if (ev.type !== "system" || ev.subtype !== "init") return;
-  if (ev.permissionMode === REQUIRED_PERMISSION_MODE) return;
+function verifyRuntimePermissionMode(ev: SDKMessage): boolean {
+  if (ev.type !== "system" || ev.subtype !== "init") return false;
+  if (ev.permissionMode === REQUIRED_PERMISSION_MODE) return true;
+  if (ev.permissionMode === "bypassPermissions") {
+    throw new AgentRunFailedError(
+      'Claude SDK started with obsolete permissionMode "bypassPermissions"; Ship requires unattended "auto" mode',
+    );
+  }
   throw new AgentRunFailedError(
     `Claude SDK started with permissionMode ${JSON.stringify(ev.permissionMode)}; expected ${JSON.stringify(REQUIRED_PERMISSION_MODE)}`,
   );
@@ -287,11 +292,17 @@ async function consumeQueryStream(
     // LAST `result` authoritative (rather than finalizing on the first one),
     // mirroring how the cursor runner consumes its full stream before mapping.
     let lastResult: SDKResultMessage | undefined;
+    let permissionModeVerified = false;
     for await (const ev of queryInstance) {
       recordEvent(ev);
       safelyEmit(ev);
-      assertRuntimePermissionMode(ev);
+      if (verifyRuntimePermissionMode(ev)) permissionModeVerified = true;
       if (ev.type === "result") lastResult = ev;
+    }
+    if (!permissionModeVerified) {
+      throw new AgentRunFailedError(
+        'Claude SDK did not report its live permissionMode; expected "auto" for unattended execution',
+      );
     }
     if (lastResult !== undefined) {
       callbacks.finalizeOk(mapResultMessage(lastResult, input, capturedEvents));
