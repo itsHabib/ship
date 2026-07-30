@@ -1,0 +1,14 @@
+{
+  "name": "unsourced-findings",
+  "artifact_json": "{\"schema_version\":1,\"artifact_id\":\"rf_unsourced\",\"decision\":\"address\",\"subject\":{\"type\":\"pull_request\",\"repo\":\"itsHabib/workbench\",\"number\":42,\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"producer\":{\"id\":\"codex:test\",\"harness\":\"codex\",\"generated_at\":\"2026-07-29T00:00:00Z\"},\"panel\":{\"requested\":[\"codex\"],\"completed\":[\"codex\"],\"missing\":[]},\"findings\":[{\"id\":\"f1\",\"severity\":\"P1\",\"summary\":\"fix\",\"evidence\":\"evidence\",\"sources\":[]}]}\n",
+  "live_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "cycle": 1,
+  "max_cycles": 3,
+  "consumed_ids": [],
+  "consumed_artifact_jsons": [],
+  "calls": ["accept"],
+  "expected_refusal": "malformed-artifact",
+  "projection": {"accepted": false, "consumed": false, "at_most_once": true},
+  "workbench": {"work_status": "", "claim_count": 0},
+  "ship": {"provider_call_count": 0}
+}
