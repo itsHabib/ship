@@ -72,6 +72,7 @@ interface LandCommandOpts {
 interface AddressCommandOpts {
   stream: string;
   findings: string;
+  decision: string;
   maxCycles?: string;
 }
 
@@ -231,6 +232,7 @@ export function registerDriverCommand(program: Command, factory: DriverServiceFa
     .description("re-dispatch consolidated review findings onto a landed stream's PR branch")
     .requiredOption("--stream <ds_id>", "driver stream id")
     .requiredOption("--findings <path>", "path to a ReviewFindingsV1 JSON artifact")
+    .requiredOption("--decision <path>", "path to an authorizing ReviewDecisionV1 JSON artifact")
     .option("--max-cycles <n>", "review-cycle cap (default 3)")
     .action(async (driverRunId: string, rawOpts: AddressCommandOpts) => {
       await runDriverActionAsync(async () => {
@@ -427,6 +429,7 @@ function buildMergeFacts(opts: MarkMergedOpts): MergeFacts {
 
 function buildAddressOpts(opts: AddressCommandOpts): AddressOpts {
   const addressOpts: AddressOpts = {
+    decisionPath: resolvePath(opts.decision),
     findingsPath: resolvePath(opts.findings),
     streamId: opts.stream,
   };

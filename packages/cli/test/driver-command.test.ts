@@ -513,7 +513,9 @@ batches:
 
     const { writeFileSync } = await import("node:fs");
     const findingsPath = join(h.tmp, "findings.md");
+    const decisionPath = join(h.tmp, "decision.json");
     writeFileSync(findingsPath, "- fix the null deref\n");
+    writeFileSync(decisionPath, "{}");
     stdout.length = 0;
     stderr.length = 0;
     // A freshly imported stream is local + pending — address refuses `not-landed`.
@@ -526,6 +528,8 @@ batches:
         streamId!,
         "--findings",
         findingsPath,
+        "--decision",
+        decisionPath,
       ]),
     ).toBe(1);
     expect(stderr.join("")).toContain("not landed");

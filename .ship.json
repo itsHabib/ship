@@ -1,5 +1,6 @@
 {
   "review": {
+    "tier_aware": true,
     "panel": [
       { "name": "codex", "trigger": "mention" },
       { "name": "claude", "trigger": "mention" },

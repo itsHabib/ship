@@ -2999,6 +2999,7 @@ describe("driver address", () => {
   let repoRoot: string;
   let manifestPath: string;
   let findingsPath: string;
+  let decisionPath: string;
   let store: ReturnType<typeof createStore>;
   let priorStateDir: string | undefined;
 
@@ -3029,7 +3030,9 @@ batches:
     mkdirSync(join(repoRoot, ".git"), { recursive: true });
     manifestPath = join(repoRoot, "driver.md");
     findingsPath = join(repoRoot, "findings.json");
+    decisionPath = join(repoRoot, "decision.json");
     writeFileSync(findingsPath, validFindingsArtifact());
+    writeFileSync(decisionPath, validReviewDecision());
     store = createStore({ dbPath: ":memory:" });
     priorStateDir = process.env["WORKBENCH_STATE_DIR"];
   });
@@ -3142,12 +3145,49 @@ batches:
     });
   }
 
+  function validReviewDecision(cycle = 1, over: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      schema_version: 1,
+      generated_at: "2026-07-10T00:00:00Z",
+      subject: {
+        repo: "example/ship",
+        number: 77,
+        head_sha: HEAD_SHA,
+      },
+      plan_id: `rp_${"1".repeat(32)}`,
+      input_digest: `sha256:${"2".repeat(64)}`,
+      policy: { id: "tier-aware-canary", digest: `sha256:${"a".repeat(64)}` },
+      route_disposition: "tier_routed",
+      tier: "T1",
+      tier_reasons: ["diff floor T1"],
+      cycle,
+      continuation_weight: 2 ** (cycle - 1),
+      cumulative_weight: 2 ** cycle - 1,
+      action: "address",
+      reason_codes: ["accepted_findings_require_address"],
+      next_reviewers: ["codex"],
+      findings: [
+        {
+          id: "finding-1",
+          severity: "high",
+          reviewers: ["codex"],
+          disposition: "fixed",
+          changed: false,
+          reviewer_closed: false,
+          debt: false,
+        },
+      ],
+      ...over,
+    });
+  }
+
   test("dispatches on the existing branch with autoCreatePR false and a findings doc", async () => {
     const { runId, streamId } = landedSeed();
     const fake = createFakeShipPort([]);
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
@@ -3173,12 +3213,54 @@ batches:
     expect(stream?.workOnCurrentBranch).toBe(true);
   });
 
+  test("records the consumed exact-head decision and policy digest in spend telemetry", async () => {
+    const fileStore = createStore({ dbPath: join(tmpDir, "state.db") });
+    try {
+      const { runId, streamId } = landedSeed({}, fileStore);
+      const fake = createFakeShipPort([]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+      await address({ clock: () => 0, gh, ship: fake.port, store: fileStore }, runId, {
+        decisionPath,
+        findingsPath,
+        streamId,
+      });
+
+      const events = readFileSync(join(tmpDir, "review-spend.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: "review_decision",
+          repo: "example/ship",
+          pr: 77,
+          head_sha: HEAD_SHA,
+          policy_id: "tier-aware-canary",
+          policy_digest: `sha256:${"a".repeat(64)}`,
+          route_disposition: "tier_routed",
+          tier: "T1",
+          cycle: 1,
+          continuation_weight: 1,
+          cumulative_weight: 1,
+          decision_action: "address",
+          findings_by_disposition: { fixed: 1 },
+          findings_by_severity: { high: 1 },
+        }),
+      );
+    } finally {
+      fileStore.close();
+    }
+  });
+
   test("increments reviewCycles exactly once per call", async () => {
     const { runId, streamId } = landedSeed({ reviewCycles: 1 });
     const fake = createFakeShipPort([]);
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    writeFileSync(decisionPath, validReviewDecision(2));
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
@@ -3203,7 +3285,8 @@ batches:
       }),
     );
     await expectRefusal(
-      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
       "findings-subject-mismatch",
     );
 
@@ -3219,7 +3302,8 @@ batches:
       }),
     );
     await expectRefusal(
-      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
       "findings-stale-head",
     );
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
@@ -3234,7 +3318,8 @@ batches:
     writeFileSync(findingsPath, "{}");
 
     await expectRefusal(
-      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
       "findings-invalid",
     );
 
@@ -3257,6 +3342,48 @@ batches:
     expect(streamEvents.some((event) => event.kind === "intervention")).toBe(true);
     expect(streamEvents.some((event) => event.kind === "closure_facts")).toBe(false);
     expect(streamEvents.some((event) => event.kind === "review_cycle")).toBe(false);
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test.each([
+    ["decision-invalid", "{}"],
+    ["decision-does-not-authorize", validReviewDecision(1, { action: "stop" })],
+    [
+      "decision-does-not-authorize",
+      validReviewDecision(1, {
+        subject: { repo: "example/ship", number: 77, head_sha: "1".repeat(40) },
+      }),
+    ],
+  ])("refuses %s review decision without consuming findings", async (code, decision) => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    writeFileSync(decisionPath, decision);
+
+    await expectRefusal(
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
+      code as AddressError["code"],
+    );
+
+    expect(firstStream(runId)?.reviewCycles).toBeUndefined();
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test("refuses an unreadable review decision", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await expectRefusal(
+      () =>
+        address({ gh, ship: fake.port, store }, runId, {
+          decisionPath: join(repoRoot, "missing-decision.json"),
+          findingsPath,
+          streamId,
+        }),
+      "decision-unreadable",
+    );
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
   });
 
@@ -3288,7 +3415,7 @@ batches:
             store: emittingStore,
           },
           runId,
-          { findingsPath, streamId },
+          { decisionPath, findingsPath, streamId },
         ),
       "findings-stale-head",
     );
@@ -3304,6 +3431,12 @@ batches:
         },
       }),
     );
+    writeFileSync(
+      decisionPath,
+      validReviewDecision(1, {
+        subject: { repo: "example/ship", number: 77, head_sha: acceptedHead },
+      }),
+    );
     await address(
       {
         gh: createFakeGhPort({ 77: { headRefOid: acceptedHead, state: "OPEN" } }),
@@ -3311,7 +3444,7 @@ batches:
         store: emittingStore,
       },
       runId,
-      { findingsPath, streamId },
+      { decisionPath, findingsPath, streamId },
     );
 
     const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
@@ -3341,10 +3474,12 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
     store.updateDriverStream(streamId, { status: "landed" });
+    writeFileSync(decisionPath, validReviewDecision(2));
     writeFileSync(
       findingsPath,
       validFindingsArtifact({
@@ -3359,7 +3494,11 @@ batches:
 
     await expectRefusal(
       () =>
-        address({ clock: () => 1, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 1, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "findings-duplicate",
     );
     expect(fake.calls.filter((call) => call.kind === "startShip")).toHaveLength(1);
@@ -3370,7 +3509,11 @@ batches:
     const fake = createFakeShipPort([]);
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
     const call = () =>
-      address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId });
+      address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
+        findingsPath,
+        streamId,
+      });
 
     const results = await Promise.allSettled([call(), call()]);
 
@@ -3394,12 +3537,16 @@ batches:
     };
 
     await expect(
-      address({ files, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      address({ files, gh, ship: fake.port, store }, runId, {
+        decisionPath,
+        findingsPath,
+        streamId,
+      }),
     ).rejects.toThrow(/disk full/u);
     expect(firstStream(runId)).toMatchObject({ attempts: [], status: "landed" });
 
     await expect(
-      address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
     ).resolves.toBeDefined();
     expect(fake.calls.filter((entry) => entry.kind === "startShip")).toHaveLength(1);
   });
@@ -3412,6 +3559,7 @@ batches:
 
     await expect(
       address({ clock: () => 0, gh, ship: failingPort, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       }),
@@ -3431,6 +3579,7 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
@@ -3476,7 +3625,11 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await expect(
-      address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
+        findingsPath,
+        streamId,
+      }),
     ).resolves.toBeDefined();
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("dispatched");
   });
@@ -3492,6 +3645,7 @@ batches:
       await expectRefusal(
         () =>
           address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+            decisionPath,
             findingsPath,
             streamId,
           }),
@@ -3507,6 +3661,7 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
@@ -3537,7 +3692,7 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
     const driver = createDriverService({ gh, ship: fake.port, store });
 
-    await driver.address(runId, { findingsPath, streamId });
+    await driver.address(runId, { decisionPath, findingsPath, streamId });
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("dispatched");
 
     const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
@@ -3562,7 +3717,7 @@ batches:
     const driver = createDriverService({ gh, logger, ship: fake.port, store });
 
     await expectRefusal(
-      () => driver.address(runId, { findingsPath, streamId }),
+      () => driver.address(runId, { decisionPath, findingsPath, streamId }),
       "findings-invalid",
     );
 
@@ -3577,7 +3732,11 @@ batches:
 
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "cycle-exhausted",
     );
     expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
@@ -3587,7 +3746,11 @@ batches:
     // A second call dedups on the open row (still one).
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "cycle-exhausted",
     );
     expect(store.listEscalations({ class: "cycle-exhausted", driverRunId: runId })).toHaveLength(1);
@@ -3607,7 +3770,11 @@ batches:
 
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       code as AddressError["code"],
     );
     const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
@@ -3622,7 +3789,11 @@ batches:
 
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "pr-not-open",
     );
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBeUndefined();
@@ -3636,6 +3807,7 @@ batches:
     await expectRefusal(
       () =>
         address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
           findingsPath: join(repoRoot, "nope.md"),
           streamId,
         }),
@@ -3645,7 +3817,11 @@ batches:
     writeFileSync(findingsPath, "   \n");
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "findings-unreadable",
     );
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBeUndefined();
@@ -3658,7 +3834,8 @@ batches:
     writeFileSync(findingsPath, "x".repeat(1024 * 1024 + 1));
 
     await expectRefusal(
-      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
       "findings-unreadable",
     );
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
@@ -3702,7 +3879,7 @@ batches:
             store: emittingStore,
           },
           runId,
-          { findingsPath, streamId },
+          { decisionPath, findingsPath, streamId },
         ),
       ).rejects.toThrow(/consumed head does not match/);
 
@@ -3733,6 +3910,7 @@ batches:
       const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
 
       await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -3777,6 +3955,7 @@ batches:
 
       await expect(
         address({ clock: () => 0, gh, ship: fake.port, store: crashStore }, runId, {
+          decisionPath,
           findingsPath,
           streamId,
         }),
@@ -3827,6 +4006,7 @@ batches:
 
       await expect(
         address({ clock: () => 0, gh: initialGh, ship: fake.port, store: crashStore }, runId, {
+          decisionPath,
           findingsPath,
           streamId,
         }),
@@ -3870,6 +4050,7 @@ batches:
       const fake = createFakeShipPort([]);
       const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh: ghInitial, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -3909,6 +4090,7 @@ batches:
       const fake = createFakeShipPort([]);
       const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh: ghInitial, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -3947,6 +4129,7 @@ batches:
       const fake = createFakeShipPort([]);
       const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -3992,6 +4175,7 @@ batches:
       ]);
       const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -4020,6 +4204,7 @@ batches:
       const fakeInitial = createFakeShipPort([]);
       const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh: ghInitial, ship: fakeInitial.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
