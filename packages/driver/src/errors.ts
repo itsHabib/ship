@@ -76,6 +76,9 @@ export type AddressRefusalCode =
   | "findings-subject-mismatch"
   | "findings-stale-head"
   | "findings-duplicate"
+  | "decision-unreadable"
+  | "decision-invalid"
+  | "decision-does-not-authorize"
   | "address-raced";
 
 export class AddressError extends Error {

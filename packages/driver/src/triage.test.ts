@@ -5,7 +5,12 @@ import { describe, expect, test } from "vitest";
 
 import type { TriageExec, TriageFloorResult, TriageOutcome } from "./triage.js";
 
-import { createExecTriageClassifier, parseTriageTier, spawnWithStdin } from "./triage.js";
+import {
+  createExecTriageClassifier,
+  parseTriageResult,
+  parseTriageTier,
+  spawnWithStdin,
+} from "./triage.js";
 
 // A binary guaranteed not to exist on PATH — the missing-classifier case.
 const MISSING_BIN = "triage-floor-does-not-exist-xyz-123";
@@ -18,16 +23,24 @@ function errorReason(outcome: TriageOutcome): string {
 }
 
 describe("parseTriageTier", () => {
-  test.each(["T0", "T1", "T2", "T3"])("accepts %s", (tier) => {
-    expect(parseTriageTier(tier)).toBe(tier);
+  test.each(["T0", "T1", "T2", "T3"] as const)("accepts current JSON for %s", (tier) => {
+    expect(parseTriageTier(triageJson(tier))).toBe(tier);
   });
 
-  test("tolerates trailing newline and whitespace", () => {
-    expect(parseTriageTier("  T1  \n")).toBe("T1");
-  });
-
-  test("reads the tier off the last non-empty line", () => {
-    expect(parseTriageTier("classifying...\n\nT2\n")).toBe("T2");
+  test("parses current triage-floor JSON with rule reasons", () => {
+    const parsed = parseTriageResult(
+      JSON.stringify({
+        added: 3,
+        files: 1,
+        floor: "T2",
+        removed: 1,
+        signals: [{ signal: "path-override", tier: "T2", why: "driver machinery" }],
+      }),
+    );
+    expect(parsed).toMatchObject({
+      reasons: ["driver machinery"],
+      tier: "T2",
+    });
   });
 
   test.each([
@@ -38,6 +51,8 @@ describe("parseTriageTier", () => {
     ["lowercase", "t1"],
     ["tier with trailing tokens", "T1 high"],
     ["tier not on the last line", "T1\ndone"],
+    ["bare legacy tier", "T1"],
+    ["noisy legacy tier", "classifying...\n\nT2\n"],
   ])("rejects %s as unparseable", (_label, stdout) => {
     expect(parseTriageTier(stdout)).toBeUndefined();
   });
@@ -52,29 +67,41 @@ describe("createExecTriageClassifier (injected seam)", () => {
     const classifier = createExecTriageClassifier({
       exec: fakeExec({
         diff: () => Promise.resolve("--- a\n+++ b\n"),
-        triageFloor: () => Promise.resolve({ code: 0, stdout: "T1\n" }),
+        triageFloor: () => Promise.resolve({ code: 0, stdout: triageJson("T1") }),
       }),
     });
     await expect(classifier.classify("itsHabib/ship", 42)).resolves.toEqual({
+      added: 0,
+      files: 0,
       kind: "classified",
+      reasons: [],
+      removed: 0,
+      signals: [],
       tier: "T1",
     });
   });
 
-  test("passes the owner/name slug and PR number through to gh pr diff", async () => {
-    const seen: { slug?: string; pr?: number } = {};
+  test("passes the owner/name slug to both gh diff and triage-floor", async () => {
+    const seen: { diffSlug?: string; floorSlug?: string; pr?: number } = {};
     const classifier = createExecTriageClassifier({
       exec: fakeExec({
         diff: (slug, pr) => {
-          seen.slug = slug;
+          seen.diffSlug = slug;
           seen.pr = pr;
           return Promise.resolve("diff");
         },
-        triageFloor: () => Promise.resolve({ code: 0, stdout: "T0" }),
+        triageFloor: (_diff, slug) => {
+          seen.floorSlug = slug;
+          return Promise.resolve({ code: 0, stdout: triageJson("T0") });
+        },
       }),
     });
     await classifier.classify("itsHabib/ship", 7);
-    expect(seen).toEqual({ pr: 7, slug: "itsHabib/ship" });
+    expect(seen).toEqual({
+      diffSlug: "itsHabib/ship",
+      floorSlug: "itsHabib/ship",
+      pr: 7,
+    });
   });
 
   test("non-zero exit is a classifier error, not a tier", async () => {
@@ -138,6 +165,16 @@ describe("createExecTriageClassifier (real spawn)", () => {
     expect(errorReason(await classifier.classify("o/r", 1))).toContain("gh pr diff failed");
   });
 });
+
+function triageJson(tier: "T0" | "T1" | "T2" | "T3"): string {
+  return JSON.stringify({
+    added: 0,
+    files: 0,
+    floor: tier,
+    removed: 0,
+    signals: [],
+  });
+}
 
 // Cross-platform: drive `node` as the stdin-reading child so the spawn seam's
 // success / non-zero-exit / timeout / ENOENT branches are covered without a

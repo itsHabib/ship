@@ -56,7 +56,7 @@ export type { DispatchTarget, ViabilityDeps, ViabilityResult } from "./viability
 
 export { mapTierToDispatch } from "./tier-map.js";
 
-export { createExecTriageClassifier, parseTriageTier } from "./triage.js";
+export { createExecTriageClassifier, parseTriageResult, parseTriageTier } from "./triage.js";
 export type {
   CreateTriageClassifierOpts,
   TriageClassifier,
@@ -65,6 +65,13 @@ export type {
   TriageOutcome,
   TriageTier,
 } from "./triage.js";
+
+export {
+  assertReviewDecisionAuthorizes,
+  parseReviewDecision,
+  ReviewDecisionValidationError,
+} from "./review-decision.js";
+export type { ReviewDecisionV1 } from "./review-decision.js";
 
 export {
   formatStreamFallbackDiagnostic,

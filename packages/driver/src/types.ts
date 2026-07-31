@@ -127,6 +127,8 @@ export interface AddressOpts {
   streamId: string;
   /** File containing one validated ReviewFindingsV1 JSON artifact. */
   findingsPath: string;
+  /** File containing the exact-head Workbench ReviewDecisionV1 authorization. */
+  decisionPath: string;
   /** Review-cycle cap (policy value; default 3). Refuses + escalates at the cap. */
   maxCycles?: number;
 }

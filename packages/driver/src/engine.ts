@@ -83,6 +83,12 @@ import {
   runtimeCeilingViolation,
 } from "./policy.js";
 import {
+  assertReviewDecisionAuthorizes,
+  parseReviewDecision,
+  type ReviewDecisionV1,
+  ReviewDecisionValidationError,
+} from "./review-decision.js";
+import {
   canonicalReviewFindingsSha256,
   MAX_REVIEW_FINDINGS_BYTES,
   parseReviewFindings,
@@ -90,6 +96,7 @@ import {
   type ReviewFindingsV1,
   ReviewFindingsValidationError,
 } from "./review-findings.js";
+import { appendSpendEvent, type ReviewDecisionSpendEvent, spendLogPathForDb } from "./spend-log.js";
 import { mapTierToDispatch } from "./tier-map.js";
 import { createViabilityDeps } from "./viability.js";
 
@@ -1524,6 +1531,22 @@ export async function address(
     opts.maxCycles ?? DEFAULT_MAX_REVIEW_CYCLES,
     clock,
   );
+  let decision;
+  try {
+    decision = readDecision(files, opts.decisionPath);
+  } catch (error: unknown) {
+    emitAddressRefusal(run, stream, pr, "malformed-review-decision", deps.logger);
+    throw error;
+  }
+  try {
+    assertReviewDecisionAuthorizes(decision, artifact, nextCycle);
+  } catch (error: unknown) {
+    emitAddressRefusal(run, stream, pr, "review-decision-does-not-authorize", deps.logger);
+    if (error instanceof ReviewDecisionValidationError) {
+      throw new AddressError("decision-does-not-authorize", error.message);
+    }
+    throw error;
+  }
   const canonicalSha256 = canonicalReviewFindingsSha256(artifact);
   const docPath = writeAddressDoc({
     canonicalSha256,
@@ -1544,6 +1567,7 @@ export async function address(
     store,
     stream,
   });
+  recordReviewDecisionSpend(store, pr, artifact, decision);
   return dispatchAddress({
     branch,
     deps: {
@@ -1559,6 +1583,55 @@ export async function address(
     addressFacts: prepared.addressFacts,
     tierMapping: prepared.tierMapping,
   });
+}
+
+function recordReviewDecisionSpend(
+  store: Store,
+  pr: AddressPr,
+  artifact: ReviewFindingsV1,
+  decision: ReviewDecisionV1,
+): void {
+  const path = spendLogPathForDb(store.dbPath);
+  if (path === undefined) return;
+  const event: ReviewDecisionSpendEvent = {
+    ts: decision.generated_at,
+    event: "review_decision",
+    repo: pr.repo,
+    pr: pr.prNumber,
+    head_sha: decision.subject.head_sha,
+    plan_id: decision.plan_id,
+    input_digest: decision.input_digest,
+    route_disposition: decision.route_disposition,
+    tier_reasons: decision.tier_reasons ?? [],
+    cycle: decision.cycle,
+    continuation_weight: decision.continuation_weight,
+    cumulative_weight: decision.cumulative_weight,
+    decision_action: "address",
+    decision_reasons: decision.reason_codes,
+    reviewers_requested: artifact.panel.requested,
+    reviewers_completed: artifact.panel.completed,
+    next_reviewers: decision.next_reviewers,
+    findings_by_severity: countDecisionFindings(decision, "severity"),
+    findings_by_disposition: countDecisionFindings(decision, "disposition"),
+    ...(decision.policy === undefined
+      ? {}
+      : { policy_id: decision.policy.id, policy_digest: decision.policy.digest }),
+    ...(decision.route_reason === undefined ? {} : { route_reason: decision.route_reason }),
+    ...(decision.tier === undefined ? {} : { tier: decision.tier }),
+  };
+  appendSpendEvent(event, { path });
+}
+
+function countDecisionFindings(
+  decision: ReviewDecisionV1,
+  field: "disposition" | "severity",
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const finding of decision.findings) {
+    const value = finding[field];
+    counts[value] = (counts[value] ?? 0) + 1;
+  }
+  return counts;
 }
 
 function loadAddressTarget(store: Store, driverRunId: string, streamId: string) {
@@ -1882,6 +1955,30 @@ function readFindings(files: AddressFilePort, findingsPath: string) {
   } catch (error: unknown) {
     if (error instanceof ReviewFindingsValidationError) {
       throw new AddressError("findings-invalid", error.message);
+    }
+    throw error;
+  }
+}
+
+function readDecision(files: AddressFilePort, decisionPath: string) {
+  let content: string;
+  try {
+    content = files.read(decisionPath);
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new AddressError(
+      "decision-unreadable",
+      `review decision file not readable: ${decisionPath}${detail}`,
+    );
+  }
+  if (content.trim() === "") {
+    throw new AddressError("decision-unreadable", `review decision file is empty: ${decisionPath}`);
+  }
+  try {
+    return parseReviewDecision(content);
+  } catch (error: unknown) {
+    if (error instanceof ReviewDecisionValidationError) {
+      throw new AddressError("decision-invalid", error.message);
     }
     throw error;
   }
