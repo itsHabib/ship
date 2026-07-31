@@ -1960,7 +1960,7 @@ function readFindings(files: AddressFilePort, findingsPath: string) {
   }
 }
 
-function readDecision(files: AddressFilePort, decisionPath: string) {
+function readDecision(files: AddressFilePort, decisionPath: string): ReviewDecisionV1 {
   let content: string;
   try {
     content = files.read(decisionPath);

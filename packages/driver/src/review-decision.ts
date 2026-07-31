@@ -34,6 +34,8 @@ const findingSchema = z
 const policySchema = z
   .object({
     id: bounded,
+    // Workbench computes policy digests from canonical content and emits
+    // lowercase hex; accepting another representation would break identity.
     digest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
   })
   .strict();
@@ -118,9 +120,22 @@ function validateDecisionFinding(finding: ReviewDecisionV1["findings"][number]):
       `deferred decision finding ${finding.id} requires defer_reason`,
     );
   }
+  validateProvedSafeFinding(finding);
   if (finding.debt && !finding.follow_up_ref?.trim()) {
     throw new ReviewDecisionValidationError(
       `debt decision finding ${finding.id} requires follow_up_ref`,
+    );
+  }
+}
+
+function validateProvedSafeFinding(finding: ReviewDecisionV1["findings"][number]): void {
+  if (
+    finding.disposition === "proved_safe" &&
+    !finding.reviewer_closed &&
+    !finding.proof_ref?.trim()
+  ) {
+    throw new ReviewDecisionValidationError(
+      `proved_safe decision finding ${finding.id} requires reviewer_closed or proof_ref`,
     );
   }
 }
@@ -169,6 +184,10 @@ export function assertReviewDecisionAuthorizes(
       `review decision cycle ${String(decision.cycle)} does not match address cycle ${String(cycle)}`,
     );
   }
+  // The findings artifact is the address worklist, not the complete panel
+  // ledger. Only accepted, not-yet-executed fixes belong in that worklist;
+  // proved-safe, deferred, unresolved, and already-changed findings remain in
+  // the decision for audit but must not be dispatched as implementation work.
   const accepted = new Set(
     decision.findings
       .filter((finding) => finding.disposition === "fixed" && !finding.changed)

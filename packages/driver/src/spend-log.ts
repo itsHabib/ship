@@ -58,6 +58,7 @@ export interface ReviewDecisionSpendEvent {
   reviewers_completed: string[];
   next_reviewers: string[];
   findings_by_severity: Record<string, number>;
+  /** All decision findings by disposition; this is not an authorization count. */
   findings_by_disposition: Record<string, number>;
 }
 

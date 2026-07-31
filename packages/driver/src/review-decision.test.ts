@@ -18,6 +18,43 @@ describe("ReviewDecisionV1", () => {
     }).not.toThrow();
   });
 
+  test("authorizes the accepted worklist while retaining non-address findings for audit", () => {
+    const value = decisionValue();
+    const base = value.findings[0]!;
+    const decision = parseReviewDecision(
+      JSON.stringify({
+        ...value,
+        findings: [
+          base,
+          {
+            ...base,
+            id: "finding-2",
+            disposition: "proved_safe",
+            reviewer_closed: true,
+          },
+          {
+            ...base,
+            id: "finding-3",
+            disposition: "deferred",
+            defer_reason: "outside this PR",
+            debt: true,
+            follow_up_ref: "issue:3",
+          },
+        ],
+      }),
+    );
+    const findings = parseReviewFindings(JSON.stringify(findingsValue()));
+    expect(() => {
+      assertReviewDecisionAuthorizes(decision, findings, 1);
+    }).not.toThrow();
+  });
+
+  test("rejects an empty address worklist at the findings boundary", () => {
+    expect(() =>
+      parseReviewFindings(JSON.stringify({ ...findingsValue(), findings: [] })),
+    ).toThrow();
+  });
+
   test.each([
     ["wrong action", { action: "stop" }],
     ["wrong head", { subject: { ...decisionValue().subject, head_sha: "b".repeat(40) } }],
@@ -71,6 +108,10 @@ describe("ReviewDecisionV1", () => {
   test.each([
     ["deferred finding without rationale", { disposition: "deferred", defer_reason: undefined }],
     ["debt finding without follow-up", { debt: true, follow_up_ref: undefined }],
+    [
+      "proved-safe finding without closure or proof",
+      { disposition: "proved_safe", proof_ref: undefined, reviewer_closed: false },
+    ],
   ])("rejects %s", (_name, findingPatch) => {
     const value = decisionValue();
     const finding = { ...value.findings[0], ...findingPatch };
