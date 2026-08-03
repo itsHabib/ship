@@ -30,6 +30,8 @@ function toError(value: unknown): Error {
 
 interface MockQueryOpts {
   events?: SDKMessage[];
+  includeInit?: boolean;
+  permissionMode?: string;
   streamThrows?: unknown;
   constructionThrows?: unknown;
 }
@@ -39,7 +41,10 @@ function makeMockQuery(opts: MockQueryOpts): {
   closeSpy: ReturnType<typeof vi.fn>;
   interruptSpy: ReturnType<typeof vi.fn>;
 } {
-  const events = opts.events ?? [];
+  const events = [
+    ...(opts.includeInit === false ? [] : [initEvent(opts.permissionMode ?? "auto")]),
+    ...(opts.events ?? []),
+  ];
   const closeSpy = vi.fn();
   const interruptSpy = vi.fn((): Promise<void> => Promise.resolve());
 
@@ -303,6 +308,7 @@ describe("LocalClaudeRunner — happy path", () => {
       summary: "implementation done",
     });
     expect(onEvent.mock.calls.map((c) => (c as [SDKMessage])[0])).toEqual([
+      initEvent("auto"),
       evAssistant,
       successResult,
     ]);
@@ -342,7 +348,7 @@ describe("LocalClaudeRunner — mid-stream throw", () => {
 });
 
 describe("LocalClaudeRunner — query options", () => {
-  test("passes permission bypass, env merge, model, cwd, mcpServers, agents", async () => {
+  test("defaults unattended execution to auto mode without a bypass flag", async () => {
     vi.stubEnv("ANTHROPIC_BASE_URL", "https://gateway.local");
     const { queryInstance } = makeMockQuery({ events: [successResult] });
     vi.mocked(query).mockReturnValue(queryInstance);
@@ -363,7 +369,6 @@ describe("LocalClaudeRunner — query options", () => {
     expect(query).toHaveBeenCalledWith(
       expect.objectContaining({
         options: expect.objectContaining({
-          allowDangerouslySkipPermissions: true,
           cwd: "/abs/work",
           env: expect.objectContaining({
             ANTHROPIC_API_KEY: "test-key-abc123",
@@ -373,21 +378,24 @@ describe("LocalClaudeRunner — query options", () => {
           fallbackModel: "claude-haiku",
           mcpServers: { docs: { type: "http", url: "https://example.com/mcp" } },
           model: "claude-sonnet-4-20250514",
-          permissionMode: "bypassPermissions",
+          permissionMode: "auto",
           settings: {
             permissions: {
-              defaultMode: "bypassPermissions",
+              defaultMode: "auto",
             },
           },
         }) as NonNullable<Parameters<typeof query>[0]["options"]>,
         prompt: "do the thing",
       }),
     );
+    const options = vi.mocked(query).mock.calls[0]?.[0].options;
+    expect(options).not.toHaveProperty("allowDangerouslySkipPermissions");
   });
 
-  test("fails fast when the SDK runtime does not honor bypassPermissions", async () => {
+  test("fails fast when the SDK runtime does not honor auto mode", async () => {
     const { queryInstance } = makeMockQuery({
-      events: [initEvent("default"), evAssistant, successResult],
+      events: [evAssistant, successResult],
+      permissionMode: "default",
     });
     vi.mocked(query).mockReturnValue(queryInstance);
 
@@ -399,15 +407,33 @@ describe("LocalClaudeRunner — query options", () => {
     expect(result.status).toBe("failed");
     expect(result.failureCategory).toBe("sdk-throw");
     expect(result.errorMessage).toContain(
-      'Claude SDK started with permissionMode "default"; expected "bypassPermissions"',
+      'Claude SDK started with permissionMode "default"; expected "auto"',
     );
     expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
-  test("accepts an SDK runtime initialized in bypassPermissions", async () => {
+  test("rejects the obsolete bypassPermissions mode without retrying", async () => {
     const { queryInstance } = makeMockQuery({
-      events: [initEvent("bypassPermissions"), evAssistant, successResult],
+      events: [evAssistant, successResult],
+      permissionMode: "bypassPermissions",
     });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    const handle = await runner.run(baseInput());
+    const result = await handle.result;
+
+    expect(result.status).toBe("failed");
+    expect(result.failureCategory).toBe("sdk-throw");
+    expect(result.errorMessage).toContain(
+      'obsolete permissionMode "bypassPermissions"; Ship requires unattended "auto" mode',
+    );
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  test("accepts an SDK runtime initialized in auto mode", async () => {
+    const { queryInstance } = makeMockQuery({ events: [evAssistant, successResult] });
     vi.mocked(query).mockReturnValue(queryInstance);
 
     const runner = new LocalClaudeRunner();
@@ -417,6 +443,24 @@ describe("LocalClaudeRunner — query options", () => {
       status: "succeeded",
       summary: "implementation done",
     });
+  });
+
+  test("fails closed when the SDK omits its live permission mode", async () => {
+    const { queryInstance } = makeMockQuery({
+      events: [evAssistant, successResult],
+      includeInit: false,
+    });
+    vi.mocked(query).mockReturnValue(queryInstance);
+
+    const runner = new LocalClaudeRunner();
+    const handle = await runner.run(baseInput());
+    const result = await handle.result;
+
+    expect(result.status).toBe("failed");
+    expect(result.failureCategory).toBe("sdk-throw");
+    expect(result.errorMessage).toContain(
+      'did not report its live permissionMode; expected "auto"',
+    );
   });
 
   test("PATH sentinel from process.env reaches options.env (replace-merge)", async () => {
@@ -746,7 +790,7 @@ describe("LocalClaudeRunner — onEvent contract", () => {
     const runner = new LocalClaudeRunner();
     const handle = await runner.run(baseInput({ onEvent }));
     await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
-    expect(onEvent).toHaveBeenCalledTimes(2);
+    expect(onEvent).toHaveBeenCalledTimes(3);
   });
 
   test("async onEvent rejection is swallowed", async () => {
@@ -759,7 +803,7 @@ describe("LocalClaudeRunner — onEvent contract", () => {
     const runner = new LocalClaudeRunner();
     const handle = await runner.run(baseInput({ onEvent }));
     await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
-    expect(onEvent).toHaveBeenCalledTimes(2);
+    expect(onEvent).toHaveBeenCalledTimes(3);
   });
 });
 

@@ -3,10 +3,9 @@
  * `review-spend.jsonl` beside the ship store's `state.db`. Best-effort: a write
  * failure warns and returns, never throwing, so it can never block a land.
  *
- * Engine scope is the `terminal` event, whose inputs (tier, cycles, merge
- * outcome) the driver has at merge-record time. Per-bot review-cycle findings,
- * the claude cost proxy, and fixes-PR linkage live where `/work-driver`
- * processes raw PR comments — not in the engine — and are recorded there.
+ * Engine scope is the terminal merge fact plus the Workbench review decision
+ * consumed by `driver address`. Per-bot cost data and fixes-PR linkage remain
+ * where `/work-driver` processes raw PR comments.
  */
 
 import type { Logger } from "@ship/logger";
@@ -31,7 +30,39 @@ export interface TerminalSpendEvent {
   fixes_pr?: number | null;
 }
 
-export type SpendEvent = TerminalSpendEvent;
+/** One exact-head Workbench decision consumed by Ship's address adapter. */
+export interface ReviewDecisionSpendEvent {
+  ts: string;
+  event: "review_decision";
+  repo: string;
+  pr: number;
+  head_sha: string;
+  plan_id: string;
+  input_digest: string;
+  policy_id?: string;
+  policy_digest?: string;
+  route_disposition:
+    | "tier_routed"
+    | "deliberately_overridden"
+    | "full_panel_fallback"
+    | "parked_unverified";
+  route_reason?: string;
+  tier?: TriageTier;
+  tier_reasons: string[];
+  cycle: number;
+  continuation_weight: number;
+  cumulative_weight: number;
+  decision_action: "address";
+  decision_reasons: string[];
+  reviewers_requested: string[];
+  reviewers_completed: string[];
+  next_reviewers: string[];
+  findings_by_severity: Record<string, number>;
+  /** All decision findings by disposition; this is not an authorization count. */
+  findings_by_disposition: Record<string, number>;
+}
+
+export type SpendEvent = ReviewDecisionSpendEvent | TerminalSpendEvent;
 
 export interface AppendSpendOpts {
   /** Override the log path (tests inject a temp path). */
