@@ -144,12 +144,15 @@ describe("reconcileSingleInstance", () => {
     expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(true);
   });
 
-  test("a source-run sibling (`npx tsx src/bin.ts`) is identified and reaped", () => {
+  test("a source-run sibling is not reaped on argv evidence, and keeps its entry", () => {
     seedEntry(2000, NOW - 10_000); // fresh heartbeat
-    // The command line README.md documents produces: the package directory is
-    // the cwd, so it appears nowhere in argv — no "mcp-server" marker, and here
-    // not even "ship". Requiring those markers left this live sibling
-    // unidentified, so it was never reaped and the guard was bypassed.
+    // The command line the documented source run produces: the package
+    // directory is the cwd, so it appears nowhere in argv — no "mcp-server",
+    // and here not even "ship". This IS a live sibling and ideally would be
+    // reaped, but nothing in this string distinguishes it from any other
+    // project's `tsx … bin.ts`, and matching on that would SIGTERM a stranger
+    // whose PID happened to collide. Decline, and keep the entry so the
+    // sibling stays visible instead of being silently erased.
     const sourceRun = "node /tmp/build/node_modules/tsx/dist/cli.mjs src/bin.ts";
     const inspector = fakeInspector(new Set([2000]), new Map([[2000, sourceRun]]));
     const result = reconcileSingleInstance({
@@ -159,9 +162,10 @@ describe("reconcileSingleInstance", () => {
       nowMs: NOW,
       inspector,
     });
-    expect(inspector.terminated).toEqual([2000]);
-    expect(result.reapedPids).toEqual([2000]);
-    expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(false);
+    expect(inspector.terminated).toEqual([]);
+    expect(result.reapedPids).toEqual([]);
+    expect(result.removedStalePids).toEqual([]);
+    expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(true);
   });
 
   test("fresh entry whose identity cannot be read is left untouched (fail-safe)", () => {

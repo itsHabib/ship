@@ -65,24 +65,27 @@ export const INSTANCE_HEARTBEAT_MS = 60_000;
 const PID_EXIT_TIMEOUT_MS = 3_000;
 
 /**
- * Command-line shapes that identify a live ship mcp-server. A PID matching ANY
- * shape (every marker within it present) is confirmed; one matching none is
- * left alone as a possible PID reuse.
+ * A live PID is only reaped when its command line contains BOTH markers — it is
+ * a ship mcp-server (`mcp-server`) AND it is *this* family's, not some other
+ * repo's connector (`ship`). A reused PID running anything else fails the match
+ * and is left alone.
  *
- * Two shapes, because the server has two supported launch paths. A packaged run
- * shows its package directory (`node .../ship/packages/mcp-server/dist/bin.js`)
- * and matches on `mcp-server` + `ship`. A source run started from the package
- * directory — `cd packages/mcp-server && npx tsx src/bin.ts`, the command
- * README.md documents — shows only the tsx shim and a *relative* `src/bin.ts`;
- * the package directory is the cwd, and a cwd is not in the command line. That
- * run is not guaranteed to contain `mcp-server` at all, so requiring it would
- * fail to identify a live server on a documented launch path — and an
- * unidentified sibling is one that never gets reaped.
+ * This deliberately does NOT try to recognize the source run
+ * (`cd packages/mcp-server && npx tsx src/bin.ts`), whose command line can
+ * carry neither marker because the package directory is the cwd. A generic
+ * `tsx` + `bin.ts` shape would match any project on the machine running a
+ * TypeScript entrypoint by that name, and a reused PID inside the freshness
+ * window would then be SIGTERMed on that evidence alone. Killing an unrelated
+ * process is a strictly worse failure than declining to reap a sibling: the
+ * first destroys someone else's work, the second is contained by the caller,
+ * which now keeps the entry and logs loudly.
+ *
+ * Closing the source-run gap needs ownership the process actually asserts — an
+ * flock the running server holds on its own registry entry, so liveness is
+ * proven by the lock rather than inferred from argv — not a wider substring
+ * guess. Tracked in the PR discussion.
  */
-const SHIP_SERVER_CMDLINE_SHAPES = [
-  ["mcp-server", "ship"],
-  ["tsx", "bin.ts"],
-] as const;
+const SHIP_SERVER_CMDLINE_MARKERS = ["mcp-server", "ship"] as const;
 
 /** On-disk shape of a registry entry. */
 interface InstanceEntry {
@@ -218,9 +221,7 @@ function runForCmdline(command: string, args: readonly string[]): string | undef
 /** True when a command line looks like a ship mcp-server (all markers present). */
 function looksLikeShipServer(commandLine: string): boolean {
   const haystack = commandLine.toLowerCase();
-  return SHIP_SERVER_CMDLINE_SHAPES.some((shape) =>
-    shape.every((marker) => haystack.includes(marker)),
-  );
+  return SHIP_SERVER_CMDLINE_MARKERS.every((marker) => haystack.includes(marker));
 }
 
 /**
