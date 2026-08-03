@@ -65,12 +65,24 @@ export const INSTANCE_HEARTBEAT_MS = 60_000;
 const PID_EXIT_TIMEOUT_MS = 3_000;
 
 /**
- * A live PID is only reaped when its command line contains BOTH markers — it is
- * a ship mcp-server (`mcp-server`) AND it is *this* family's, not some other
- * repo's connector (`ship`). A reused PID running anything else fails the match
- * and is left alone.
+ * Command-line shapes that identify a live ship mcp-server. A PID matching ANY
+ * shape (every marker within it present) is confirmed; one matching none is
+ * left alone as a possible PID reuse.
+ *
+ * Two shapes, because the server has two supported launch paths. A packaged run
+ * shows its package directory (`node .../ship/packages/mcp-server/dist/bin.js`)
+ * and matches on `mcp-server` + `ship`. A source run started from the package
+ * directory — `cd packages/mcp-server && npx tsx src/bin.ts`, the command
+ * README.md documents — shows only the tsx shim and a *relative* `src/bin.ts`;
+ * the package directory is the cwd, and a cwd is not in the command line. That
+ * run is not guaranteed to contain `mcp-server` at all, so requiring it would
+ * fail to identify a live server on a documented launch path — and an
+ * unidentified sibling is one that never gets reaped.
  */
-const SHIP_SERVER_CMDLINE_MARKERS = ["mcp-server", "ship"] as const;
+const SHIP_SERVER_CMDLINE_SHAPES = [
+  ["mcp-server", "ship"],
+  ["tsx", "bin.ts"],
+] as const;
 
 /** On-disk shape of a registry entry. */
 interface InstanceEntry {
@@ -206,7 +218,9 @@ function runForCmdline(command: string, args: readonly string[]): string | undef
 /** True when a command line looks like a ship mcp-server (all markers present). */
 function looksLikeShipServer(commandLine: string): boolean {
   const haystack = commandLine.toLowerCase();
-  return SHIP_SERVER_CMDLINE_MARKERS.every((marker) => haystack.includes(marker));
+  return SHIP_SERVER_CMDLINE_SHAPES.some((shape) =>
+    shape.every((marker) => haystack.includes(marker)),
+  );
 }
 
 /**
@@ -337,7 +351,14 @@ function classifyEntry(path: string, opts: ReconcileOptions, freshnessMs: number
 /**
  * Fresh + alive is only a *candidate*: a crashed sibling leaves a fresh entry
  * behind too. Confirm the live PID is actually a ship mcp-server before killing
- * it — a reused PID must never be reaped. Unconfirmable identity fails safe.
+ * it — a reused PID must never be reaped. Unconfirmable identity fails safe,
+ * which means skipping: neither killing the process nor deleting its entry.
+ *
+ * Deleting it would be the worse error. `reconcileSingleInstance` opens the
+ * store no matter what this returns, so a `remove` on an unidentified PID drops
+ * the only record of a sibling that is still running and still holding the WAL,
+ * and the guard is bypassed silently. Keeping the entry costs one stale file in
+ * the genuine PID-reuse case; removing it costs two writers on one database.
  */
 function confirmReapTarget(pid: number, opts: ReconcileOptions): EntryAction {
   const cmdline = opts.inspector.commandLine(pid);
@@ -351,9 +372,9 @@ function confirmReapTarget(pid: number, opts: ReconcileOptions): EntryAction {
   if (!looksLikeShipServer(cmdline)) {
     opts.logger?.warn(
       { pid, cmdline },
-      "registry PID was reused by a non-ship process; sweeping the stale entry without a kill",
+      "could not identify the reap target as a ship mcp-server; not reaping and keeping its entry (fail-safe against an unrecognized launch path)",
     );
-    return { kind: "remove", pid };
+    return { kind: "skip" };
   }
   return { kind: "reap", pid };
 }

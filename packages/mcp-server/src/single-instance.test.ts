@@ -122,7 +122,7 @@ describe("reconcileSingleInstance", () => {
     expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(false);
   });
 
-  test("fresh entry whose PID was reused by a non-ship process is swept, not killed", () => {
+  test("fresh entry whose PID looks unrelated is neither killed nor swept", () => {
     seedEntry(2000, NOW - 10_000); // fresh heartbeat
     // PID 2000 is alive but its command line is some unrelated process.
     const inspector = fakeInspector(new Set([2000]), new Map([[2000, "C:/Windows/explorer.exe"]]));
@@ -135,7 +135,32 @@ describe("reconcileSingleInstance", () => {
     });
     expect(inspector.terminated).toEqual([]); // never killed the innocent process
     expect(result.reapedPids).toEqual([]);
-    expect(result.removedStalePids).toEqual([2000]); // stale entry cleaned up
+    // An unrecognized command line is evidence of PID reuse, not proof of it —
+    // it is equally the signature of a launch path this matcher doesn't know.
+    // Since reconcile opens the store regardless, deleting the entry would drop
+    // the only record of a sibling that may still hold the WAL. Keep it: one
+    // stale file is cheaper than two writers on one database.
+    expect(result.removedStalePids).toEqual([]);
+    expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(true);
+  });
+
+  test("a source-run sibling (`npx tsx src/bin.ts`) is identified and reaped", () => {
+    seedEntry(2000, NOW - 10_000); // fresh heartbeat
+    // The command line README.md documents produces: the package directory is
+    // the cwd, so it appears nowhere in argv — no "mcp-server" marker, and here
+    // not even "ship". Requiring those markers left this live sibling
+    // unidentified, so it was never reaped and the guard was bypassed.
+    const sourceRun = "node /tmp/build/node_modules/tsx/dist/cli.mjs src/bin.ts";
+    const inspector = fakeInspector(new Set([2000]), new Map([[2000, sourceRun]]));
+    const result = reconcileSingleInstance({
+      dbPath,
+      selfPid: 1000,
+      startedAtMs: NOW,
+      nowMs: NOW,
+      inspector,
+    });
+    expect(inspector.terminated).toEqual([2000]);
+    expect(result.reapedPids).toEqual([2000]);
     expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(false);
   });
 
