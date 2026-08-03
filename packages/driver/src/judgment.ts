@@ -18,6 +18,7 @@ import type {
   MergeFacts,
 } from "./types.js";
 
+import { emitValidatedMergeFacts, ensureDriverStateMergeRun } from "./driverstate-emit.js";
 import { CancelError, DecideError } from "./errors.js";
 import {
   resolveAllDispatchFailingEscalations,
@@ -27,6 +28,12 @@ import {
   resolveStreamParkedEscalation,
 } from "./escalation.js";
 import { parseManifest } from "./manifest.js";
+import {
+  appendSpendEvent,
+  ownerNameFromRepoUrl,
+  spendLogPathForDb,
+  type TerminalSpendEvent,
+} from "./spend-log.js";
 
 const LIST_RUNS_LIMIT = 200;
 
@@ -521,16 +528,98 @@ export function markMerged(
     throw new DecideError(`stream ${streamId} is not landed (status=${stream.status})`);
   }
 
+  assertMergeClosureHandoff(facts);
+  const patch = mergePatch(facts);
+  // Capture before the update: only the first merge-record (a `landed` stream
+  // becoming `done`) emits a spend event. markMerged/land accept an already
+  // `done` stream for idempotent re-land, which must not double-count.
+  const firstMerge = stream.status === "landed";
+  ensureDriverStateMergeRun(run, stream);
+  store.updateDriverStream(streamId, patch);
+  emitValidatedMergeFacts(store, driverRunId, streamId, patch);
+
+  if (firstMerge) recordTerminalSpend(store, run, stream, facts);
+
+  return maybeCompleteRunAfterMerge(store, driverRunId, run, facts.mergedAt);
+}
+
+/**
+ * Validate the public merge-record handoff before any store or ledger write.
+ * Legacy calls may omit both Gate facts; exact-head closure requires the pair.
+ */
+function assertMergeClosureHandoff(facts: MergeFacts): void {
+  const hasGate = facts.gateRunRef !== undefined;
+  const hasHead = facts.finalReviewedHeadSha !== undefined;
+  if (hasGate !== hasHead) {
+    throw new DecideError("closure handoff requires both gateRunRef and finalReviewedHeadSha");
+  }
+  if (!hasGate || !hasHead) {
+    return;
+  }
+  if (!/^run_[0-9a-f]+$/.test(facts.gateRunRef ?? "")) {
+    throw new DecideError("closure handoff gateRunRef must match run_<lowercase-hex>");
+  }
+  if (!/^[0-9a-f]{40}$/.test(facts.finalReviewedHeadSha ?? "")) {
+    throw new DecideError(
+      "closure handoff finalReviewedHeadSha must be 40 lowercase hexadecimal characters",
+    );
+  }
+  if (
+    facts.mergeHeadSha !== undefined &&
+    facts.finalReviewedHeadSha !== facts.mergeHeadSha.toLowerCase()
+  ) {
+    throw new DecideError(
+      `closure handoff reviewed head ${String(facts.finalReviewedHeadSha)} does not match merge head ${facts.mergeHeadSha}`,
+    );
+  }
+}
+
+function mergePatch(facts: MergeFacts): Parameters<Store["updateDriverStream"]>[1] {
   const patch: Parameters<Store["updateDriverStream"]>[1] = {
     mergeCommit: facts.mergeCommit,
     prNumber: facts.prNumber,
     status: "done",
   };
+  if (facts.mergeHeadSha !== undefined) patch.mergeHeadSha = facts.mergeHeadSha;
+  if (facts.finalReviewedHeadSha !== undefined) {
+    patch.finalReviewedHeadSha = facts.finalReviewedHeadSha;
+  }
+  if (facts.gateRunRef !== undefined) patch.gateRunRef = facts.gateRunRef;
   if (facts.mergedAt !== undefined) patch.mergedAt = facts.mergedAt;
   if (facts.cycles !== undefined) patch.cycles = facts.cycles;
-  store.updateDriverStream(streamId, patch);
+  return patch;
+}
 
-  return maybeCompleteRunAfterMerge(store, driverRunId, run, facts.mergedAt);
+/**
+ * Append the terminal review-spend record for a merged stream — the engine-side
+ * slice of the spend log: tier, source, cycles, and outcome, which the driver
+ * has at merge-record time. Best-effort inside `appendSpendEvent`, so a spend
+ * write can never block the merge record.
+ */
+function recordTerminalSpend(
+  store: Store,
+  run: DriverRun,
+  stream: DriverStream,
+  facts: MergeFacts,
+): void {
+  // Land the log beside the store's own db; an in-memory/custom store has no
+  // sibling, so skip rather than leak telemetry into the default profile.
+  const spendPath = spendLogPathForDb(store.dbPath);
+  if (spendPath === undefined) return;
+  const repoUrl = extractRepoUrl(run);
+  const repo = (repoUrl === undefined ? undefined : ownerNameFromRepoUrl(repoUrl)) ?? run.repo;
+  const cyclesUsed = facts.cycles ?? stream.reviewCycles;
+  const event: TerminalSpendEvent = {
+    ts: facts.mergedAt ?? new Date().toISOString(),
+    event: "terminal",
+    repo,
+    pr: facts.prNumber,
+    merged: true,
+    ...(stream.triageTier !== undefined && { tier: stream.triageTier }),
+    ...(stream.triageTierSource !== undefined && { tier_source: stream.triageTierSource }),
+    ...(cyclesUsed !== undefined && { cycles_used: cyclesUsed }),
+  };
+  appendSpendEvent(event, { path: spendPath });
 }
 
 export async function cancelRun(

@@ -134,6 +134,8 @@ const STREAM_TRANSITIONS: Readonly<Record<string, Readonly<Record<string, string
   stream_failed: { [STATUS_DISPATCHED]: STATUS_FAILED },
   stream_pr_opened: { [STATUS_LANDED]: STATUS_PR_OPEN },
   review_cycle: { [STATUS_PR_OPEN]: STATUS_PR_OPEN },
+  closure_facts: { [STATUS_PR_OPEN]: STATUS_PR_OPEN },
+  intervention: { [STATUS_PR_OPEN]: STATUS_PR_OPEN },
   stream_merged: { [STATUS_PR_OPEN]: STATUS_MERGED },
   stream_skipped: { [STATUS_PENDING]: STATUS_SKIPPED, [STATUS_FAILED]: STATUS_SKIPPED },
 };

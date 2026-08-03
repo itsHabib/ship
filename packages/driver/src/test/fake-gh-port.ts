@@ -21,6 +21,8 @@ export interface FakeGhPrState {
   checks?: GhPrCheck[];
   /** After merge, return a stale OPEN view this many times before the merged state. */
   postMergeViewLagReads?: number;
+  /** Simulated head observed atomically at the merge write boundary. */
+  headRefOidAtMerge?: string;
   /** When set, `markReady` throws with this message. */
   markReadyError?: string;
   /** When true, `markReady` leaves the PR draft (simulates unconfirmed flip). */
@@ -28,7 +30,12 @@ export interface FakeGhPrState {
 }
 
 export interface FakeGhPort extends DriverGhPort {
-  mergeCalls: { repo: string; prNumber: number; admin: boolean }[];
+  mergeCalls: {
+    repo: string;
+    prNumber: number;
+    admin: boolean;
+    expectedHeadSha?: string;
+  }[];
   viewCalls: { repo: string; prNumber: number }[];
   markReadyCalls: { repo: string; prNumber: number }[];
   loginCalls: number;
@@ -48,7 +55,7 @@ export function createFakeGhPort(
   const prs = new Map<number, FakeGhPrState>(
     Object.entries(initial).map(([k, v]) => [Number(k), v]),
   );
-  const mergeCalls: { repo: string; prNumber: number; admin: boolean }[] = [];
+  const mergeCalls: FakeGhPort["mergeCalls"] = [];
   const viewCalls: { repo: string; prNumber: number }[] = [];
   const markReadyCalls: { repo: string; prNumber: number }[] = [];
   const postMergeLagRemaining = new Map<number, number>();
@@ -58,8 +65,9 @@ export function createFakeGhPort(
     viewCalls,
     loginCalls: 0,
     mergePullRequest(_repo: string, prNumber: number, opts?: GhMergeOpts): Promise<void> {
-      mergeCalls.push({ admin: opts?.admin === true, prNumber, repo: _repo });
       const current = prs.get(prNumber);
+      assertFakeMergeHead(current, opts);
+      mergeCalls.push(fakeMergeCall(_repo, prNumber, opts));
       const lagReads = current?.postMergeViewLagReads ?? 0;
       if (lagReads > 0) {
         postMergeLagRemaining.set(prNumber, lagReads);
@@ -148,4 +156,31 @@ export function createFakeGhPort(
     },
   };
   return port;
+}
+
+function assertFakeMergeHead(current: FakeGhPrState | undefined, opts?: GhMergeOpts): void {
+  const headAtMerge = current?.headRefOidAtMerge ?? current?.headRefOid;
+  if (opts?.expectedHeadSha === undefined || headAtMerge === undefined) {
+    return;
+  }
+  if (opts.expectedHeadSha.toLowerCase() === headAtMerge.toLowerCase()) {
+    return;
+  }
+  throw new Error("head commit mismatch");
+}
+
+function fakeMergeCall(
+  repo: string,
+  prNumber: number,
+  opts?: GhMergeOpts,
+): FakeGhPort["mergeCalls"][number] {
+  const call: FakeGhPort["mergeCalls"][number] = {
+    admin: opts?.admin === true,
+    prNumber,
+    repo,
+  };
+  if (opts?.expectedHeadSha !== undefined) {
+    call.expectedHeadSha = opts.expectedHeadSha;
+  }
+  return call;
 }

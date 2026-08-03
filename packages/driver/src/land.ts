@@ -45,6 +45,8 @@ export async function land(
   // be refused on an identity mismatch it never acts on.
   const prView = await fetchMergedPrView(gh, run, repo, opts.prNumber, {
     admin: opts.admin === true,
+    ...(opts.gateRunRef === undefined ? {} : { gateRunRef: opts.gateRunRef }),
+    ...(opts.reviewedHeadSha === undefined ? {} : { reviewedHeadSha: opts.reviewedHeadSha }),
   });
   const facts = buildLandFacts(prView, opts);
   return markMerged(store, driverRunId, streamId, facts);
@@ -83,11 +85,17 @@ async function fetchMergedPrView(
   run: DriverRun,
   repo: string,
   prNumber: number,
-  opts: { admin: boolean; sleep?: SleepFn },
+  opts: {
+    admin: boolean;
+    sleep?: SleepFn;
+    gateRunRef?: string;
+    reviewedHeadSha?: string;
+  },
 ): Promise<GhPullRequestView> {
   const sleep = opts.sleep ?? defaultSleep;
   try {
     let prView = await gh.viewPullRequest(repo, prNumber);
+    assertClosureHandoff(opts, prView.headRefOid);
     if (prView.state !== "MERGED") {
       // Always-on readiness guard: refuse to merge an unready PR. Runs even
       // under --admin (admin bypasses the *approval* gate, not this check).
@@ -95,7 +103,7 @@ async function fetchMergedPrView(
       // gh-identity guard immediately before the write — a mismatched gh login
       // must not merge under a repo that pins its identity.
       await assertGhIdentity(gh, run);
-      await gh.mergePullRequest(repo, prNumber, { admin: opts.admin });
+      await gh.mergePullRequest(repo, prNumber, mergeOpts(opts));
       prView = await readMergedViewWithRetry(gh, repo, prNumber, { sleep });
     }
 
@@ -113,6 +121,41 @@ async function fetchMergedPrView(
     if (err instanceof DecideError) throw err;
     const detail = err instanceof Error ? err.message : String(err);
     throw new DecideError(`gh operation failed for PR #${String(prNumber)}: ${detail}`);
+  }
+}
+
+function mergeOpts(opts: { admin: boolean; reviewedHeadSha?: string }): {
+  admin: boolean;
+  expectedHeadSha?: string;
+} {
+  if (opts.reviewedHeadSha === undefined) {
+    return { admin: opts.admin };
+  }
+  return { admin: opts.admin, expectedHeadSha: opts.reviewedHeadSha };
+}
+
+function assertClosureHandoff(
+  opts: { gateRunRef?: string; reviewedHeadSha?: string },
+  liveHeadSha: string,
+): void {
+  const hasGate = opts.gateRunRef !== undefined;
+  const hasHead = opts.reviewedHeadSha !== undefined;
+  if (hasGate !== hasHead) {
+    throw new DecideError("closure handoff requires both gateRunRef and reviewedHeadSha");
+  }
+  if (!hasGate || !hasHead) return;
+  if (!/^run_[0-9a-f]+$/.test(opts.gateRunRef ?? "")) {
+    throw new DecideError("closure handoff gateRunRef must match run_<lowercase-hex>");
+  }
+  if (!/^[0-9a-f]{40}$/.test(opts.reviewedHeadSha ?? "")) {
+    throw new DecideError(
+      "closure handoff reviewedHeadSha must be 40 lowercase hexadecimal characters",
+    );
+  }
+  if (opts.reviewedHeadSha !== liveHeadSha.toLowerCase()) {
+    throw new DecideError(
+      `closure handoff reviewed head ${String(opts.reviewedHeadSha)} does not match live head ${liveHeadSha}`,
+    );
   }
 }
 
@@ -187,6 +230,7 @@ function buildLandFacts(prView: GhPullRequestView, opts: LandOpts): MergeFacts {
   }
 
   const facts: MergeFacts = {
+    mergeHeadSha: prView.headRefOid.toLowerCase(),
     mergeCommit: mergeOid,
     prNumber: opts.prNumber,
   };
@@ -195,6 +239,10 @@ function buildLandFacts(prView: GhPullRequestView, opts: LandOpts): MergeFacts {
   }
   if (opts.cycles !== undefined) {
     facts.cycles = opts.cycles;
+  }
+  if (opts.gateRunRef !== undefined && opts.reviewedHeadSha !== undefined) {
+    facts.finalReviewedHeadSha = opts.reviewedHeadSha;
+    facts.gateRunRef = opts.gateRunRef;
   }
   return facts;
 }

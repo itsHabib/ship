@@ -84,7 +84,17 @@ export function createDriverService(opts: CreateDriverServiceOpts): DriverServic
       if (gh === undefined) {
         throw new DecideError("address requires a GitHub port — wire gh in createDriverService");
       }
-      return addressFn({ clock: clock ?? Date.now, gh, ship, store }, driverRunId, addressOpts);
+      return addressFn(
+        {
+          clock: clock ?? Date.now,
+          gh,
+          ship,
+          store,
+          ...(logger === undefined ? {} : { logger }),
+        },
+        driverRunId,
+        addressOpts,
+      );
     },
     cancel: (driverRunId) => cancelRun(store, ship, driverRunId, now()),
     deleteDriverRun: (id) => {

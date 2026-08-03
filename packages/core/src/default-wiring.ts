@@ -57,6 +57,15 @@ export const DEFAULT_CODEX_MODEL: ModelSelection = {
   id: "gpt-5.3-codex",
 };
 
+// The rooms microVM image is a property of the KVM host, not the task — the
+// `rooms` CLI requires `--image` and `RoomCursorRunner` has no built-in default,
+// so a rooms dispatch fails synchronously (`MissingRoomImageError`) unless an
+// image is supplied. The host operator sets this env var (or injects a
+// `roomCursor` with an explicit `defaultImage`); a per-run `room.image` still
+// overrides it. Read here at the composition root so the runner stays a pure
+// mechanism configured by its opts.
+const ROOMS_IMAGE_ENV = "SHIP_ROOMS_IMAGE";
+
 function resolveConfiguredDefaultModel(opts: DefaultShipServiceOpts): ModelSelection {
   if (opts.defaultModel !== undefined) return opts.defaultModel;
   return {
@@ -214,7 +223,10 @@ export function createDefaultShipService(opts: DefaultShipServiceOpts): ShipServ
     const infra = getOrCreateSharedInfra(opts.dbPath, logger);
     const cursor = opts.cursor ?? new LocalCursorRunner();
     const cloudCursor = opts.cloudCursor ?? new CloudCursorRunner();
-    const roomCursor = opts.roomCursor ?? new RoomCursorRunner();
+    const roomsImage = process.env[ROOMS_IMAGE_ENV];
+    const roomCursor =
+      opts.roomCursor ??
+      new RoomCursorRunner(roomsImage !== undefined ? { defaultImage: roomsImage } : {});
     const claude = opts.claude ?? new LocalClaudeRunner();
     const cloudClaude = opts.cloudClaude ?? new CloudClaudeRunner();
     const codex = opts.codex ?? new CodexRunner();

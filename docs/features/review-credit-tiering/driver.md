@@ -8,37 +8,38 @@ source:
 repo: ship
 repo_url: https://github.com/itsHabib/ship
 branch_prefix: review-credit-
-default_runtime: local
+default_runtime: cloud
+default_provider: claude
 
 batches:
   - id: 1
     label: tier classification (ready now)
     depends_on: []
-    status: pending
+    status: done
     streams:
       - task_id: tsk_01KY4Z6WWBN42B53Y1XDPPYY3Z
         task_slug: driver-triage-tier
         spec_path: docs/features/review-credit-tiering/driver-triage-tier.md
         branch_name: review-credit-driver-triage-tier
-        runtime: local
+        runtime: cloud
         model: opus
         effort: extra
         touches: [packages/driver/src/triage.ts, packages/driver/src/engine.ts, packages/driver/src/types.ts, packages/driver/src/render.ts, packages/driver/src/tier-map.ts]
-        status: pending
+        status: done
   - id: 2
     label: spend log (after tier column exists)
     depends_on: [1]
-    status: pending
+    status: done
     streams:
       - task_id: tsk_01KY4Z7B6PXN3ZGPM21WQ0S51Z
         task_slug: review-spend-log
         spec_path: docs/features/review-credit-tiering/review-spend-log.md
         branch_name: review-credit-review-spend-log
-        runtime: local
+        runtime: cloud
         model: sonnet
         effort: extra
         touches: [packages/driver/src/spend-log.ts, packages/driver/src/land.ts, packages/driver/src/engine.ts, packages/driver/src/review-findings.ts]
-        status: pending
+        status: done
 
 conflict_notes:
   - kind: file_overlap
@@ -64,10 +65,10 @@ Consumed by `/work-driver docs/features/review-credit-tiering/driver.md`.
 ## Batches
 
 Batch 1 — 1 stream, ready now:
-- `driver-triage-tier` → per-head tier classification, tier_source classified|classifier_error, fail = full-panel posture, never a fabricated tier. [local / opus / extra]
+- `driver-triage-tier` → per-head tier classification, tier_source classified|classifier_error, fail = full-panel posture, never a fabricated tier. [cloud / opus / extra]
 
 Batch 2 — 1 stream, after batch 1 merges (engine.ts overlap + hard dep on the tier column):
-- `review-spend-log` → append-only review_cycle + terminal spend events, claude cost proxy, fixes_pr linkage. [local / sonnet / extra]
+- `review-spend-log` → append-only review_cycle + terminal spend events, claude cost proxy, fixes_pr linkage. [cloud / sonnet / extra]
 
 Parked (not in this manifest): `review-recipe-tiered`, `work-driver-skill-tier-policy` — Phase 1 cut, blocked on 30d of spend data per the strategy doc.
 Cross-repo sibling: `triage-path-overrides` runs from workbench's manifest and can proceed in parallel with both batches here (different repo, no shared files).

@@ -1,7 +1,9 @@
 /** Tests for the best-effort driver-state ledger emission decorator. */
 
-import type { DriverRun, Store } from "@ship/store";
+import type { LogFields, Logger } from "@ship/logger";
+import type { ConsumeReviewArtifactInput, DriverRun, Store } from "@ship/store";
 
+import { appendEvent } from "@ship/driverstate-emitter";
 import { createStore } from "@ship/store";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,8 +11,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ledgerRunId, ledgerStreamId, withDriverStateEmission } from "./driverstate-emit.js";
+import {
+  emitAddressIntervention,
+  emitValidatedAddressFacts,
+  ensureDriverStateRun,
+  ledgerRunId,
+  ledgerStreamId,
+  withDriverStateEmission,
+} from "./driverstate-emit.js";
 import { importManifest } from "./import.js";
+import { markMerged } from "./judgment.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(here, "../test/fixtures");
@@ -61,6 +71,63 @@ function pendingStreamId(run: DriverRun): string {
   return stream.id;
 }
 
+function insertImportedLandedRun(target: Store = wrapped): { run: DriverRun; streamId: string } {
+  const runId = "drv_01IMPORTEDLANDED";
+  const streamId = "ds_01IMPORTEDLANDED";
+  const run = target.insertDriverRun({
+    batches: [
+      {
+        batchIndex: 1,
+        dependsOn: [],
+        id: "db_01IMPORTEDLANDED",
+        status: "running",
+        streams: [
+          {
+            attempts: [],
+            branch: "codex/imported-landed",
+            id: streamId,
+            prNumber: 41,
+            prUrl: "https://github.com/example/ship/pull/41",
+            runtime: "cloud",
+            specPath: "docs/imported-landed.md",
+            status: "landed",
+            streamIndex: 0,
+            taskId: "tsk_01IMPORTEDLANDED",
+            touches: [],
+          },
+        ],
+      },
+    ],
+    id: runId,
+    manifestPath: join(fixturesDir, "synthetic-full.driver.md"),
+    phase: "driver-extraction",
+    project: "ship",
+    repo: "example/ship",
+    sourceJson: readFileSync(join(fixturesDir, "synthetic-full.driver.md"), "utf8"),
+    status: "running",
+  });
+  return { run, streamId };
+}
+
+function consumeValidated(input: ConsumeReviewArtifactInput): void {
+  wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+  emitValidatedAddressFacts(wrapped, input);
+}
+
+function makeCapturingLogger(sink: string[]): Logger {
+  const record = (_fields: LogFields, msg: string): void => {
+    sink.push(msg);
+  };
+  const logger: Logger = {
+    child: () => logger,
+    debug: () => undefined,
+    error: record,
+    info: () => undefined,
+    warn: record,
+  };
+  return logger;
+}
+
 describe("withDriverStateEmission", () => {
   it("emits run_imported with the manifest snapshot on insertDriverRun", () => {
     const run = importFixture();
@@ -106,6 +173,42 @@ describe("withDriverStateEmission", () => {
     ]);
   });
 
+  it("makes direct bare-store markMerged receipt-complete and idempotent", () => {
+    const { run, streamId } = insertImportedLandedRun(store);
+    const head = "9".repeat(40);
+    const facts = {
+      finalReviewedHeadSha: head,
+      gateRunRef: "run_09ab",
+      mergeCommit: "merge-direct",
+      mergeHeadSha: head,
+      mergedAt: "2026-07-20T00:00:00.000Z",
+      prNumber: 41,
+    };
+
+    markMerged(store, run.id, streamId, facts);
+    markMerged(store, run.id, streamId, facts);
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.map((event) => event.kind)).toEqual([
+      "stream_dispatched",
+      "stream_attempt",
+      "stream_pr_opened",
+      "closure_facts",
+      "stream_merged",
+    ]);
+    expect(events.find((event) => event.kind === "closure_facts")?.body).toMatchObject({
+      final_reviewed_head_sha: head,
+      gate_head_sha: head,
+      gate_run_ref: "run_09ab",
+    });
+    expect(events.find((event) => event.kind === "stream_merged")?.body).toMatchObject({
+      head_sha: head,
+      merge_commit: "merge-direct",
+    });
+  });
+
   it("falls back to merged_at now when the patch carries only the merge commit", () => {
     const run = importFixture();
     const streamId = pendingStreamId(run);
@@ -118,6 +221,35 @@ describe("withDriverStateEmission", () => {
     const merged = ledgerEvents(run.id).find((e) => e.kind === "stream_merged");
     expect(merged?.body).toMatchObject({ merge_commit: "abc123", pr: 41 });
     expect((merged?.body as { merged_at: string }).merged_at).not.toBe("");
+  });
+
+  it("does not mislabel a no-address merge head as the PR opening head", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+    const mergeHead = "a".repeat(40);
+
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+    wrapped.updateDriverStream(streamId, {
+      mergeCommit: "merge-commit",
+      mergeHeadSha: mergeHead,
+      prNumber: 41,
+      prUrl: "https://github.com/example/ship/pull/41",
+      status: "done",
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.find((event) => event.kind === "stream_pr_opened")?.body).toMatchObject({
+      head_sha: "",
+      pr: 41,
+    });
+    expect(events.find((event) => event.kind === "stream_merged")?.body).toMatchObject({
+      head_sha: mergeHead,
+      merge_commit: "merge-commit",
+      pr: 41,
+    });
   });
 
   it("prefers the latest attempt's structured failureCategory over errorMessage", () => {
@@ -161,7 +293,7 @@ describe("withDriverStateEmission", () => {
     wrapped.updateDriverStream(streamId, { status: "landed" });
     wrapped.updateDriverStream(streamId, { prNumber: 41, prUrl: "https://x/pull/41" });
 
-    wrapped.consumeReviewArtifactAndPrepareDispatch({
+    consumeValidated({
       addressCycle: 1,
       artifactId: "rf_one",
       attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
@@ -171,12 +303,452 @@ describe("withDriverStateEmission", () => {
       driverRunId: run.id,
       expectedReviewCycle: 0,
       headSha: "b".repeat(40),
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
       prNumber: 41,
       repo: "example/ship",
       streamId,
     });
 
     expect(ledgerKinds(run.id)).toContain("review_cycle");
+    expect(
+      ledgerEvents(run.id).find((event) => event.kind === "closure_facts")?.body,
+    ).toMatchObject({
+      harness: "cursor",
+      review_producer: "codex:reviewfindings-github",
+      seat: "cursor",
+    });
+  });
+
+  it("does not synthetic-bootstrap a normal decorated landed stream", () => {
+    const warnings: string[] = [];
+    const emittingStore = withDriverStateEmission(store, makeCapturingLogger(warnings));
+    const run = importManifest(emittingStore, join(fixturesDir, "synthetic-full.driver.md")).run;
+    const streamId = pendingStreamId(run);
+    emittingStore.updateDriverStream(streamId, { status: "dispatching" });
+    emittingStore.updateDriverStream(streamId, { status: "landed" });
+    const before = ledgerEvents(run.id);
+    const refreshed = emittingStore.getDriverRun(run.id);
+    if (refreshed === null) {
+      throw new Error("decorated run missing");
+    }
+
+    ensureDriverStateRun(refreshed, makeCapturingLogger(warnings));
+
+    expect(ledgerEvents(run.id)).toEqual(before);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("persists address receipt facts for a resumed stream imported as landed", () => {
+    const headSha = "b".repeat(40);
+    const artifactDigest = "a".repeat(64);
+    const { run, streamId } = insertImportedLandedRun();
+
+    consumeValidated({
+      addressCycle: 1,
+      artifactId: "rf_imported_landed",
+      attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
+      canonicalSha256: artifactDigest,
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.map((event) => event.kind)).toEqual([
+      "stream_dispatched",
+      "stream_attempt",
+      "stream_pr_opened",
+      "closure_facts",
+      "review_cycle",
+    ]);
+    expect(events.filter((event) => event.kind === "stream_attempt")).toHaveLength(1);
+    expect(events.find((event) => event.kind === "stream_pr_opened")?.body).toMatchObject({
+      head_sha: headSha,
+      pr: 41,
+    });
+    expect(events.find((event) => event.kind === "closure_facts")?.body).toMatchObject({
+      review_artifact_digest: artifactDigest,
+      review_artifact_id: "rf_imported_landed",
+      review_head_sha: headSha,
+      opening_head_sha: headSha,
+      review_producer: "codex:reviewfindings-github",
+      task_ref: "tsk_01IMPORTEDLANDED",
+    });
+    expect(events.find((event) => event.kind === "review_cycle")?.body).toMatchObject({
+      cycle: 1,
+      panel_settled: true,
+    });
+  });
+
+  it("repairs a legacy empty PR head through an idempotent authoritative closure fact", () => {
+    const { run, streamId } = insertImportedLandedRun();
+    const headSha = "c".repeat(40);
+    const artifactDigest = "d".repeat(64);
+    const eventPath = join(stateRoot, ledgerRunId(run.id), "events.jsonl");
+    const legacyOpening = appendEvent({
+      actor: `ship:${run.id}`,
+      body: { head_sha: "", pr: 41, url: "https://github.com/example/ship/pull/41" },
+      id: `evt_${ledgerStreamId(streamId)}_pr_41`,
+      kind: "stream_pr_opened",
+      runId: ledgerRunId(run.id),
+      stream: ledgerStreamId(streamId),
+    });
+    expect(legacyOpening.ok).toBe(true);
+
+    const input = {
+      addressCycle: 1,
+      artifactId: "rf_legacy_repair",
+      attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
+      canonicalSha256: artifactDigest,
+      dispatchProvider: "codex" as const,
+      docPath: "C:/repo/address.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    };
+    consumeValidated(input);
+    const afterFirst = readFileSync(eventPath, "utf8");
+    expect(() => {
+      wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+    }).toThrow();
+    expect(readFileSync(eventPath, "utf8")).toBe(afterFirst);
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    const openings = events.filter((event) => event.kind === "stream_pr_opened");
+    const closures = events.filter((event) => event.kind === "closure_facts");
+    expect(openings).toHaveLength(1);
+    expect(openings[0]?.body).toMatchObject({ head_sha: "", pr: 41 });
+    expect(closures).toHaveLength(1);
+    expect(closures[0]?.body).toMatchObject({
+      opening_head_sha: headSha,
+      review_artifact_digest: artifactDigest,
+      review_artifact_id: "rf_legacy_repair",
+      review_head_sha: headSha,
+    });
+  });
+
+  it("repairs a persisted pre-upgrade landed ledger on first address without duplicates", () => {
+    const { run, streamId } = insertImportedLandedRun(store);
+    const headSha = "e".repeat(40);
+    const artifactDigest = "f".repeat(64);
+    const eventPath = join(stateRoot, ledgerRunId(run.id), "events.jsonl");
+    const imported = appendEvent({
+      actor: `ship:${run.id}`,
+      body: {
+        generated_at: "2026-06-10T12:00:00Z",
+        manifest: {},
+        repo: run.repo,
+        ship_run_ref: run.id,
+        source: run.manifestPath,
+        streams: [{ stream: ledgerStreamId(streamId) }],
+      },
+      id: `evt_${ledgerRunId(run.id)}_imported`,
+      kind: "run_imported",
+      runId: ledgerRunId(run.id),
+    });
+    expect(imported.ok).toBe(true);
+
+    const input = {
+      addressCycle: 1,
+      artifactId: "rf_persisted_repair",
+      attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
+      canonicalSha256: artifactDigest,
+      dispatchProvider: "codex" as const,
+      docPath: "C:/repo/address.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    };
+    consumeValidated(input);
+    const afterFirst = readFileSync(eventPath, "utf8");
+    expect(() => {
+      wrapped.consumeReviewArtifactAndPrepareDispatch(input);
+    }).toThrow();
+    expect(readFileSync(eventPath, "utf8")).toBe(afterFirst);
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.map((event) => event.kind)).toEqual([
+      "stream_dispatched",
+      "stream_attempt",
+      "stream_pr_opened",
+      "closure_facts",
+      "review_cycle",
+    ]);
+    expect(events.filter((event) => event.kind === "stream_attempt")).toHaveLength(1);
+    expect(events.find((event) => event.kind === "closure_facts")?.body).toMatchObject({
+      opening_head_sha: headSha,
+      review_artifact_digest: artifactDigest,
+      review_artifact_id: "rf_persisted_repair",
+      review_head_sha: headSha,
+    });
+  });
+
+  it("preserves the cycle-one opening head across later address cycles", () => {
+    const { run, streamId } = insertImportedLandedRun();
+    const openingHead = "1".repeat(40);
+    const laterHead = "2".repeat(40);
+    const firstAttempt = { dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false };
+    consumeValidated({
+      addressCycle: 1,
+      artifactId: "rf_cycle_one",
+      attempts: [firstAttempt],
+      canonicalSha256: "3".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address-1.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha: openingHead,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const completedFirstAttempt = { ...firstAttempt, terminal: true };
+    wrapped.updateDriverStream(streamId, {
+      attempts: [completedFirstAttempt],
+      status: "landed",
+    });
+    consumeValidated({
+      addressCycle: 2,
+      artifactId: "rf_cycle_two",
+      attempts: [
+        completedFirstAttempt,
+        { dispatchedAt: "2026-07-20T01:00:00.000Z", terminal: false },
+      ],
+      canonicalSha256: "4".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address-2.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 1,
+      headSha: laterHead,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const closures = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId) && event.kind === "closure_facts",
+    );
+    expect(closures).toHaveLength(2);
+    expect(closures[0]?.body).toMatchObject({
+      opening_head_sha: openingHead,
+      review_head_sha: openingHead,
+    });
+    expect(closures[1]?.body).toMatchObject({ review_head_sha: laterHead });
+    expect(closures[1]?.body).not.toHaveProperty("opening_head_sha");
+  });
+
+  it("recovers a pre-upgrade consumed cycle-one head on a later cycle", () => {
+    const { run, streamId } = insertImportedLandedRun();
+    const openingHead = "5".repeat(40);
+    const laterHead = "6".repeat(40);
+    const ledgerStream = ledgerStreamId(streamId);
+    const legacyOpen = appendEvent({
+      actor: `ship:${run.id}`,
+      body: {
+        head_sha: "",
+        pr: 41,
+        url: "https://github.com/example/ship/pull/41",
+      },
+      extRef: "https://github.com/example/ship/pull/41",
+      id: `evt_${ledgerStream}_pr_41`,
+      kind: "stream_pr_opened",
+      runId: ledgerRunId(run.id),
+      stream: ledgerStream,
+    });
+    expect(legacyOpen.ok).toBe(true);
+    const firstAttempt = { dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false };
+    wrapped.consumeReviewArtifactAndPrepareDispatch({
+      addressCycle: 1,
+      artifactId: "rf_pre_upgrade_cycle_one",
+      attempts: [firstAttempt],
+      canonicalSha256: "7".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address-pre-upgrade-1.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha: openingHead,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+    const completedFirstAttempt = { ...firstAttempt, terminal: true };
+    store.updateDriverStream(streamId, {
+      attempts: [completedFirstAttempt],
+      status: "landed",
+    });
+    consumeValidated({
+      addressCycle: 2,
+      artifactId: "rf_post_upgrade_cycle_two",
+      attempts: [
+        completedFirstAttempt,
+        { dispatchedAt: "2026-07-20T01:00:00.000Z", terminal: false },
+      ],
+      canonicalSha256: "8".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address-post-upgrade-2.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 1,
+      headSha: laterHead,
+      prNumber: 41,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    const opening = events.find((event) => event.kind === "stream_pr_opened");
+    const closures = events.filter((event) => event.kind === "closure_facts");
+    expect(opening?.body).toMatchObject({ head_sha: "" });
+    expect(closures).toHaveLength(1);
+    expect(closures[0]?.body).toMatchObject({
+      opening_head_sha: openingHead,
+      review_head_sha: laterHead,
+    });
+  });
+
+  it("emits one exact-head closure sequence from address through Gate handoff and merge", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+    const openingHead = "b".repeat(40);
+    const finalHead = "c".repeat(40);
+    const catalogRevision = "d".repeat(40);
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+    wrapped.updateDriverStream(streamId, {
+      prNumber: 41,
+      prUrl: "https://github.com/example/ship/pull/41",
+    });
+
+    consumeValidated({
+      addressCycle: 1,
+      artifactId: "rf_exact",
+      attempts: [{ dispatchedAt: "2026-07-20T00:00:00.000Z", terminal: false }],
+      canonicalSha256: "a".repeat(64),
+      dispatchProvider: "codex",
+      docPath: "C:/repo/address.md",
+      driverRunId: run.id,
+      expectedReviewCycle: 0,
+      headSha: openingHead,
+      prNumber: 41,
+      producerCatalogRevision: catalogRevision,
+      producerHarness: "codex",
+      producerId: "codex:reviewfindings-github",
+      repo: "example/ship",
+      streamId,
+    });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+    wrapped.updateDriverStream(streamId, {
+      finalReviewedHeadSha: finalHead,
+      gateRunRef: "run_01ab",
+      mergeCommit: "merge-commit",
+      mergeHeadSha: finalHead,
+      mergedAt: "2026-07-20T01:00:00.000Z",
+      prNumber: 41,
+      status: "done",
+    });
+    // Idempotent re-land does not append a second terminal closure.
+    wrapped.updateDriverStream(streamId, {
+      finalReviewedHeadSha: finalHead,
+      gateRunRef: "run_01ab",
+      mergeCommit: "merge-commit",
+      mergeHeadSha: finalHead,
+      prNumber: 41,
+      status: "done",
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    const opening = events.find((event) => event.kind === "stream_pr_opened");
+    const closures = events.filter((event) => event.kind === "closure_facts");
+    const merged = events.filter((event) => event.kind === "stream_merged");
+    expect(opening?.body).toMatchObject({ head_sha: openingHead, pr: 41 });
+    expect(closures).toHaveLength(2);
+    expect(closures[0]?.body).toMatchObject({
+      catalog_revision: catalogRevision,
+      review_artifact_digest: "a".repeat(64),
+      review_artifact_id: "rf_exact",
+      review_head_sha: openingHead,
+      opening_head_sha: openingHead,
+      review_producer: "codex:reviewfindings-github",
+      ship_run_ref: run.id,
+    });
+    expect(closures[1]?.body).toMatchObject({
+      final_reviewed_head_sha: finalHead,
+      gate_head_sha: finalHead,
+      gate_run_ref: "run_01ab",
+    });
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.body).toMatchObject({ head_sha: finalHead, merge_commit: "merge-commit" });
+  });
+
+  it("keeps legacy missing catalog provenance incomplete and records stale repair once", () => {
+    const run = importFixture();
+    const streamId = pendingStreamId(run);
+    const liveHead = "e".repeat(40);
+    wrapped.updateDriverStream(streamId, { status: "dispatching" });
+    wrapped.updateDriverStream(streamId, { status: "landed" });
+
+    emitAddressIntervention({
+      driverRunId: run.id,
+      liveHeadSha: liveHead,
+      prNumber: 41,
+      reasonCode: "stale-review-head",
+      repo: "example/ship",
+      streamId,
+    });
+    emitAddressIntervention({
+      driverRunId: run.id,
+      liveHeadSha: liveHead,
+      prNumber: 41,
+      reasonCode: "stale-review-head",
+      repo: "example/ship",
+      streamId,
+    });
+
+    const events = ledgerEvents(run.id).filter(
+      (event) => event.stream === ledgerStreamId(streamId),
+    );
+    expect(events.filter((event) => event.kind === "intervention")).toHaveLength(1);
+    expect(events.find((event) => event.kind === "intervention")?.body).toMatchObject({
+      kind: "mechanism-repair",
+      reason_code: "stale-review-head",
+    });
+    expect(events.some((event) => event.kind === "stream_merged")).toBe(false);
   });
 
   it("records the terminal failed attempt of a fallback hop (pending reset patch)", () => {

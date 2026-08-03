@@ -26,8 +26,22 @@ export type { TriageTier };
 
 /** A classified tier, or a structured operational failure — never both. */
 export type TriageOutcome =
-  | { kind: "classified"; tier: TriageTier }
+  | {
+      kind: "classified";
+      tier: TriageTier;
+      reasons?: string[];
+      signals?: TriageSignal[];
+      files?: number;
+      added?: number;
+      removed?: number;
+    }
   | { kind: "error"; reason: string };
+
+export interface TriageSignal {
+  signal: string;
+  tier: TriageTier;
+  why: string;
+}
 
 export interface TriageClassifier {
   /**
@@ -53,7 +67,7 @@ export interface TriageExec {
   /** stdout of `gh pr diff <n> -R <slug>` (the unified diff fed to stdin). */
   diff(repoSlug: string, prNumber: number): Promise<string>;
   /** Run `triage-floor` with `diff` on stdin; resolve stdout + exit code. */
-  triageFloor(diff: string): Promise<TriageFloorResult>;
+  triageFloor(diff: string, repoSlug: string): Promise<TriageFloorResult>;
 }
 
 const DEFAULT_TRIAGE_TIMEOUT_MS = 60_000;
@@ -62,23 +76,28 @@ const DEFAULT_TRIAGE_TIMEOUT_MS = 60_000;
 const MAX_DIFF_BYTES = 64 * 1024 * 1024;
 const MAX_ERROR_DETAIL = 200;
 
-// The stdout tier line, matched exactly on the last non-empty line: strict so
-// noisy or unexpected output classifies as an error, not a guessed tier.
 const TIER_TOKEN = /^T[0-3]$/;
 
+interface TriageFloorJson {
+  floor: unknown;
+  signals: unknown;
+  files: unknown;
+  added: unknown;
+  removed: unknown;
+}
+
 /**
- * Parse a `triage-floor` stdout into a tier. Strict: the last non-empty line
- * must be exactly `T0`–`T3`. Anything else is unparseable (returns undefined),
- * which the caller records as a classifier error rather than a fabricated tier.
+ * Parse current `triage-floor` JSON into a tier. Bare legacy tier lines are
+ * incomplete evidence and therefore fail closed.
  */
 export function parseTriageTier(stdout: string): TriageTier | undefined {
-  const lines = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
-  const last = lines.at(-1);
-  if (last === undefined) return undefined;
-  return TIER_TOKEN.test(last) ? (last as TriageTier) : undefined;
+  return parseTriageResult(stdout)?.tier;
+}
+
+export function parseTriageResult(
+  stdout: string,
+): Extract<TriageOutcome, { kind: "classified" }> | undefined {
+  return parseTriageJson(stdout);
 }
 
 export interface CreateTriageClassifierOpts {
@@ -106,7 +125,8 @@ export function createExecTriageClassifier(
   const exec: TriageExec = {
     diff: opts.exec?.diff ?? ((slug, pr) => defaultDiff(ghBin, slug, pr, timeoutMs)),
     triageFloor:
-      opts.exec?.triageFloor ?? ((diff) => defaultTriageFloor(triageFloorBin, diff, timeoutMs)),
+      opts.exec?.triageFloor ??
+      ((diff, slug) => defaultTriageFloor(triageFloorBin, diff, slug, timeoutMs)),
   };
   return { classify: (slug, pr) => classifyWith(exec, slug, pr) };
 }
@@ -124,21 +144,21 @@ async function classifyWith(
   }
   let result: TriageFloorResult;
   try {
-    result = await exec.triageFloor(diff);
+    result = await exec.triageFloor(diff, repoSlug);
   } catch (err: unknown) {
     return { kind: "error", reason: `triage-floor failed: ${errorDetail(err)}` };
   }
   if (result.code !== 0) {
     return { kind: "error", reason: `triage-floor exited ${String(result.code)}` };
   }
-  const tier = parseTriageTier(result.stdout);
-  if (tier === undefined) {
+  const classification = parseTriageResult(result.stdout);
+  if (classification === undefined) {
     return {
       kind: "error",
       reason: `triage-floor produced unparseable output: ${truncate(result.stdout)}`,
     };
   }
-  return { kind: "classified", tier };
+  return classification;
 }
 
 async function defaultDiff(
@@ -157,10 +177,59 @@ async function defaultDiff(
 function defaultTriageFloor(
   bin: string,
   diff: string,
+  repoSlug: string,
   timeoutMs: number,
 ): Promise<TriageFloorResult> {
-  // The classifier reads the diff on stdin and takes no args.
-  return spawnWithStdin(bin, [], diff, timeoutMs);
+  return spawnWithStdin(bin, ["-repo", repoSlug], diff, timeoutMs);
+}
+
+function parseTriageJson(
+  stdout: string,
+): Extract<TriageOutcome, { kind: "classified" }> | undefined {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(decoded)) return undefined;
+  const value = decoded as unknown as TriageFloorJson;
+  if (typeof value.floor !== "string" || !TIER_TOKEN.test(value.floor)) return undefined;
+  if (!Array.isArray(value.signals)) return undefined;
+  if (!isNonNegativeInteger(value.files)) return undefined;
+  if (!isNonNegativeInteger(value.added)) return undefined;
+  if (!isNonNegativeInteger(value.removed)) return undefined;
+  const signals = value.signals.map(parseSignal);
+  if (signals.some((signal) => signal === undefined)) return undefined;
+  const parsedSignals = signals as TriageSignal[];
+  return {
+    added: value.added,
+    files: value.files,
+    kind: "classified",
+    reasons: parsedSignals.map((signal) => signal.why),
+    removed: value.removed,
+    signals: parsedSignals,
+    tier: value.floor as TriageTier,
+  };
+}
+
+function parseSignal(value: unknown): TriageSignal | undefined {
+  if (!isRecord(value)) return undefined;
+  const signal = value["signal"];
+  const tier = value["tier"];
+  const why = value["why"];
+  if (typeof signal !== "string" || signal === "") return undefined;
+  if (typeof tier !== "string" || !TIER_TOKEN.test(tier)) return undefined;
+  if (typeof why !== "string" || why === "") return undefined;
+  return { signal, tier: tier as TriageTier, why };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 /**

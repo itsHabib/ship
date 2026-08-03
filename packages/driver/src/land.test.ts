@@ -1,11 +1,13 @@
 /** Land verb — merge, read gh facts, record via markMerged. */
 
+import { appendEvent, resolveStateRoot } from "@ship/driverstate-emitter";
 import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { ledgerRunId, ledgerStreamId } from "./driverstate-emit.js";
 import { DecideError } from "./errors.js";
 import { toGhRepo } from "./gh-port.js";
 import { land } from "./land.js";
@@ -77,6 +79,129 @@ describe("land", () => {
     expect(gh.mergeCalls).toEqual([]);
     expect(run.batches[0]?.streams[0]?.mergeCommit).toBe("abc123deadbeef");
     expect(run.batches[0]?.streams[0]?.mergedAt).toBe("2026-06-12T01:00:00.000Z");
+  });
+
+  test("requires an exact live reviewed head with every Gate handoff", async () => {
+    const streamId = newDriverStreamId();
+    const head = "a".repeat(40);
+    const runId = seedLandedRun(store, streamId, {
+      prUrl: "https://github.com/org/ship/pull/8",
+    });
+    const gh = createFakeGhPort({
+      8: { headRefOid: head, mergeCommit: null, mergedAt: null, state: "OPEN" },
+    });
+
+    await expect(land(store, gh, runId, { gateRunRef: "run_01ab", prNumber: 8 })).rejects.toThrow(
+      /requires both/,
+    );
+    await expect(
+      land(store, gh, runId, {
+        gateRunRef: "run_01ab",
+        prNumber: 8,
+        reviewedHeadSha: "b".repeat(40),
+      }),
+    ).rejects.toThrow(/does not match live head/);
+    expect(gh.mergeCalls).toEqual([]);
+
+    const result = await land(store, gh, runId, {
+      gateRunRef: "run_01ab",
+      prNumber: 8,
+      reviewedHeadSha: head,
+    });
+    expect(result.batches[0]?.streams[0]?.status).toBe("done");
+    expect(gh.mergeCalls).toHaveLength(1);
+    expect(gh.mergeCalls[0]?.expectedHeadSha).toBe(head);
+  });
+
+  test("repairs a run-imported-only exact-head receipt and replays idempotently", async () => {
+    const streamId = newDriverStreamId();
+    const head = "c".repeat(40);
+    const runId = seedLandedRun(store, streamId, {
+      prUrl: "https://github.com/org/ship/pull/12",
+    });
+    const imported = appendEvent({
+      actor: `ship:${runId}`,
+      body: { legacy: true },
+      id: `evt_${ledgerRunId(runId)}_imported`,
+      kind: "run_imported",
+      runId: ledgerRunId(runId),
+    });
+    expect(imported.ok).toBe(true);
+    const gh = createFakeGhPort({
+      12: {
+        headRefOid: head,
+        mergeCommit: { oid: "merge-12" },
+        mergedAt: "2026-06-12T01:00:00.000Z",
+        state: "MERGED",
+      },
+    });
+    const opts = {
+      gateRunRef: "run_01ab",
+      prNumber: 12,
+      reviewedHeadSha: head,
+    };
+
+    await land(store, gh, runId, opts);
+    await land(store, gh, runId, opts);
+
+    const path = join(resolveStateRoot(), ledgerRunId(runId), "events.jsonl");
+    const events = readFileSync(path, "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            body: Record<string, unknown>;
+            kind: string;
+            stream?: string;
+          },
+      );
+    const streamEvents = events.filter((event) => event.stream === ledgerStreamId(streamId));
+    expect(streamEvents.map((event) => event.kind)).toEqual([
+      "stream_dispatched",
+      "stream_attempt",
+      "stream_pr_opened",
+      "closure_facts",
+      "stream_merged",
+    ]);
+    expect(streamEvents.find((event) => event.kind === "closure_facts")?.body).toMatchObject({
+      final_reviewed_head_sha: head,
+      gate_head_sha: head,
+      gate_run_ref: "run_01ab",
+    });
+    expect(streamEvents.find((event) => event.kind === "stream_merged")?.body).toMatchObject({
+      head_sha: head,
+      merge_commit: "merge-12",
+    });
+  });
+
+  test("refuses a head race atomically at the merge write boundary", async () => {
+    const streamId = newDriverStreamId();
+    const reviewedHead = "a".repeat(40);
+    const racedHead = "b".repeat(40);
+    const runId = seedLandedRun(store, streamId, {
+      prUrl: "https://github.com/org/ship/pull/9",
+    });
+    const gh = createFakeGhPort({
+      9: {
+        headRefOid: reviewedHead,
+        headRefOidAtMerge: racedHead,
+        mergeCommit: null,
+        mergedAt: null,
+        state: "OPEN",
+      },
+    });
+
+    await expect(
+      land(store, gh, runId, {
+        gateRunRef: "run_01ab",
+        prNumber: 9,
+        reviewedHeadSha: reviewedHead,
+      }),
+    ).rejects.toThrow(/head commit mismatch/);
+
+    expect(gh.mergeCalls).toEqual([]);
+    expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("landed");
   });
 
   test("resolves the stream from --pr via prUrl parsing", async () => {

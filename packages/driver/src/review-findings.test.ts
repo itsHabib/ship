@@ -69,6 +69,31 @@ describe("ReviewFindingsV1", () => {
     expect(parsed.findings[0]).not.toHaveProperty("confidence");
   });
 
+  test("accepts legacy missing catalog provenance and preserves valid provenance", () => {
+    const legacy = parseReviewFindings(JSON.stringify(artifact()));
+    expect(legacy.producer.catalog_revision).toBeUndefined();
+
+    const current = artifact();
+    const revision = "c".repeat(40);
+    current.producer = {
+      ...current.producer,
+      catalog_revision: revision,
+    } as typeof current.producer;
+    const parsed = parseReviewFindings(JSON.stringify(current));
+    expect(parsed.producer.catalog_revision).toBe(revision);
+  });
+
+  test("refuses present malformed catalog provenance", () => {
+    const malformed = artifact();
+    malformed.producer = {
+      ...malformed.producer,
+      catalog_revision: "dirty",
+    } as typeof malformed.producer;
+    expect(() => parseReviewFindings(JSON.stringify(malformed))).toThrow(
+      /producer catalog_revision/,
+    );
+  });
+
   test("refuses a mixed-validity source and malformed panel partition", () => {
     const mixed = artifact();
     mixed.findings[0]!.sources.push({

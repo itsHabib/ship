@@ -47,7 +47,7 @@ export type {
 
 export type { UpdateDriverBatchInput } from "./driver-batches.js";
 export type { UpdateDriverStreamInput } from "./driver-streams.js";
-export type { ConsumeReviewArtifactInput } from "./review-artifacts.js";
+export type { ConsumeReviewArtifactInput, ReviewArtifactReceiptFacts } from "./review-artifacts.js";
 
 export type { Escalation } from "./escalation-schemas.js";
 export type {

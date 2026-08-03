@@ -7,8 +7,10 @@
 
 > Transport update: `review-findings-v1.md` supersedes this phase's original
 > opaque-file boundary. `--findings` now requires a validated ReviewFindingsV1
-> JSON artifact with exact-head and durable replay protection; dispatch and
-> cycle behavior below remains the mechanism foundation.
+> JSON artifact with exact-head and durable replay protection. Tier-aware review
+> additionally requires `--decision` with the matching Workbench
+> ReviewDecisionV1; only its `address` action authorizes this adapter. Dispatch
+> and cycle behavior below remains the mechanism foundation.
 
 ## Scope
 
@@ -34,7 +36,8 @@ showed the judgment/review-fix loop firing on 5 of 7 real PRs.
 New engine verb, mirroring `land`/`decide` in shape:
 
 ```
-ship driver address <driverRunId> --stream <streamId> --findings <path>
+ship driver address <driverRunId> --stream <streamId> \
+  --findings <findings.json> --decision <decision.json>
 ```
 
 **Mechanism only.** *Which* findings to take and *whether* to push back stays
@@ -50,6 +53,9 @@ What the verb does, in order:
    so the precondition must key off `prUrl`), the PR is open — checked live via
    `gh.viewPullRequest` with the number parsed by the existing `prNumberFromUrl`
    — run not cancelled/failed, cycle cap not exhausted.
+   The findings artifact and Workbench decision must name the same repository,
+   PR, exact head, cycle, and accepted finding set. A decision whose action is
+   not `address` refuses before the artifact is consumed or work is dispatched.
 2. **Synthesize the address doc**: a fixed mechanical preamble ("address the
    following review findings on the current branch; do not open a new PR")
    prepended to the findings file's content, written adjacent to the run
@@ -164,7 +170,7 @@ follow-on if the refusal ever bites in practice.
 
 ## EDs (engineering decisions)
 
-1. `AddressOpts = { streamId, findingsPath, maxCycles? }`; verb signature
+1. `AddressOpts = { streamId, findingsPath, decisionPath, maxCycles? }`; verb signature
    `address(store, ship, gh, driverRunId, opts): Promise<DriverRun>` — both
    ports: `ship` because it dispatches, `gh` because the `pr-not-open` refusal
    needs live PR state (`viewPullRequest`), which the store does not hold.
@@ -231,7 +237,8 @@ follow-on if the refusal ever bites in practice.
   `handleSucceededPoll` skips the draft→ready flip when the stream carried a
   `prUrl` before the poll; refusal matrix (`no-pr`, `pr-not-open`,
   `not-landed`, `not-cloud`, `findings-unreadable`) each return the structured
-  code and leave the stream row untouched; call at `maxCycles` → refusal +
+code and leave the stream row untouched; malformed, unreadable, stale, or
+non-authorizing review decisions refuse likewise; call at `maxCycles` → refusal +
   `cycle-exhausted` escalation row written once (dedup on the open row).
 - Store: migration 0014 round-trips `reviewCycles` (defaults 0 for existing
   rows); counter survives a store reopen.

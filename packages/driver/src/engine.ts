@@ -4,7 +4,7 @@
 
 import type { GetWorkflowRunOutput, ShipInput, ShipStartOutput } from "@ship/core";
 import type { Logger } from "@ship/logger";
-import type { Store } from "@ship/store";
+import type { ConsumeReviewArtifactInput, Store } from "@ship/store";
 import type { DriverBatch, DriverRun, DriverStream, StreamAttempt } from "@ship/store";
 import type { AgentProvider, FailureCategory } from "@ship/workflow";
 
@@ -34,6 +34,12 @@ import type {
   TierDispatchResult,
 } from "./types.js";
 
+import { isLegalCell } from "./dispatch-cell.js";
+import {
+  emitAddressIntervention,
+  emitValidatedAddressFacts,
+  ensureDriverStateRun,
+} from "./driverstate-emit.js";
 import {
   AddressError,
   DriverRunNotFoundEngineError,
@@ -77,6 +83,12 @@ import {
   runtimeCeilingViolation,
 } from "./policy.js";
 import {
+  assertReviewDecisionAuthorizes,
+  parseReviewDecision,
+  type ReviewDecisionV1,
+  ReviewDecisionValidationError,
+} from "./review-decision.js";
+import {
   canonicalReviewFindingsSha256,
   MAX_REVIEW_FINDINGS_BYTES,
   parseReviewFindings,
@@ -84,6 +96,7 @@ import {
   type ReviewFindingsV1,
   ReviewFindingsValidationError,
 } from "./review-findings.js";
+import { appendSpendEvent, type ReviewDecisionSpendEvent, spendLogPathForDb } from "./spend-log.js";
 import { mapTierToDispatch } from "./tier-map.js";
 import { createViabilityDeps } from "./viability.js";
 
@@ -94,6 +107,9 @@ const DEFAULT_RUNAWAY_BACKSTOP_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_PARALLEL_LOCAL = 1;
 const DEFAULT_MAX_PARALLEL_CLOUD = 4;
+// A Firecracker microVM is heavier than a cloud dispatch — start conservative;
+// the operator raises `maxParallel.rooms` once the rooms-host proves out.
+const DEFAULT_MAX_PARALLEL_ROOMS = 2;
 const RUNAWAY_BACKSTOP_MULTIPLIER = 6;
 
 // Review-cycle cap for `address` re-dispatch (TDD §7 Flow B). A policy value
@@ -151,9 +167,17 @@ export interface ResolvedRunOpts {
   pollIntervalMs: number;
   maxParallelLocal: number;
   maxParallelCloud: number;
+  maxParallelRooms: number;
   force: boolean;
   notify?: NotifyConfig | undefined;
   escalation?: EscalationConfig | undefined;
+}
+
+/** In-flight dispatch counts, per runtime lane — threaded through one tick's dispatch loop. */
+interface InFlightByRuntime {
+  local: number;
+  cloud: number;
+  rooms: number;
 }
 
 interface TickContext {
@@ -194,6 +218,8 @@ interface DispatchContext {
   cloudInFlight: number;
   gh?: DriverGhPort;
   localInFlight: number;
+  logger?: Logger;
+  roomsInFlight: number;
   onProgress: () => void;
   opts: ResolvedRunOpts;
   repoRoot: string;
@@ -212,6 +238,7 @@ export function resolveRunOpts(opts?: RunOpts): ResolvedRunOpts {
     force: opts?.force === true,
     maxParallelCloud: parallel.cloud,
     maxParallelLocal: parallel.local,
+    maxParallelRooms: parallel.rooms,
     maxWaitMs,
     pollIntervalMs: opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     runawayBackstopMs: opts?.runawayBackstopMs ?? resolveRunawayBackstopMs(maxWaitMs),
@@ -243,11 +270,12 @@ export function shouldGiveUpTick(
   return false;
 }
 
-function defaultParallelLimits(opts?: RunOpts): { cloud: number; local: number } {
+function defaultParallelLimits(opts?: RunOpts): { cloud: number; local: number; rooms: number } {
   const parallel = opts?.maxParallel;
   return {
     cloud: parallel?.cloud ?? DEFAULT_MAX_PARALLEL_CLOUD,
     local: parallel?.local ?? DEFAULT_MAX_PARALLEL_LOCAL,
+    rooms: parallel?.rooms ?? DEFAULT_MAX_PARALLEL_ROOMS,
   };
 }
 
@@ -609,9 +637,8 @@ function collectStreamPreflightErrors(
   if (stream.status !== "pending") return;
   assertStreamWithinPolicy(stream, policy);
   if (stream.runtime === "rooms") {
-    throw new PreconditionError(
-      `rooms stream ${stream.id} is not supported by the engine yet — dispatch rooms work via ship.ship directly`,
-    );
+    collectRoomsPreflightErrors(stream, repoUrl);
+    return;
   }
   if (stream.runtime === "cloud" && repoUrl === undefined) {
     throw new PreconditionError(
@@ -624,6 +651,36 @@ function collectStreamPreflightErrors(
   }
   const worktreePath = join(repoRoot, ".claude", "worktrees", stream.branch);
   if (!existsSync(worktreePath)) missing.push(worktreePath);
+}
+
+// Rooms dispatches remotely (like cloud) but must push a NAMED branch the driver
+// opens the PR from downstream — so it needs both a repo URL to clone and a branch
+// to push. No local worktree (nothing added to `missing`). Rooms is a cursor-only
+// cell: import's provider validation doesn't reject claude/rooms or codex/rooms
+// (it only special-cases codex-non-local + claude-cloud), so reject the unwired
+// cell here — before dispatch — instead of letting core's selectRunner fail it
+// mid-flight with an opaque IllegalProviderRuntimeError.
+function collectRoomsPreflightErrors(stream: DriverStream, repoUrl: string | undefined): void {
+  const provider = stream.provider ?? DEFAULT_DISPATCH_PROVIDER;
+  if (!isLegalCell(provider, "rooms")) {
+    throw new PreconditionError(
+      `rooms stream ${stream.id} uses provider '${provider}' — rooms supports only the cursor provider`,
+    );
+  }
+  // Blank counts as missing throughout: `repo_url` / `branch_name` are
+  // `z.string().optional()` (no min), so `""`/whitespace parses; the values are
+  // forwarded to rooms as `--repo` / `--push-branch`, and `RoomCursorRunner`'s
+  // nullish fallbacks don't re-derive a blank, so the VM boots against no repo /
+  // an empty branch and fails mid-run. Reject blanks here (matches the flip
+  // path's `undefined || ""` guard).
+  if (repoUrl === undefined || repoUrl.trim() === "") {
+    throw new PreconditionError(
+      `rooms stream ${stream.id} requires repo_url in manifest — add repo_url to the driver frontmatter`,
+    );
+  }
+  if (stream.branch === undefined || stream.branch.trim() === "") {
+    throw new PreconditionError(`rooms stream ${stream.id} requires branch_name in manifest`);
+  }
 }
 
 // The stored runtime/provider re-checked against the repo ceiling at dispatch
@@ -718,6 +775,8 @@ function buildDispatchContext(
     clock: ctx.clock,
     cloudInFlight: countInFlight(run, "cloud"),
     localInFlight: countInFlight(run, "local"),
+    ...(ctx.logger === undefined ? {} : { logger: ctx.logger }),
+    roomsInFlight: countInFlight(run, "rooms"),
     onProgress,
     opts,
     repoRoot: resolveRepoRoot(run.manifestPath),
@@ -732,12 +791,14 @@ function buildDispatchContext(
 
 async function dispatchEligible(ctx: DispatchContext): Promise<void> {
   const run = loadRun(ctx.store, ctx.runId);
-  let localInFlight = ctx.localInFlight;
-  let cloudInFlight = ctx.cloudInFlight;
+  let inFlight: InFlightByRuntime = {
+    cloud: ctx.cloudInFlight,
+    local: ctx.localInFlight,
+    rooms: ctx.roomsInFlight,
+  };
 
   for (const batch of run.batches) {
-    localInFlight = await dispatchBatchStreams(batch, run, ctx, localInFlight, cloudInFlight);
-    cloudInFlight = countInFlight(loadRun(ctx.store, ctx.runId), "cloud");
+    inFlight = await dispatchBatchStreams(batch, run, ctx, inFlight);
   }
 }
 
@@ -745,54 +806,52 @@ async function dispatchBatchStreams(
   batch: DriverBatch,
   run: DriverRun,
   ctx: DispatchContext,
-  localInFlight: number,
-  cloudInFlight: number,
-): Promise<number> {
-  if (!batchHasPendingDispatchable(batch, run.batches)) return localInFlight;
-  if (ctx.opts.batch !== undefined && batch.batchIndex !== ctx.opts.batch) return localInFlight;
+  inFlight: InFlightByRuntime,
+): Promise<InFlightByRuntime> {
+  if (!batchHasPendingDispatchable(batch, run.batches)) return inFlight;
+  if (ctx.opts.batch !== undefined && batch.batchIndex !== ctx.opts.batch) return inFlight;
 
-  let local = localInFlight;
-  let cloud = cloudInFlight;
+  let counts = inFlight;
   for (const stream of batch.streams) {
     if (stream.status !== "pending") continue;
-    if (!canDispatchStream(stream, local, cloud, ctx.opts)) continue;
+    if (!canDispatchStream(stream, counts, ctx.opts)) continue;
     const dispatched = await dispatchStream(ctx, stream);
     // A failed dispatch holds no slot — only live work counts against the caps.
     if (!dispatched) continue;
     ctx.onProgress();
-    const bumped = bumpInFlightAfterDispatch(ctx, stream, local, cloud);
-    local = bumped.local;
-    cloud = bumped.cloud;
+    counts = bumpInFlightAfterDispatch(ctx, stream, counts);
   }
-  return local;
+  return counts;
 }
 
-/** Count the post-dispatch runtime — a hop may have rewritten it mid-call. */
+/**
+ * Count the post-dispatch runtime — a hop may have rewritten it mid-call. The
+ * runtime IS the in-flight lane key, so bump it directly: a runtime added to the
+ * union but not to `InFlightByRuntime` fails to compile here rather than silently
+ * polluting an unrelated lane.
+ */
 function bumpInFlightAfterDispatch(
   ctx: DispatchContext,
   stream: DriverStream,
-  local: number,
-  cloud: number,
-): { local: number; cloud: number } {
+  inFlight: InFlightByRuntime,
+): InFlightByRuntime {
   const live = findStream(loadRun(ctx.store, ctx.runId), stream.id);
   const runtime = live?.runtime ?? stream.runtime;
-  if (runtime === "local") return { cloud, local: local + 1 };
-  if (runtime === "cloud") return { cloud: cloud + 1, local };
-  return { cloud, local };
+  return { ...inFlight, [runtime]: inFlight[runtime] + 1 };
 }
 
 function canDispatchStream(
   stream: DriverStream,
-  localInFlight: number,
-  cloudInFlight: number,
+  inFlight: InFlightByRuntime,
   opts: ResolvedRunOpts,
 ): boolean {
-  if (stream.runtime === "local" && localInFlight >= opts.maxParallelLocal) return false;
-  if (stream.runtime === "cloud" && cloudInFlight >= opts.maxParallelCloud) return false;
+  if (stream.runtime === "local" && inFlight.local >= opts.maxParallelLocal) return false;
+  if (stream.runtime === "cloud" && inFlight.cloud >= opts.maxParallelCloud) return false;
+  if (stream.runtime === "rooms" && inFlight.rooms >= opts.maxParallelRooms) return false;
   return true;
 }
 
-function countInFlight(run: DriverRun, runtime: "local" | "cloud"): number {
+function countInFlight(run: DriverRun, runtime: "local" | "cloud" | "rooms"): number {
   return allStreams(run).filter((s) => {
     if (s.status !== "dispatching" && s.status !== "dispatched") return false;
     return s.runtime === runtime;
@@ -824,9 +883,12 @@ async function dispatchStream(
     // A hop may have rewritten the runtime — the redispatch must clear the
     // same caps a fresh dispatch would; a saturated target waits for a later
     // tick instead of overshooting maxParallel*.
-    const local = countInFlight(refreshed, "local");
-    const cloud = countInFlight(refreshed, "cloud");
-    if (!canDispatchStream(next, local, cloud, ctx.opts)) return false;
+    const inFlight: InFlightByRuntime = {
+      cloud: countInFlight(refreshed, "cloud"),
+      local: countInFlight(refreshed, "local"),
+      rooms: countInFlight(refreshed, "rooms"),
+    };
+    if (!canDispatchStream(next, inFlight, ctx.opts)) return false;
     current = next;
   }
 }
@@ -847,6 +909,7 @@ async function dispatchStreamOnce(
 ): Promise<boolean> {
   const headOk = await checkTickAddressHead(ctx, stream);
   if (!headOk) return false;
+  emitRecoveredAddressFacts(ctx, stream);
   const docPath = opts.docPath ?? resolveDispatchDocPath(ctx.repoRoot, stream);
   const attempt: StreamAttempt = {
     dispatchedAt: new Date(ctx.clock()).toISOString(),
@@ -888,6 +951,24 @@ async function dispatchStreamOnce(
 }
 
 /**
+ * Replay the durable transaction-to-ledger handoff after a recovered or
+ * retried address dispatch passes exact-head revalidation. Deterministic event
+ * ids make repeated retries idempotent; legacy rows without receipt columns
+ * remain intentionally incomplete.
+ */
+function emitRecoveredAddressFacts(ctx: DispatchContext, stream: DriverStream): void {
+  const cycle = stream.reviewCycles;
+  if (cycle === undefined || cycle === 0) {
+    return;
+  }
+  const facts = ctx.store.getConsumedReviewArtifactReceipt(ctx.runId, stream.id, cycle);
+  if (facts === undefined) {
+    return;
+  }
+  emitValidatedAddressFacts(ctx.store, facts, ctx.logger);
+}
+
+/**
  * Tick-path guard for the stale-head check. A fresh (cycle-0) dispatch needs no
  * head re-validation and may proceed without a gh port. An address-cycle
  * re-dispatch must re-validate the consumed head against the live PR — so when
@@ -905,7 +986,40 @@ async function checkTickAddressHead(ctx: DispatchContext, stream: DriverStream):
     });
     return false;
   }
-  return checkAddressAttemptHead(ctx.store, ctx.gh, ctx.repoUrl, ctx.runId, stream);
+  const onStaleHead = recoveredStaleHeadIntervention(ctx, stream, cycle);
+  return checkAddressAttemptHead(ctx.store, ctx.gh, ctx.repoUrl, ctx.runId, {
+    stream,
+    ...(onStaleHead === undefined ? {} : { onStaleHead }),
+  });
+}
+
+function recoveredStaleHeadIntervention(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  cycle: number,
+): ((liveHeadSha: string) => void) | undefined {
+  const facts = ctx.store.getConsumedReviewArtifactReceipt(ctx.runId, stream.id, cycle);
+  if (facts === undefined) {
+    return undefined;
+  }
+  return (liveHeadSha) => {
+    emitAddressIntervention(
+      {
+        driverRunId: ctx.runId,
+        liveHeadSha,
+        prNumber: facts.prNumber,
+        reasonCode: "stale-review-head-post-consumption",
+        repo: facts.repo,
+        streamId: stream.id,
+      },
+      ctx.logger,
+    );
+  };
+}
+
+interface AddressHeadCheckOpts {
+  stream: DriverStream;
+  onStaleHead?: (liveHeadSha: string) => void;
 }
 
 /**
@@ -924,8 +1038,9 @@ async function checkAddressAttemptHead(
   gh: DriverGhPort,
   repoUrl: string | undefined,
   runId: string,
-  stream: DriverStream,
+  opts: AddressHeadCheckOpts,
 ): Promise<boolean> {
+  const { onStaleHead, stream } = opts;
   const cycle = stream.reviewCycles;
   if (cycle === undefined || cycle === 0) return true;
   const consumedHead = store.getConsumedArtifactHeadSha(runId, stream.id, cycle);
@@ -940,6 +1055,7 @@ async function checkAddressAttemptHead(
   const view = await gh.viewPullRequest(toGhRepo(repoUrl), prNumber);
   const liveHead = view.headRefOid.toLowerCase();
   if (consumedHead.toLowerCase() === liveHead) return true;
+  onStaleHead?.(liveHead);
   return failStreamHeadCheck(
     store,
     stream.id,
@@ -1100,15 +1216,21 @@ function buildShipInput(params: {
   continuation?: CloudContinuation;
 }): ShipInput {
   const { ctx, stream, docPath, tierMapping, continuation } = params;
-  if (stream.runtime === "rooms") {
-    throw new PreconditionError(`rooms stream ${stream.id} is not supported by the engine yet`);
-  }
-  const base =
-    stream.runtime === "cloud"
-      ? buildCloudShipInput(ctx, stream, docPath, continuation)
-      : buildLocalShipInput(ctx, stream, docPath);
+  const base = buildRuntimeShipInput(ctx, stream, docPath, continuation);
   const input = stream.provider !== undefined ? { ...base, provider: stream.provider } : base;
   return applyTierMapping(input, tierMapping);
+}
+
+/** Route to the per-runtime builder; provider + tier mapping layer on downstream. */
+function buildRuntimeShipInput(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  docPath: string,
+  continuation?: CloudContinuation,
+): ShipInput {
+  if (stream.runtime === "rooms") return buildRoomShipInput(ctx, stream, docPath);
+  if (stream.runtime === "cloud") return buildCloudShipInput(ctx, stream, docPath, continuation);
+  return buildLocalShipInput(ctx, stream, docPath);
 }
 
 function buildCloudShipInput(
@@ -1188,6 +1310,52 @@ function buildLocalShipInput(
   };
 }
 
+// Rooms is "our self-hosted cloud" (spec ED-2): the runner clones the repo URL
+// inside a microVM, the agent edits, then rooms commits + pushes `pushBranch`;
+// the driver opens the PR from that branch downstream (ED-3). So the input mirrors
+// the cloud builder — a repo URL + starting ref — plus the deterministic push
+// branch. `workdir` carries the local repo root as the policy-resolution cwd (the
+// credential guard + dispatch-policy ceiling resolve `.ship.json` from this
+// checkout), exactly as `buildCloudShipInput` documents.
+//
+// The branch is set BOTH as `room.pushBranch` (which branch the runner pushes
+// inside the VM) AND as the top-level `branch` (persisted as the run's
+// `worktree.branch`). Unlike cloud — where cursor picks the branch, so recovery
+// can't match on it — rooms knows its branch up front, and the recovery filter
+// (`filterRecoveryCandidates`) matches a live rooms workflow on
+// `worktree.branch === stream.branch`. Omitting the top-level branch persists it
+// as "(unknown)", so a post-dispatch store-write failure would make recovery
+// reject the live VM and dispatch a duplicate.
+function buildRoomShipInput(
+  ctx: DispatchContext,
+  stream: DriverStream,
+  docPath: string,
+): ShipInput {
+  const repoUrl = ctx.repoUrl;
+  if (repoUrl === undefined || repoUrl.trim() === "") {
+    throw new PreconditionError(`rooms stream ${stream.id} requires repo_url in manifest`);
+  }
+  const pushBranch = stream.branch;
+  if (pushBranch === undefined || pushBranch.trim() === "") {
+    throw new PreconditionError(`rooms stream ${stream.id} requires branch_name in manifest`);
+  }
+  const run = loadRun(ctx.store, ctx.runId);
+  // A blank `base_branch` must normalize to undefined, not forward as an empty
+  // `--base-sha` — the runner falls back to HEAD only on a nullish startingRef.
+  const rawRef = extractStreamBaseBranch(run, stream.specPath);
+  const startingRef = rawRef !== undefined && rawRef.trim() !== "" ? rawRef : undefined;
+  const repoEntry: NonNullable<ShipInput["room"]>["repos"][0] =
+    startingRef !== undefined ? { startingRef, url: repoUrl } : { url: repoUrl };
+  return {
+    branch: pushBranch,
+    docPath,
+    repo: run.repo,
+    room: { pushBranch, repos: [repoEntry] },
+    runtime: "rooms",
+    workdir: ctx.repoRoot,
+  };
+}
+
 function resolveCloudContinuation(
   stream: DriverStream,
   override?: CloudContinuation,
@@ -1249,6 +1417,7 @@ export async function flipStreamToCloud(
     clock,
     cloudInFlight: 0,
     localInFlight: 0,
+    roomsInFlight: 0,
     onProgress: () => undefined,
     opts: resolveRunOpts(),
     repoRoot: resolveRepoRoot(refreshed.manifestPath),
@@ -1304,6 +1473,7 @@ export interface AddressDeps {
   store: Store;
   ship: DriverShipPort;
   gh: DriverGhPort;
+  logger?: Logger;
   clock?: () => number;
   files?: AddressFilePort;
 }
@@ -1344,9 +1514,16 @@ export async function address(
   const clock = deps.clock ?? Date.now;
   const files = deps.files ?? DEFAULT_ADDRESS_FILES;
   const { branch, run, stream } = loadAddressTarget(store, driverRunId, opts.streamId);
+  ensureDriverStateRun(run, deps.logger);
   const pr = await loadAddressPr(gh, run, stream);
-  const artifact = readFindings(files, opts.findingsPath);
-  assertArtifactMatchesPr(artifact, pr);
+  let artifact: ReviewFindingsV1;
+  try {
+    artifact = readFindings(files, opts.findingsPath);
+  } catch (error: unknown) {
+    emitAddressRefusal(run, stream, pr, "malformed-review-artifact", deps.logger);
+    throw error;
+  }
+  assertArtifactMatchesPr(artifact, pr, run, stream, deps.logger);
   const nextCycle = nextAddressCycle(
     store,
     run,
@@ -1354,6 +1531,22 @@ export async function address(
     opts.maxCycles ?? DEFAULT_MAX_REVIEW_CYCLES,
     clock,
   );
+  let decision;
+  try {
+    decision = readDecision(files, opts.decisionPath);
+  } catch (error: unknown) {
+    emitAddressRefusal(run, stream, pr, "malformed-review-decision", deps.logger);
+    throw error;
+  }
+  try {
+    assertReviewDecisionAuthorizes(decision, artifact, nextCycle);
+  } catch (error: unknown) {
+    emitAddressRefusal(run, stream, pr, "review-decision-does-not-authorize", deps.logger);
+    if (error instanceof ReviewDecisionValidationError) {
+      throw new AddressError("decision-does-not-authorize", error.message);
+    }
+    throw error;
+  }
   const canonicalSha256 = canonicalReviewFindingsSha256(artifact);
   const docPath = writeAddressDoc({
     canonicalSha256,
@@ -1363,7 +1556,7 @@ export async function address(
     manifestPath: run.manifestPath,
     streamId: stream.id,
   });
-  const tierMapping = consumePreparedAddress({
+  const prepared = consumePreparedAddress({
     artifact,
     canonicalSha256,
     clock,
@@ -1374,14 +1567,71 @@ export async function address(
     store,
     stream,
   });
+  recordReviewDecisionSpend(store, pr, artifact, decision);
   return dispatchAddress({
     branch,
-    deps: { clock, gh, ship, store },
+    deps: {
+      clock,
+      gh,
+      ship,
+      store,
+      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+    },
     docPath,
     driverRunId,
     streamId: stream.id,
-    tierMapping,
+    addressFacts: prepared.addressFacts,
+    tierMapping: prepared.tierMapping,
   });
+}
+
+function recordReviewDecisionSpend(
+  store: Store,
+  pr: AddressPr,
+  artifact: ReviewFindingsV1,
+  decision: ReviewDecisionV1,
+): void {
+  const path = spendLogPathForDb(store.dbPath);
+  if (path === undefined) return;
+  const event: ReviewDecisionSpendEvent = {
+    ts: decision.generated_at,
+    event: "review_decision",
+    repo: pr.repo,
+    pr: pr.prNumber,
+    head_sha: decision.subject.head_sha,
+    plan_id: decision.plan_id,
+    input_digest: decision.input_digest,
+    route_disposition: decision.route_disposition,
+    tier_reasons: decision.tier_reasons ?? [],
+    cycle: decision.cycle,
+    continuation_weight: decision.continuation_weight,
+    cumulative_weight: decision.cumulative_weight,
+    decision_action: "address",
+    decision_reasons: decision.reason_codes,
+    reviewers_requested: artifact.panel.requested,
+    reviewers_completed: artifact.panel.completed,
+    next_reviewers: decision.next_reviewers,
+    findings_by_severity: countDecisionFindings(decision, "severity"),
+    findings_by_disposition: countDecisionFindings(decision, "disposition"),
+    ...(decision.policy === undefined
+      ? {}
+      : { policy_id: decision.policy.id, policy_digest: decision.policy.digest }),
+    ...(decision.route_reason === undefined ? {} : { route_reason: decision.route_reason }),
+    ...(decision.tier === undefined ? {} : { tier: decision.tier }),
+  };
+  appendSpendEvent(event, { path });
+}
+
+function countDecisionFindings(
+  decision: ReviewDecisionV1,
+  field: "disposition" | "severity",
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const finding of decision.findings) {
+    const value = finding[field];
+    counts[value] = (counts[value] ?? 0) + 1;
+  }
+  return counts;
 }
 
 function loadAddressTarget(store: Store, driverRunId: string, streamId: string) {
@@ -1406,19 +1656,47 @@ interface AddressPr {
   view: GhPullRequestView;
 }
 
-function assertArtifactMatchesPr(artifact: ReviewFindingsV1, pr: AddressPr): void {
+function assertArtifactMatchesPr(
+  artifact: ReviewFindingsV1,
+  pr: AddressPr,
+  run: DriverRun,
+  stream: DriverStream,
+  logger?: Logger,
+): void {
   if (artifact.subject.repo !== pr.repo || artifact.subject.number !== pr.prNumber) {
+    emitAddressRefusal(run, stream, pr, "review-subject-mismatch", logger);
     throw new AddressError(
       "findings-subject-mismatch",
       `findings target ${artifact.subject.repo}#${String(artifact.subject.number)} does not match ${pr.repo}#${String(pr.prNumber)}`,
     );
   }
   if (artifact.subject.head_sha !== pr.view.headRefOid.toLowerCase()) {
+    emitAddressRefusal(run, stream, pr, "stale-review-head", logger);
     throw new AddressError(
       "findings-stale-head",
       `findings head ${artifact.subject.head_sha} does not match live head ${pr.view.headRefOid}`,
     );
   }
+}
+
+function emitAddressRefusal(
+  run: DriverRun,
+  stream: DriverStream,
+  pr: AddressPr,
+  reasonCode: string,
+  logger?: Logger,
+): void {
+  emitAddressIntervention(
+    {
+      driverRunId: run.id,
+      liveHeadSha: pr.view.headRefOid.toLowerCase(),
+      prNumber: pr.prNumber,
+      reasonCode,
+      repo: pr.repo,
+      streamId: stream.id,
+    },
+    logger,
+  );
 }
 
 function nextAddressCycle(
@@ -1449,7 +1727,7 @@ function consumePreparedAddress(params: {
   pr: AddressPr;
   store: Store;
   stream: DriverStream;
-}): TierDispatchResult {
+}): { addressFacts: ConsumeReviewArtifactInput; tierMapping: TierDispatchResult } {
   const { artifact, canonicalSha256, clock, docPath, driverRunId, nextCycle, pr, store, stream } =
     params;
   const attempt: StreamAttempt = {
@@ -1465,31 +1743,37 @@ function consumePreparedAddress(params: {
     stream.modelId,
   );
   const dispatchPatch = tierDispatchPatch(provider, tierMapping);
+  const addressFacts: ConsumeReviewArtifactInput = {
+    addressCycle: nextCycle,
+    artifactId: artifact.artifact_id,
+    attempts: [...stream.attempts, attempt],
+    canonicalSha256,
+    dispatchProvider: provider,
+    docPath,
+    driverRunId,
+    expectedReviewCycle: nextCycle - 1,
+    headSha: artifact.subject.head_sha,
+    producerHarness: artifact.producer.harness,
+    producerId: artifact.producer.id,
+    prNumber: pr.prNumber,
+    repo: pr.repo,
+    streamId: stream.id,
+    ...(artifact.producer.catalog_revision === undefined
+      ? {}
+      : { producerCatalogRevision: artifact.producer.catalog_revision }),
+    ...(typeof dispatchPatch.dispatchModel === "string"
+      ? { dispatchModel: dispatchPatch.dispatchModel }
+      : {}),
+    ...(Array.isArray(dispatchPatch.dispatchModelParams)
+      ? { dispatchModelParams: dispatchPatch.dispatchModelParams }
+      : {}),
+    effortDegraded: dispatchPatch.effortDegraded ?? false,
+    ...(typeof dispatchPatch.tierDegradeReason === "string"
+      ? { tierDegradeReason: dispatchPatch.tierDegradeReason }
+      : {}),
+  };
   try {
-    store.consumeReviewArtifactAndPrepareDispatch({
-      addressCycle: nextCycle,
-      artifactId: artifact.artifact_id,
-      attempts: [...stream.attempts, attempt],
-      canonicalSha256,
-      dispatchProvider: provider,
-      docPath,
-      driverRunId,
-      expectedReviewCycle: nextCycle - 1,
-      headSha: artifact.subject.head_sha,
-      prNumber: pr.prNumber,
-      repo: pr.repo,
-      streamId: stream.id,
-      ...(typeof dispatchPatch.dispatchModel === "string"
-        ? { dispatchModel: dispatchPatch.dispatchModel }
-        : {}),
-      ...(Array.isArray(dispatchPatch.dispatchModelParams)
-        ? { dispatchModelParams: dispatchPatch.dispatchModelParams }
-        : {}),
-      effortDegraded: dispatchPatch.effortDegraded ?? false,
-      ...(typeof dispatchPatch.tierDegradeReason === "string"
-        ? { tierDegradeReason: dispatchPatch.tierDegradeReason }
-        : {}),
-    });
+    store.consumeReviewArtifactAndPrepareDispatch(addressFacts);
   } catch (error: unknown) {
     if (error instanceof ReviewArtifactDuplicateError) {
       throw new AddressError("findings-duplicate", error.message);
@@ -1499,19 +1783,26 @@ function consumePreparedAddress(params: {
     }
     throw error;
   }
-  return tierMapping;
+  return { addressFacts, tierMapping };
 }
 
 async function dispatchAddress(params: {
   branch: string;
-  deps: { store: Store; ship: DriverShipPort; clock: () => number; gh: DriverGhPort };
+  deps: {
+    store: Store;
+    ship: DriverShipPort;
+    clock: () => number;
+    gh: DriverGhPort;
+    logger?: Logger;
+  };
   docPath: string;
   driverRunId: string;
   streamId: string;
+  addressFacts: ConsumeReviewArtifactInput;
   tierMapping: TierDispatchResult;
 }): Promise<DriverRun> {
-  const { branch, deps, docPath, driverRunId, streamId, tierMapping } = params;
-  const { gh, store, ship, clock } = deps;
+  const { addressFacts, branch, deps, docPath, driverRunId, streamId, tierMapping } = params;
+  const { gh, store, ship, clock, logger } = deps;
   const refreshed = store.getDriverRun(driverRunId);
   if (refreshed === null) {
     throw new DriverRunNotFoundEngineError(driverRunId);
@@ -1528,23 +1819,34 @@ async function dispatchAddress(params: {
   }
   // Re-validate the consumed head against the live PR before dispatching.
   // This guards the window between consumption and dispatch startup.
-  const headOk = await checkAddressAttemptHead(
-    store,
-    gh,
-    extractRepoUrl(refreshed),
-    driverRunId,
-    flipped,
-  );
+  const headOk = await checkAddressAttemptHead(store, gh, extractRepoUrl(refreshed), driverRunId, {
+    stream: flipped,
+    onStaleHead: (liveHeadSha) => {
+      emitAddressIntervention(
+        {
+          driverRunId,
+          liveHeadSha,
+          prNumber: addressFacts.prNumber,
+          reasonCode: "stale-review-head-post-consumption",
+          repo: addressFacts.repo,
+          streamId,
+        },
+        logger,
+      );
+    },
+  });
   if (!headOk) {
     store.updateDriverRunStatus(driverRunId, "awaiting_judgment");
     throw new PreconditionError(
       `address attempt blocked for stream ${streamId}: consumed head does not match live PR head — decide retry or skip`,
     );
   }
+  emitValidatedAddressFacts(store, addressFacts, logger);
   const ctx: DispatchContext = {
     clock,
     cloudInFlight: 0,
     localInFlight: 0,
+    roomsInFlight: 0,
     onProgress: () => undefined,
     opts: resolveRunOpts(),
     repoRoot: resolveRepoRoot(refreshed.manifestPath),
@@ -1653,6 +1955,30 @@ function readFindings(files: AddressFilePort, findingsPath: string) {
   } catch (error: unknown) {
     if (error instanceof ReviewFindingsValidationError) {
       throw new AddressError("findings-invalid", error.message);
+    }
+    throw error;
+  }
+}
+
+function readDecision(files: AddressFilePort, decisionPath: string): ReviewDecisionV1 {
+  let content: string;
+  try {
+    content = files.read(decisionPath);
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new AddressError(
+      "decision-unreadable",
+      `review decision file not readable: ${decisionPath}${detail}`,
+    );
+  }
+  if (content.trim() === "") {
+    throw new AddressError("decision-unreadable", `review decision file is empty: ${decisionPath}`);
+  }
+  try {
+    return parseReviewDecision(content);
+  } catch (error: unknown) {
+    if (error instanceof ReviewDecisionValidationError) {
+      throw new AddressError("decision-invalid", error.message);
     }
     throw error;
   }

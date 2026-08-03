@@ -30,7 +30,7 @@ export interface RunOpts {
   /** Absolute monotonic ceiling for a tick; overrides the derived default when set. */
   runawayBackstopMs?: number;
   pollIntervalMs?: number;
-  maxParallel?: { local?: number; cloud?: number };
+  maxParallel?: { local?: number; cloud?: number; rooms?: number };
   force?: boolean;
   /** Optional notify command for page-tier escalation delivery. */
   notify?: NotifyConfig;
@@ -103,12 +103,22 @@ export interface MergeFacts {
   mergeCommit: string;
   mergedAt?: string;
   cycles?: number;
+  /** Exact PR head GitHub reports as merged. */
+  mergeHeadSha?: string;
+  /** Exact post-address head independently reviewed before Gate. */
+  finalReviewedHeadSha?: string;
+  /** Gate run that judged finalReviewedHeadSha. */
+  gateRunRef?: string;
 }
 
 export interface LandOpts {
   prNumber: number;
   streamId?: string;
   cycles?: number;
+  /** Exact post-address head independently reviewed before Gate. */
+  reviewedHeadSha?: string;
+  /** Gate run that authorized reviewedHeadSha. */
+  gateRunRef?: string;
   /** Pass `--admin` to the merge (bypass branch protection). Default false. */
   admin?: boolean;
 }
@@ -117,6 +127,8 @@ export interface AddressOpts {
   streamId: string;
   /** File containing one validated ReviewFindingsV1 JSON artifact. */
   findingsPath: string;
+  /** File containing the exact-head Workbench ReviewDecisionV1 authorization. */
+  decisionPath: string;
   /** Review-cycle cap (policy value; default 3). Refuses + escalates at the cap. */
   maxCycles?: number;
 }

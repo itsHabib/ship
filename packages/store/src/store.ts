@@ -23,7 +23,7 @@ import type {
   ListEscalationsFilter,
 } from "./escalations.js";
 import type { AppendPhaseInput, UpdatePhaseInput } from "./phases.js";
-import type { ConsumeReviewArtifactInput } from "./review-artifacts.js";
+import type { ConsumeReviewArtifactInput, ReviewArtifactReceiptFacts } from "./review-artifacts.js";
 import type {
   CreateWorkflowRunInput,
   ListRunsFilter,
@@ -63,6 +63,13 @@ export interface CreateStoreOptions {
  * mutators commit before returning or throw.
  */
 export interface Store {
+  /**
+   * The `dbPath` this store was opened with — an absolute file path, or the
+   * `:memory:` sentinel. Lets sibling artifacts (e.g. the review-spend log)
+   * land beside the same `state.db` the run actually writes, rather than
+   * re-resolving the location independently.
+   */
+  readonly dbPath: string;
   /**
    * Insert a workflow run with `status = 'pending'`. Caller passes a
    * `wf_<ulid>` id from `@ship/workflow`'s `newWorkflowRunId`. Returns the
@@ -178,6 +185,12 @@ export interface Store {
     streamId: string,
     cycle: number,
   ) => string | undefined;
+  /** Return durable facts needed to recover exact-head address receipt emission. */
+  getConsumedReviewArtifactReceipt: (
+    driverRunId: string,
+    streamId: string,
+    cycle: number,
+  ) => ReviewArtifactReceiptFacts | undefined;
   /** Insert an escalation row; rejects when an open row exists for the dedup key. */
   insertEscalation: (input: InsertEscalationInput) => Escalation;
   /** Hydrated escalation row, or `null` if unknown. Does not throw. */
@@ -239,6 +252,7 @@ export function createStore(opts: CreateStoreOptions): Store {
     const reviewArtifactOps = createReviewArtifactOps(db, clock);
 
     return {
+      dbPath: opts.dbPath,
       appendPhase: (input) => withStoreContentionGuard(() => phaseOps.append(input)),
       cancelRun: (id) => withStoreContentionGuard(() => workflowRunOps.cancel(id)),
       deleteWorkflowRun: (id) => {
@@ -270,6 +284,10 @@ export function createStore(opts: CreateStoreOptions): Store {
       getConsumedArtifactHeadSha: (driverRunId, streamId, cycle) =>
         withStoreContentionGuard(() =>
           reviewArtifactOps.getConsumedHeadSha(driverRunId, streamId, cycle),
+        ),
+      getConsumedReviewArtifactReceipt: (driverRunId, streamId, cycle) =>
+        withStoreContentionGuard(() =>
+          reviewArtifactOps.getReceiptFacts(driverRunId, streamId, cycle),
         ),
       getEscalation: (id) => withStoreContentionGuard(() => escalationOps.get(id)),
       getOpenEscalation: (key) => withStoreContentionGuard(() => escalationOps.getOpenByKey(key)),

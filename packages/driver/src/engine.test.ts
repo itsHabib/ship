@@ -1,7 +1,7 @@
 /** Engine tick loop tests — fake clock, fake port, in-memory store. */
 
 import type { LogFields, Logger } from "@ship/logger";
-import type { DriverStream } from "@ship/store";
+import type { DriverStream, Store } from "@ship/store";
 
 import { parseReceiptsJsonl } from "@ship/receipt";
 import { createStore, newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store";
@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { DriverStreamView } from "./types.js";
 
+import { ledgerRunId, ledgerStreamId, withDriverStateEmission } from "./driverstate-emit.js";
 import {
   address,
   buildShipInputForTest,
@@ -43,6 +44,14 @@ function restoreReceiptsPath(prior: string | undefined): void {
     return;
   }
   process.env["SHIP_RECEIPTS_PATH"] = prior;
+}
+
+function restoreStateDir(prior: string | undefined): void {
+  if (prior === undefined) {
+    delete process.env["WORKBENCH_STATE_DIR"];
+    return;
+  }
+  process.env["WORKBENCH_STATE_DIR"] = prior;
 }
 
 /** A minimal logger that records the messages passed to `warn`/`error`. */
@@ -149,6 +158,29 @@ batches:
     });
 
     await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0, pollIntervalMs: 1000 });
+    store.close();
+  });
+
+  test("DriverService.markMerged refuses a partial closure handoff", async () => {
+    const docA = localDoc(repoRoot, "feat-a", "docs/tasks/a.md");
+    const fake = createFakeShipPort([{ docPath: docA, repo: "ship", workflowRunId: "wf_a" }]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifestPath);
+    const result = await driver.run({ driverRunId: imported.run.id }, { batch: 1, maxWaitMs: 0 });
+    const streamId = result.unmerged[0]?.streamId;
+    if (streamId === undefined) {
+      throw new Error("expected landed stream");
+    }
+
+    expect(() => {
+      driver.markMerged(imported.run.id, streamId, {
+        gateRunRef: "run_ab12",
+        mergeCommit: "abc123",
+        prNumber: 1,
+      });
+    }).toThrow(/requires both gateRunRef and finalReviewedHeadSha/u);
+    expect(store.getDriverRun(imported.run.id)?.batches[0]?.streams[0]?.status).toBe("landed");
     store.close();
   });
 
@@ -798,7 +830,7 @@ batches:
     store.close();
   });
 
-  test("rooms runtime is rejected at pre-flight, nothing dispatches", async () => {
+  test("a well-formed rooms stream dispatches (engine hard-stop removed)", async () => {
     const manifest = join(repoRoot, "rooms.driver.md");
     writeFileSync(
       manifest,
@@ -822,14 +854,18 @@ batches:
 ---
 `,
     );
-    const fake = createFakeShipPort([]);
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+    ]);
     const store = createStore({ dbPath: ":memory:" });
     const driver = createDriverService({ ship: fake.port, store });
     const imported = driver.importManifest(manifest);
-    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
-      /rooms stream .* not supported/,
-    );
-    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const starts = fake.calls.filter((c) => c.kind === "startShip");
+    expect(starts).toHaveLength(1);
+    expect(starts[0]?.input).toMatchObject({ runtime: "rooms" });
     store.close();
   });
 
@@ -1118,6 +1154,321 @@ batches:
     await driver.run({ driverRunId: imported.run.id }, { maxParallel: { cloud: 1 }, maxWaitMs: 0 });
 
     expect(fake.calls.filter((c) => c.kind === "startShip")).toHaveLength(1);
+    store.close();
+  });
+
+  test("rooms dispatches both streams and forwards the room spec", async () => {
+    const manifest = join(repoRoot, "two-rooms.driver.md");
+    writeFileSync(manifest, twoRoomsStreamManifest("2026-07-25T00:00:00Z"));
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docB = resolveDocPath(repoRoot, "docs/tasks/b.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+      { docPath: docB, repo: "ship", terminalStatus: "running", workflowRunId: "wf_b" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxParallel: { rooms: 2 }, maxWaitMs: 0 });
+
+    const starts = fake.calls.filter((c) => c.kind === "startShip");
+    expect(starts).toHaveLength(2);
+    expect(starts[0]?.input).toMatchObject({
+      // top-level `branch` is what core persists as worktree.branch — recovery
+      // matches a live rooms VM on it, so it must equal the stream branch.
+      branch: "feat-a",
+      room: { pushBranch: "feat-a", repos: [{ url: "https://github.com/example/ship" }] },
+      runtime: "rooms",
+    });
+    // Assert the second stream distinctly — an identity-swap (both dispatches
+    // using feat-a) would otherwise satisfy the length-2 check.
+    expect(starts[1]?.input).toMatchObject({
+      branch: "feat-b",
+      room: { pushBranch: "feat-b", repos: [{ url: "https://github.com/example/ship" }] },
+      runtime: "rooms",
+    });
+    store.close();
+  });
+
+  test("rooms cap limits dispatch within a multi-stream batch", async () => {
+    const manifest = join(repoRoot, "capped-rooms.driver.md");
+    writeFileSync(manifest, twoRoomsStreamManifest("2026-07-25T01:00:00Z"));
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const docB = resolveDocPath(repoRoot, "docs/tasks/b.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+      { docPath: docB, repo: "ship", terminalStatus: "running", workflowRunId: "wf_b" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+
+    await driver.run({ driverRunId: imported.run.id }, { maxParallel: { rooms: 1 }, maxWaitMs: 0 });
+
+    expect(fake.calls.filter((c) => c.kind === "startShip")).toHaveLength(1);
+    store.close();
+  });
+
+  test("rooms stream without repo_url fails preflight", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-no-url.driver.md");
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T02:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: createFakeShipPort([]).port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /repo_url/,
+    );
+    store.close();
+  });
+
+  test("rooms stream without branch_name fails preflight", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-no-branch.driver.md");
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T03:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: createFakeShipPort([]).port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /branch_name/,
+    );
+    store.close();
+  });
+
+  test("rooms stream with a non-cursor provider is rejected at preflight, nothing dispatches", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-claude.driver.md");
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T04:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: rooms
+        provider: claude
+        status: pending
+---
+`,
+    );
+
+    const fake = createFakeShipPort([]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /provider 'claude'.*cursor/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    store.close();
+  });
+
+  test("rooms stream with a blank branch_name fails preflight, nothing dispatches", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-blank-branch.driver.md");
+    // branch_name is z.string().optional() (no min), so "" parses; the blank
+    // must be rejected here, not forwarded to rooms as `--push-branch ""`.
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T05:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: ""
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+
+    const fake = createFakeShipPort([]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /branch_name/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    store.close();
+  });
+
+  test("rooms stream with a blank repo_url fails preflight, nothing dispatches", async () => {
+    const roomsManifestPath = join(repoRoot, "rooms-blank-url.driver.md");
+    writeFileSync(
+      roomsManifestPath,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T06:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: ""
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+
+    const fake = createFakeShipPort([]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(roomsManifestPath);
+    await expect(driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 })).rejects.toThrow(
+      /repo_url/,
+    );
+    expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+    store.close();
+  });
+
+  test("rooms blank base_branch normalizes to undefined (no empty startingRef)", async () => {
+    const manifest = join(repoRoot, "rooms-blank-base.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T07:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        base_branch: ""
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    const room = (start?.input as { room?: { repos: { url: string; startingRef?: string }[] } })
+      .room;
+    expect(room?.repos[0]).toEqual({ url: "https://github.com/example/ship" });
+    store.close();
+  });
+
+  test("rooms forwards a non-blank base_branch as startingRef", async () => {
+    const manifest = join(repoRoot, "rooms-base.driver.md");
+    writeFileSync(
+      manifest,
+      `---
+driver_version: 1
+generated_at: 2026-07-25T08:00:00Z
+generated_by: test
+source:
+  project: ship
+  phase: rooms
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        base_branch: main
+        runtime: rooms
+        status: pending
+---
+`,
+    );
+    const docA = resolveDocPath(repoRoot, "docs/tasks/a.md");
+    const fake = createFakeShipPort([
+      { docPath: docA, repo: "ship", terminalStatus: "running", workflowRunId: "wf_a" },
+    ]);
+    const store = createStore({ dbPath: ":memory:" });
+    const driver = createDriverService({ ship: fake.port, store });
+    const imported = driver.importManifest(manifest);
+    await driver.run({ driverRunId: imported.run.id }, { maxWaitMs: 0 });
+
+    const start = fake.calls.find((c) => c.kind === "startShip");
+    const room = (start?.input as { room?: { repos: { url: string; startingRef?: string }[] } })
+      .room;
+    expect(room?.repos[0]).toEqual({
+      startingRef: "main",
+      url: "https://github.com/example/ship",
+    });
     store.close();
   });
 
@@ -1655,6 +2006,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1670,6 +2022,68 @@ describe("buildShipInputForTest", () => {
       provider: "claude",
       runtime: "cloud",
       cloud: { repos: [{ url: "https://github.com/example/ship", prBranch: "feat-claude" }] },
+    });
+  });
+
+  test("builds a rooms ShipInput mirroring the cloud shape", () => {
+    const runId = newDriverRunId();
+    const batchId = newDriverBatchId();
+    const streamId = newDriverStreamId();
+    store.insertDriverRun({
+      batches: [
+        {
+          batchIndex: 1,
+          dependsOn: [],
+          id: batchId,
+          status: "pending",
+          streams: [
+            {
+              attempts: [],
+              branch: "feat-rooms",
+              id: streamId,
+              runtime: "rooms",
+              specPath: "docs/a.md",
+              status: "pending",
+              streamIndex: 0,
+              touches: [],
+            },
+          ],
+        },
+      ],
+      id: runId,
+      manifestPath: join(repoRoot, "driver.md"),
+      repo: "ship",
+      sourceJson: "---\ndriver_version: 1\nrepo_url: https://github.com/example/ship\n---\n",
+      status: "pending",
+    });
+
+    const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
+    expect(stream).toBeDefined();
+    const input = buildShipInputForTest(
+      {
+        clock: () => 0,
+        cloudInFlight: 0,
+        localInFlight: 0,
+        roomsInFlight: 0,
+        onProgress: noopProgress,
+        opts: resolveRunOpts(),
+        repoRoot,
+        repoUrl: "https://github.com/example/ship",
+        runId,
+        ship: createFakeShipPort([]).port,
+        store,
+      },
+      stream!,
+      "docs/a.md",
+    );
+    // Rooms carries the local repo root as the policy-resolution cwd (like cloud),
+    // pushes the stream's branch, and clones the manifest repo_url.
+    expect(input).toMatchObject({
+      branch: "feat-rooms",
+      repo: "ship",
+      room: { pushBranch: "feat-rooms", repos: [{ url: "https://github.com/example/ship" }] },
+      runtime: "rooms",
+      workdir: repoRoot,
     });
   });
 
@@ -1713,6 +2127,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1774,6 +2189,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1833,6 +2249,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1914,6 +2331,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -1994,6 +2412,7 @@ describe("buildShipInputForTest", () => {
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -2129,6 +2548,7 @@ batches:
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -2182,6 +2602,7 @@ batches:
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -2578,7 +2999,9 @@ describe("driver address", () => {
   let repoRoot: string;
   let manifestPath: string;
   let findingsPath: string;
+  let decisionPath: string;
   let store: ReturnType<typeof createStore>;
+  let priorStateDir: string | undefined;
 
   const PR_URL = "https://github.com/example/ship/pull/77";
   const HEAD_SHA = "0000000000000000000000000000000000000000";
@@ -2607,11 +3030,15 @@ batches:
     mkdirSync(join(repoRoot, ".git"), { recursive: true });
     manifestPath = join(repoRoot, "driver.md");
     findingsPath = join(repoRoot, "findings.json");
+    decisionPath = join(repoRoot, "decision.json");
     writeFileSync(findingsPath, validFindingsArtifact());
+    writeFileSync(decisionPath, validReviewDecision());
     store = createStore({ dbPath: ":memory:" });
+    priorStateDir = process.env["WORKBENCH_STATE_DIR"];
   });
 
   afterEach(() => {
+    restoreStateDir(priorStateDir);
     store.close();
     rmSync(tmpDir, { force: true, recursive: true });
   });
@@ -2626,11 +3053,14 @@ batches:
     reviewCycles?: number;
   }
 
-  function seed(opts: SeedOpts = {}): { runId: string; streamId: string } {
+  function seed(
+    opts: SeedOpts = {},
+    targetStore: Store = store,
+  ): { runId: string; streamId: string } {
     const runId = newDriverRunId();
     const batchId = newDriverBatchId();
     const streamId = newDriverStreamId();
-    store.insertDriverRun({
+    targetStore.insertDriverRun({
       batches: [
         {
           batchIndex: 1,
@@ -2660,13 +3090,16 @@ batches:
       status: (opts.runStatus ?? "running") as "running",
     });
     if (opts.reviewCycles !== undefined) {
-      store.updateDriverStream(streamId, { reviewCycles: opts.reviewCycles });
+      targetStore.updateDriverStream(streamId, { reviewCycles: opts.reviewCycles });
     }
     return { runId, streamId };
   }
 
-  function landedSeed(over: SeedOpts = {}): { runId: string; streamId: string } {
-    return seed({ branch: "feat-a", prUrl: PR_URL, ...over });
+  function landedSeed(
+    over: SeedOpts = {},
+    targetStore: Store = store,
+  ): { runId: string; streamId: string } {
+    return seed({ branch: "feat-a", prUrl: PR_URL, ...over }, targetStore);
   }
 
   // Single accessor for the seeded run's first stream — keeps the assertion
@@ -2712,12 +3145,49 @@ batches:
     });
   }
 
+  function validReviewDecision(cycle = 1, over: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      schema_version: 1,
+      generated_at: "2026-07-10T00:00:00Z",
+      subject: {
+        repo: "example/ship",
+        number: 77,
+        head_sha: HEAD_SHA,
+      },
+      plan_id: `rp_${"1".repeat(32)}`,
+      input_digest: `sha256:${"2".repeat(64)}`,
+      policy: { id: "tier-aware-canary", digest: `sha256:${"a".repeat(64)}` },
+      route_disposition: "tier_routed",
+      tier: "T1",
+      tier_reasons: ["diff floor T1"],
+      cycle,
+      continuation_weight: 2 ** (cycle - 1),
+      cumulative_weight: 2 ** cycle - 1,
+      action: "address",
+      reason_codes: ["accepted_findings_require_address"],
+      next_reviewers: ["codex"],
+      findings: [
+        {
+          id: "finding-1",
+          severity: "high",
+          reviewers: ["codex"],
+          disposition: "fixed",
+          changed: false,
+          reviewer_closed: false,
+          debt: false,
+        },
+      ],
+      ...over,
+    });
+  }
+
   test("dispatches on the existing branch with autoCreatePR false and a findings doc", async () => {
     const { runId, streamId } = landedSeed();
     const fake = createFakeShipPort([]);
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
@@ -2743,12 +3213,54 @@ batches:
     expect(stream?.workOnCurrentBranch).toBe(true);
   });
 
+  test("records the consumed exact-head decision and policy digest in spend telemetry", async () => {
+    const fileStore = createStore({ dbPath: join(tmpDir, "state.db") });
+    try {
+      const { runId, streamId } = landedSeed({}, fileStore);
+      const fake = createFakeShipPort([]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+      await address({ clock: () => 0, gh, ship: fake.port, store: fileStore }, runId, {
+        decisionPath,
+        findingsPath,
+        streamId,
+      });
+
+      const events = readFileSync(join(tmpDir, "review-spend.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: "review_decision",
+          repo: "example/ship",
+          pr: 77,
+          head_sha: HEAD_SHA,
+          policy_id: "tier-aware-canary",
+          policy_digest: `sha256:${"a".repeat(64)}`,
+          route_disposition: "tier_routed",
+          tier: "T1",
+          cycle: 1,
+          continuation_weight: 1,
+          cumulative_weight: 1,
+          decision_action: "address",
+          findings_by_disposition: { fixed: 1 },
+          findings_by_severity: { high: 1 },
+        }),
+      );
+    } finally {
+      fileStore.close();
+    }
+  });
+
   test("increments reviewCycles exactly once per call", async () => {
     const { runId, streamId } = landedSeed({ reviewCycles: 1 });
     const fake = createFakeShipPort([]);
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    writeFileSync(decisionPath, validReviewDecision(2));
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
@@ -2773,7 +3285,8 @@ batches:
       }),
     );
     await expectRefusal(
-      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
       "findings-subject-mismatch",
     );
 
@@ -2789,10 +3302,170 @@ batches:
       }),
     );
     await expectRefusal(
-      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
       "findings-stale-head",
     );
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test("direct malformed refusal bootstraps headless intervention evidence", async () => {
+    const stateRoot = join(tmpDir, "driverstate-direct-refusal");
+    process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { headRefOid: HEAD_SHA, state: "OPEN" } });
+    writeFileSync(findingsPath, "{}");
+
+    await expectRefusal(
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
+      "findings-invalid",
+    );
+
+    const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            body: Record<string, unknown>;
+            kind: string;
+            stream?: string;
+          },
+      );
+    const streamEvents = events.filter((event) => event.stream === ledgerStreamId(streamId));
+    expect(events[0]?.kind).toBe("run_imported");
+    expect(streamEvents.find((event) => event.kind === "stream_pr_opened")?.body["head_sha"]).toBe(
+      "",
+    );
+    expect(streamEvents.some((event) => event.kind === "intervention")).toBe(true);
+    expect(streamEvents.some((event) => event.kind === "closure_facts")).toBe(false);
+    expect(streamEvents.some((event) => event.kind === "review_cycle")).toBe(false);
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test.each([
+    ["decision-invalid", "{}"],
+    ["decision-does-not-authorize", validReviewDecision(1, { action: "stop" })],
+    [
+      "decision-does-not-authorize",
+      validReviewDecision(1, {
+        subject: { repo: "example/ship", number: 77, head_sha: "1".repeat(40) },
+      }),
+    ],
+  ])("refuses %s review decision without consuming findings", async (code, decision) => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    writeFileSync(decisionPath, decision);
+
+    await expectRefusal(
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
+      code as AddressError["code"],
+    );
+
+    expect(firstStream(runId)?.reviewCycles).toBeUndefined();
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test("refuses an unreadable review decision", async () => {
+    const { runId, streamId } = landedSeed();
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+
+    await expectRefusal(
+      () =>
+        address({ gh, ship: fake.port, store }, runId, {
+          decisionPath: join(repoRoot, "missing-decision.json"),
+          findingsPath,
+          streamId,
+        }),
+      "decision-unreadable",
+    );
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
+  test("stale refusal does not seal a head before a later valid cycle", async () => {
+    const stateRoot = join(tmpDir, "driverstate-refusal-retry");
+    process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+    const emittingStore = withDriverStateEmission(store);
+    const { runId, streamId } = landedSeed({}, emittingStore);
+    const fake = createFakeShipPort([]);
+    const refusedHead = "1".repeat(40);
+    const acceptedHead = "2".repeat(40);
+    writeFileSync(
+      findingsPath,
+      validFindingsArtifact({
+        subject: {
+          type: "pull_request",
+          repo: "example/ship",
+          number: 77,
+          head_sha: refusedHead,
+        },
+      }),
+    );
+    await expectRefusal(
+      () =>
+        address(
+          {
+            gh: createFakeGhPort({ 77: { headRefOid: HEAD_SHA, state: "OPEN" } }),
+            ship: fake.port,
+            store: emittingStore,
+          },
+          runId,
+          { decisionPath, findingsPath, streamId },
+        ),
+      "findings-stale-head",
+    );
+
+    writeFileSync(
+      findingsPath,
+      validFindingsArtifact({
+        subject: {
+          type: "pull_request",
+          repo: "example/ship",
+          number: 77,
+          head_sha: acceptedHead,
+        },
+      }),
+    );
+    writeFileSync(
+      decisionPath,
+      validReviewDecision(1, {
+        subject: { repo: "example/ship", number: 77, head_sha: acceptedHead },
+      }),
+    );
+    await address(
+      {
+        gh: createFakeGhPort({ 77: { headRefOid: acceptedHead, state: "OPEN" } }),
+        ship: fake.port,
+        store: emittingStore,
+      },
+      runId,
+      { decisionPath, findingsPath, streamId },
+    );
+
+    const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            body: Record<string, unknown>;
+            kind: string;
+            stream: string;
+          },
+      )
+      .filter((event) => event.stream === ledgerStreamId(streamId));
+    const opening = events.find((event) => event.kind === "stream_pr_opened");
+    const closure = events.find((event) => event.kind === "closure_facts");
+    expect(opening?.body["head_sha"]).toBe("");
+    expect(closure?.body).toMatchObject({
+      opening_head_sha: acceptedHead,
+      review_head_sha: acceptedHead,
+    });
   });
 
   test("canonical replay with regenerated envelope dispatches at most once", async () => {
@@ -2801,10 +3474,12 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
     store.updateDriverStream(streamId, { status: "landed" });
+    writeFileSync(decisionPath, validReviewDecision(2));
     writeFileSync(
       findingsPath,
       validFindingsArtifact({
@@ -2819,7 +3494,11 @@ batches:
 
     await expectRefusal(
       () =>
-        address({ clock: () => 1, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 1, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "findings-duplicate",
     );
     expect(fake.calls.filter((call) => call.kind === "startShip")).toHaveLength(1);
@@ -2830,7 +3509,11 @@ batches:
     const fake = createFakeShipPort([]);
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
     const call = () =>
-      address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId });
+      address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
+        findingsPath,
+        streamId,
+      });
 
     const results = await Promise.allSettled([call(), call()]);
 
@@ -2854,12 +3537,16 @@ batches:
     };
 
     await expect(
-      address({ files, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      address({ files, gh, ship: fake.port, store }, runId, {
+        decisionPath,
+        findingsPath,
+        streamId,
+      }),
     ).rejects.toThrow(/disk full/u);
     expect(firstStream(runId)).toMatchObject({ attempts: [], status: "landed" });
 
     await expect(
-      address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
     ).resolves.toBeDefined();
     expect(fake.calls.filter((entry) => entry.kind === "startShip")).toHaveLength(1);
   });
@@ -2872,6 +3559,7 @@ batches:
 
     await expect(
       address({ clock: () => 0, gh, ship: failingPort, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       }),
@@ -2891,6 +3579,7 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
@@ -2909,6 +3598,7 @@ batches:
         clock: () => 0,
         cloudInFlight: 0,
         localInFlight: 0,
+        roomsInFlight: 0,
         onProgress: noopProgress,
         opts: resolveRunOpts(),
         repoRoot,
@@ -2935,7 +3625,11 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await expect(
-      address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
+        findingsPath,
+        streamId,
+      }),
     ).resolves.toBeDefined();
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("dispatched");
   });
@@ -2951,6 +3645,7 @@ batches:
       await expectRefusal(
         () =>
           address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+            decisionPath,
             findingsPath,
             streamId,
           }),
@@ -2966,6 +3661,7 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
 
     await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+      decisionPath,
       findingsPath,
       streamId,
     });
@@ -2996,7 +3692,7 @@ batches:
     const gh = createFakeGhPort({ 77: { state: "OPEN" } });
     const driver = createDriverService({ gh, ship: fake.port, store });
 
-    await driver.address(runId, { findingsPath, streamId });
+    await driver.address(runId, { decisionPath, findingsPath, streamId });
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.status).toBe("dispatched");
 
     const result = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
@@ -3011,6 +3707,24 @@ batches:
     expect(gh.markReadyCalls).toHaveLength(0);
   });
 
+  test("configured service refusal bootstraps without ledger warnings", async () => {
+    const { runId, streamId } = landedSeed();
+    const warnings: string[] = [];
+    const logger = makeCapturingLogger(warnings);
+    const fake = createFakeShipPort([]);
+    const gh = createFakeGhPort({ 77: { state: "OPEN" } });
+    writeFileSync(findingsPath, "{}", "utf8");
+    const driver = createDriverService({ gh, logger, ship: fake.port, store });
+
+    await expectRefusal(
+      () => driver.address(runId, { decisionPath, findingsPath, streamId }),
+      "findings-invalid",
+    );
+
+    expect(warnings).toHaveLength(0);
+    expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+  });
+
   test("call at maxCycles refuses cycle-exhausted and writes one escalation row", async () => {
     const { runId, streamId } = landedSeed({ reviewCycles: 3 });
     const fake = createFakeShipPort([]);
@@ -3018,7 +3732,11 @@ batches:
 
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "cycle-exhausted",
     );
     expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
@@ -3028,7 +3746,11 @@ batches:
     // A second call dedups on the open row (still one).
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "cycle-exhausted",
     );
     expect(store.listEscalations({ class: "cycle-exhausted", driverRunId: runId })).toHaveLength(1);
@@ -3048,7 +3770,11 @@ batches:
 
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       code as AddressError["code"],
     );
     const stream = store.getDriverRun(runId)?.batches[0]?.streams[0];
@@ -3063,7 +3789,11 @@ batches:
 
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "pr-not-open",
     );
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBeUndefined();
@@ -3077,6 +3807,7 @@ batches:
     await expectRefusal(
       () =>
         address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
           findingsPath: join(repoRoot, "nope.md"),
           streamId,
         }),
@@ -3086,7 +3817,11 @@ batches:
     writeFileSync(findingsPath, "   \n");
     await expectRefusal(
       () =>
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
       "findings-unreadable",
     );
     expect(store.getDriverRun(runId)?.batches[0]?.streams[0]?.reviewCycles).toBeUndefined();
@@ -3099,7 +3834,8 @@ batches:
     writeFileSync(findingsPath, "x".repeat(1024 * 1024 + 1));
 
     await expectRefusal(
-      () => address({ gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+      () =>
+        address({ gh, ship: fake.port, store }, runId, { decisionPath, findingsPath, streamId }),
       "findings-unreadable",
     );
     expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
@@ -3109,7 +3845,10 @@ batches:
     const NEW_HEAD = `aaaa${"0".repeat(36)}`;
 
     test("parks stream and does not dispatch when head advances between consumption and fresh address dispatch", async () => {
-      const { runId, streamId } = landedSeed();
+      const stateRoot = join(tmpDir, "driverstate-race");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+      const emittingStore = withDriverStateEmission(store);
+      const { runId, streamId } = landedSeed({}, emittingStore);
       const fake = createFakeShipPort([]);
       // First viewPullRequest (loadAddressPr) returns HEAD_SHA; second
       // (checkAddressAttemptHead inside dispatchAddress) returns NEW_HEAD.
@@ -3132,7 +3871,16 @@ batches:
       };
 
       await expect(
-        address({ clock: () => 0, gh, ship: fake.port, store }, runId, { findingsPath, streamId }),
+        address(
+          {
+            clock: () => 0,
+            gh,
+            ship: fake.port,
+            store: emittingStore,
+          },
+          runId,
+          { decisionPath, findingsPath, streamId },
+        ),
       ).rejects.toThrow(/consumed head does not match/);
 
       const stream = firstStream(runId);
@@ -3142,20 +3890,158 @@ batches:
       expect(stream?.reviewCycles).toBe(1);
       expect(store.getDriverRun(runId)?.status).toBe("awaiting_judgment");
       expect(fake.calls.some((c) => c.kind === "startShip")).toBe(false);
+      const ledger = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as { kind: string; stream: string });
+      const streamKinds = ledger
+        .filter((event) => event.stream === ledgerStreamId(streamId))
+        .map((event) => event.kind);
+      expect(streamKinds).not.toContain("closure_facts");
+      expect(streamKinds).not.toContain("review_cycle");
+      expect(streamKinds).toContain("intervention");
     });
 
-    test("dispatches normally when head is unchanged at fresh address dispatch", async () => {
+    test("direct address call emits validated receipt intrinsically when head is unchanged", async () => {
+      const stateRoot = join(tmpDir, "driverstate-direct");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
       const { runId, streamId } = landedSeed();
       const fake = createFakeShipPort([]);
       const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
 
       await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
 
       expect(firstStream(runId)?.status).toBe("dispatched");
       expect(fake.calls.some((c) => c.kind === "startShip")).toBe(true);
+      const ledger = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as { kind: string; stream: string });
+      const streamKinds = ledger
+        .filter((event) => event.stream === ledgerStreamId(streamId))
+        .map((event) => event.kind);
+      expect(streamKinds).toContain("closure_facts");
+      expect(streamKinds).toContain("review_cycle");
+    });
+
+    test("tick recovery publishes durable address provenance after post-consumption crash", async () => {
+      const stateRoot = join(tmpDir, "driverstate-consumption-crash");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+      writeFileSync(
+        findingsPath,
+        validFindingsArtifact({
+          producer: {
+            catalog_revision: "c".repeat(40),
+            generated_at: "2026-07-10T00:00:00Z",
+            harness: "codex",
+            id: "codex:reviewfindings-github",
+          },
+        }),
+      );
+      const { runId, streamId } = landedSeed();
+      const fake = createFakeShipPort([]);
+      const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      const crashStore: Store = {
+        ...store,
+        consumeReviewArtifactAndPrepareDispatch: (input) => {
+          store.consumeReviewArtifactAndPrepareDispatch(input);
+          throw new Error("simulated process exit after commit");
+        },
+      };
+
+      await expect(
+        address({ clock: () => 0, gh, ship: fake.port, store: crashStore }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
+      ).rejects.toThrow(/simulated process exit/u);
+      expect(firstStream(runId)).toMatchObject({ reviewCycles: 1, status: "dispatching" });
+      expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+
+      const driver = createDriverService({ clock: () => 1, gh, ship: fake.port, store });
+      await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+
+      const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              body: Record<string, unknown>;
+              kind: string;
+              stream: string;
+            },
+        )
+        .filter((event) => event.stream === ledgerStreamId(streamId));
+      const closure = events.filter((event) => event.kind === "closure_facts");
+      expect(closure).toHaveLength(1);
+      expect(closure[0]?.body).toMatchObject({
+        catalog_revision: "c".repeat(40),
+        review_artifact_id: "rf_test",
+        review_head_sha: HEAD_SHA,
+        review_producer: "codex:reviewfindings-github",
+      });
+      expect(events.filter((event) => event.kind === "review_cycle")).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.kind === "startShip")).toHaveLength(1);
+    });
+
+    test("tick recovery emits one stale-head intervention and does not dispatch", async () => {
+      const stateRoot = join(tmpDir, "driverstate-consumption-crash-stale");
+      process.env["WORKBENCH_STATE_DIR"] = stateRoot;
+      const { runId, streamId } = landedSeed();
+      const fake = createFakeShipPort([]);
+      const initialGh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
+      const crashStore: Store = {
+        ...store,
+        consumeReviewArtifactAndPrepareDispatch: (input) => {
+          store.consumeReviewArtifactAndPrepareDispatch(input);
+          throw new Error("simulated process exit after commit");
+        },
+      };
+
+      await expect(
+        address({ clock: () => 0, gh: initialGh, ship: fake.port, store: crashStore }, runId, {
+          decisionPath,
+          findingsPath,
+          streamId,
+        }),
+      ).rejects.toThrow(/simulated process exit/u);
+
+      const staleGh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: NEW_HEAD } });
+      const driver = createDriverService({ clock: () => 1, gh: staleGh, ship: fake.port, store });
+      const first = await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+      expect(first.status).toBe("awaiting_judgment");
+      expect(firstStream(runId)?.status).toBe("failed");
+      expect(firstStream(runId)?.errorMessage).toMatch(/stale-head/u);
+      expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
+
+      await driver.run({ driverRunId: runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
+      const events = readFileSync(join(stateRoot, ledgerRunId(runId), "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              body: Record<string, unknown>;
+              kind: string;
+              stream: string;
+            },
+        )
+        .filter((event) => event.stream === ledgerStreamId(streamId));
+      const interventions = events.filter((event) => event.kind === "intervention");
+      expect(interventions).toHaveLength(1);
+      expect(interventions[0]?.body).toMatchObject({
+        kind: "mechanism-repair",
+        reason_code: "stale-review-head-post-consumption",
+      });
+      expect(events.some((event) => event.kind === "closure_facts")).toBe(false);
+      expect(events.some((event) => event.kind === "review_cycle")).toBe(false);
+      expect(fake.calls.some((call) => call.kind === "startShip")).toBe(false);
     });
 
     test("parks stream on tick re-dispatch when head has moved (covers recovery and retry paths)", async () => {
@@ -3164,6 +4050,7 @@ batches:
       const fake = createFakeShipPort([]);
       const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh: ghInitial, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -3203,6 +4090,7 @@ batches:
       const fake = createFakeShipPort([]);
       const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh: ghInitial, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -3241,6 +4129,7 @@ batches:
       const fake = createFakeShipPort([]);
       const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -3286,6 +4175,7 @@ batches:
       ]);
       const gh = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh, ship: fake.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -3314,6 +4204,7 @@ batches:
       const fakeInitial = createFakeShipPort([]);
       const ghInitial = createFakeGhPort({ 77: { state: "OPEN", headRefOid: HEAD_SHA } });
       await address({ clock: () => 0, gh: ghInitial, ship: fakeInitial.port, store }, runId, {
+        decisionPath,
         findingsPath,
         streamId,
       });
@@ -3391,6 +4282,32 @@ batches:
         status: pending
       - spec_path: docs/tasks/b.md
         runtime: cloud
+        status: pending
+---
+`;
+}
+
+function twoRoomsStreamManifest(generatedAt: string): string {
+  return `---
+driver_version: 1
+generated_at: ${generatedAt}
+generated_by: test
+source:
+  project: ship
+  phase: rooms-pair
+repo: ship
+repo_url: https://github.com/example/ship
+batches:
+  - id: 1
+    depends_on: []
+    streams:
+      - spec_path: docs/tasks/a.md
+        branch_name: feat-a
+        runtime: rooms
+        status: pending
+      - spec_path: docs/tasks/b.md
+        branch_name: feat-b
+        runtime: rooms
         status: pending
 ---
 `;
