@@ -4,7 +4,15 @@
  * the reap policy without spawning processes.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -90,7 +98,7 @@ describe("reconcileSingleInstance", () => {
     expect(inspector.terminated).toEqual([]);
   });
 
-  test("live + fresh sibling is reaped (last-one-wins) and its entry removed", () => {
+  test("live + fresh sibling is reaped (last-one-wins), entry kept until its exit is confirmed", () => {
     seedEntry(2000, NOW - 10_000); // 10s old heartbeat → fresh
     const inspector = fakeInspector(new Set([2000]));
     const result = reconcileSingleInstance({
@@ -102,7 +110,12 @@ describe("reconcileSingleInstance", () => {
     });
     expect(result.reapedPids).toEqual([2000]);
     expect(inspector.terminated).toEqual([2000]);
-    expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(false);
+    // The entry survives the reconcile: the caller removes it only once the
+    // pid is confirmed gone. A hung sibling's heartbeat never recreates a
+    // missing entry, so deleting here would make it permanently invisible.
+    const entryPath = join(registryDirFor(dbPath), "2000.json");
+    expect(existsSync(entryPath)).toBe(true);
+    expect(result.reapedEntries).toEqual([{ pid: 2000, entryPath }]);
     expect(existsSync(result.selfEntryPath)).toBe(true);
   });
 
@@ -280,6 +293,25 @@ describe("heartbeatInstance / releaseInstance", () => {
     // Release is idempotent.
     expect(() => {
       releaseInstance(selfEntryPath);
+    }).not.toThrow();
+  });
+
+  test("entry writes are atomic: no .tmp scratch survives, and the entry always parses", () => {
+    const inspector = fakeInspector(new Set());
+    const { selfEntryPath } = reconcileSingleInstance({
+      dbPath,
+      selfPid: 1000,
+      startedAtMs: NOW,
+      nowMs: NOW,
+      inspector,
+    });
+    heartbeatInstance(selfEntryPath, NOW + 5_000);
+    // Temp-then-rename means a reader can never observe a truncated entry —
+    // a partial read classified as garbage would sweep a live server.
+    const leftovers = readdirSync(registryDirFor(dbPath)).filter((f) => f.endsWith(".tmp"));
+    expect(leftovers).toEqual([]);
+    expect(() => {
+      JSON.parse(readFileSync(selfEntryPath, "utf8"));
     }).not.toThrow();
   });
 

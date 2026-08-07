@@ -38,7 +38,7 @@
 import type { Logger } from "@ship/logger";
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 /** Registry subdirectory under the store dir; one JSON file per live server. */
@@ -135,6 +135,14 @@ export interface ReconcileResult {
   selfEntryPath: string;
   /** Pids of live sibling servers this pass terminated (last-one-wins). */
   reapedPids: number[];
+  /**
+   * Registry entries of the terminated siblings, still on disk. The caller
+   * removes each entry only once its pid is confirmed gone — deleting at
+   * terminate time made a hung sibling permanently invisible (its heartbeat
+   * never recreates a missing entry), so later launches could stack more
+   * long-lived handles against the same store.
+   */
+  reapedEntries: { pid: number; entryPath: string }[];
   /** Pids whose entries were dead/garbage and were swept away without a kill. */
   removedStalePids: number[];
 }
@@ -236,6 +244,7 @@ export function reconcileSingleInstance(opts: ReconcileOptions): ReconcileResult
   mkdirSync(dir, { recursive: true });
 
   const reapedPids: number[] = [];
+  const reapedEntries: { pid: number; entryPath: string }[] = [];
   const removedStalePids: number[] = [];
   for (const file of listEntryFiles(dir)) {
     const path = join(dir, file);
@@ -246,9 +255,11 @@ export function reconcileSingleInstance(opts: ReconcileOptions): ReconcileResult
       if (Number.isFinite(action.pid)) removedStalePids.push(action.pid);
       continue;
     }
+    // The entry stays until the caller confirms the pid is gone — see
+    // ReconcileResult.reapedEntries.
     opts.inspector.terminate(action.pid);
-    removeEntry(path);
     reapedPids.push(action.pid);
+    reapedEntries.push({ pid: action.pid, entryPath: path });
     opts.logger?.warn(
       { reapedPid: action.pid, dbPath: opts.dbPath },
       "reaped a live sibling ship mcp-server bound to the same store (single-instance, last-one-wins)",
@@ -262,7 +273,7 @@ export function reconcileSingleInstance(opts: ReconcileOptions): ReconcileResult
     heartbeatAt: new Date(opts.nowMs).toISOString(),
     dbPath: opts.dbPath,
   });
-  return { selfEntryPath, reapedPids, removedStalePids };
+  return { selfEntryPath, reapedPids, reapedEntries, removedStalePids };
 }
 
 /** Options for {@link awaitPidsGone} (all injectable for tests). */
@@ -404,7 +415,13 @@ function readEntry(path: string): InstanceEntry | undefined {
 }
 
 function writeEntry(path: string, entry: InstanceEntry): void {
-  writeFileSync(path, `${JSON.stringify(entry)}\n`, "utf8");
+  // Temp-then-rename: a bare writeFileSync truncates before it writes, so a
+  // reconciling sibling could read an empty/partial entry, classify it as
+  // garbage, and sweep a live server — after which both open the same store.
+  // The .tmp suffix keeps the scratch file out of listEntryFiles's .json scan.
+  const tmp = `${path}.${String(process.pid)}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(entry)}\n`, "utf8");
+  renameSync(tmp, path);
 }
 
 function removeEntry(path: string): void {

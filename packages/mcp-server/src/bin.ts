@@ -147,10 +147,18 @@ async function installSingleInstance(dbPath: string, logger: Logger): Promise<st
     // Wait for reaped siblings to actually exit before the store opens — a
     // just-killed WAL holder still owns the file for a beat on Windows.
     const stillAlive = await awaitPidsGone(result.reapedPids, systemProcessInspector);
+    // A reaped entry leaves the registry only once its process is confirmed
+    // gone. A hung sibling keeps its entry — its heartbeat never recreates a
+    // missing one, so deleting here would make it permanently invisible to
+    // every future reconcile while it still holds store handles.
+    const stillAlivePids = new Set(stillAlive);
+    for (const reaped of result.reapedEntries) {
+      if (!stillAlivePids.has(reaped.pid)) releaseInstance(reaped.entryPath);
+    }
     if (stillAlive.length > 0) {
       logger.warn(
         { stillAlive, dbPath },
-        "reaped sibling(s) did not exit before timeout; opening store anyway (open retry guards the race)",
+        "reaped sibling(s) did not exit before timeout; opening store anyway (open retry guards the race; their registry entries stay visible for the next reconcile)",
       );
     }
     startHeartbeat(result.selfEntryPath);
