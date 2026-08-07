@@ -54,6 +54,7 @@ interface AddressCorpusCase {
 interface ScenarioContext {
   dir: string;
   findingsPath: string;
+  decisionPath: string;
   runId: string;
   streamId: string;
   store: Store;
@@ -158,6 +159,7 @@ function seedScenario(scenario: AddressCorpusCase): ScenarioContext {
   return {
     dir,
     findingsPath,
+    decisionPath: join(repoRoot, "decision.json"),
     gh: createFakeGhPort({
       42: { headRefOid: scenario.live_head, state: "OPEN" },
     }),
@@ -166,6 +168,61 @@ function seedScenario(scenario: AddressCorpusCase): ScenarioContext {
     store,
     streamId,
   };
+}
+
+/**
+ * Mirror the scenario's findings artifact into an authorizing ReviewDecisionV1.
+ * This corpus pins the FINDINGS contract; the decision is scaffolding and must
+ * always authorize whenever the artifact itself is well-formed — every
+ * decision-independent refusal (malformed artifact, stale head, exhausted
+ * cycle) fires before the decision file is read. An unparseable artifact gets
+ * an empty placeholder for the same reason: it is never read.
+ */
+function decisionFor(artifactJson: string, cycle: number): string {
+  let artifact: {
+    subject?: { repo?: unknown; number?: unknown; head_sha?: unknown };
+    findings?: { id?: unknown }[];
+  };
+  try {
+    artifact = JSON.parse(artifactJson) as typeof artifact;
+  } catch {
+    return "{}";
+  }
+  const ids = (Array.isArray(artifact.findings) ? artifact.findings : [])
+    .map((finding) => (typeof finding.id === "string" ? finding.id : ""))
+    .filter((id) => id !== "");
+  return JSON.stringify({
+    schema_version: 1,
+    generated_at: "2026-07-29T00:00:00Z",
+    // Only the keys the decision schema knows: the artifact subject also
+    // carries e.g. `type`, and the parser rejects unrecognized keys.
+    subject: {
+      repo: artifact.subject?.repo,
+      number: artifact.subject?.number,
+      head_sha: artifact.subject?.head_sha,
+    },
+    plan_id: `rp_${"1".repeat(32)}`,
+    input_digest: `sha256:${"2".repeat(64)}`,
+    policy: { id: "conformance", digest: `sha256:${"a".repeat(64)}` },
+    route_disposition: "tier_routed",
+    tier: "T1",
+    tier_reasons: ["conformance"],
+    cycle,
+    continuation_weight: 2 ** (cycle - 1),
+    cumulative_weight: 2 ** cycle - 1,
+    action: "address",
+    reason_codes: ["accepted_findings_require_address"],
+    next_reviewers: ["codex"],
+    findings: ids.map((id) => ({
+      id,
+      severity: "high",
+      reviewers: ["codex"],
+      disposition: "fixed",
+      changed: false,
+      reviewer_closed: false,
+      debt: false,
+    })),
+  });
 }
 
 function seedConsumedArtifacts(context: ScenarioContext, scenario: AddressCorpusCase): void {
@@ -188,6 +245,7 @@ async function executeCalls(
   scenario: AddressCorpusCase,
 ): Promise<{ accepted: boolean; refusal: string }> {
   let accepted = false;
+  let successes = 0;
   let refusal = "";
   const driver = createDriverService({
     gh: context.gh,
@@ -200,6 +258,19 @@ async function executeCalls(
       continue;
     }
     try {
+      // A fresh authorizing decision per call: the address cycle advances with
+      // every consumed artifact — the scenario's pre-seeded consumptions and
+      // each accepted call so far — and the decision must name the cycle it
+      // authorizes. The duplicate/preconsumed scenarios must refuse in the
+      // consume transaction, not on a stale decision cycle.
+      writeFileSync(
+        context.decisionPath,
+        decisionFor(
+          scenario.artifact_json,
+          scenario.cycle + scenario.consumed_ids.length + successes,
+        ),
+        "utf8",
+      );
       await address(
         {
           clock: () => 0,
@@ -209,12 +280,14 @@ async function executeCalls(
         },
         context.runId,
         {
+          decisionPath: context.decisionPath,
           findingsPath: context.findingsPath,
           maxCycles: scenario.max_cycles,
           streamId: context.streamId,
         },
       );
       accepted = true;
+      successes += 1;
       await driver.run({ driverRunId: context.runId }, { maxWaitMs: 0, pollIntervalMs: 1 });
     } catch (error: unknown) {
       refusal = commonRefusal(error);
