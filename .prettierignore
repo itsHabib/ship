@@ -9,6 +9,9 @@ spike
 pnpm-lock.yaml
 *.tsbuildinfo
 
+# Vendored exact-byte cross-repository conformance corpus
+packages/driver/testdata/reviewfindings-address-v1/
+
 # Design docs — keep author's markdown style
 *.md
 docs/**/*.md
