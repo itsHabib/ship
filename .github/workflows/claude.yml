@@ -144,12 +144,17 @@ jobs:
           # match, and they are supposed to not match: a missed attestation
           # leaves the panel incomplete and gate parks for judgment, which is
           # merely today's behaviour, while a false one credits a review that
-          # never happened. The request line must END at the verb (modulo a
-          # few no-op tails), because `@claude review permissions` and `@claude
+          # never happened. The request must END at the verb (modulo a few
+          # no-op tails), because `@claude review permissions` and `@claude
           # review the failing CI logs` start the same way and are not PR code
-          # reviews. Widen this pattern only toward forms that cannot also
-          # match such a request.
-          if ! grep -Eqi '^[[:space:]]*@claude[[:space:]]+(please[[:space:]]+)?review([[:space:]]+(this([[:space:]]+pr)?|the[[:space:]]+pr))?[[:space:]]*[.!]?[[:space:]]*$' <<<"${COMMENT_BODY}"; then
+          # reviews. The WHOLE body is validated as one string — bash =~, not
+          # grep, whose ^/$ anchor per line — so a `@claude review` first line
+          # followed by countermanding instructions does not attest either.
+          # Widen this pattern only toward forms that cannot also match such
+          # a request.
+          shopt -s nocasematch
+          re='^[[:space:]]*@claude[[:space:]]+(please[[:space:]]+)?review([[:space:]]+(this([[:space:]]+pr)?|the[[:space:]]+pr))?[[:space:]]*[.!]?[[:space:]]*$'
+          if [[ ! "${COMMENT_BODY}" =~ $re ]]; then
             echo "not a review request — no attestation"
             exit 0
           fi
