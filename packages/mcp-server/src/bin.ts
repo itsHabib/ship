@@ -218,11 +218,22 @@ function installLifecycleShutdown(
   };
   const shutdown = (code: number, reason: string): void => {
     if (closing) {
-      // A second signal while draining is the operator's escape hatch: the
-      // drain is unbounded (an in-flight local run must not be cut mid-write),
-      // so a genuinely wedged drain is broken out of by signalling again.
-      logger.warn({ reason }, "second shutdown signal during drain; exiting immediately");
-      process.exit(code);
+      // Only a human's repeated Ctrl+C forces an exit mid-drain. SIGTERM is
+      // what a NEW server's reaper sends when this server's client has died
+      // while a local run is still finalizing — honoring it would kill the
+      // exact run the unbounded drain exists to preserve. Ignoring it is
+      // safe: the reaper's awaitPidsGone times out, keeps this entry visible
+      // (heartbeat still refreshing), and the next reconcile retries after
+      // the drain has closed the store and exited.
+      if (reason === "SIGINT") {
+        logger.warn({ reason }, "second SIGINT during drain; exiting immediately");
+        process.exit(code);
+      }
+      logger.warn(
+        { reason },
+        "shutdown signal during active drain ignored (likely a sibling's reaper); finishing the drain",
+      );
+      return;
     }
     closing = true;
     logger.info({ reason }, "ship mcp-server shutting down");
