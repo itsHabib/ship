@@ -8,12 +8,16 @@
  * holding one `state.db` open. Unbounded long-lived writers on a single WAL
  * file is what rotted the b-tree twice, with total data loss.
  *
- * The design already treats the mcp-server as a *single* long-lived,
- * dispatch-capable process whose boot adopts a prior server's orphaned runs
- * (see `docs/.../multi-process-store-guard.md` — `resumeOrphans`). This guard
- * completes that handover: a fresh server reaps the prior server(s) bound to
- * the SAME store, then registers itself. Short-lived CLI processes never
- * register here, so the intended CLI+server concurrency is untouched.
+ * The per-client process model (ship-v1 spec) supports concurrent sessions,
+ * each with its own server on the shared store — a healthy sibling with a
+ * live client is a peer to coexist with, never a target. What this guard
+ * removes is exactly the accumulation case: a server whose CLIENT died
+ * without tearing it down. A fresh server reaps only demonstrably orphaned
+ * siblings bound to the SAME store (re-parented to init/launchd on POSIX, or
+ * a dead recorded parent on Windows), then registers itself; boot adopts the
+ * reaped server's orphaned runs (see `docs/.../multi-process-store-guard.md`
+ * — `resumeOrphans`). Short-lived CLI processes never register here, so the
+ * intended CLI+server concurrency is untouched.
  *
  * PID-reuse safety is a two-stage guard. A heartbeat the running server
  * refreshes on a timer is the cheap first filter — a long-dead entry reads as
@@ -38,8 +42,16 @@
 import type { Logger } from "@ship/logger";
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve as resolvePath, sep } from "node:path";
 
 /** Registry subdirectory under the store dir; one JSON file per live server. */
 const REGISTRY_DIRNAME = "mcp-server-instances";
@@ -111,6 +123,13 @@ export interface ProcessInspector {
    * before killing it; `undefined` fails safe (the caller does not kill).
    */
   commandLine: (pid: number) => string | undefined;
+  /**
+   * The pid of `pid`'s CURRENT parent, or `undefined` when it can't be
+   * determined. The orphan test: a server whose client died is re-parented to
+   * init/launchd on POSIX (ppid 1) or keeps a dead recorded parent on Windows.
+   * `undefined` fails safe (the caller treats the sibling as healthy).
+   */
+  parentPid: (pid: number) => number | undefined;
 }
 
 /** Options for {@link reconcileSingleInstance}. */
@@ -133,7 +152,7 @@ export interface ReconcileOptions {
 export interface ReconcileResult {
   /** Absolute path of this process's own registry entry. */
   selfEntryPath: string;
-  /** Pids of live sibling servers this pass terminated (last-one-wins). */
+  /** Pids of demonstrably orphaned sibling servers this pass terminated. */
   reapedPids: number[];
   /**
    * Registry entries of the terminated siblings, still on disk. The caller
@@ -150,6 +169,25 @@ export interface ReconcileResult {
 /** Registry directory for the store that `dbPath` lives in. */
 export function registryDirFor(dbPath: string): string {
   return join(dirname(dbPath), REGISTRY_DIRNAME);
+}
+
+/**
+ * One canonical identity per physical store. Raw string comparison lets two
+ * aliases of the same SQLite file — `/x/state.db` vs `/x/./state.db`, a
+ * symlinked directory, mixed case on Windows — each believe they are alone
+ * and open the same database, bypassing the guard entirely. The directory is
+ * realpathed (the file itself may not exist yet on first boot); Windows
+ * case-folds.
+ */
+export function canonicalStorePath(dbPath: string): string {
+  const resolved = resolvePath(dbPath);
+  let canonical = resolved;
+  try {
+    canonical = realpathSync(dirname(resolved)) + sep + basename(resolved);
+  } catch {
+    // Directory not created yet — the resolved absolute path is the identity.
+  }
+  return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
 /**
@@ -177,7 +215,48 @@ export const systemProcessInspector: ProcessInspector = {
   commandLine(pid: number): string | undefined {
     return readCommandLine(pid);
   },
+  parentPid(pid: number): number | undefined {
+    return readParentPid(pid);
+  },
 };
+
+/**
+ * Best-effort parent pid, per platform, same trust posture as
+ * {@link readCommandLine}: fixed absolute binaries, any failure returns
+ * `undefined` (which the reap policy reads as "cannot prove orphanhood → do
+ * not kill").
+ */
+function readParentPid(pid: number): number | undefined {
+  try {
+    if (process.platform === "win32") {
+      const powershell = join(
+        process.env["SystemRoot"] ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const out = runForCmdline(powershell, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${String(pid)}").ParentProcessId`,
+      ]);
+      return parsePid(out);
+    }
+    // linux + darwin: ps lives at a fixed path and reports the CURRENT parent
+    // (a reparented orphan shows 1, not its dead original parent).
+    return parsePid(runForCmdline("/bin/ps", ["-p", String(pid), "-o", "ppid="]));
+  } catch {
+    return undefined;
+  }
+}
+
+function parsePid(out: string | undefined): number | undefined {
+  if (out === undefined) return undefined;
+  const n = Number.parseInt(out.trim(), 10);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
 
 /**
  * Best-effort process command line, per platform. Only runs for an actual reap
@@ -240,7 +319,8 @@ function looksLikeShipServer(commandLine: string): boolean {
  */
 export function reconcileSingleInstance(opts: ReconcileOptions): ReconcileResult {
   const freshnessMs = opts.freshnessMs ?? INSTANCE_FRESHNESS_MS;
-  const dir = registryDirFor(opts.dbPath);
+  const dbPath = canonicalStorePath(opts.dbPath);
+  const dir = registryDirFor(dbPath);
   mkdirSync(dir, { recursive: true });
 
   const reapedPids: number[] = [];
@@ -261,8 +341,8 @@ export function reconcileSingleInstance(opts: ReconcileOptions): ReconcileResult
     reapedPids.push(action.pid);
     reapedEntries.push({ pid: action.pid, entryPath: path });
     opts.logger?.warn(
-      { reapedPid: action.pid, dbPath: opts.dbPath },
-      "reaped a live sibling ship mcp-server bound to the same store (single-instance, last-one-wins)",
+      { reapedPid: action.pid, dbPath },
+      "reaped an orphaned ship mcp-server bound to the same store (client gone; adopting its runs)",
     );
   }
 
@@ -271,7 +351,7 @@ export function reconcileSingleInstance(opts: ReconcileOptions): ReconcileResult
     pid: opts.selfPid,
     startedAt: new Date(opts.startedAtMs).toISOString(),
     heartbeatAt: new Date(opts.nowMs).toISOString(),
-    dbPath: opts.dbPath,
+    dbPath,
   });
   return { selfEntryPath, reapedPids, reapedEntries, removedStalePids };
 }
@@ -345,7 +425,11 @@ function classifyEntry(path: string, opts: ReconcileOptions, freshnessMs: number
   // The registry dir is keyed by the store *directory*, so two distinct
   // SHIP_DB_PATH files in one dir share it. An entry for a different db belongs
   // to a separate store's server — never our sibling; leave it entirely alone.
-  if (entry.dbPath !== "" && entry.dbPath !== opts.dbPath) return { kind: "skip" };
+  // Both sides are canonicalized so two aliases of one physical file compare
+  // equal.
+  if (entry.dbPath !== "" && canonicalStorePath(entry.dbPath) !== canonicalStorePath(opts.dbPath)) {
+    return { kind: "skip" };
+  }
   if (!opts.inspector.isAlive(entry.pid)) return { kind: "remove", pid: entry.pid };
 
   const heartbeatMs = Date.parse(entry.heartbeatAt);
@@ -361,16 +445,22 @@ function classifyEntry(path: string, opts: ReconcileOptions, freshnessMs: number
 }
 
 /**
- * Fresh + alive is only a *candidate*: a crashed sibling leaves a fresh entry
- * behind too. Confirm the live PID is actually a ship mcp-server before killing
- * it — a reused PID must never be reaped. Unconfirmable identity fails safe,
- * which means skipping: neither killing the process nor deleting its entry.
+ * Fresh + alive is only a *candidate*: identity and orphanhood both have to be
+ * proven before a kill. Two gates, both fail-safe to skip:
  *
- * Deleting it would be the worse error. `reconcileSingleInstance` opens the
- * store no matter what this returns, so a `remove` on an unidentified PID drops
- * the only record of a sibling that is still running and still holding the WAL,
- * and the guard is bypassed silently. Keeping the entry costs one stale file in
- * the genuine PID-reuse case; removing it costs two writers on one database.
+ * Identity — the live PID must actually be a ship mcp-server; a reused PID
+ * must never be reaped. Deleting an unidentified entry would be the worse
+ * error: `reconcileSingleInstance` opens the store no matter what this
+ * returns, so a `remove` drops the only record of a sibling still holding the
+ * WAL and the guard is bypassed silently.
+ *
+ * Orphanhood — a healthy sibling with a live client is a supported peer, not
+ * a target: the per-client process model (ship-v1 spec §Concurrency) allows
+ * two concurrent sessions on one store, and killing the first session's
+ * server severs its MCP connection mid-run. Only a demonstrably orphaned
+ * owner is reaped: its client is gone, so it has been re-parented to
+ * init/launchd (POSIX, ppid ≤ 1) or its recorded parent is dead (Windows —
+ * no re-parenting). An unreadable parent fails safe: coexist, don't kill.
  */
 function confirmReapTarget(pid: number, opts: ReconcileOptions): EntryAction {
   const cmdline = opts.inspector.commandLine(pid);
@@ -385,6 +475,21 @@ function confirmReapTarget(pid: number, opts: ReconcileOptions): EntryAction {
     opts.logger?.warn(
       { pid, cmdline },
       "could not identify the reap target as a ship mcp-server; not reaping and keeping its entry (fail-safe against an unrecognized launch path)",
+    );
+    return { kind: "skip" };
+  }
+  const ppid = opts.inspector.parentPid(pid);
+  if (ppid === undefined) {
+    opts.logger?.warn(
+      { pid },
+      "could not read the sibling's parent; not reaping (cannot prove it is orphaned)",
+    );
+    return { kind: "skip" };
+  }
+  if (ppid > 1 && opts.inspector.isAlive(ppid)) {
+    opts.logger?.info(
+      { pid, ppid },
+      "live ship mcp-server sibling has a live client; coexisting (per-client process model)",
     );
     return { kind: "skip" };
   }

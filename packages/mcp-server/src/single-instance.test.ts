@@ -21,6 +21,7 @@ import type { ProcessInspector } from "./single-instance.js";
 
 import {
   awaitPidsGone,
+  canonicalStorePath,
   heartbeatInstance,
   INSTANCE_FRESHNESS_MS,
   reconcileSingleInstance,
@@ -48,6 +49,7 @@ const SHIP_CMDLINE = "node C:/Users/x/pers/ship/packages/mcp-server/src/bin.ts";
 function fakeInspector(
   alivePids: Set<number>,
   cmdlines?: Map<number, string | undefined>,
+  parents?: Map<number, number | undefined>,
 ): ProcessInspector & { terminated: number[] } {
   const terminated: number[] = [];
   return {
@@ -60,6 +62,9 @@ function fakeInspector(
     // Default: every live pid looks like a ship server, so the existing reap
     // cases still reap. Per-pid overrides drive the identity-gate tests.
     commandLine: (pid) => (cmdlines?.has(pid) ? cmdlines.get(pid) : SHIP_CMDLINE),
+    // Default: every sibling reads as ORPHANED (re-parented to init), so reap
+    // cases reap. Per-pid overrides drive the healthy-peer tests.
+    parentPid: (pid) => (parents?.has(pid) ? parents.get(pid) : 1),
   };
 }
 
@@ -98,8 +103,61 @@ describe("reconcileSingleInstance", () => {
     expect(inspector.terminated).toEqual([]);
   });
 
-  test("live + fresh sibling is reaped (last-one-wins), entry kept until its exit is confirmed", () => {
-    seedEntry(2000, NOW - 10_000); // 10s old heartbeat → fresh
+  test("two aliases of one store share a canonical identity", () => {
+    const cut = dbPath.lastIndexOf("/");
+    const alias = `${dbPath.slice(0, cut)}/./${dbPath.slice(cut + 1)}`; // /x/./state.db
+    expect(canonicalStorePath(alias)).toBe(canonicalStorePath(dbPath));
+  });
+
+  test("a healthy sibling with a live client is a peer: coexist, never reap", () => {
+    seedEntry(2000, NOW - 10_000); // fresh heartbeat
+    const alive = new Set([2000, 500]); // 500 = the sibling's live client
+    const inspector = fakeInspector(alive, undefined, new Map([[2000, 500]]));
+    const result = reconcileSingleInstance({
+      dbPath,
+      selfPid: 1000,
+      startedAtMs: NOW,
+      nowMs: NOW,
+      inspector,
+    });
+    expect(result.reapedPids).toEqual([]);
+    expect(inspector.terminated).toEqual([]);
+    expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(true);
+    expect(existsSync(result.selfEntryPath)).toBe(true);
+  });
+
+  test("an unreadable parent fails safe: coexist, never reap", () => {
+    seedEntry(2000, NOW - 10_000);
+    const inspector = fakeInspector(new Set([2000]), undefined, new Map([[2000, undefined]]));
+    const result = reconcileSingleInstance({
+      dbPath,
+      selfPid: 1000,
+      startedAtMs: NOW,
+      nowMs: NOW,
+      inspector,
+    });
+    expect(result.reapedPids).toEqual([]);
+    expect(inspector.terminated).toEqual([]);
+  });
+
+  test("an orphaned sibling (dead recorded parent) is reaped even without re-parenting", () => {
+    // Windows shape: no re-parenting to pid 1 — the recorded parent is simply
+    // dead. Parent 600 is NOT in the alive set.
+    seedEntry(2000, NOW - 10_000);
+    const inspector = fakeInspector(new Set([2000]), undefined, new Map([[2000, 600]]));
+    const result = reconcileSingleInstance({
+      dbPath,
+      selfPid: 1000,
+      startedAtMs: NOW,
+      nowMs: NOW,
+      inspector,
+    });
+    expect(result.reapedPids).toEqual([2000]);
+    expect(inspector.terminated).toEqual([2000]);
+  });
+
+  test("an orphaned sibling is reaped, entry kept until its exit is confirmed", () => {
+    seedEntry(2000, NOW - 10_000); // 10s old heartbeat → fresh; default parent = init (orphan)
     const inspector = fakeInspector(new Set([2000]));
     const result = reconcileSingleInstance({
       dbPath,
@@ -113,7 +171,10 @@ describe("reconcileSingleInstance", () => {
     // The entry survives the reconcile: the caller removes it only once the
     // pid is confirmed gone. A hung sibling's heartbeat never recreates a
     // missing entry, so deleting here would make it permanently invisible.
-    const entryPath = join(registryDirFor(dbPath), "2000.json");
+    // reconcile derives the registry from the CANONICAL store path (on macOS
+    // the tmpdir crosses the /var → /private/var symlink), so the reported
+    // entryPath is the canonical spelling.
+    const entryPath = join(registryDirFor(canonicalStorePath(dbPath)), "2000.json");
     expect(existsSync(entryPath)).toBe(true);
     expect(result.reapedEntries).toEqual([{ pid: 2000, entryPath }]);
     expect(existsSync(result.selfEntryPath)).toBe(true);

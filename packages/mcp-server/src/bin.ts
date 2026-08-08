@@ -184,9 +184,6 @@ function startHeartbeat(selfEntryPath: string): void {
   timer.unref();
 }
 
-/** Bound on how long shutdown waits for in-flight `ship` starts to settle. */
-const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
-
 /**
  * Wire graceful shutdown to transport close + SIGTERM/SIGINT. Idempotent (a
  * disconnect and a signal can both fire): drain in-flight `ship` starts (a
@@ -207,13 +204,26 @@ function installLifecycleShutdown(
 ): void {
   let closing = false;
   const finishShutdown = async (code: number): Promise<void> => {
-    await drainQuietly(shipFactory, logger);
-    releaseSelf(selfEntryPath);
-    closeStoreQuietly(dbPath, logger);
+    // The SQLite close/checkpoint is the one step that must not be skipped:
+    // registry release is best-effort cleanup, and a throw from it (unwritable
+    // registry dir, a Windows sharing error) must never leave the WAL
+    // unclosed — that is the exact writer-leak this guard exists to prevent.
+    try {
+      await drainQuietly(shipFactory, logger);
+      releaseSelf(selfEntryPath);
+    } finally {
+      closeStoreQuietly(dbPath, logger);
+    }
     process.exit(code);
   };
   const shutdown = (code: number, reason: string): void => {
-    if (closing) return;
+    if (closing) {
+      // A second signal while draining is the operator's escape hatch: the
+      // drain is unbounded (an in-flight local run must not be cut mid-write),
+      // so a genuinely wedged drain is broken out of by signalling again.
+      logger.warn({ reason }, "second shutdown signal during drain; exiting immediately");
+      process.exit(code);
+    }
     closing = true;
     logger.info({ reason }, "ship mcp-server shutting down");
     finishShutdown(code).catch((err: unknown) => {
@@ -225,35 +235,32 @@ function installLifecycleShutdown(
   lowLevel.onclose = () => {
     shutdown(0, "transport closed");
   };
-  process.once("SIGTERM", () => {
+  process.on("SIGTERM", () => {
     shutdown(0, "SIGTERM");
   });
-  process.once("SIGINT", () => {
+  process.on("SIGINT", () => {
     shutdown(0, "SIGINT");
   });
 }
 
 /**
  * Await `drainBackground()` (in-flight `ship` starts finishing their
- * persistence), bounded by {@link SHUTDOWN_DRAIN_TIMEOUT_MS} so a wedged
- * background task can't hang shutdown. Never throws.
+ * persistence) to COMPLETION. A timeout here was the wrong bound: a normal
+ * local continuation can legitimately run past any fixed cap, and cutting it
+ * kills the workflow with the process — the run cannot be resumed and its row
+ * strands at `running`. A genuinely wedged drain is escaped by a second
+ * shutdown signal (see installLifecycleShutdown), which is an operator
+ * decision rather than a silent 10-second guess. Never throws.
  */
 async function drainQuietly(
   shipFactory: ReturnType<typeof createDefaultShipService>,
   logger: Logger,
 ): Promise<void> {
   try {
-    await Promise.race([shipFactory().drainBackground(), sleep(SHUTDOWN_DRAIN_TIMEOUT_MS)]);
+    await shipFactory().drainBackground();
   } catch (err: unknown) {
     logger.warn({ err: errorText(err) }, "drainBackground during shutdown failed; closing anyway");
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref();
-  });
 }
 
 function releaseSelf(selfEntryPath: string | undefined): void {
