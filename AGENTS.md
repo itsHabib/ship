@@ -91,7 +91,10 @@ verified-addressed-but-unretracted threads and recorded deferrals (a
 FOLLOWUPS.md at the repo root). Reviewers generate second-order findings
 on every new diff indefinitely, so "zero open findings" is a
 non-terminating exit condition; the judge's residual acceptance is the
-terminating one.
+terminating one. The round cap caps panel re-triggers, not fixes: a
+verified P1-or-higher surfaced by the final run still gets fixed, then
+goes to the judge as verified-addressed-but-unretracted rather than
+through a fourth panel round.
 
 Two fix-rounds plus the initial panel run is three review cycles, which
 is why review caps default to `max_cycles: 3`; `max_requests` caps total
