@@ -147,6 +147,24 @@ A phase task doc declares the weighted budget in a **Scope** section near the to
 
 The phase doc's "Implementation plan" step list is the natural PR boundary. When there are more than ~3-4 distinct steps, treat each step (or small group) as its own PR — not as substeps inside one PR. Reviewers flag a wrong-shape budget at design time, not after a 1500-LOC PR is open.
 
+## Review-cycle discipline
+
+Per PR, at most **two fix-rounds** against the review panel: fix every
+verified P1 and anything touching authorization invariants, push once,
+re-trigger the panel once — then one more round at the same bar. After
+round two, STOP fixing. Residual P2s and nits go to the judge with a
+written why — a judgment can accept verified-addressed-but-unretracted
+threads and recorded deferrals (FOLLOWUPS.md pattern). Reviewers generate
+second-order findings on every new diff indefinitely, so "zero open
+findings" is a non-terminating exit condition; the judge's residual
+acceptance is the terminating one.
+
+Grant `max-cycles` caps are the stop signal, not friction — never respond
+to a ceiling park by asking for a wider grant. A blown cap means the
+process looped; the fix is fewer rounds, not more budget. Behavioral
+claims that reviewers keep re-litigating belong in e2e tests asserted
+every CI run, not in review rounds.
+
 <!-- BEGIN eng-philo (managed by /eng-philo — re-run to refresh; hand-edits inside this block will be overwritten) -->
 ## Engineering principles
 

@@ -8,6 +8,8 @@
       { "name": "copilot", "trigger": "reviewer-request" }
     ],
     "require": ["codex", "claude", "cursor"],
-    "settle_minutes": 15
+    "settle_minutes": 15,
+    "max_cycles": 3,
+    "max_requests": 5
   }
 }
