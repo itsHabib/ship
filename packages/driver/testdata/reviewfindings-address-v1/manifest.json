@@ -1,0 +1,18 @@
+{
+  "version": "reviewfindings-address-conformance-v1",
+  "digest_rule": "sha256(sorted file + ':' + sha256(file) + '\\n')",
+  "cases": [
+    {"file": "accept.json", "sha256": "83d6ca1895cead15efd6e5b8077b060535df1170a2d0f71a376445750ec518db"},
+    {"file": "cycle-exhausted.json", "sha256": "d9cb1a6774eacf79d243b0627d7693d7f356f1ff333f8faab806ab136d4f6362"},
+    {"file": "duplicate.json", "sha256": "9128244830850bd53363df0f4340ce3a2046937d3a574fd158d79015e6942014"},
+    {"file": "empty-findings.json", "sha256": "2e259c51f67a2337b142bc0ab26d4724515302d4a4c7359703024ac81be07724"},
+    {"file": "malformed.json", "sha256": "9cb428c2a41601ad2158a89d25355c241fa5cc60ed05c7b432b32f6320a80b04"},
+    {"file": "preconsumed-artifact-id.json", "sha256": "a70f31f781add2ba6e18d79aa8f5da694f2f6bf8cff0b442c3480e633aa976e7"},
+    {"file": "preconsumed-canonical-digest.json", "sha256": "13e2ad7e7bad579c10d45a96b4c7fd697b8aef0abb3103209cbece3f6e04f01d"},
+    {"file": "source-not-completed.json", "sha256": "9301f3cbeb2a2b2c04f531d2a28b486e8478a4ec272247bb30b509933bd480fd"},
+    {"file": "stale-head.json", "sha256": "b853dfd9a50ba49fff89d03f9e088e3b3ca6ee4dea3666395f69862853a564b1"},
+    {"file": "unknown-major.json", "sha256": "4083e276e89cac792d43f26e2510a02fb6d754bb6725a9901c4da6ab9cfa808b"},
+    {"file": "unsourced-findings.json", "sha256": "a9d26367b07007a2a9c6a47ac630ede45052b4e2b4a18f4b6ffc784c9eb03c1e"}
+  ],
+  "corpus_sha256": "1bcca413f8d40abfffd865e5108bfa607d0ba8f87353f71594866b309f974593"
+}

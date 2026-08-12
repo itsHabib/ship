@@ -1,0 +1,13 @@
+{
+  "name": "malformed",
+  "artifact_json": "{\"schema_version\":1,\"artifact_id\":\"rf_malformed\"}\n",
+  "live_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "cycle": 1,
+  "max_cycles": 3,
+  "consumed_ids": [],
+  "calls": ["accept"],
+  "expected_refusal": "malformed-artifact",
+  "projection": {"accepted": false, "consumed": false, "at_most_once": true},
+  "workbench": {"work_status": "", "claim_count": 0},
+  "ship": {"provider_call_count": 0}
+}
