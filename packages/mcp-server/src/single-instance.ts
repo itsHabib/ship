@@ -263,7 +263,7 @@ function readProcessIdentity(pid: number): string | undefined {
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        `(Get-CimInstance Win32_Process -Filter "ProcessId=${String(pid)}").CreationDate.ToUniversalTime().Ticks`,
+        `(Get-Process -Id ${String(pid)}).StartTime.ToUniversalTime().Ticks`,
       ]);
     }
     // macOS / other POSIX: lstart is stable for the process lifetime.
