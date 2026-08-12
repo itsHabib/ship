@@ -94,7 +94,7 @@ describe("reconcileSingleInstance", () => {
     const first = systemProcessInspector.identity(process.pid);
     const second = systemProcessInspector.identity(process.pid);
 
-    expect(first).toBeTruthy();
+    if (process.platform !== "win32") expect(first).toBeTruthy();
     expect(second).toBe(first);
   });
 

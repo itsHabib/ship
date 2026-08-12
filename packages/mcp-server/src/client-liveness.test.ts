@@ -21,7 +21,7 @@ describe("startClientLivenessWatch", () => {
     vi.advanceTimersByTime(500);
 
     expect(onClientGone).not.toHaveBeenCalled();
-    clearInterval(timer);
+    timer.stop();
   });
 
   test("requests graceful shutdown exactly once when the original client dies", () => {
@@ -41,7 +41,7 @@ describe("startClientLivenessWatch", () => {
     vi.advanceTimersByTime(500);
 
     expect(onClientGone).toHaveBeenCalledTimes(1);
-    clearInterval(timer);
+    timer.stop();
   });
 
   test("detects PID reuse even while that PID remains alive", () => {
@@ -60,6 +60,22 @@ describe("startClientLivenessWatch", () => {
     vi.advanceTimersByTime(100);
 
     expect(onClientGone).toHaveBeenCalledTimes(1);
-    clearInterval(timer);
+    timer.stop();
+  });
+
+  test("prefers a stable OS process-exit watch when available", () => {
+    const onClientGone = vi.fn();
+    const stop = vi.fn();
+    const watchExit = vi.fn(() => stop);
+    const watch = startClientLivenessWatch(
+      42,
+      undefined,
+      { identity: () => undefined, isAlive: () => true, watchExit },
+      onClientGone,
+    );
+
+    expect(watchExit).toHaveBeenCalledWith(42, onClientGone);
+    watch.stop();
+    expect(stop).toHaveBeenCalledOnce();
   });
 });

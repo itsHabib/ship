@@ -15,6 +15,10 @@ import type { ProcessInspector } from "./single-instance.js";
 /** Polling cadence for the original client process. */
 export const CLIENT_LIVENESS_POLL_MS = 5_000;
 
+export interface ClientLivenessWatch {
+  stop: () => void;
+}
+
 /**
  * Start watching `clientPid`. The callback fires at most once, after the
  * original client is no longer alive. The unref'ed timer never keeps an
@@ -23,10 +27,13 @@ export const CLIENT_LIVENESS_POLL_MS = 5_000;
 export function startClientLivenessWatch(
   clientPid: number,
   clientIdentity: string | undefined,
-  inspector: Pick<ProcessInspector, "identity" | "isAlive">,
+  inspector: Pick<ProcessInspector, "identity" | "isAlive" | "watchExit">,
   onClientGone: () => void,
   intervalMs = CLIENT_LIVENESS_POLL_MS,
-): NodeJS.Timeout {
+): ClientLivenessWatch {
+  if (inspector.watchExit !== undefined) {
+    return { stop: inspector.watchExit(clientPid, onClientGone) };
+  }
   let notified = false;
   const timer = setInterval(() => {
     if (notified) return;
@@ -42,5 +49,9 @@ export function startClientLivenessWatch(
     onClientGone();
   }, intervalMs);
   timer.unref();
-  return timer;
+  return {
+    stop: () => {
+      clearInterval(timer);
+    },
+  };
 }

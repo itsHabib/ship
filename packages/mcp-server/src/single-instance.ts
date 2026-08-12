@@ -41,7 +41,7 @@
 
 import type { Logger } from "@ship/logger";
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   mkdirSync,
   readdirSync,
@@ -118,6 +118,8 @@ export interface ProcessInspector {
   isAlive: (pid: number) => boolean;
   /** Stable process-birth identity, or undefined when the OS cannot provide it. */
   identity: (pid: number) => string | undefined;
+  /** Stable OS wait on this process lifetime; Windows avoids PID polling. */
+  watchExit?: (pid: number, onExit: () => void) => () => void;
   /** Ask `pid` to terminate (SIGTERM → graceful on POSIX; hard on Windows). */
   terminate: (pid: number) => void;
   /**
@@ -231,7 +233,47 @@ export const systemProcessInspector: ProcessInspector = {
   parentPid(pid: number): number | undefined {
     return readParentPid(pid);
   },
+  ...(process.platform === "win32" ? { watchExit: watchWindowsProcessExit } : {}),
 };
+
+/**
+ * Hold a Windows Process object for the original client lifetime. Unlike
+ * existence polling, WaitForExit stays attached to that process if its PID is
+ * later reused. The returned stop function tears down the helper on normal
+ * server shutdown.
+ */
+function watchWindowsProcessExit(pid: number, onExit: () => void): () => void {
+  const powershell = join(
+    process.env["SystemRoot"] ?? "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const child = spawn(
+    powershell,
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$client = Get-Process -Id ${String(pid)} -ErrorAction Stop; $client.WaitForExit()`,
+    ],
+    { stdio: "ignore", windowsHide: true },
+  );
+  let stopped = false;
+  child.once("exit", (code) => {
+    if (stopped) return;
+    // A successful wait proves the captured process exited. If PowerShell
+    // could not capture it because it was already gone, the native existence
+    // check proves the same fact. Other helper failures fail safe and leave
+    // transport close as the lifecycle signal.
+    if (code === 0 || !systemProcessInspector.isAlive(pid)) onExit();
+  });
+  return () => {
+    stopped = true;
+    child.kill();
+  };
+}
 
 /**
  * Stable identity for one lifetime of `pid`. This closes the existence-only
@@ -251,21 +293,7 @@ function readProcessIdentity(pid: number): string | undefined {
         .split(/\s+/);
       return fieldsFromState[19];
     }
-    if (process.platform === "win32") {
-      const powershell = join(
-        process.env["SystemRoot"] ?? "C:\\Windows",
-        "System32",
-        "WindowsPowerShell",
-        "v1.0",
-        "powershell.exe",
-      );
-      return runForCmdline(powershell, [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `(Get-Process -Id ${String(pid)}).StartTime.ToUniversalTime().Ticks`,
-      ]);
-    }
+    if (process.platform === "win32") return undefined;
     // macOS / other POSIX: lstart is stable for the process lifetime.
     return runForCmdline("/bin/ps", ["-p", String(pid), "-o", "lstart="]);
   } catch {

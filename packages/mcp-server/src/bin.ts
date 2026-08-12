@@ -39,6 +39,7 @@ import { createExecTriageClassifier } from "@ship/driver";
 import { createLogger } from "@ship/logger";
 
 import type { ActiveWorkTracker } from "./active-work.js";
+import type { ClientLivenessWatch } from "./client-liveness.js";
 
 import { createActiveWorkTracker } from "./active-work.js";
 import { startClientLivenessWatch } from "./client-liveness.js";
@@ -103,7 +104,7 @@ async function main(): Promise<void> {
   const activeWork = createActiveWorkTracker();
   let shipService: ShipService | undefined;
   let resweepTimer: NodeJS.Timeout | undefined;
-  let clientLivenessTimer: NodeJS.Timeout | undefined;
+  let clientLivenessWatch: ClientLivenessWatch | undefined;
   // Everything from opening the store onward shares one failure path: on any
   // bootstrap error (corrupt db, or a throw from buildServer/connect after the
   // store opened) release our registry entry and close the store so a retry
@@ -126,7 +127,7 @@ async function main(): Promise<void> {
     // Self-exit on client disconnect / signals: restores the 1:1 session↔server
     // lifecycle so a dead session's server doesn't linger holding the db. Wired
     // BEFORE connect so an immediate transport close can't race an unset hook.
-    clientLivenessTimer = installLifecycleShutdown({
+    clientLivenessWatch = installLifecycleShutdown({
       server,
       service,
       activeWork,
@@ -140,7 +141,7 @@ async function main(): Promise<void> {
     const transport = new StdioServerTransport();
     await server.connect(transport);
   } catch (err: unknown) {
-    if (clientLivenessTimer !== undefined) clearInterval(clientLivenessTimer);
+    clientLivenessWatch?.stop();
     if (resweepTimer !== undefined) clearInterval(resweepTimer);
     await activeWork.drain();
     if (shipService !== undefined) await drainQuietly(shipService, logger);
@@ -237,7 +238,7 @@ interface LifecycleShutdownOptions {
   logger: Logger;
 }
 
-function installLifecycleShutdown(opts: LifecycleShutdownOptions): NodeJS.Timeout {
+function installLifecycleShutdown(opts: LifecycleShutdownOptions): ClientLivenessWatch {
   const {
     activeWork,
     clientIdentity,
@@ -259,7 +260,7 @@ function installLifecycleShutdown(opts: LifecycleShutdownOptions): NodeJS.Timeou
     // drain first because a driver tick can start a Ship continuation; only
     // then is it safe to snapshot and drain the service's background sets.
     clearInterval(resweepTimer);
-    clearInterval(clientLivenessTimer);
+    clientLivenessWatch.stop();
     try {
       await activeWork.drain();
       await drainQuietly(service, logger);
@@ -300,7 +301,7 @@ function installLifecycleShutdown(opts: LifecycleShutdownOptions): NodeJS.Timeou
   process.on("SIGINT", () => {
     shutdown(0, "SIGINT");
   });
-  const clientLivenessTimer = startClientLivenessWatch(
+  const clientLivenessWatch = startClientLivenessWatch(
     clientPid,
     clientIdentity,
     systemProcessInspector,
@@ -308,7 +309,7 @@ function installLifecycleShutdown(opts: LifecycleShutdownOptions): NodeJS.Timeou
       shutdown(0, "client process exited");
     },
   );
-  return clientLivenessTimer;
+  return clientLivenessWatch;
 }
 
 /**
