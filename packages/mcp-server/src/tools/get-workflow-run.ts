@@ -12,10 +12,16 @@ import type { ShipServiceFactory } from "@ship/core";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { getWorkflowRunInputSchema, getWorkflowRunOutputSchema } from "@ship/mcp";
 
+import type { ActiveWorkTracker } from "../active-work.js";
+
 import { mapErrorToMcpError } from "../errors.js";
 
 /** Registers the `get_workflow_run` tool on the given `McpServer`. */
-export function registerGetWorkflowRunTool(server: McpServer, factory: ShipServiceFactory): void {
+export function registerGetWorkflowRunTool(
+  server: McpServer,
+  factory: ShipServiceFactory,
+  activeWork?: ActiveWorkTracker,
+): void {
   server.registerTool(
     "get_workflow_run",
     {
@@ -25,7 +31,8 @@ export function registerGetWorkflowRunTool(server: McpServer, factory: ShipServi
     },
     async (args) => {
       try {
-        const run = await factory().getRun(args.workflowRunId);
+        const get = factory().getRun(args.workflowRunId);
+        const run = await (activeWork?.track(get) ?? get);
         if (run === null) {
           throw new McpError(ErrorCode.InvalidParams, `not found: ${args.workflowRunId}`);
         }

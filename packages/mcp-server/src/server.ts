@@ -47,12 +47,12 @@ export function buildServer(
   activeWork?: ActiveWorkTracker,
 ): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-  registerShipTool(server, shipFactory);
-  registerGetWorkflowRunTool(server, shipFactory);
-  registerListWorkflowRunsTool(server, shipFactory);
-  registerCancelWorkflowRunTool(server, shipFactory);
-  registerListArtifactsTool(server, shipFactory);
-  registerDownloadArtifactTool(server, shipFactory);
+  registerShipTool(server, shipFactory, activeWork);
+  registerGetWorkflowRunTool(server, shipFactory, activeWork);
+  registerListWorkflowRunsTool(server, shipFactory, activeWork);
+  registerCancelWorkflowRunTool(server, shipFactory, activeWork);
+  registerListArtifactsTool(server, shipFactory, activeWork);
+  registerDownloadArtifactTool(server, shipFactory, activeWork);
   if (driverFactory !== undefined) {
     registerDriverImportTool(server, driverFactory);
     registerDriverRunTool(server, driverFactory, activeWork);
@@ -63,6 +63,6 @@ export function buildServer(
     registerDriverRenderTool(server, driverFactory);
     registerDriverMarkMergedTool(server, driverFactory);
   }
-  registerRunsResource(server, shipFactory);
+  registerRunsResource(server, shipFactory, activeWork);
   return server;
 }

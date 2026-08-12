@@ -21,6 +21,8 @@ import {
 } from "@ship/mcp";
 import { z } from "zod";
 
+import type { ActiveWorkTracker } from "../active-work.js";
+
 import { mapErrorToMcpError } from "../errors.js";
 
 const shipToolInputShape = {
@@ -34,7 +36,11 @@ const shipToolInputShape = {
 };
 
 /** Registers the `ship` tool on the given `McpServer`. Idempotent within a server lifetime. */
-export function registerShipTool(server: McpServer, factory: ShipServiceFactory): void {
+export function registerShipTool(
+  server: McpServer,
+  factory: ShipServiceFactory,
+  activeWork?: ActiveWorkTracker,
+): void {
   server.registerTool(
     "ship",
     {
@@ -56,7 +62,8 @@ export function registerShipTool(server: McpServer, factory: ShipServiceFactory)
     async (args) => {
       try {
         const validated = shipInputSchema.parse(args);
-        const out = await factory().startShip(validated);
+        const start = factory().startShip(validated);
+        const out = await (activeWork?.track(start) ?? start);
         const validatedOut = shipStartOutputSchema.parse(out);
         return { content: [{ type: "text", text: JSON.stringify(validatedOut) }] };
       } catch (err) {

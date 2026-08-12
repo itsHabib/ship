@@ -10,10 +10,16 @@ import type { ShipServiceFactory } from "@ship/core";
 
 import { listWorkflowRunsInputSchema, listWorkflowRunsOutputSchema } from "@ship/mcp";
 
+import type { ActiveWorkTracker } from "../active-work.js";
+
 import { mapErrorToMcpError } from "../errors.js";
 
 /** Registers the `list_workflow_runs` tool on the given `McpServer`. */
-export function registerListWorkflowRunsTool(server: McpServer, factory: ShipServiceFactory): void {
+export function registerListWorkflowRunsTool(
+  server: McpServer,
+  factory: ShipServiceFactory,
+  activeWork?: ActiveWorkTracker,
+): void {
   server.registerTool(
     "list_workflow_runs",
     {
@@ -30,7 +36,8 @@ export function registerListWorkflowRunsTool(server: McpServer, factory: ShipSer
           ...(args.status !== undefined && { status: args.status }),
           ...(args.limit !== undefined && { limit: args.limit }),
         };
-        const runs = await factory().listRuns(filter);
+        const list = factory().listRuns(filter);
+        const runs = await (activeWork?.track(list) ?? list);
         const validated = listWorkflowRunsOutputSchema.parse({ runs });
         return { content: [{ type: "text", text: JSON.stringify(validated) }] };
       } catch (err) {

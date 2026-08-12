@@ -10,12 +10,15 @@ import type { ShipServiceFactory } from "@ship/core";
 
 import { cancelWorkflowRunInputSchema, cancelWorkflowRunOutputSchema } from "@ship/mcp";
 
+import type { ActiveWorkTracker } from "../active-work.js";
+
 import { mapErrorToMcpError } from "../errors.js";
 
 /** Registers the `cancel_workflow_run` tool on the given `McpServer`. */
 export function registerCancelWorkflowRunTool(
   server: McpServer,
   factory: ShipServiceFactory,
+  activeWork?: ActiveWorkTracker,
 ): void {
   server.registerTool(
     "cancel_workflow_run",
@@ -25,7 +28,8 @@ export function registerCancelWorkflowRunTool(
     },
     async (args) => {
       try {
-        const out = await factory().cancelRun(args.workflowRunId);
+        const cancel = factory().cancelRun(args.workflowRunId);
+        const out = await (activeWork?.track(cancel) ?? cancel);
         const validated = cancelWorkflowRunOutputSchema.parse(out);
         return { content: [{ type: "text", text: JSON.stringify(validated) }] };
       } catch (err) {
