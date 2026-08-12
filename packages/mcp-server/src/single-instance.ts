@@ -57,10 +57,11 @@ import { basename, dirname, join, resolve as resolvePath, sep } from "node:path"
 const REGISTRY_DIRNAME = "mcp-server-instances";
 
 /**
- * A registry entry is "fresh" (its owner is a genuinely-live ship server) if
- * its heartbeat is newer than this. Kept a small multiple of the heartbeat
- * cadence so a dead server's entry goes stale quickly, shrinking the window in
- * which a reused PID could be mistaken for a live sibling.
+ * A registry entry is "fresh" (and therefore a candidate for further identity
+ * and orphanhood checks) if its heartbeat is newer than this. Kept a small
+ * multiple of the heartbeat cadence so a dead server's entry goes stale
+ * quickly, shrinking the window in which a reused PID could be mistaken for a
+ * live sibling.
  */
 export const INSTANCE_FRESHNESS_MS = 150_000;
 
@@ -317,10 +318,11 @@ function looksLikeShipServer(commandLine: string): boolean {
 }
 
 /**
- * Ensure this process is the only live ship server bound to `dbPath`'s store,
- * then register it. Reaps live sibling servers (last-one-wins) and sweeps away
- * dead / garbage entries. Never throws on a single bad entry — a corrupt or
- * racing entry is logged and skipped so a fresh server always comes up.
+ * Reconcile prior registry entries for `dbPath`, then register this process.
+ * Reaps only a same-store server whose client is demonstrably gone, coexists
+ * with healthy peer sessions, and sweeps dead / garbage entries. Never throws
+ * on a single bad entry — a corrupt or racing entry is logged and skipped so a
+ * fresh server always comes up.
  */
 export function reconcileSingleInstance(opts: ReconcileOptions): ReconcileResult {
   const freshnessMs = opts.freshnessMs ?? INSTANCE_FRESHNESS_MS;
@@ -413,10 +415,11 @@ type EntryAction =
   | { kind: "reap"; pid: number };
 
 /**
- * Decide what to do with one sibling entry. Policy: reap only a live sibling
- * with a fresh heartbeat (a real running ship server); remove dead or garbage
- * entries without a kill; leave an alive-but-stale-heartbeat entry untouched
- * (a hung server or a reused PID — not safe to kill, log for the operator).
+ * Decide what to do with one sibling entry. A live sibling with a fresh
+ * heartbeat advances to explicit identity and orphanhood checks; only a
+ * confirmed orphan is reaped. Dead or garbage entries are removed without a
+ * kill. An alive-but-stale-heartbeat entry is left untouched (a hung server or
+ * a reused PID — not safe to kill, log for the operator).
  */
 function classifyEntry(path: string, opts: ReconcileOptions, freshnessMs: number): EntryAction {
   const entry = readEntry(path);
