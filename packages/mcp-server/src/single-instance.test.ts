@@ -28,6 +28,7 @@ import {
   reconcileSingleInstance,
   registryDirFor,
   releaseInstance,
+  systemProcessInspector,
 } from "./single-instance.js";
 
 let tmpDir: string;
@@ -89,6 +90,14 @@ function writeRaw(pid: number, contents: string): void {
 }
 
 describe("reconcileSingleInstance", () => {
+  test("the system inspector exposes a stable identity for the current process", () => {
+    const first = systemProcessInspector.identity(process.pid);
+    const second = systemProcessInspector.identity(process.pid);
+
+    expect(first).toBeTruthy();
+    expect(second).toBe(first);
+  });
+
   test("empty registry: registers self, reaps nothing", () => {
     const inspector = fakeInspector(new Set());
     const result = reconcileSingleInstance({
