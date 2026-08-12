@@ -77,40 +77,14 @@ jobs:
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
-          # Gate counts a reviewer only when it finds a formal GitHub review
-          # pinned to the exact judged head: classifyPanel in
-          # cmd/gate/internal/evidence/panel.go requires User.Type=Bot, a
-          # COMMENTED/APPROVED/CHANGES_REQUESTED state, and commit_id == head.
-          # An issue comment satisfies none of that, so every PR parked on
-          # `missing=[claude]` while a thorough review sat right there in the
-          # thread — and readiness escalated alongside it for want of any
-          # review decision. codex only escapes this through a bespoke
-          # comment-regex exemption; claude has no such carve-out.
-          #
-          # claude[bot] already satisfies the bot-identity and name matching,
-          # so publishing the review AS a review is the whole fix. Appended to
-          # the system prompt rather than set as `prompt`, so `@claude <any
-          # other request>` keeps behaving exactly as before.
-          claude_args: >-
-            --allowed-tools "Bash(gh pr review:*)"
-            --append-system-prompt
-            "When you are asked to review a pull request, publish the review as
-            a formal GitHub review pinned to the head commit you actually
-            reviewed: gh pr review <number> --repo <owner/repo> --comment
-            --body <your review>. Publish it as a review, not as an issue
-            comment, and state the head SHA you reviewed in the body. Use
-            --request-changes rather than --comment only when you found a
-            blocking defect; never approve. If the review command fails, say so
-            plainly instead of silently falling back to a comment."
-
-      # The instruction above asks the model to publish a formal review; in
-      # practice it keeps posting an issue comment, and an issue comment has no
-      # commit anchor for gate's panel to check. Asking harder cannot fix that:
-      # gate refuses provider prose as authority precisely because a model
-      # writes it, so even a body that named the head would not count.
+      # Claude posts an issue comment, which has no commit anchor for gate's
+      # panel to check. Asking the model to run `gh pr review` is not a safe
+      # substitute: GitHub pins that review to the live head at submission
+      # time, which can differ from the checkout Claude actually reviewed.
       #
-      # This step is the authority the prose is not. The checkout above resolved
-      # a specific ref and the reviewer ran against exactly that tree, so the
+      # This step supplies the authority provider prose cannot. The checkout
+      # above resolved a specific ref and the reviewer ran against exactly that
+      # tree, so the
       # workflow can state the reviewed head as fact, in a fixed shape gate
       # parses — the same structural role the Codex connector's own
       # "Reviewed commit:" line plays. See workflowAttestation in
