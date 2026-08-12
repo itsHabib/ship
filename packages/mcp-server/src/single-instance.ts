@@ -176,16 +176,21 @@ export function registryDirFor(dbPath: string): string {
  * aliases of the same SQLite file — `/x/state.db` vs `/x/./state.db`, a
  * symlinked directory, mixed case on Windows — each believe they are alone
  * and open the same database, bypassing the guard entirely. The directory is
- * realpathed (the file itself may not exist yet on first boot); Windows
- * case-folds.
+ * realpathed as a whole when it exists, so filename symlinks collapse too. A
+ * not-yet-created database falls back to a realpathed parent plus basename;
+ * Windows case-folds.
  */
 export function canonicalStorePath(dbPath: string): string {
   const resolved = resolvePath(dbPath);
   let canonical = resolved;
   try {
-    canonical = realpathSync(dirname(resolved)) + sep + basename(resolved);
+    canonical = realpathSync(resolved);
   } catch {
-    // Directory not created yet — the resolved absolute path is the identity.
+    try {
+      canonical = realpathSync(dirname(resolved)) + sep + basename(resolved);
+    } catch {
+      // Directory not created yet — the resolved absolute path is the identity.
+    }
   }
   return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }

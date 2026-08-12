@@ -6,11 +6,16 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { driverCancelInputSchema, driverCancelOutputSchema } from "@ship/mcp";
 
+import type { ActiveWorkTracker } from "../active-work.js";
 import type { DriverServiceFactory } from "../driver-service.js";
 
 import { mapErrorToMcpError } from "../errors.js";
 
-export function registerDriverCancelTool(server: McpServer, factory: DriverServiceFactory): void {
+export function registerDriverCancelTool(
+  server: McpServer,
+  factory: DriverServiceFactory,
+  activeWork?: ActiveWorkTracker,
+): void {
   server.registerTool(
     "driver_cancel",
     {
@@ -20,7 +25,8 @@ export function registerDriverCancelTool(server: McpServer, factory: DriverServi
     async (args) => {
       try {
         const validated = driverCancelInputSchema.parse(args);
-        const run = await factory().cancel(validated.driverRunId);
+        const cancel = factory().cancel(validated.driverRunId);
+        const run = await (activeWork?.track(cancel) ?? cancel);
         const validatedOut = driverCancelOutputSchema.parse({
           driverRunId: run.id,
           status: run.status,

@@ -11,10 +11,11 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import type { ProcessInspector } from "./single-instance.js";
@@ -104,8 +105,22 @@ describe("reconcileSingleInstance", () => {
   });
 
   test("two aliases of one store share a canonical identity", () => {
-    const cut = dbPath.lastIndexOf("/");
-    const alias = `${dbPath.slice(0, cut)}/./${dbPath.slice(cut + 1)}`; // /x/./state.db
+    const alias = `${dirname(dbPath)}${sep}.${sep}${basename(dbPath)}`;
+    expect(canonicalStorePath(alias)).toBe(canonicalStorePath(dbPath));
+  });
+
+  test("a database-file symlink resolves to the physical store identity", () => {
+    writeFileSync(dbPath, "sqlite placeholder");
+    const alias = join(tmpDir, "current.db");
+    try {
+      symlinkSync(dbPath, alias, "file");
+    } catch (err: unknown) {
+      // Windows runners can deny file-symlink creation without Developer Mode.
+      // The platform-neutral path alias test above still runs there; exercise
+      // filename-symlink behavior everywhere the OS permits the fixture.
+      if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") return;
+      throw err;
+    }
     expect(canonicalStorePath(alias)).toBe(canonicalStorePath(dbPath));
   });
 

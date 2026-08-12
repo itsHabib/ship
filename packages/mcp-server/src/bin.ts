@@ -24,6 +24,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ShipService } from "@ship/core";
 import type { AgentRunner } from "@ship/cursor-runner";
 import type { Logger } from "@ship/logger";
 
@@ -37,6 +38,9 @@ import { FakeCursorRunner } from "@ship/cursor-runner/test/fake";
 import { createExecTriageClassifier } from "@ship/driver";
 import { createLogger } from "@ship/logger";
 
+import type { ActiveWorkTracker } from "./active-work.js";
+
+import { createActiveWorkTracker } from "./active-work.js";
 import { createMcpDriverServiceFactory } from "./driver-service.js";
 import { buildServer } from "./server.js";
 import {
@@ -90,6 +94,9 @@ async function main(): Promise<void> {
   // Real triage classifier in production only — fake mode never shells out.
   const triage = useFake ? undefined : createExecTriageClassifier();
   const driverFactory = createMcpDriverServiceFactory(opts, shipFactory, undefined, triage);
+  const activeWork = createActiveWorkTracker();
+  let shipService: ShipService | undefined;
+  let resweepTimer: NodeJS.Timeout | undefined;
   // Everything from opening the store onward shares one failure path: on any
   // bootstrap error (corrupt db, or a throw from buildServer/connect after the
   // store opened) release our registry entry and close the store so a retry
@@ -101,20 +108,32 @@ async function main(): Promise<void> {
     // integrity gate (quick_check) fires; corruption is terminal (never retried).
     await openStoreWithRetry(
       () => {
-        shipFactory();
+        shipService = shipFactory();
       },
       dbPath,
       { logger },
     );
-    startOrphanResweep(shipFactory, logger);
-    const server = buildServer(shipFactory, driverFactory);
+    const service = shipService ?? shipFactory();
+    resweepTimer = startOrphanResweep(service, logger);
+    const server = buildServer(shipFactory, driverFactory, activeWork);
     // Self-exit on client disconnect / signals: restores the 1:1 session↔server
     // lifecycle so a dead session's server doesn't linger holding the db. Wired
     // BEFORE connect so an immediate transport close can't race an unset hook.
-    installLifecycleShutdown(server, shipFactory, dbPath, selfEntryPath, logger);
+    installLifecycleShutdown({
+      server,
+      service,
+      activeWork,
+      dbPath,
+      selfEntryPath,
+      resweepTimer,
+      logger,
+    });
     const transport = new StdioServerTransport();
     await server.connect(transport);
   } catch (err: unknown) {
+    if (resweepTimer !== undefined) clearInterval(resweepTimer);
+    await activeWork.drain();
+    if (shipService !== undefined) await drainQuietly(shipService, logger);
     releaseSelf(selfEntryPath);
     closeStoreQuietly(dbPath, logger);
     throw err;
@@ -195,21 +214,31 @@ function startHeartbeat(selfEntryPath: string): void {
  * kill (no drain possible); the reaper removes the reaped entry itself — this
  * path is the clean-disconnect and POSIX-signal case.
  */
-function installLifecycleShutdown(
-  server: McpServer,
-  shipFactory: ReturnType<typeof createDefaultShipService>,
-  dbPath: string,
-  selfEntryPath: string | undefined,
-  logger: Logger,
-): void {
+interface LifecycleShutdownOptions {
+  server: McpServer;
+  service: ShipService;
+  activeWork: ActiveWorkTracker;
+  dbPath: string;
+  selfEntryPath: string | undefined;
+  resweepTimer: NodeJS.Timeout;
+  logger: Logger;
+}
+
+function installLifecycleShutdown(opts: LifecycleShutdownOptions): void {
+  const { activeWork, dbPath, logger, resweepTimer, selfEntryPath, server, service } = opts;
   let closing = false;
   const finishShutdown = async (code: number): Promise<void> => {
     // The SQLite close/checkpoint is the one step that must not be skipped:
     // registry release is best-effort cleanup, and a throw from it (unwritable
     // registry dir, a Windows sharing error) must never leave the WAL
     // unclosed — that is the exact writer-leak this guard exists to prevent.
+    // Stop periodic work before taking either drain snapshot. Driver handlers
+    // drain first because a driver tick can start a Ship continuation; only
+    // then is it safe to snapshot and drain the service's background sets.
+    clearInterval(resweepTimer);
     try {
-      await drainQuietly(shipFactory, logger);
+      await activeWork.drain();
+      await drainQuietly(service, logger);
       releaseSelf(selfEntryPath);
     } finally {
       closeStoreQuietly(dbPath, logger);
@@ -263,12 +292,9 @@ function installLifecycleShutdown(
  * shutdown signal (see installLifecycleShutdown), which is an operator
  * decision rather than a silent 10-second guess. Never throws.
  */
-async function drainQuietly(
-  shipFactory: ReturnType<typeof createDefaultShipService>,
-  logger: Logger,
-): Promise<void> {
+async function drainQuietly(shipService: ShipService, logger: Logger): Promise<void> {
   try {
-    await shipFactory().drainBackground();
+    await shipService.drainBackground();
   } catch (err: unknown) {
     logger.warn({ err: errorText(err) }, "drainBackground during shutdown failed; closing anyway");
   }
@@ -304,18 +330,17 @@ function errorText(err: unknown): string {
  * stay excluded. `unref()` keeps the timer from holding the process open.
  */
 function startOrphanResweep(
-  shipFactory: ReturnType<typeof createDefaultShipService>,
+  shipService: ShipService,
   logger: ReturnType<typeof createLogger>,
-): void {
+): NodeJS.Timeout {
   const timer = setInterval(() => {
-    shipFactory()
-      .resumeOrphanedRuns()
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        logger.error({ err: message }, "periodic orphan resume sweep failed");
-      });
+    shipService.resumeOrphanedRuns().catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err: message }, "periodic orphan resume sweep failed");
+    });
   }, ORPHAN_RESUME_STALENESS_MS);
   timer.unref();
+  return timer;
 }
 
 main().catch((err: unknown) => {

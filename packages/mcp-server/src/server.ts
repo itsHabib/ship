@@ -10,6 +10,7 @@ import type { ShipServiceFactory } from "@ship/core";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+import type { ActiveWorkTracker } from "./active-work.js";
 import type { DriverServiceFactory } from "./driver-service.js";
 
 import { registerRunsResource } from "./resources/runs.js";
@@ -43,6 +44,7 @@ const SERVER_VERSION = "0.0.0";
 export function buildServer(
   shipFactory: ShipServiceFactory,
   driverFactory?: DriverServiceFactory,
+  activeWork?: ActiveWorkTracker,
 ): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   registerShipTool(server, shipFactory);
@@ -53,11 +55,11 @@ export function buildServer(
   registerDownloadArtifactTool(server, shipFactory);
   if (driverFactory !== undefined) {
     registerDriverImportTool(server, driverFactory);
-    registerDriverRunTool(server, driverFactory);
+    registerDriverRunTool(server, driverFactory, activeWork);
     registerDriverStatusTool(server, driverFactory);
     registerDriverDecideTool(server, driverFactory);
-    registerDriverLandTool(server, driverFactory);
-    registerDriverCancelTool(server, driverFactory);
+    registerDriverLandTool(server, driverFactory, activeWork);
+    registerDriverCancelTool(server, driverFactory, activeWork);
     registerDriverRenderTool(server, driverFactory);
     registerDriverMarkMergedTool(server, driverFactory);
   }
