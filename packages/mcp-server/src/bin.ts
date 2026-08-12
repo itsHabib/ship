@@ -41,6 +41,7 @@ import { createLogger } from "@ship/logger";
 import type { ActiveWorkTracker } from "./active-work.js";
 
 import { createActiveWorkTracker } from "./active-work.js";
+import { startClientLivenessWatch } from "./client-liveness.js";
 import { createMcpDriverServiceFactory } from "./driver-service.js";
 import { buildServer } from "./server.js";
 import {
@@ -55,6 +56,10 @@ import { openStoreWithRetry } from "./store-open.js";
 import { resolveDbPath, resolveRunsDir } from "./store-paths.js";
 
 async function main(): Promise<void> {
+  // Capture the launching client's pid before any async bootstrap work. On
+  // platforms that re-parent orphans, reading process.ppid later would lose
+  // the identity of the client this per-client server belongs to.
+  const clientPid = process.ppid;
   const logger = createLogger({ stream: process.stderr });
   const useFake = process.env["SHIP_TEST_FAKE_CURSOR"] === "1";
 
@@ -97,6 +102,7 @@ async function main(): Promise<void> {
   const activeWork = createActiveWorkTracker();
   let shipService: ShipService | undefined;
   let resweepTimer: NodeJS.Timeout | undefined;
+  let clientLivenessTimer: NodeJS.Timeout | undefined;
   // Everything from opening the store onward shares one failure path: on any
   // bootstrap error (corrupt db, or a throw from buildServer/connect after the
   // store opened) release our registry entry and close the store so a retry
@@ -119,10 +125,11 @@ async function main(): Promise<void> {
     // Self-exit on client disconnect / signals: restores the 1:1 session↔server
     // lifecycle so a dead session's server doesn't linger holding the db. Wired
     // BEFORE connect so an immediate transport close can't race an unset hook.
-    installLifecycleShutdown({
+    clientLivenessTimer = installLifecycleShutdown({
       server,
       service,
       activeWork,
+      clientPid,
       dbPath,
       selfEntryPath,
       resweepTimer,
@@ -131,6 +138,7 @@ async function main(): Promise<void> {
     const transport = new StdioServerTransport();
     await server.connect(transport);
   } catch (err: unknown) {
+    if (clientLivenessTimer !== undefined) clearInterval(clientLivenessTimer);
     if (resweepTimer !== undefined) clearInterval(resweepTimer);
     await activeWork.drain();
     if (shipService !== undefined) await drainQuietly(shipService, logger);
@@ -163,8 +171,9 @@ async function installSingleInstance(dbPath: string, logger: Logger): Promise<st
         "single-instance guard reconciled prior ship mcp-server registry entries",
       );
     }
-    // Wait for reaped siblings to actually exit before the store opens — a
-    // just-killed WAL holder still owns the file for a beat on Windows.
+    // Wait for gracefully signaled POSIX siblings to actually exit before the
+    // store opens. Windows siblings are never hard-killed; their own client
+    // liveness watch drains them and their registry entry remains visible.
     const stillAlive = await awaitPidsGone(result.reapedPids, systemProcessInspector);
     // A reaped entry leaves the registry only once its process is confirmed
     // gone. A hung sibling keeps its entry — its heartbeat never recreates a
@@ -210,22 +219,24 @@ function startHeartbeat(selfEntryPath: string): void {
  * continuation — closing the store first would strand a just-started local run
  * with no resumable cursor row), then release the registry entry, close the
  * store (checkpoints the WAL), and exit. Draining is a no-op when nothing is
- * pending, so an idle disconnect exits promptly. On Windows SIGTERM is a hard
- * kill (no drain possible); the reaper removes the reaped entry itself — this
- * path is the clean-disconnect and POSIX-signal case.
+ * pending, so an idle disconnect exits promptly. The original client is also
+ * polled because a dirty Windows parent death may not close stdin; that watch
+ * enters this same graceful drain instead of relying on a sibling hard kill.
  */
 interface LifecycleShutdownOptions {
   server: McpServer;
   service: ShipService;
   activeWork: ActiveWorkTracker;
+  clientPid: number;
   dbPath: string;
   selfEntryPath: string | undefined;
   resweepTimer: NodeJS.Timeout;
   logger: Logger;
 }
 
-function installLifecycleShutdown(opts: LifecycleShutdownOptions): void {
-  const { activeWork, dbPath, logger, resweepTimer, selfEntryPath, server, service } = opts;
+function installLifecycleShutdown(opts: LifecycleShutdownOptions): NodeJS.Timeout {
+  const { activeWork, clientPid, dbPath, logger, resweepTimer, selfEntryPath, server, service } =
+    opts;
   let closing = false;
   const finishShutdown = async (code: number): Promise<void> => {
     // The SQLite close/checkpoint is the one step that must not be skipped:
@@ -236,6 +247,7 @@ function installLifecycleShutdown(opts: LifecycleShutdownOptions): void {
     // drain first because a driver tick can start a Ship continuation; only
     // then is it safe to snapshot and drain the service's background sets.
     clearInterval(resweepTimer);
+    clearInterval(clientLivenessTimer);
     try {
       await activeWork.drain();
       await drainQuietly(service, logger);
@@ -247,13 +259,8 @@ function installLifecycleShutdown(opts: LifecycleShutdownOptions): void {
   };
   const shutdown = (code: number, reason: string): void => {
     if (closing) {
-      // Only a human's repeated Ctrl+C forces an exit mid-drain. SIGTERM is
-      // what a NEW server's reaper sends when this server's client has died
-      // while a local run is still finalizing — honoring it would kill the
-      // exact run the unbounded drain exists to preserve. Ignoring it is
-      // safe: the reaper's awaitPidsGone times out, keeps this entry visible
-      // (heartbeat still refreshing), and the next reconcile retries after
-      // the drain has closed the store and exited.
+      // Only a human's repeated Ctrl+C forces an exit mid-drain. Repeated
+      // lifecycle notifications do not shorten an active continuation.
       if (reason === "SIGINT") {
         logger.warn({ reason }, "second SIGINT during drain; exiting immediately");
         process.exit(code);
@@ -281,6 +288,10 @@ function installLifecycleShutdown(opts: LifecycleShutdownOptions): void {
   process.on("SIGINT", () => {
     shutdown(0, "SIGINT");
   });
+  const clientLivenessTimer = startClientLivenessWatch(clientPid, systemProcessInspector, () => {
+    shutdown(0, "client process exited");
+  });
+  return clientLivenessTimer;
 }
 
 /**

@@ -31,7 +31,12 @@ export const BUSY_TIMEOUT_MS = 30_000;
  * or SQLite locks.
  */
 export function openDatabase(dbPath: string, logger?: Logger): Db {
-  const db = new Database(dbPath);
+  let db: Db;
+  try {
+    db = new Database(dbPath);
+  } catch (err: unknown) {
+    throw mapDatabaseOpenError(err, dbPath);
+  }
   try {
     // busy_timeout FIRST so the integrity read below (and the WAL pragma) wait
     // out a concurrent writer's lock rather than surfacing a spurious busy.
@@ -42,22 +47,22 @@ export function openDatabase(dbPath: string, logger?: Logger): Db {
     configureConnection(db, dbPath, logger);
   } catch (err: unknown) {
     db.close();
-    // A failed integrity check is terminal — surface it verbatim so the
-    // operator sees the recovery path instead of a downstream SQLite error
-    // once writes start landing on the corrupt b-tree.
-    if (err instanceof StoreIntegrityError) throw err;
-    // Corruption bad enough to fault a pragma read surfaces as a raw
-    // SQLITE_CORRUPT ("database disk image is malformed"); map it to the same
-    // operator-facing integrity error. `isSqliteCorruptError` implies
-    // `err instanceof Error`, so `.message` is safe.
-    if (isSqliteCorruptError(err)) throw new StoreIntegrityError(dbPath, (err as Error).message);
-    // The PRAGMA setup (and migrations on open) can hit lock contention under
-    // concurrent local runs; surface the operator-facing hint instead of a raw
-    // SQLITE_BUSY on the startup path.
-    if (isSqliteBusyError(err)) throw new StoreContentionError(err);
-    throw err;
+    throw mapDatabaseOpenError(err, dbPath);
   }
   return db;
+}
+
+/** Map constructor-time and PRAGMA-time SQLite failures consistently. */
+function mapDatabaseOpenError(err: unknown, dbPath: string): unknown {
+  // A failed integrity check is terminal — surface it verbatim so the
+  // operator sees the recovery path instead of a downstream SQLite error.
+  if (err instanceof StoreIntegrityError) return err;
+  // Severe corruption can fail in the Database constructor itself, before a
+  // handle exists to quick_check or close. Map it at the same boundary as a
+  // pragma-time SQLITE_CORRUPT / SQLITE_NOTADB failure.
+  if (isSqliteCorruptError(err)) return new StoreIntegrityError(dbPath, (err as Error).message);
+  if (isSqliteBusyError(err)) return new StoreContentionError(err);
+  return err;
 }
 
 /**
@@ -124,7 +129,9 @@ export function isSqliteBusyError(err: unknown): boolean {
 export function isSqliteCorruptError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as Error & { code?: unknown }).code;
-  if (typeof code === "string" && code.startsWith("SQLITE_CORRUPT")) return true;
+  if (typeof code === "string" && (code.startsWith("SQLITE_CORRUPT") || code === "SQLITE_NOTADB")) {
+    return true;
+  }
   const message = err.message.toLowerCase();
   return message.includes("malformed") || message.includes("is not a database");
 }

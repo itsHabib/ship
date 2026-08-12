@@ -46,6 +46,12 @@ describe("openDatabase PRAGMAs (file-backed)", () => {
 });
 
 describe("integrity gate (quick_check on open)", () => {
+  test("a non-SQLite file is refused with StoreIntegrityError", () => {
+    writeFileSync(dbPath, "this is not a sqlite database");
+
+    expect(() => openDatabase(dbPath)).toThrow(StoreIntegrityError);
+  });
+
   test("a clean db opens; a corrupt b-tree page is refused with StoreIntegrityError", () => {
     // Build a db with several pages of data, then checkpoint into the main
     // file so the corruption we inject can't hide in a -wal sidecar.
@@ -101,6 +107,9 @@ describe("isSqliteCorruptError", () => {
     const coded = new Error("boom") as Error & { code: string };
     coded.code = "SQLITE_CORRUPT_VTAB";
     expect(isSqliteCorruptError(coded)).toBe(true);
+    const notadb = new Error("boom") as Error & { code: string };
+    notadb.code = "SQLITE_NOTADB";
+    expect(isSqliteCorruptError(notadb)).toBe(true);
     expect(isSqliteCorruptError(new Error("database disk image is malformed"))).toBe(true);
     expect(isSqliteCorruptError(new Error("file is not a database"))).toBe(true);
     expect(isSqliteCorruptError(new Error("some unrelated failure"))).toBe(false);

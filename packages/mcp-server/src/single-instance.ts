@@ -13,11 +13,11 @@
  * live client is a peer to coexist with, never a target. What this guard
  * removes is exactly the accumulation case: a server whose CLIENT died
  * without tearing it down. A fresh server reaps only demonstrably orphaned
- * siblings bound to the SAME store (re-parented to init/launchd on POSIX, or
- * a dead recorded parent on Windows), then registers itself; boot adopts the
- * reaped server's orphaned runs (see `docs/.../multi-process-store-guard.md`
- * — `resumeOrphans`). Short-lived CLI processes never register here, so the
- * intended CLI+server concurrency is untouched.
+ * siblings bound to the SAME store when the platform can request a graceful
+ * termination (POSIX SIGTERM). On Windows an orphan self-detects its dead
+ * client and drains gracefully; a sibling never hard-kills it. Boot adopts a
+ * reaped server's orphaned runs (`resumeOrphans`). Short-lived CLI processes
+ * never register here, so the intended CLI+server concurrency is untouched.
  *
  * PID-reuse safety is a two-stage guard. A heartbeat the running server
  * refreshes on a timer is the cheap first filter — a long-dead entry reads as
@@ -147,6 +147,8 @@ export interface ReconcileOptions {
   logger?: Logger;
   /** Freshness window override (tests); defaults to {@link INSTANCE_FRESHNESS_MS}. */
   freshnessMs?: number;
+  /** Whether `inspector.terminate` lets the target drain; false on Windows. */
+  terminateIsGraceful?: boolean;
 }
 
 /** Outcome of a reconcile pass. */
@@ -468,7 +470,9 @@ function classifyEntry(path: string, opts: ReconcileOptions, freshnessMs: number
  * server severs its MCP connection mid-run. Only a demonstrably orphaned
  * owner is reaped: its client is gone, so it has been re-parented to
  * init/launchd (POSIX, ppid ≤ 1) or its recorded parent is dead (Windows —
- * no re-parenting). An unreadable parent fails safe: coexist, don't kill.
+ * no re-parenting). An unreadable parent fails safe: coexist, don't kill. A
+ * proven Windows orphan also stays untouched by the sibling because Node's
+ * SIGTERM is a hard kill there; its own client-liveness watch drains it.
  */
 function confirmReapTarget(pid: number, opts: ReconcileOptions): EntryAction {
   const cmdline = opts.inspector.commandLine(pid);
@@ -498,6 +502,18 @@ function confirmReapTarget(pid: number, opts: ReconcileOptions): EntryAction {
     opts.logger?.info(
       { pid, ppid },
       "live ship mcp-server sibling has a live client; coexisting (per-client process model)",
+    );
+    return { kind: "skip" };
+  }
+  return reapOrAwaitSelfShutdown(pid, ppid, opts);
+}
+
+/** Reap only when the platform can deliver a graceful termination request. */
+function reapOrAwaitSelfShutdown(pid: number, ppid: number, opts: ReconcileOptions): EntryAction {
+  if (!(opts.terminateIsGraceful ?? process.platform !== "win32")) {
+    opts.logger?.info(
+      { pid, ppid },
+      "orphaned ship mcp-server cannot be terminated gracefully on this platform; waiting for its client-liveness watch to drain and exit",
     );
     return { kind: "skip" };
   }

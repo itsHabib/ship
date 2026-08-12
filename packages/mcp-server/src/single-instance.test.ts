@@ -155,9 +155,9 @@ describe("reconcileSingleInstance", () => {
     expect(inspector.terminated).toEqual([]);
   });
 
-  test("an orphaned sibling (dead recorded parent) is reaped even without re-parenting", () => {
-    // Windows shape: no re-parenting to pid 1 — the recorded parent is simply
-    // dead. Parent 600 is NOT in the alive set.
+  test("a dead recorded parent proves orphanhood when termination is graceful", () => {
+    // Parent 600 is NOT in the alive set. The explicit capability keeps this
+    // policy test platform-neutral even when CI itself runs on Windows.
     seedEntry(2000, NOW - 10_000);
     const inspector = fakeInspector(new Set([2000]), undefined, new Map([[2000, 600]]));
     const result = reconcileSingleInstance({
@@ -166,9 +166,27 @@ describe("reconcileSingleInstance", () => {
       startedAtMs: NOW,
       nowMs: NOW,
       inspector,
+      terminateIsGraceful: true,
     });
     expect(result.reapedPids).toEqual([2000]);
     expect(inspector.terminated).toEqual([2000]);
+  });
+
+  test("a Windows-style hard termination never reaps an orphan with active local work", () => {
+    seedEntry(2000, NOW - 10_000);
+    const inspector = fakeInspector(new Set([2000]), undefined, new Map([[2000, 600]]));
+    const result = reconcileSingleInstance({
+      dbPath,
+      selfPid: 1000,
+      startedAtMs: NOW,
+      nowMs: NOW,
+      inspector,
+      terminateIsGraceful: false,
+    });
+
+    expect(result.reapedPids).toEqual([]);
+    expect(inspector.terminated).toEqual([]);
+    expect(existsSync(join(registryDirFor(dbPath), "2000.json"))).toBe(true);
   });
 
   test("an orphaned sibling is reaped, entry kept until its exit is confirmed", () => {
@@ -180,6 +198,7 @@ describe("reconcileSingleInstance", () => {
       startedAtMs: NOW,
       nowMs: NOW,
       inspector,
+      terminateIsGraceful: true,
     });
     expect(result.reapedPids).toEqual([2000]);
     expect(inspector.terminated).toEqual([2000]);
