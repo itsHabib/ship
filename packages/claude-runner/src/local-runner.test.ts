@@ -571,6 +571,10 @@ describe("LocalClaudeRunner — query options", () => {
 
   test("omits ANTHROPIC_BASE_URL from env when unset", async () => {
     vi.unstubAllEnvs();
+    // unstubAllEnvs restores the real process env, so "unset" has to be stated
+    // rather than assumed — a developer machine running an agent harness
+    // typically has ANTHROPIC_BASE_URL exported, and would fail here otherwise.
+    vi.stubEnv("ANTHROPIC_BASE_URL", undefined);
     vi.stubEnv("ANTHROPIC_API_KEY", "test-key-abc123");
     const { queryInstance } = makeMockQuery({ events: [successResult] });
     vi.mocked(query).mockReturnValue(queryInstance);
