@@ -56,6 +56,7 @@ function fakeInspector(
   return {
     terminated,
     isAlive: (pid) => alivePids.has(pid),
+    identity: (pid) => (alivePids.has(pid) ? `birth-${String(pid)}` : undefined),
     terminate: (pid) => {
       terminated.push(pid);
       alivePids.delete(pid);

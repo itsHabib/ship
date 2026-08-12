@@ -60,6 +60,7 @@ async function main(): Promise<void> {
   // platforms that re-parent orphans, reading process.ppid later would lose
   // the identity of the client this per-client server belongs to.
   const clientPid = process.ppid;
+  const clientIdentity = systemProcessInspector.identity(clientPid);
   const logger = createLogger({ stream: process.stderr });
   const useFake = process.env["SHIP_TEST_FAKE_CURSOR"] === "1";
 
@@ -129,6 +130,7 @@ async function main(): Promise<void> {
       server,
       service,
       activeWork,
+      clientIdentity,
       clientPid,
       dbPath,
       selfEntryPath,
@@ -227,6 +229,7 @@ interface LifecycleShutdownOptions {
   server: McpServer;
   service: ShipService;
   activeWork: ActiveWorkTracker;
+  clientIdentity: string | undefined;
   clientPid: number;
   dbPath: string;
   selfEntryPath: string | undefined;
@@ -235,8 +238,17 @@ interface LifecycleShutdownOptions {
 }
 
 function installLifecycleShutdown(opts: LifecycleShutdownOptions): NodeJS.Timeout {
-  const { activeWork, clientPid, dbPath, logger, resweepTimer, selfEntryPath, server, service } =
-    opts;
+  const {
+    activeWork,
+    clientIdentity,
+    clientPid,
+    dbPath,
+    logger,
+    resweepTimer,
+    selfEntryPath,
+    server,
+    service,
+  } = opts;
   let closing = false;
   const finishShutdown = async (code: number): Promise<void> => {
     // The SQLite close/checkpoint is the one step that must not be skipped:
@@ -288,9 +300,14 @@ function installLifecycleShutdown(opts: LifecycleShutdownOptions): NodeJS.Timeou
   process.on("SIGINT", () => {
     shutdown(0, "SIGINT");
   });
-  const clientLivenessTimer = startClientLivenessWatch(clientPid, systemProcessInspector, () => {
-    shutdown(0, "client process exited");
-  });
+  const clientLivenessTimer = startClientLivenessWatch(
+    clientPid,
+    clientIdentity,
+    systemProcessInspector,
+    () => {
+      shutdown(0, "client process exited");
+    },
+  );
   return clientLivenessTimer;
 }
 

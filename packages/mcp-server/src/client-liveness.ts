@@ -22,13 +22,22 @@ export const CLIENT_LIVENESS_POLL_MS = 5_000;
  */
 export function startClientLivenessWatch(
   clientPid: number,
-  inspector: Pick<ProcessInspector, "isAlive">,
+  clientIdentity: string | undefined,
+  inspector: Pick<ProcessInspector, "identity" | "isAlive">,
   onClientGone: () => void,
   intervalMs = CLIENT_LIVENESS_POLL_MS,
 ): NodeJS.Timeout {
   let notified = false;
   const timer = setInterval(() => {
-    if (notified || inspector.isAlive(clientPid)) return;
+    if (notified) return;
+    const alive = inspector.isAlive(clientPid);
+    const currentIdentity = alive ? inspector.identity(clientPid) : undefined;
+    const sameProcess =
+      alive &&
+      (clientIdentity === undefined ||
+        currentIdentity === undefined ||
+        currentIdentity === clientIdentity);
+    if (sameProcess) return;
     notified = true;
     onClientGone();
   }, intervalMs);

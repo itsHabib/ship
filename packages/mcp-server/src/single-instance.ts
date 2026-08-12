@@ -116,6 +116,8 @@ interface InstanceEntry {
 export interface ProcessInspector {
   /** True when a process with `pid` currently exists. */
   isAlive: (pid: number) => boolean;
+  /** Stable process-birth identity, or undefined when the OS cannot provide it. */
+  identity: (pid: number) => string | undefined;
   /** Ask `pid` to terminate (SIGTERM → graceful on POSIX; hard on Windows). */
   terminate: (pid: number) => void;
   /**
@@ -213,6 +215,9 @@ export const systemProcessInspector: ProcessInspector = {
       return (err as NodeJS.ErrnoException).code === "EPERM";
     }
   },
+  identity(pid: number): string | undefined {
+    return readProcessIdentity(pid);
+  },
   terminate(pid: number): void {
     try {
       process.kill(pid, "SIGTERM");
@@ -227,6 +232,46 @@ export const systemProcessInspector: ProcessInspector = {
     return readParentPid(pid);
   },
 };
+
+/**
+ * Stable identity for one lifetime of `pid`. This closes the existence-only
+ * liveness hole where a dead client's PID is reused before the next poll.
+ */
+function readProcessIdentity(pid: number): string | undefined {
+  try {
+    if (process.platform === "linux") {
+      // /proc/<pid>/stat field 22 is starttime. The command in field 2 may
+      // contain spaces or parentheses, so split only after its final `)`.
+      const stat = readFileSync(`/proc/${String(pid)}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) return undefined;
+      const fieldsFromState = stat
+        .slice(commandEnd + 1)
+        .trim()
+        .split(/\s+/);
+      return fieldsFromState[19];
+    }
+    if (process.platform === "win32") {
+      const powershell = join(
+        process.env["SystemRoot"] ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      return runForCmdline(powershell, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${String(pid)}").CreationDate.ToUniversalTime().Ticks`,
+      ]);
+    }
+    // macOS / other POSIX: lstart is stable for the process lifetime.
+    return runForCmdline("/bin/ps", ["-p", String(pid), "-o", "lstart="]);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Best-effort parent pid, per platform, same trust posture as
