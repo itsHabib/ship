@@ -77,6 +77,30 @@ Each layer owns one responsibility and can be replaced without rippling: dossier
 The contract planes are **State** (dossier plus run, verdict, grant, and receipt artifacts), **Execution** (Ship), **Verification** (review and Gate's escalate-only verifier ladder), **Capability** (scoped operator-minted grants), and **Observability** (Console, Flare, /wip, /shipped, /status). This section is **Composition**. Planes share typed artifacts - evidence -> verdict -> action - rather than call stacks.
 <!-- END dev-workbench -->
 
+## Review-cycle discipline
+
+Per PR, at most **two fix-rounds** against the review panel: fix every
+verified finding at P1 or higher and anything touching authorization
+invariants, push once, re-trigger the panel once — then one more round
+at the same bar. After round two, STOP fixing. Residual P2s and nits go
+to the judge with a written why — a judgment can accept
+verified-addressed-but-unretracted threads and recorded deferrals (a
+FOLLOWUPS.md at the repo root). Reviewers generate second-order findings
+on every new diff indefinitely, so "zero open findings" is a
+non-terminating exit condition; the judge's residual acceptance is the
+terminating one. The round cap caps panel re-triggers, not fixes: a
+verified P1-or-higher surfaced by the final run still gets fixed, then
+goes to the judge as verified-addressed-but-unretracted rather than
+through a fourth panel round.
+
+Two fix-rounds plus the initial panel run is three review cycles, which
+is why review caps default to `max_cycles: 3`; `max_requests` caps total
+panel re-triggers across the PR. These caps are the stop signal, not
+friction — never respond to a ceiling park by asking for a wider grant.
+A blown cap means the process looped; the fix is fewer rounds, not more
+budget. Behavioral claims that reviewers keep re-litigating belong in
+e2e tests asserted every CI run, not in review rounds.
+
 <!-- BEGIN eng-philo (managed by /eng-philo — re-run to refresh; hand-edits inside this block will be overwritten) -->
 ## Engineering principles
 
