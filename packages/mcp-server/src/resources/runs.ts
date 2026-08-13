@@ -18,6 +18,8 @@ import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { getWorkflowRunOutputSchema } from "@ship/mcp";
 
+import type { ActiveWorkTracker } from "../active-work.js";
+
 import { mapErrorToMcpError } from "../errors.js";
 
 const URI_TEMPLATE = "ship://runs/{id}";
@@ -28,7 +30,11 @@ const MIME_JSON = "application/json";
  * given `McpServer`. V1 doesn't advertise resource subscriptions — the
  * caller must re-read to pick up changes.
  */
-export function registerRunsResource(server: McpServer, factory: ShipServiceFactory): void {
+export function registerRunsResource(
+  server: McpServer,
+  factory: ShipServiceFactory,
+  activeWork?: ActiveWorkTracker,
+): void {
   const template = new ResourceTemplate(URI_TEMPLATE, { list: undefined });
   server.registerResource(
     "ship-run",
@@ -41,7 +47,8 @@ export function registerRunsResource(server: McpServer, factory: ShipServiceFact
     async (uri, variables) => {
       try {
         const id = extractId(variables["id"]);
-        const run = await factory().getRun(id);
+        const get = factory().getRun(id);
+        const run = await (activeWork?.track(get) ?? get);
         if (run === null) {
           throw new McpError(ErrorCode.InvalidParams, `not found: ${id}`);
         }

@@ -1,0 +1,631 @@
+/**
+ * Store-scoped single-instance guard for `@ship/mcp-server`.
+ *
+ * Why this exists: every Claude session spawns its own `@ship/mcp-server`
+ * process, and before the lifecycle wiring in `bin.ts` those servers never
+ * exited when their session died — on Windows a dirty parent death delivers no
+ * stdin EOF, so orphaned servers accumulated (6 alive at once, over hours) all
+ * holding one `state.db` open. Unbounded long-lived writers on a single WAL
+ * file is what rotted the b-tree twice, with total data loss.
+ *
+ * The per-client process model (ship-v1 spec) supports concurrent sessions,
+ * each with its own server on the shared store — a healthy sibling with a
+ * live client is a peer to coexist with, never a target. What this guard
+ * removes is exactly the accumulation case: a server whose CLIENT died
+ * without tearing it down. A fresh server reaps only demonstrably orphaned
+ * siblings bound to the SAME store when the platform can request a graceful
+ * termination (POSIX SIGTERM). On Windows an orphan self-detects its dead
+ * client and drains gracefully; a sibling never hard-kills it. Boot adopts a
+ * reaped server's orphaned runs (`resumeOrphans`). Short-lived CLI processes
+ * never register here, so the intended CLI+server concurrency is untouched.
+ *
+ * PID-reuse safety is a two-stage guard. A heartbeat the running server
+ * refreshes on a timer is the cheap first filter — a long-dead entry reads as
+ * stale and isn't even a reap candidate. But a *crashed* server (uncaught
+ * throw, OOM, kill -9, power loss) never removes its entry and leaves a
+ * still-fresh heartbeat behind, so freshness alone is not enough: before
+ * terminating, the reaper verifies the live PID is actually a ship mcp-server
+ * by matching its command line ({@link ProcessInspector.commandLine}). A reused
+ * PID running something else fails that check and is never killed; an
+ * unconfirmable identity fails safe (skip, don't kill).
+ *
+ * Boot is not serialized: two servers starting against one store within each
+ * other's list→register window can both survive (or reap each other). Layer 1
+ * (self-exit on disconnect) still bounds each session to one server, so this is
+ * a bounded, self-correcting residual — not the original unbounded accumulation.
+ *
+ * This module is pure mechanism + a small policy (which siblings to reap). The
+ * process primitives are injected via {@link ProcessInspector} so the policy is
+ * unit-testable without spawning real processes.
+ */
+
+import type { Logger } from "@ship/logger";
+
+import { execFileSync, spawn } from "node:child_process";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve as resolvePath, sep } from "node:path";
+
+/** Registry subdirectory under the store dir; one JSON file per live server. */
+const REGISTRY_DIRNAME = "mcp-server-instances";
+
+/**
+ * A registry entry is "fresh" (and therefore a candidate for further identity
+ * and orphanhood checks) if its heartbeat is newer than this. Kept a small
+ * multiple of the heartbeat cadence so a dead server's entry goes stale
+ * quickly, shrinking the window in which a reused PID could be mistaken for a
+ * live sibling.
+ */
+export const INSTANCE_FRESHNESS_MS = 150_000;
+
+/** How often a running server should refresh its heartbeat (see bin.ts timer). */
+export const INSTANCE_HEARTBEAT_MS = 60_000;
+
+/**
+ * How long to wait for a reaped sibling to actually exit before opening the
+ * store. `process.kill` returns before the OS finishes tearing the process
+ * down; on Windows the killed holder's WAL `-shm` handle lingers just long
+ * enough that an immediate reopen faults with a transient "disk I/O error".
+ * Waiting for the PID to disappear closes that race.
+ */
+const PID_EXIT_TIMEOUT_MS = 3_000;
+
+/**
+ * A live PID is only reaped when its command line contains BOTH markers — it is
+ * a ship mcp-server (`mcp-server`) AND it is *this* family's, not some other
+ * repo's connector (`ship`). A reused PID running anything else fails the match
+ * and is left alone.
+ *
+ * This deliberately does NOT try to recognize the source run
+ * (`cd packages/mcp-server && npx tsx src/bin.ts`), whose command line can
+ * carry neither marker because the package directory is the cwd. A generic
+ * `tsx` + `bin.ts` shape would match any project on the machine running a
+ * TypeScript entrypoint by that name, and a reused PID inside the freshness
+ * window would then be SIGTERMed on that evidence alone. Killing an unrelated
+ * process is a strictly worse failure than declining to reap a sibling: the
+ * first destroys someone else's work, the second is contained by the caller,
+ * which now keeps the entry and logs loudly.
+ *
+ * Closing the source-run gap needs ownership the process actually asserts — an
+ * flock the running server holds on its own registry entry, so liveness is
+ * proven by the lock rather than inferred from argv — not a wider substring
+ * guess. Tracked in the PR discussion.
+ */
+const SHIP_SERVER_CMDLINE_MARKERS = ["mcp-server", "ship"] as const;
+
+/** On-disk shape of a registry entry. */
+interface InstanceEntry {
+  pid: number;
+  startedAt: string;
+  heartbeatAt: string;
+  dbPath: string;
+}
+
+/**
+ * Injected process primitives — the mechanism the reap policy drives. The
+ * default implementation ({@link systemProcessInspector}) uses `process.kill`;
+ * tests substitute a deterministic fake.
+ */
+export interface ProcessInspector {
+  /** True when a process with `pid` currently exists. */
+  isAlive: (pid: number) => boolean;
+  /** Stable process-birth identity, or undefined when the OS cannot provide it. */
+  identity: (pid: number) => string | undefined;
+  /** Stable OS wait on this process lifetime; Windows avoids PID polling. */
+  watchExit?: (pid: number, onExit: () => void) => () => void;
+  /** Ask `pid` to terminate (SIGTERM → graceful on POSIX; hard on Windows). */
+  terminate: (pid: number) => void;
+  /**
+   * The command line of `pid`, or `undefined` when it can't be determined. Used
+   * to confirm a reap target is genuinely a ship mcp-server (not a reused PID)
+   * before killing it; `undefined` fails safe (the caller does not kill).
+   */
+  commandLine: (pid: number) => string | undefined;
+  /**
+   * The pid of `pid`'s CURRENT parent, or `undefined` when it can't be
+   * determined. The orphan test: a server whose client died is re-parented to
+   * init/launchd on POSIX (ppid 1) or keeps a dead recorded parent on Windows.
+   * `undefined` fails safe (the caller treats the sibling as healthy).
+   */
+  parentPid: (pid: number) => number | undefined;
+}
+
+/** Options for {@link reconcileSingleInstance}. */
+export interface ReconcileOptions {
+  /** The resolved SQLite path — its directory scopes the registry. */
+  dbPath: string;
+  /** This process's pid (`process.pid`). */
+  selfPid: number;
+  /** This process's start time in epoch ms. */
+  startedAtMs: number;
+  /** Current time in epoch ms (injectable for tests). */
+  nowMs: number;
+  inspector: ProcessInspector;
+  logger?: Logger;
+  /** Freshness window override (tests); defaults to {@link INSTANCE_FRESHNESS_MS}. */
+  freshnessMs?: number;
+  /** Whether `inspector.terminate` lets the target drain; false on Windows. */
+  terminateIsGraceful?: boolean;
+}
+
+/** Outcome of a reconcile pass. */
+export interface ReconcileResult {
+  /** Absolute path of this process's own registry entry. */
+  selfEntryPath: string;
+  /** Pids of demonstrably orphaned sibling servers this pass terminated. */
+  reapedPids: number[];
+  /**
+   * Registry entries of the terminated siblings, still on disk. The caller
+   * removes each entry only once its pid is confirmed gone — deleting at
+   * terminate time made a hung sibling permanently invisible (its heartbeat
+   * never recreates a missing entry), so later launches could stack more
+   * long-lived handles against the same store.
+   */
+  reapedEntries: { pid: number; entryPath: string }[];
+  /** Pids whose entries were dead/garbage and were swept away without a kill. */
+  removedStalePids: number[];
+}
+
+/** Registry directory for the store that `dbPath` lives in. */
+export function registryDirFor(dbPath: string): string {
+  return join(dirname(dbPath), REGISTRY_DIRNAME);
+}
+
+/**
+ * One canonical identity per physical store. Raw string comparison lets two
+ * aliases of the same SQLite file — `/x/state.db` vs `/x/./state.db`, a
+ * symlinked directory, mixed case on Windows — each believe they are alone
+ * and open the same database, bypassing the guard entirely. The directory is
+ * realpathed as a whole when it exists, so filename symlinks collapse too. A
+ * not-yet-created database falls back to a realpathed parent plus basename;
+ * Windows case-folds.
+ */
+export function canonicalStorePath(dbPath: string): string {
+  const resolved = resolvePath(dbPath);
+  let canonical = resolved;
+  try {
+    canonical = realpathSync(resolved);
+  } catch {
+    try {
+      canonical = realpathSync(dirname(resolved)) + sep + basename(resolved);
+    } catch {
+      // Directory not created yet — the resolved absolute path is the identity.
+    }
+  }
+  return process.platform === "win32" ? canonical.toLowerCase() : canonical;
+}
+
+/**
+ * The default {@link ProcessInspector}. `isAlive` uses signal 0 (existence
+ * probe): `ESRCH` → gone; `EPERM` → exists but not ours (still alive). Both
+ * `terminate` and the probe swallow "already gone" so reconcile stays robust
+ * against a sibling exiting mid-pass.
+ */
+export const systemProcessInspector: ProcessInspector = {
+  isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err: unknown) {
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
+  },
+  identity(pid: number): string | undefined {
+    return readProcessIdentity(pid);
+  },
+  terminate(pid: number): void {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Already gone, or not permitted — nothing to reap.
+    }
+  },
+  commandLine(pid: number): string | undefined {
+    return readCommandLine(pid);
+  },
+  parentPid(pid: number): number | undefined {
+    return readParentPid(pid);
+  },
+  ...(process.platform === "win32" ? { watchExit: watchWindowsProcessExit } : {}),
+};
+
+/**
+ * Hold a Windows Process object for the original client lifetime. Unlike
+ * existence polling, WaitForExit stays attached to that process if its PID is
+ * later reused. The returned stop function tears down the helper on normal
+ * server shutdown.
+ */
+function watchWindowsProcessExit(pid: number, onExit: () => void): () => void {
+  const powershell = join(
+    process.env["SystemRoot"] ?? "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const child = spawn(
+    powershell,
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$client = Get-Process -Id ${String(pid)} -ErrorAction Stop; $client.WaitForExit()`,
+    ],
+    { stdio: "ignore", windowsHide: true },
+  );
+  let stopped = false;
+  child.once("exit", (code) => {
+    if (stopped) return;
+    // A successful wait proves the captured process exited. If PowerShell
+    // could not capture it because it was already gone, the native existence
+    // check proves the same fact. Other helper failures fail safe and leave
+    // transport close as the lifecycle signal.
+    if (code === 0 || !systemProcessInspector.isAlive(pid)) onExit();
+  });
+  return () => {
+    stopped = true;
+    child.kill();
+  };
+}
+
+/**
+ * Stable identity for one lifetime of `pid`. This closes the existence-only
+ * liveness hole where a dead client's PID is reused before the next poll.
+ */
+function readProcessIdentity(pid: number): string | undefined {
+  try {
+    if (process.platform === "linux") {
+      // /proc/<pid>/stat field 22 is starttime. The command in field 2 may
+      // contain spaces or parentheses, so split only after its final `)`.
+      const stat = readFileSync(`/proc/${String(pid)}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) return undefined;
+      const fieldsFromState = stat
+        .slice(commandEnd + 1)
+        .trim()
+        .split(/\s+/);
+      return fieldsFromState[19];
+    }
+    if (process.platform === "win32") return undefined;
+    // macOS / other POSIX: lstart is stable for the process lifetime.
+    return runForCmdline("/bin/ps", ["-p", String(pid), "-o", "lstart="]);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Best-effort parent pid, per platform, same trust posture as
+ * {@link readCommandLine}: fixed absolute binaries, any failure returns
+ * `undefined` (which the reap policy reads as "cannot prove orphanhood → do
+ * not kill").
+ */
+function readParentPid(pid: number): number | undefined {
+  try {
+    if (process.platform === "win32") {
+      const powershell = join(
+        process.env["SystemRoot"] ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const out = runForCmdline(powershell, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${String(pid)}").ParentProcessId`,
+      ]);
+      return parsePid(out);
+    }
+    // linux + darwin: ps lives at a fixed path and reports the CURRENT parent
+    // (a reparented orphan shows 1, not its dead original parent).
+    return parsePid(runForCmdline("/bin/ps", ["-p", String(pid), "-o", "ppid="]));
+  } catch {
+    return undefined;
+  }
+}
+
+function parsePid(out: string | undefined): number | undefined {
+  if (out === undefined) return undefined;
+  const n = Number.parseInt(out.trim(), 10);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/**
+ * Best-effort process command line, per platform. Only runs for an actual reap
+ * candidate (rare — usually zero at boot), so a one-shot shell-out is fine. Any
+ * failure returns `undefined`, which the reap policy treats as "cannot confirm
+ * → don't kill".
+ */
+function readCommandLine(pid: number): string | undefined {
+  try {
+    if (process.platform === "linux") {
+      return readFileSync(`/proc/${String(pid)}/cmdline`, "utf8")
+        .replace(/\0/g, " ")
+        .trim();
+    }
+    // Fixed absolute binaries (never PATH-resolved) so a hijacked PATH can't
+    // substitute the process the reaper trusts for identity.
+    if (process.platform === "win32") {
+      const powershell = join(
+        process.env["SystemRoot"] ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      return runForCmdline(powershell, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${String(pid)}").CommandLine`,
+      ]);
+    }
+    // darwin / other POSIX: ps lives at a fixed path.
+    return runForCmdline("/bin/ps", ["-p", String(pid), "-o", "command="]);
+  } catch {
+    return undefined;
+  }
+}
+
+function runForCmdline(command: string, args: readonly string[]): string | undefined {
+  const out = execFileSync(command, args, {
+    encoding: "utf8",
+    timeout: 5_000,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const trimmed = out.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** True when a command line looks like a ship mcp-server (all markers present). */
+function looksLikeShipServer(commandLine: string): boolean {
+  const haystack = commandLine.toLowerCase();
+  return SHIP_SERVER_CMDLINE_MARKERS.every((marker) => haystack.includes(marker));
+}
+
+/**
+ * Reconcile prior registry entries for `dbPath`, then register this process.
+ * Reaps only a same-store server whose client is demonstrably gone, coexists
+ * with healthy peer sessions, and sweeps dead / garbage entries. Never throws
+ * on a single bad entry — a corrupt or racing entry is logged and skipped so a
+ * fresh server always comes up.
+ */
+export function reconcileSingleInstance(opts: ReconcileOptions): ReconcileResult {
+  const freshnessMs = opts.freshnessMs ?? INSTANCE_FRESHNESS_MS;
+  const dbPath = canonicalStorePath(opts.dbPath);
+  const dir = registryDirFor(dbPath);
+  mkdirSync(dir, { recursive: true });
+
+  const reapedPids: number[] = [];
+  const reapedEntries: { pid: number; entryPath: string }[] = [];
+  const removedStalePids: number[] = [];
+  for (const file of listEntryFiles(dir)) {
+    const path = join(dir, file);
+    const action = classifyEntry(path, opts, freshnessMs);
+    if (action.kind === "skip") continue;
+    if (action.kind === "remove") {
+      removeEntry(path);
+      if (Number.isFinite(action.pid)) removedStalePids.push(action.pid);
+      continue;
+    }
+    // The entry stays until the caller confirms the pid is gone — see
+    // ReconcileResult.reapedEntries.
+    opts.inspector.terminate(action.pid);
+    reapedPids.push(action.pid);
+    reapedEntries.push({ pid: action.pid, entryPath: path });
+    opts.logger?.warn(
+      { reapedPid: action.pid, dbPath },
+      "reaped an orphaned ship mcp-server bound to the same store (client gone; adopting its runs)",
+    );
+  }
+
+  const selfEntryPath = join(dir, `${String(opts.selfPid)}.json`);
+  writeEntry(selfEntryPath, {
+    pid: opts.selfPid,
+    startedAt: new Date(opts.startedAtMs).toISOString(),
+    heartbeatAt: new Date(opts.nowMs).toISOString(),
+    dbPath,
+  });
+  return { selfEntryPath, reapedPids, reapedEntries, removedStalePids };
+}
+
+/** Options for {@link awaitPidsGone} (all injectable for tests). */
+export interface AwaitPidsGoneOptions {
+  timeoutMs?: number;
+  intervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  nowMs?: () => number;
+}
+
+/**
+ * Poll until every pid in `pids` has exited, or `timeoutMs` elapses. Returns
+ * the pids still alive at the deadline (empty when all are gone). Callers open
+ * the store only after this resolves so they never reopen a WAL file whose
+ * just-reaped holder hasn't finished releasing it.
+ */
+export async function awaitPidsGone(
+  pids: readonly number[],
+  inspector: Pick<ProcessInspector, "isAlive">,
+  opts: AwaitPidsGoneOptions = {},
+): Promise<number[]> {
+  const timeoutMs = opts.timeoutMs ?? PID_EXIT_TIMEOUT_MS;
+  const intervalMs = opts.intervalMs ?? 50;
+  const sleep = opts.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = opts.nowMs ?? (() => Date.now());
+
+  const deadline = now() + timeoutMs;
+  let remaining = pids.filter((pid) => inspector.isAlive(pid));
+  while (remaining.length > 0 && now() < deadline) {
+    await sleep(intervalMs);
+    remaining = remaining.filter((pid) => inspector.isAlive(pid));
+  }
+  return remaining;
+}
+
+/** Refresh this process's heartbeat so live siblings can tell it apart from a reused PID. */
+export function heartbeatInstance(selfEntryPath: string, nowMs: number): void {
+  const entry = readEntry(selfEntryPath);
+  if (entry === undefined) return;
+  entry.heartbeatAt = new Date(nowMs).toISOString();
+  writeEntry(selfEntryPath, entry);
+}
+
+/** Remove this process's registry entry on graceful shutdown. Idempotent. */
+export function releaseInstance(selfEntryPath: string): void {
+  removeEntry(selfEntryPath);
+}
+
+type EntryAction =
+  | { kind: "skip" }
+  | { kind: "remove"; pid: number }
+  | { kind: "reap"; pid: number };
+
+/**
+ * Decide what to do with one sibling entry. A live sibling with a fresh
+ * heartbeat advances to explicit identity and orphanhood checks; only a
+ * confirmed orphan is reaped. Dead or garbage entries are removed without a
+ * kill. An alive-but-stale-heartbeat entry is left untouched (a hung server or
+ * a reused PID — not safe to kill, log for the operator).
+ */
+function classifyEntry(path: string, opts: ReconcileOptions, freshnessMs: number): EntryAction {
+  const entry = readEntry(path);
+  if (entry === undefined) {
+    opts.logger?.warn({ path }, "removing unreadable ship mcp-server registry entry");
+    // The entry body is unreadable; recover the pid from the `<pid>.json` name
+    // for the swept-stale log rather than emitting NaN.
+    return { kind: "remove", pid: Number.parseInt(basename(path, ".json"), 10) };
+  }
+  if (entry.pid === opts.selfPid) return { kind: "skip" };
+  // The registry dir is keyed by the store *directory*, so two distinct
+  // SHIP_DB_PATH files in one dir share it. An entry for a different db belongs
+  // to a separate store's server — never our sibling; leave it entirely alone.
+  // Both sides are canonicalized so two aliases of one physical file compare
+  // equal.
+  if (entry.dbPath !== "" && canonicalStorePath(entry.dbPath) !== canonicalStorePath(opts.dbPath)) {
+    return { kind: "skip" };
+  }
+  if (!opts.inspector.isAlive(entry.pid)) return { kind: "remove", pid: entry.pid };
+
+  const heartbeatMs = Date.parse(entry.heartbeatAt);
+  const fresh = Number.isFinite(heartbeatMs) && opts.nowMs - heartbeatMs <= freshnessMs;
+  if (!fresh) {
+    opts.logger?.warn(
+      { pid: entry.pid, heartbeatAt: entry.heartbeatAt },
+      "alive ship mcp-server registry entry has a stale heartbeat; not reaping (possible hung server or reused PID)",
+    );
+    return { kind: "skip" };
+  }
+  return confirmReapTarget(entry.pid, opts);
+}
+
+/**
+ * Fresh + alive is only a *candidate*: identity and orphanhood both have to be
+ * proven before a kill. Two gates, both fail-safe to skip:
+ *
+ * Identity — the live PID must actually be a ship mcp-server; a reused PID
+ * must never be reaped. Deleting an unidentified entry would be the worse
+ * error: `reconcileSingleInstance` opens the store no matter what this
+ * returns, so a `remove` drops the only record of a sibling still holding the
+ * WAL and the guard is bypassed silently.
+ *
+ * Orphanhood — a healthy sibling with a live client is a supported peer, not
+ * a target: the per-client process model (ship-v1 spec §Concurrency) allows
+ * two concurrent sessions on one store, and killing the first session's
+ * server severs its MCP connection mid-run. Only a demonstrably orphaned
+ * owner is reaped: its client is gone, so it has been re-parented to
+ * init/launchd (POSIX, ppid ≤ 1) or its recorded parent is dead (Windows —
+ * no re-parenting). An unreadable parent fails safe: coexist, don't kill. A
+ * proven Windows orphan also stays untouched by the sibling because Node's
+ * SIGTERM is a hard kill there; its own client-liveness watch drains it.
+ */
+function confirmReapTarget(pid: number, opts: ReconcileOptions): EntryAction {
+  const cmdline = opts.inspector.commandLine(pid);
+  if (cmdline === undefined) {
+    opts.logger?.warn(
+      { pid },
+      "could not read reap target's command line; not reaping (fail-safe against PID reuse)",
+    );
+    return { kind: "skip" };
+  }
+  if (!looksLikeShipServer(cmdline)) {
+    opts.logger?.warn(
+      { pid, cmdline },
+      "could not identify the reap target as a ship mcp-server; not reaping and keeping its entry (fail-safe against an unrecognized launch path)",
+    );
+    return { kind: "skip" };
+  }
+  const ppid = opts.inspector.parentPid(pid);
+  if (ppid === undefined) {
+    opts.logger?.warn(
+      { pid },
+      "could not read the sibling's parent; not reaping (cannot prove it is orphaned)",
+    );
+    return { kind: "skip" };
+  }
+  if (ppid > 1 && opts.inspector.isAlive(ppid)) {
+    opts.logger?.info(
+      { pid, ppid },
+      "live ship mcp-server sibling has a live client; coexisting (per-client process model)",
+    );
+    return { kind: "skip" };
+  }
+  return reapOrAwaitSelfShutdown(pid, ppid, opts);
+}
+
+/** Reap only when the platform can deliver a graceful termination request. */
+function reapOrAwaitSelfShutdown(pid: number, ppid: number, opts: ReconcileOptions): EntryAction {
+  if (!(opts.terminateIsGraceful ?? process.platform !== "win32")) {
+    opts.logger?.info(
+      { pid, ppid },
+      "orphaned ship mcp-server cannot be terminated gracefully on this platform; waiting for its client-liveness watch to drain and exit",
+    );
+    return { kind: "skip" };
+  }
+  return { kind: "reap", pid };
+}
+
+function listEntryFiles(dir: string): string[] {
+  try {
+    return readdirSync(dir).filter((name) => name.endsWith(".json"));
+  } catch {
+    return [];
+  }
+}
+
+function readEntry(path: string): InstanceEntry | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<InstanceEntry>;
+    if (typeof parsed.pid !== "number" || typeof parsed.heartbeatAt !== "string") return undefined;
+    return {
+      pid: parsed.pid,
+      startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : parsed.heartbeatAt,
+      heartbeatAt: parsed.heartbeatAt,
+      dbPath: typeof parsed.dbPath === "string" ? parsed.dbPath : "",
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function writeEntry(path: string, entry: InstanceEntry): void {
+  // Temp-then-rename: a bare writeFileSync truncates before it writes, so a
+  // reconciling sibling could read an empty/partial entry, classify it as
+  // garbage, and sweep a live server — after which both open the same store.
+  // The .tmp suffix keeps the scratch file out of listEntryFiles's .json scan.
+  const tmp = `${path}.${String(process.pid)}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(entry)}\n`, "utf8");
+  renameSync(tmp, path);
+}
+
+function removeEntry(path: string): void {
+  rmSync(path, { force: true });
+}

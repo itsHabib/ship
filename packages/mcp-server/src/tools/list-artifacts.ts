@@ -7,10 +7,16 @@ import type { ShipServiceFactory } from "@ship/core";
 
 import { listArtifactsInputSchema, listArtifactsOutputSchema } from "@ship/mcp";
 
+import type { ActiveWorkTracker } from "../active-work.js";
+
 import { mapErrorToMcpError } from "../errors.js";
 
 /** Registers the `list_artifacts` tool on the given `McpServer`. */
-export function registerListArtifactsTool(server: McpServer, factory: ShipServiceFactory): void {
+export function registerListArtifactsTool(
+  server: McpServer,
+  factory: ShipServiceFactory,
+  activeWork?: ActiveWorkTracker,
+): void {
   server.registerTool(
     "list_artifacts",
     {
@@ -20,7 +26,8 @@ export function registerListArtifactsTool(server: McpServer, factory: ShipServic
     },
     async (args) => {
       try {
-        const artifacts = await factory().listArtifacts(args.workflowRunId);
+        const list = factory().listArtifacts(args.workflowRunId);
+        const artifacts = await (activeWork?.track(list) ?? list);
         const validated = listArtifactsOutputSchema.parse({ artifacts });
         return { content: [{ type: "text", text: JSON.stringify(validated) }] };
       } catch (err) {

@@ -10,11 +10,16 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { driverRunInputSchema, driverTickResultSchema } from "@ship/mcp";
 import { isAbsolute } from "node:path";
 
+import type { ActiveWorkTracker } from "../active-work.js";
 import type { DriverServiceFactory } from "../driver-service.js";
 
 import { mapErrorToMcpError } from "../errors.js";
 
-export function registerDriverRunTool(server: McpServer, factory: DriverServiceFactory): void {
+export function registerDriverRunTool(
+  server: McpServer,
+  factory: DriverServiceFactory,
+  activeWork?: ActiveWorkTracker,
+): void {
   server.registerTool(
     "driver_run",
     {
@@ -25,7 +30,7 @@ export function registerDriverRunTool(server: McpServer, factory: DriverServiceF
     async (args) => {
       try {
         const validated = driverRunInputSchema.parse(args);
-        const result = await factory().run(toDriverRunRef(validated), {
+        const run = factory().run(toDriverRunRef(validated), {
           ...(validated.batch !== undefined ? { batch: validated.batch } : {}),
           force: validated.force === true,
           maxWaitMs: validated.maxWaitMs,
@@ -33,6 +38,7 @@ export function registerDriverRunTool(server: McpServer, factory: DriverServiceF
             ? { pollIntervalMs: validated.pollIntervalMs }
             : {}),
         });
+        const result = await (activeWork?.track(run) ?? run);
         const validatedOut = driverTickResultSchema.parse(result);
         return { content: [{ type: "text", text: JSON.stringify(validatedOut) }] };
       } catch (err) {

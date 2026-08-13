@@ -6,11 +6,16 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { driverLandInputSchema, driverLandOutputSchema } from "@ship/mcp";
 
+import type { ActiveWorkTracker } from "../active-work.js";
 import type { DriverServiceFactory } from "../driver-service.js";
 
 import { mapErrorToMcpError } from "../errors.js";
 
-export function registerDriverLandTool(server: McpServer, factory: DriverServiceFactory): void {
+export function registerDriverLandTool(
+  server: McpServer,
+  factory: DriverServiceFactory,
+  activeWork?: ActiveWorkTracker,
+): void {
   server.registerTool(
     "driver_land",
     {
@@ -21,7 +26,7 @@ export function registerDriverLandTool(server: McpServer, factory: DriverService
     async (args) => {
       try {
         const validated = driverLandInputSchema.parse(args);
-        const run = await factory().land(validated.driverRunId, {
+        const land = factory().land(validated.driverRunId, {
           prNumber: validated.prNumber,
           ...(validated.streamId !== undefined ? { streamId: validated.streamId } : {}),
           ...(validated.cycles !== undefined ? { cycles: validated.cycles } : {}),
@@ -31,6 +36,7 @@ export function registerDriverLandTool(server: McpServer, factory: DriverService
             : {}),
           ...(validated.gateRunRef !== undefined ? { gateRunRef: validated.gateRunRef } : {}),
         });
+        const run = await (activeWork?.track(land) ?? land);
         const validatedOut = driverLandOutputSchema.parse({
           driverRunId: run.id,
           status: run.status,

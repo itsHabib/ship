@@ -7,10 +7,16 @@ import type { ShipServiceFactory } from "@ship/core";
 
 import { downloadArtifactInputSchema, downloadArtifactOutputSchema } from "@ship/mcp";
 
+import type { ActiveWorkTracker } from "../active-work.js";
+
 import { mapErrorToMcpError } from "../errors.js";
 
 /** Registers the `download_artifact` tool on the given `McpServer`. */
-export function registerDownloadArtifactTool(server: McpServer, factory: ShipServiceFactory): void {
+export function registerDownloadArtifactTool(
+  server: McpServer,
+  factory: ShipServiceFactory,
+  activeWork?: ActiveWorkTracker,
+): void {
   server.registerTool(
     "download_artifact",
     {
@@ -20,9 +26,10 @@ export function registerDownloadArtifactTool(server: McpServer, factory: ShipSer
     },
     async (args) => {
       try {
-        const out = await factory().downloadArtifact(args.workflowRunId, args.path, {
+        const download = factory().downloadArtifact(args.workflowRunId, args.path, {
           ...(args.force !== undefined && { force: args.force }),
         });
+        const out = await (activeWork?.track(download) ?? download);
         const validated = downloadArtifactOutputSchema.parse(out);
         return { content: [{ type: "text", text: JSON.stringify(validated) }] };
       } catch (err) {
