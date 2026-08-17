@@ -7,7 +7,7 @@ export default defineConfig({
     // parks a run. See packages/receipt/test/receipts-isolation.ts. The same
     // goes for driver-state ledger events — every suite redirects
     // WORKBENCH_STATE_DIR, enforced by
-    // driverstate-emitter/test/isolation-wiring.test.ts.
+    // packages/driverstate-emitter/test/isolation-wiring.test.ts.
     setupFiles: [
       "../receipt/test/receipts-isolation.ts",
       "../driverstate-emitter/test/driverstate-isolation.ts",

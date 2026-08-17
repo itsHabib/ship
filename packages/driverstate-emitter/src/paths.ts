@@ -40,9 +40,10 @@ function assertNotDefaultRootUnderTest(): void {
   throw new Error(
     "driverstate: refusing to resolve the real store " +
       `(${defaultStateRoot()}) under vitest. WORKBENCH_STATE_DIR is unset, ` +
-      "which means this suite's vitest.config.ts is missing " +
-      '"driverstate-emitter/test/driverstate-isolation.ts" in test.setupFiles. ' +
-      "Add it, or set WORKBENCH_STATE_DIR to a temp dir for this test.",
+      "which means this suite's vitest.config.ts does not wire " +
+      "packages/driverstate-emitter/test/driverstate-isolation.ts into " +
+      "test.setupFiles (as a path relative to that config). Add it, or set " +
+      "WORKBENCH_STATE_DIR to a temp dir for this test.",
   );
 }
 

@@ -60,7 +60,9 @@ function isFile(path: string): boolean {
  * it at that same directory.
  */
 function isolationSetupPaths(source: string): string[] {
-  const block = /setupFiles: \[([\s\S]*?)\]/.exec(source);
+  // Whitespace-tolerant: a formatting-only edit (prettier reflowing the array,
+  // dropping the space after the colon) must not make this guard cry wolf.
+  const block = /setupFiles\s*:\s*\[([\s\S]*?)\]/.exec(source);
   if (block === null) {
     return [];
   }
@@ -77,6 +79,22 @@ describe("driver-state isolation wiring", () => {
     expect(configs).toContain(join(repoRoot, "vitest.config.ts"));
     expect(configs).toContain(join(repoRoot, "e2e", "vitest.e2e.config.ts"));
     expect(configs).toContain(join(repoRoot, "packages", "cli", "vitest.config.ts"));
+  });
+
+  it("reads wiring through formatting-only variation", () => {
+    // The parse must track what the config *means*, not how prettier laid it
+    // out — otherwise a reflow trips the guard on a correctly-wired repo.
+    const wired = [
+      `setupFiles: ["../driverstate-emitter/test/driverstate-isolation.ts"],`,
+      `setupFiles:["../driverstate-emitter/test/driverstate-isolation.ts"],`,
+      `setupFiles:  [\n  "./a.ts",\n  "../driverstate-emitter/test/driverstate-isolation.ts",\n],`,
+    ];
+    for (const source of wired) {
+      expect(isolationSetupPaths(source)).toHaveLength(1);
+    }
+    expect(isolationSetupPaths(`setupFiles: ["../receipt/test/receipts-isolation.ts"],`)).toEqual(
+      [],
+    );
   });
 
   it.each(configs.map((c) => [relative(repoRoot, c), c]))(

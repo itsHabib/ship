@@ -6,7 +6,7 @@ export default defineConfig({
     // Repo-wide invariant: every suite redirects WORKBENCH_STATE_DIR to a
     // per-worker temp dir, so no test can append to the operator's real
     // ~/.workbench/driver-state. Enforced by
-    // driverstate-emitter/test/isolation-wiring.test.ts.
+    // packages/driverstate-emitter/test/isolation-wiring.test.ts.
     setupFiles: ["./test/driverstate-isolation.ts"],
     include: ["src/**/*.test.ts", "test/**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/dist/**"],
