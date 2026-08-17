@@ -42,6 +42,14 @@ export default defineConfig({
   test: {
     root,
     globals: false,
+    // Same safety nets the per-package configs wire: never write park receipts
+    // or driver-state ledger events to the operator's real files. The
+    // integration layer spawns `tsx src/bin.ts` subprocesses, which inherit
+    // these redirected env vars from this process.
+    setupFiles: [
+      "../packages/receipt/test/receipts-isolation.ts",
+      "../packages/driverstate-emitter/test/driverstate-isolation.ts",
+    ],
     include: live
       ? ["integration/**/*.integration.test.ts", "scenarios/**/*.e2e.test.ts"]
       : ["integration/**/*.integration.test.ts"],
