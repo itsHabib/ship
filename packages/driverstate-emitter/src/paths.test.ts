@@ -1,4 +1,4 @@
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -43,7 +43,22 @@ describe("resolveStateRoot", () => {
     // The regression guard: this is precisely the state that let driver CLI
     // tests append 235 fixture runs to ~/.workbench/driver-state.
     process.env["VITEST"] = "true";
-    expect(() => resolveStateRoot()).toThrow(/refusing to resolve the real store/);
+    expect(() => resolveStateRoot()).toThrow(/refusing to resolve the operator's real store/);
     expect(() => resolveStateRoot()).toThrow(/setupFiles/);
+  });
+
+  it("refuses the real store even when WORKBENCH_STATE_DIR points at it", () => {
+    // An environment exporting the var at the real canonical store would
+    // otherwise sail past both this guard and the isolation setup file.
+    process.env["VITEST"] = "true";
+    process.env["WORKBENCH_STATE_DIR"] = defaultStateRoot();
+    expect(() => resolveStateRoot()).toThrow(/refusing to resolve the operator's real store/);
+    expect(() => resolveStateRoot()).toThrow(/points at it/);
+  });
+
+  it("accepts a non-default root under vitest", () => {
+    process.env["VITEST"] = "true";
+    process.env["WORKBENCH_STATE_DIR"] = join(tmpdir(), "some-isolated-root");
+    expect(resolveStateRoot()).toBe(join(tmpdir(), "some-isolated-root"));
   });
 });

@@ -81,6 +81,20 @@ describe("driver-state isolation wiring", () => {
     expect(configs).toContain(join(repoRoot, "packages", "cli", "vitest.config.ts"));
   });
 
+  it("installs its temp root unconditionally", () => {
+    // A conditional fill-in ("only if unset") lets any environment that
+    // exports WORKBENCH_STATE_DIR at a real store defeat the whole safety net,
+    // which is what this setup exists to prevent (#251 review, Codex P1).
+    // Runtime: the setup already ran for this file, so the live value is ours.
+    expect(process.env["WORKBENCH_STATE_DIR"]).toContain("driverstate-isolation-");
+
+    // Source: pin the shape, so the conditional cannot creep back in.
+    const source = readFileSync(isolationFile, "utf8");
+    const assignment = /process\.env\["WORKBENCH_STATE_DIR"\]\s*=\s*mkdtempSync/;
+    expect(source).toMatch(assignment);
+    expect(source.split("\n").filter((l) => /^\s*if\s*\(/.test(l))).toEqual([]);
+  });
+
   it("reads wiring through formatting-only variation", () => {
     // The parse must track what the config *means*, not how prettier laid it
     // out — otherwise a reflow trips the guard on a correctly-wired repo.
