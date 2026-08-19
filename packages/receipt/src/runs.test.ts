@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
+  configHome,
   loadShipRunReceipts,
   plausibleDispatch,
   resolveDefaultReceiptsPath,
@@ -232,6 +233,41 @@ describe("resolveDefaultReceiptsPath", () => {
     // The guard is scoped to the live process.env, so pure resolution tests
     // (fake home, fake platform) must keep working.
     expect(resolveDefaultReceiptsPath({}, "linux", "/home/u")).toContain("receipts.jsonl");
+  });
+
+  it("refuses SHIP_RECEIPTS_PATH pointed AT the real file, not just an unset one", () => {
+    // The override used to early-return before the guard, so an env exporting
+    // the var at the operator's canonical file defeated the whole safety net —
+    // the same hole this PR closed for WORKBENCH_STATE_DIR, still open here.
+    const real = join(configHome(process.env, platform(), homedir()), "ship", "receipts.jsonl");
+    const prior = process.env["SHIP_RECEIPTS_PATH"];
+    process.env["SHIP_RECEIPTS_PATH"] = real;
+    try {
+      expect(() => resolveDefaultReceiptsPath(process.env, platform(), homedir())).toThrow(
+        /refusing to resolve the operator's real receipts file/,
+      );
+    } finally {
+      if (prior !== undefined) {
+        process.env["SHIP_RECEIPTS_PATH"] = prior;
+      } else {
+        delete process.env["SHIP_RECEIPTS_PATH"];
+      }
+    }
+  });
+
+  it("allows a temp SHIP_RECEIPTS_PATH override against the live env", () => {
+    const prior = process.env["SHIP_RECEIPTS_PATH"];
+    const temp = join(tmpdir(), "ship-receipts-guard-test.jsonl");
+    process.env["SHIP_RECEIPTS_PATH"] = temp;
+    try {
+      expect(resolveDefaultReceiptsPath(process.env, platform(), homedir())).toBe(temp);
+    } finally {
+      if (prior !== undefined) {
+        process.env["SHIP_RECEIPTS_PATH"] = prior;
+      } else {
+        delete process.env["SHIP_RECEIPTS_PATH"];
+      }
+    }
   });
 });
 

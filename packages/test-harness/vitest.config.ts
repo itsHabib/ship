@@ -7,7 +7,10 @@ export default defineConfig({
     // per-worker temp dir, so no test can append to the operator's real
     // ~/.workbench/driver-state. Enforced by
     // packages/driverstate-emitter/test/isolation-wiring.test.ts.
-    setupFiles: ["../driverstate-emitter/test/driverstate-isolation.ts"],
+    setupFiles: [
+      "../receipt/test/receipts-isolation.ts",
+      "../driverstate-emitter/test/driverstate-isolation.ts",
+    ],
     include: ["src/**/*.test.ts", "scenarios/**/*.scenario.test.ts"],
     exclude: ["**/node_modules/**", "**/dist/**"],
     coverage: {

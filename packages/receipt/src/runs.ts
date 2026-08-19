@@ -13,7 +13,7 @@
 import type { Stats } from "node:fs";
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
 import type { Receipt, ReceiptOutcome } from "./schema.js";
@@ -136,11 +136,12 @@ export function resolveDefaultReceiptsPath(
   home: string,
 ): string {
   const override = env["SHIP_RECEIPTS_PATH"];
-  if (override !== undefined && override !== "") {
-    return override;
-  }
-  assertNotRealReceiptsUnderTest(env);
-  return join(configHome(env, platform, home), "ship", "receipts.jsonl");
+  const resolved =
+    override !== undefined && override !== ""
+      ? override
+      : join(configHome(env, platform, home), "ship", "receipts.jsonl");
+  assertNotRealReceiptsUnderTest(env, platform, home, resolved);
+  return resolved;
 }
 
 /**
@@ -155,23 +156,41 @@ export function resolveDefaultReceiptsPath(
  * from synthetic env objects (`{}`, `{ APPDATA: ... }`) with fake homes, which
  * are not the operator's file and must keep working.
  */
-function assertNotRealReceiptsUnderTest(env: NodeJS.ProcessEnv): void {
+function assertNotRealReceiptsUnderTest(
+  env: NodeJS.ProcessEnv,
+  platform: string,
+  home: string,
+  resolved: string,
+): void {
   if (process.env["VITEST"] === undefined) {
     return;
   }
   if (env !== process.env) {
     return;
   }
+  // Only the operator's REAL file is refused — whether it was reached as the
+  // platform default OR named directly by SHIP_RECEIPTS_PATH. A temp override
+  // (the isolation setup, or a suite pinning its own path) resolves elsewhere
+  // and passes. The old form guarded only the no-override branch, so an env
+  // exporting the var AT the real file sailed through — the same hole this PR
+  // closed for WORKBENCH_STATE_DIR.
+  const real = join(configHome(env, platform, home), "ship", "receipts.jsonl");
+  if (resolve(resolved) !== resolve(real)) {
+    return;
+  }
+  const why =
+    env["SHIP_RECEIPTS_PATH"] === undefined || env["SHIP_RECEIPTS_PATH"] === ""
+      ? "SHIP_RECEIPTS_PATH is unset, so this suite's vitest.config.ts does not wire"
+      : "SHIP_RECEIPTS_PATH points at it; every suite must instead wire";
   throw new Error(
     "receipt: refusing to resolve the operator's real receipts file under " +
-      "vitest. SHIP_RECEIPTS_PATH is unset, so this suite's vitest.config.ts " +
-      "does not wire packages/receipt/test/receipts-isolation.ts into " +
+      `vitest. ${why} packages/receipt/test/receipts-isolation.ts into ` +
       "test.setupFiles (as a path relative to that config). Add it, or point " +
       "SHIP_RECEIPTS_PATH at a temp file for this test.",
   );
 }
 
-function configHome(env: NodeJS.ProcessEnv, platform: string, home: string): string {
+export function configHome(env: NodeJS.ProcessEnv, platform: string, home: string): string {
   const xdg = env["XDG_CONFIG_HOME"];
   // Match the ship CLI: only an ABSOLUTE XDG_CONFIG_HOME is honored; a relative
   // value falls through to the platform default rather than scanning cwd-relative.
