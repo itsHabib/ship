@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -254,6 +254,46 @@ describe("resolveDefaultReceiptsPath", () => {
       }
     }
   });
+
+  // Windows file symlinks need Developer Mode or elevation; the gap this pins
+  // (dereferencing before comparison) is platform-independent, so one POSIX
+  // run of it is enough.
+  it.skipIf(platform() === "win32")(
+    "refuses a symlink alias of the real file — identity, not spelling",
+    () => {
+      // resolve() compares spellings; a symlink at a different spelling naming
+      // the real file used to sail past the guard (#252 review, Codex/Claude
+      // P2). Point the real location at a temp XDG home so the test never
+      // touches the operator's actual file.
+      const xdg = mkdtempSync(join(tmpdir(), "ship-receipts-symlink-"));
+      mkdirSync(join(xdg, "ship"), { recursive: true });
+      const real = join(xdg, "ship", "receipts.jsonl");
+      writeFileSync(real, "");
+      const alias = join(xdg, "alias.jsonl");
+      symlinkSync(real, alias);
+      const priorXdg = process.env["XDG_CONFIG_HOME"];
+      const prior = process.env["SHIP_RECEIPTS_PATH"];
+      process.env["XDG_CONFIG_HOME"] = xdg;
+      process.env["SHIP_RECEIPTS_PATH"] = alias;
+      try {
+        expect(() => resolveDefaultReceiptsPath(process.env, platform(), homedir())).toThrow(
+          /refusing to resolve the operator's real receipts file/,
+        );
+      } finally {
+        if (priorXdg !== undefined) {
+          process.env["XDG_CONFIG_HOME"] = priorXdg;
+        } else {
+          delete process.env["XDG_CONFIG_HOME"];
+        }
+        if (prior !== undefined) {
+          process.env["SHIP_RECEIPTS_PATH"] = prior;
+        } else {
+          delete process.env["SHIP_RECEIPTS_PATH"];
+        }
+        rmSync(xdg, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("allows a temp SHIP_RECEIPTS_PATH override against the live env", () => {
     const prior = process.env["SHIP_RECEIPTS_PATH"];

@@ -5,6 +5,7 @@
  * `appendEvent`, bypassing both.
  */
 
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -45,7 +46,7 @@ function assertNotDefaultRootUnderTest(root: string): void {
   if (process.env["VITEST"] === undefined) {
     return;
   }
-  if (resolve(root) !== resolve(defaultStateRoot())) {
+  if (canonical(root) !== canonical(defaultStateRoot())) {
     return;
   }
   const why =
@@ -59,6 +60,22 @@ function assertNotDefaultRootUnderTest(root: string): void {
       "test.setupFiles (as a path relative to that config). Add it, or point " +
       "WORKBENCH_STATE_DIR at a temp dir for this test.",
   );
+}
+
+/**
+ * Filesystem identity of a path, for guard comparisons. `resolve()` alone
+ * neither dereferences symlinks nor case-folds, so a `WORKBENCH_STATE_DIR`
+ * naming the real store through a symlink alias (or different casing on
+ * Windows) would compare unequal and slip past the guard — the same gap
+ * closed in `@ship/receipt`'s runs.ts (#252 review, Codex/Claude P2). Paths
+ * that do not exist yet fall back to the lexical resolution.
+ */
+function canonical(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 export function runDir(stateRoot: string, runId: string): string {

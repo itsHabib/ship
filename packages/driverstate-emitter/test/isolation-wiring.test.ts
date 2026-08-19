@@ -50,7 +50,10 @@ const MODULES = [
     file: join(repoRoot, "packages", "receipt", "test", "receipts-isolation.ts"),
     envVar: "SHIP_RECEIPTS_PATH",
     runtimeMarker: "ship-receipts-isolation-",
-    assignment: /^process\.env\["SHIP_RECEIPTS_PATH"\]\s*=\s*join\(/m,
+    // Same axes as driverstate above: the temp constructor must appear inside
+    // the assignment's RHS, so `join(cond ? temp : real, ...)` fails — the
+    // constructor is anchored right after `join(`, not somewhere later.
+    assignment: /^process\.env\["SHIP_RECEIPTS_PATH"\]\s*=\s*join\(\s*mkdtempSync\(/m,
   },
 ] as const;
 

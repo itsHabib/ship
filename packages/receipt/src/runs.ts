@@ -12,7 +12,7 @@
 
 import type { Stats } from "node:fs";
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
@@ -175,7 +175,7 @@ function assertNotRealReceiptsUnderTest(
   // exporting the var AT the real file sailed through — the same hole this PR
   // closed for WORKBENCH_STATE_DIR.
   const real = join(configHome(env, platform, home), "ship", "receipts.jsonl");
-  if (resolve(resolved) !== resolve(real)) {
+  if (canonical(resolved) !== canonical(real)) {
     return;
   }
   const why =
@@ -188,6 +188,22 @@ function assertNotRealReceiptsUnderTest(
       "test.setupFiles (as a path relative to that config). Add it, or point " +
       "SHIP_RECEIPTS_PATH at a temp file for this test.",
   );
+}
+
+/**
+ * Filesystem identity of a path, for guard comparisons. `resolve()` alone
+ * neither dereferences symlinks nor case-folds, so a `SHIP_RECEIPTS_PATH`
+ * naming the real file through a symlink alias (or different casing on
+ * Windows) would compare unequal and slip past the guard (#252 review,
+ * Codex/Claude P2). `realpathSync` closes both; paths that do not exist yet
+ * fall back to the lexical resolution, which is the best identity available.
+ */
+function canonical(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 export function configHome(env: NodeJS.ProcessEnv, platform: string, home: string): string {
