@@ -295,6 +295,42 @@ describe("resolveDefaultReceiptsPath", () => {
     },
   );
 
+  it.skipIf(platform() === "win32")(
+    "refuses a symlinked-parent alias of the real file even before it exists",
+    () => {
+      // The usual state this guard exists for: the real file has not been
+      // written yet, so realpathSync on the leaf throws and the identity must
+      // come from canonicalizing the PARENT and reattaching the basename
+      // (#252 review round 1, full panel). No writeFileSync here — that is
+      // the point.
+      const xdg = mkdtempSync(join(tmpdir(), "ship-receipts-symlink-parent-"));
+      mkdirSync(join(xdg, "ship"), { recursive: true });
+      const aliasDir = join(xdg, "shiplink");
+      symlinkSync(join(xdg, "ship"), aliasDir);
+      const priorXdg = process.env["XDG_CONFIG_HOME"];
+      const prior = process.env["SHIP_RECEIPTS_PATH"];
+      process.env["XDG_CONFIG_HOME"] = xdg;
+      process.env["SHIP_RECEIPTS_PATH"] = join(aliasDir, "receipts.jsonl");
+      try {
+        expect(() => resolveDefaultReceiptsPath(process.env, platform(), homedir())).toThrow(
+          /refusing to resolve the operator's real receipts file/,
+        );
+      } finally {
+        if (priorXdg !== undefined) {
+          process.env["XDG_CONFIG_HOME"] = priorXdg;
+        } else {
+          delete process.env["XDG_CONFIG_HOME"];
+        }
+        if (prior !== undefined) {
+          process.env["SHIP_RECEIPTS_PATH"] = prior;
+        } else {
+          delete process.env["SHIP_RECEIPTS_PATH"];
+        }
+        rmSync(xdg, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("allows a temp SHIP_RECEIPTS_PATH override against the live env", () => {
     const prior = process.env["SHIP_RECEIPTS_PATH"];
     const temp = join(tmpdir(), "ship-receipts-guard-test.jsonl");

@@ -13,7 +13,7 @@
 import type { Stats } from "node:fs";
 
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { z } from "zod";
 
 import type { Receipt, ReceiptOutcome } from "./schema.js";
@@ -195,12 +195,24 @@ function assertNotRealReceiptsUnderTest(
  * neither dereferences symlinks nor case-folds, so a `SHIP_RECEIPTS_PATH`
  * naming the real file through a symlink alias (or different casing on
  * Windows) would compare unequal and slip past the guard (#252 review,
- * Codex/Claude P2). `realpathSync` closes both; paths that do not exist yet
- * fall back to the lexical resolution, which is the best identity available.
+ * Codex/Claude P2). `realpathSync` closes both. A leaf that does not exist
+ * yet — the usual state before the first write this guard exists to block —
+ * canonicalizes its parent and reattaches the basename, so a symlinked
+ * ancestor is still dereferenced (#252 review round 1, full panel); only when
+ * the parent is absent too does the lexical resolution stand. Mirrors
+ * `canonicalStorePath` in mcp-server's single-instance.ts.
  */
 function canonical(path: string): string {
   try {
     return realpathSync(path);
+  } catch {
+    return canonicalViaParent(path);
+  }
+}
+
+function canonicalViaParent(path: string): string {
+  try {
+    return realpathSync(dirname(path)) + sep + basename(path);
   } catch {
     return resolve(path);
   }
