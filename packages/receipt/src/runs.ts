@@ -139,7 +139,36 @@ export function resolveDefaultReceiptsPath(
   if (override !== undefined && override !== "") {
     return override;
   }
+  assertNotRealReceiptsUnderTest(env);
   return join(configHome(env, platform, home), "ship", "receipts.jsonl");
+}
+
+/**
+ * Regression guard: under vitest, no suite may resolve the operator's real
+ * `<config>/ship/receipts.jsonl` — the one file flare tails to page a phone.
+ * Reaching here means a `vitest.config.ts` did not wire
+ * `packages/receipt/test/receipts-isolation.ts` into `setupFiles`, so the
+ * override the setup installs is absent.
+ *
+ * Scoped by identity, not by path: only a call against the live `process.env`
+ * can produce the real file. The unit tests below resolve platform defaults
+ * from synthetic env objects (`{}`, `{ APPDATA: ... }`) with fake homes, which
+ * are not the operator's file and must keep working.
+ */
+function assertNotRealReceiptsUnderTest(env: NodeJS.ProcessEnv): void {
+  if (process.env["VITEST"] === undefined) {
+    return;
+  }
+  if (env !== process.env) {
+    return;
+  }
+  throw new Error(
+    "receipt: refusing to resolve the operator's real receipts file under " +
+      "vitest. SHIP_RECEIPTS_PATH is unset, so this suite's vitest.config.ts " +
+      "does not wire packages/receipt/test/receipts-isolation.ts into " +
+      "test.setupFiles (as a path relative to that config). Add it, or point " +
+      "SHIP_RECEIPTS_PATH at a temp file for this test.",
+  );
 }
 
 function configHome(env: NodeJS.ProcessEnv, platform: string, home: string): string {

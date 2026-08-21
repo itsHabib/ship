@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
@@ -209,6 +209,29 @@ describe("resolveDefaultReceiptsPath", () => {
     expect(resolveDefaultReceiptsPath({}, "linux", "/home/u")).toBe(
       join("/home/u", ".config", "ship", "receipts.jsonl"),
     );
+  });
+
+  it("refuses the operator's real receipts file under vitest", () => {
+    // Reaching the platform default against the LIVE env means the isolation
+    // setup file was never wired, so this suite is one append away from
+    // injecting fake parked rows into the file flare tails.
+    const prior = process.env["SHIP_RECEIPTS_PATH"];
+    delete process.env["SHIP_RECEIPTS_PATH"];
+    try {
+      expect(() => resolveDefaultReceiptsPath(process.env, platform(), homedir())).toThrow(
+        /refusing to resolve the operator's real receipts file/,
+      );
+    } finally {
+      if (prior !== undefined) {
+        process.env["SHIP_RECEIPTS_PATH"] = prior;
+      }
+    }
+  });
+
+  it("still resolves platform defaults from a synthetic env under vitest", () => {
+    // The guard is scoped to the live process.env, so pure resolution tests
+    // (fake home, fake platform) must keep working.
+    expect(resolveDefaultReceiptsPath({}, "linux", "/home/u")).toContain("receipts.jsonl");
   });
 });
 
