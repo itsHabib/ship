@@ -24,5 +24,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const dir = mkdtempSync(join(tmpdir(), "ship-receipts-isolation-"));
-process.env["SHIP_RECEIPTS_PATH"] = join(dir, "receipts.jsonl");
+// The temp constructor is inlined in the assignment's RHS so the structural
+// guard (isolation-wiring.test.ts) can anchor it — an intermediate variable
+// would let a conditional creep into the RHS unseen (#252 review, Claude P3).
+process.env["SHIP_RECEIPTS_PATH"] = join(
+  mkdtempSync(join(tmpdir(), "ship-receipts-isolation-")),
+  "receipts.jsonl",
+);

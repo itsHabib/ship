@@ -12,8 +12,8 @@
 
 import type { Stats } from "node:fs";
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { z } from "zod";
 
 import type { Receipt, ReceiptOutcome } from "./schema.js";
@@ -136,11 +136,12 @@ export function resolveDefaultReceiptsPath(
   home: string,
 ): string {
   const override = env["SHIP_RECEIPTS_PATH"];
-  if (override !== undefined && override !== "") {
-    return override;
-  }
-  assertNotRealReceiptsUnderTest(env);
-  return join(configHome(env, platform, home), "ship", "receipts.jsonl");
+  const resolved =
+    override !== undefined && override !== ""
+      ? override
+      : join(configHome(env, platform, home), "ship", "receipts.jsonl");
+  assertNotRealReceiptsUnderTest(env, platform, home, resolved);
+  return resolved;
 }
 
 /**
@@ -155,23 +156,69 @@ export function resolveDefaultReceiptsPath(
  * from synthetic env objects (`{}`, `{ APPDATA: ... }`) with fake homes, which
  * are not the operator's file and must keep working.
  */
-function assertNotRealReceiptsUnderTest(env: NodeJS.ProcessEnv): void {
+function assertNotRealReceiptsUnderTest(
+  env: NodeJS.ProcessEnv,
+  platform: string,
+  home: string,
+  resolved: string,
+): void {
   if (process.env["VITEST"] === undefined) {
     return;
   }
   if (env !== process.env) {
     return;
   }
+  // Only the operator's REAL file is refused — whether it was reached as the
+  // platform default OR named directly by SHIP_RECEIPTS_PATH. A temp override
+  // (the isolation setup, or a suite pinning its own path) resolves elsewhere
+  // and passes. The old form guarded only the no-override branch, so an env
+  // exporting the var AT the real file sailed through — the same hole this PR
+  // closed for WORKBENCH_STATE_DIR.
+  const real = join(configHome(env, platform, home), "ship", "receipts.jsonl");
+  if (canonical(resolved) !== canonical(real)) {
+    return;
+  }
+  const why =
+    env["SHIP_RECEIPTS_PATH"] === undefined || env["SHIP_RECEIPTS_PATH"] === ""
+      ? "SHIP_RECEIPTS_PATH is unset, so this suite's vitest.config.ts does not wire"
+      : "SHIP_RECEIPTS_PATH points at it; every suite must instead wire";
   throw new Error(
     "receipt: refusing to resolve the operator's real receipts file under " +
-      "vitest. SHIP_RECEIPTS_PATH is unset, so this suite's vitest.config.ts " +
-      "does not wire packages/receipt/test/receipts-isolation.ts into " +
+      `vitest. ${why} packages/receipt/test/receipts-isolation.ts into ` +
       "test.setupFiles (as a path relative to that config). Add it, or point " +
       "SHIP_RECEIPTS_PATH at a temp file for this test.",
   );
 }
 
-function configHome(env: NodeJS.ProcessEnv, platform: string, home: string): string {
+/**
+ * Filesystem identity of a path, for guard comparisons. `resolve()` alone
+ * neither dereferences symlinks nor case-folds, so a `SHIP_RECEIPTS_PATH`
+ * naming the real file through a symlink alias (or different casing on
+ * Windows) would compare unequal and slip past the guard (#252 review,
+ * Codex/Claude P2). `realpathSync` closes both. A leaf that does not exist
+ * yet — the usual state before the first write this guard exists to block —
+ * canonicalizes its parent and reattaches the basename, so a symlinked
+ * ancestor is still dereferenced (#252 review round 1, full panel); only when
+ * the parent is absent too does the lexical resolution stand. Mirrors
+ * `canonicalStorePath` in mcp-server's single-instance.ts.
+ */
+function canonical(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return canonicalViaParent(path);
+  }
+}
+
+function canonicalViaParent(path: string): string {
+  try {
+    return realpathSync(dirname(path)) + sep + basename(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+export function configHome(env: NodeJS.ProcessEnv, platform: string, home: string): string {
   const xdg = env["XDG_CONFIG_HOME"];
   // Match the ship CLI: only an ABSOLUTE XDG_CONFIG_HOME is honored; a relative
   // value falls through to the platform default rather than scanning cwd-relative.

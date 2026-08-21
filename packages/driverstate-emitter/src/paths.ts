@@ -5,8 +5,9 @@
  * `appendEvent`, bypassing both.
  */
 
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 
 /** The operator's real store: `~/.workbench/driver-state`. */
 export function defaultStateRoot(): string {
@@ -45,7 +46,7 @@ function assertNotDefaultRootUnderTest(root: string): void {
   if (process.env["VITEST"] === undefined) {
     return;
   }
-  if (resolve(root) !== resolve(defaultStateRoot())) {
+  if (canonical(root) !== canonical(defaultStateRoot())) {
     return;
   }
   const why =
@@ -59,6 +60,34 @@ function assertNotDefaultRootUnderTest(root: string): void {
       "test.setupFiles (as a path relative to that config). Add it, or point " +
       "WORKBENCH_STATE_DIR at a temp dir for this test.",
   );
+}
+
+/**
+ * Filesystem identity of a path, for guard comparisons. `resolve()` alone
+ * neither dereferences symlinks nor case-folds, so a `WORKBENCH_STATE_DIR`
+ * naming the real store through a symlink alias (or different casing on
+ * Windows) would compare unequal and slip past the guard — the same gap
+ * closed in `@ship/receipt`'s runs.ts (#252 review, Codex/Claude P2). A leaf
+ * that does not exist yet — the usual state before the first write this guard
+ * exists to block — canonicalizes its parent and reattaches the basename, so
+ * a symlinked ancestor is still dereferenced (#252 review round 1, full
+ * panel); only when the parent is absent too does the lexical resolution
+ * stand. Mirrors `canonicalStorePath` in mcp-server's single-instance.ts.
+ */
+function canonical(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return canonicalViaParent(path);
+  }
+}
+
+function canonicalViaParent(path: string): string {
+  try {
+    return realpathSync(dirname(path)) + sep + basename(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 export function runDir(stateRoot: string, runId: string): string {

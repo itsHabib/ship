@@ -14,8 +14,11 @@
  *
  * So the invariant is checked structurally, over every config in the repo,
  * rather than trusted to whoever adds the next package: if a suite can run
- * vitest, it must first redirect `WORKBENCH_STATE_DIR` to a temp dir. The
- * runtime guard in `src/paths.ts` backs this up for anything that slips past.
+ * vitest, it must first redirect BOTH stores — `WORKBENCH_STATE_DIR` AND
+ * `SHIP_RECEIPTS_PATH` — to a temp location. The very incident above was ONE of
+ * the two setups missing; policing only driverstate would leave the receipts
+ * file (the one flare tails to page a phone) guarded by nothing but the runtime
+ * backstop. The runtime guards in `paths.ts` / `runs.ts` back this up.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -24,13 +27,35 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const isolationFile = join(
-  repoRoot,
-  "packages",
-  "driverstate-emitter",
-  "test",
-  "driverstate-isolation.ts",
-);
+
+/**
+ * The two global stores a test must never resolve to its real location, each
+ * with the setup file that redirects it and the unconditional assignment that
+ * setup must contain.
+ */
+const MODULES = [
+  {
+    slug: "driverstate-isolation",
+    file: join(repoRoot, "packages", "driverstate-emitter", "test", "driverstate-isolation.ts"),
+    envVar: "WORKBENCH_STATE_DIR",
+    runtimeMarker: "driverstate-isolation-",
+    // Anchored at column 0 (so an `if`-wrapped, indented assignment fails), a
+    // direct `=` (so `??=`/`||=` fail — they have no `=` immediately after
+    // `]`), and a temp constructor as the whole RHS (so a `cond ? temp : real`
+    // ternary fails — its RHS starts with the condition, not the constructor).
+    assignment: /^process\.env\["WORKBENCH_STATE_DIR"\]\s*=\s*mkdtempSync\(/m,
+  },
+  {
+    slug: "receipts-isolation",
+    file: join(repoRoot, "packages", "receipt", "test", "receipts-isolation.ts"),
+    envVar: "SHIP_RECEIPTS_PATH",
+    runtimeMarker: "ship-receipts-isolation-",
+    // Same axes as driverstate above: the temp constructor must appear inside
+    // the assignment's RHS, so `join(cond ? temp : real, ...)` fails — the
+    // constructor is anchored right after `join(`, not somewhere later.
+    assignment: /^process\.env\["SHIP_RECEIPTS_PATH"\]\s*=\s*join\(\s*mkdtempSync\(/m,
+  },
+] as const;
 
 /** Every `vitest*.config.ts` a `pnpm test` / `make check` / `make ci` run can load. */
 function vitestConfigs(): string[] {
@@ -54,12 +79,12 @@ function isFile(path: string): boolean {
 }
 
 /**
- * Setup-file paths mentioning the isolation module, as written in the config.
+ * Setup-file paths mentioning one isolation module, as written in the config.
  * `test.setupFiles` resolve against `test.root`, which defaults to the config's
  * own directory — and the one config that sets `root` explicitly (e2e) points
  * it at that same directory.
  */
-function isolationSetupPaths(source: string): string[] {
+function isolationSetupPaths(source: string, slug: string): string[] {
   // Whitespace-tolerant: a formatting-only edit (prettier reflowing the array,
   // dropping the space after the colon) must not make this guard cry wolf.
   const block = /setupFiles\s*:\s*\[([\s\S]*?)\]/.exec(source);
@@ -67,10 +92,10 @@ function isolationSetupPaths(source: string): string[] {
     return [];
   }
   const quoted = block[1]?.match(/"([^"]+)"/g) ?? [];
-  return quoted.map((q) => q.slice(1, -1)).filter((p) => p.includes("driverstate-isolation"));
+  return quoted.map((q) => q.slice(1, -1)).filter((p) => p.includes(slug));
 }
 
-describe("driver-state isolation wiring", () => {
+describe("store isolation wiring", () => {
   const configs = vitestConfigs();
 
   it("discovers the configs it is meant to police", () => {
@@ -79,20 +104,6 @@ describe("driver-state isolation wiring", () => {
     expect(configs).toContain(join(repoRoot, "vitest.config.ts"));
     expect(configs).toContain(join(repoRoot, "e2e", "vitest.e2e.config.ts"));
     expect(configs).toContain(join(repoRoot, "packages", "cli", "vitest.config.ts"));
-  });
-
-  it("installs its temp root unconditionally", () => {
-    // A conditional fill-in ("only if unset") lets any environment that
-    // exports WORKBENCH_STATE_DIR at a real store defeat the whole safety net,
-    // which is what this setup exists to prevent (#251 review, Codex P1).
-    // Runtime: the setup already ran for this file, so the live value is ours.
-    expect(process.env["WORKBENCH_STATE_DIR"]).toContain("driverstate-isolation-");
-
-    // Source: pin the shape, so the conditional cannot creep back in.
-    const source = readFileSync(isolationFile, "utf8");
-    const assignment = /process\.env\["WORKBENCH_STATE_DIR"\]\s*=\s*mkdtempSync/;
-    expect(source).toMatch(assignment);
-    expect(source.split("\n").filter((l) => /^\s*if\s*\(/.test(l))).toEqual([]);
   });
 
   it("reads wiring through formatting-only variation", () => {
@@ -104,33 +115,49 @@ describe("driver-state isolation wiring", () => {
       `setupFiles:  [\n  "./a.ts",\n  "../driverstate-emitter/test/driverstate-isolation.ts",\n],`,
     ];
     for (const source of wired) {
-      expect(isolationSetupPaths(source)).toHaveLength(1);
+      expect(isolationSetupPaths(source, "driverstate-isolation")).toHaveLength(1);
     }
-    expect(isolationSetupPaths(`setupFiles: ["../receipt/test/receipts-isolation.ts"],`)).toEqual(
-      [],
-    );
+    expect(
+      isolationSetupPaths(`setupFiles: ["../foo/test/bar.ts"],`, "driverstate-isolation"),
+    ).toEqual([]);
   });
 
-  it.each(configs.map((c) => [relative(repoRoot, c), c]))(
-    "%s wires driverstate-isolation into setupFiles",
-    (_label, config) => {
-      const paths = isolationSetupPaths(readFileSync(config, "utf8"));
-      expect(
-        paths.length,
-        `${relative(repoRoot, config)} does not wire driverstate-isolation.ts into ` +
-          `test.setupFiles. Without it this suite writes driver-state events to the ` +
-          `operator's real ~/.workbench/driver-state.`,
-      ).toBeGreaterThan(0);
-    },
-  );
+  describe.each(MODULES)("$slug", (mod) => {
+    it("installs its temp location unconditionally", () => {
+      // A conditional fill-in ("only if unset") lets any environment that
+      // exports the var at a real store defeat the whole safety net, which is
+      // what this setup exists to prevent (#251 review, Codex P1).
+      // Runtime: the setup already ran for this file, so the live value is ours.
+      expect(process.env[mod.envVar]).toContain(mod.runtimeMarker);
 
-  it.each(configs.map((c) => [relative(repoRoot, c), c]))(
-    "%s points at the real isolation module",
-    (_label, config) => {
-      // A path that no longer resolves is silently a no-op setup file.
-      for (const p of isolationSetupPaths(readFileSync(config, "utf8"))) {
-        expect(resolve(dirname(config), p)).toBe(isolationFile);
-      }
-    },
-  );
+      // Source: pin the assignment shape. The regex is anchored so a later edit
+      // cannot smuggle conditionality back in through an `if` wrap, a `??=`, or
+      // a ternary — none of which match — without a legitimate `if (` elsewhere
+      // in the file tripping a false alarm.
+      const source = readFileSync(mod.file, "utf8");
+      expect(source).toMatch(mod.assignment);
+    });
+
+    it.each(configs.map((c) => [relative(repoRoot, c), c]))(
+      "%s wires it into setupFiles",
+      (_label, config) => {
+        const paths = isolationSetupPaths(readFileSync(config, "utf8"), mod.slug);
+        expect(
+          paths.length,
+          `${relative(repoRoot, config)} does not wire ${mod.slug}.ts into test.setupFiles. ` +
+            `Without it this suite can resolve the operator's real ${mod.envVar} store.`,
+        ).toBeGreaterThan(0);
+      },
+    );
+
+    it.each(configs.map((c) => [relative(repoRoot, c), c]))(
+      "%s points at the real module",
+      (_label, config) => {
+        // A path that no longer resolves is silently a no-op setup file.
+        for (const p of isolationSetupPaths(readFileSync(config, "utf8"), mod.slug)) {
+          expect(resolve(dirname(config), p)).toBe(mod.file);
+        }
+      },
+    );
+  });
 });
