@@ -13,11 +13,10 @@
 
 import type { AgentProvider } from "@ship/workflow";
 
-import { statSync } from "node:fs";
-import { join } from "node:path";
-
+import type { CodexLoginStatus } from "./codex-auth.js";
 import type { ManifestStream } from "./manifest.js";
 
+import { hasCodexAccountAuth } from "./codex-auth.js";
 import { AssignError } from "./errors.js";
 
 type Runtime = NonNullable<ManifestStream["runtime"]>;
@@ -117,29 +116,21 @@ const CURSOR_MODELS_TIMEOUT_MS = 10_000;
  * memoized on its promise so every cursor member (and members differing only by
  * runtime) reuses one `/v1/models` round-trip.
  */
-export function createViabilityDeps(env: Record<string, string | undefined>): ViabilityDeps {
+export function createViabilityDeps(
+  env: Record<string, string | undefined>,
+  opts: { codexLoginStatus?: CodexLoginStatus } = {},
+): ViabilityDeps {
   let cached: Promise<string[]> | undefined;
+  let codexAccountAuth: boolean | undefined;
   const listCursorModels = (): Promise<string[]> => {
     cached ??= fetchCursorModels(env);
     return cached;
   };
-  return { codexAccountAuthExists: () => hasCodexAccountAuth(env), env, listCursorModels };
-}
-
-function hasCodexAccountAuth(env: Record<string, string | undefined>): boolean {
-  let codexHome = env["CODEX_HOME"]?.trim();
-  if (!codexHome) {
-    const home = [env["HOME"]?.trim(), env["USERPROFILE"]?.trim()].find(
-      (candidate) => candidate !== undefined && candidate !== "",
-    );
-    if (!home) return false;
-    codexHome = join(home, ".codex");
-  }
-  try {
-    return statSync(join(codexHome, "auth.json")).isFile();
-  } catch {
-    return false;
-  }
+  const codexAccountAuthExists = (): boolean => {
+    codexAccountAuth ??= hasCodexAccountAuth(env, opts.codexLoginStatus);
+    return codexAccountAuth;
+  };
+  return { codexAccountAuthExists, env, listCursorModels };
 }
 
 async function fetchCursorModels(env: Record<string, string | undefined>): Promise<string[]> {

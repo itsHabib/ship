@@ -98,15 +98,16 @@ describe("missingCredentialEnv", () => {
     ).toBeUndefined();
   });
 
-  it("accepts either key for codex", () => {
+  it("accepts either key or a signed-in profile for codex", () => {
     expect(
       missingCredentialEnv({ provider: "codex", runtime: "local" }, { CODEX_API_KEY: "k" }),
     ).toBeUndefined();
     expect(
       missingCredentialEnv({ provider: "codex", runtime: "local" }, { OPENAI_API_KEY: "k" }),
     ).toBeUndefined();
-    expect(missingCredentialEnv({ provider: "codex", runtime: "local" }, {})).toBe(
-      "CODEX_API_KEY or OPENAI_API_KEY",
+    expect(missingCredentialEnv({ provider: "codex", runtime: "local" }, {}, true)).toBeUndefined();
+    expect(missingCredentialEnv({ provider: "codex", runtime: "local" }, {}, false)).toBe(
+      "CODEX_API_KEY, OPENAI_API_KEY, or a signed-in Codex CLI profile",
     );
   });
 

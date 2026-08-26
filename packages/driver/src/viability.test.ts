@@ -197,6 +197,17 @@ describe("createViabilityDeps", () => {
     }
   });
 
+  test("detects keyring-backed Codex auth through login status", () => {
+    const loginStatus = vi.fn(() => true);
+    const built = createViabilityDeps(
+      { CODEX_HOME: join(tmpdir(), "missing-codex-home") },
+      { codexLoginStatus: loginStatus },
+    );
+    expect(built.codexAccountAuthExists()).toBe(true);
+    expect(built.codexAccountAuthExists()).toBe(true);
+    expect(loginStatus).toHaveBeenCalledOnce();
+  });
+
   test("memoizes: many calls hit the network once", async () => {
     const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({ data: [{ id: "grok-4.5" }] })));
     vi.stubGlobal("fetch", fetchMock);

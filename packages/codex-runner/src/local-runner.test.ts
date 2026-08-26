@@ -121,9 +121,19 @@ describe("CodexRunner — env / pre-run errors", () => {
     const runner = new CodexRunner();
     const handle = await runner.run(baseInput());
     await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
-    expect(Codex).toHaveBeenCalledWith(
-      expect.not.objectContaining({ apiKey: expect.anything() as unknown }),
-    );
+    const options = vi.mocked(Codex).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(Object.hasOwn(options, "apiKey")).toBe(false);
+  });
+
+  test("treats whitespace-only API keys as absent for account auth", async () => {
+    vi.stubEnv("CODEX_API_KEY", " \t");
+    vi.stubEnv("OPENAI_API_KEY", "  ");
+    const thread = makeMockThread({ events: [agentMessageDone, turnCompleted] });
+    vi.mocked(Codex).mockImplementation(() => makeMockCodex(thread));
+    const handle = await new CodexRunner().run(baseInput());
+    await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+    const options = vi.mocked(Codex).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(Object.hasOwn(options, "apiKey")).toBe(false);
   });
 
   test("falls back to OPENAI_API_KEY", async () => {

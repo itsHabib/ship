@@ -6,7 +6,7 @@ The sole package that imports `@openai/codex-sdk` (and transitively `@openai/cod
 
 ## Public surface
 
-- **`CodexRunner`** — drives `Codex` with per-run gateway config (`baseUrl`, `model_providers`, env injection); uses `CODEX_API_KEY`/`OPENAI_API_KEY` when present and otherwise lets the CLI use its signed-in account; rejects non-local runtime; `attach` throws `OperationNotSupportedError`.
+- **`CodexRunner`** — drives `Codex` with per-run gateway config (`baseUrl`, `model_providers`, env injection); uses non-blank `CODEX_API_KEY`/`OPENAI_API_KEY` values when present and otherwise lets the CLI use its signed-in account; grants the `workspace-write` sandbox only the linked-worktree Git admin, objects, refs, and reflog directories needed to commit; rejects non-local runtime; `attach` throws `OperationNotSupportedError`.
 - **`classifyFailure` / `buildFailureDetail`** — Codex-bound failure classification over the bounded event window.
 - **`codexEventProjection`** — normalizes Codex `ThreadEvent` items to the neutral `EventProjection` vocabulary.
 - **SDK re-export** — `ThreadEvent` type-only for consumers without a direct SDK dep.

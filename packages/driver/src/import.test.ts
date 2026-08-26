@@ -756,4 +756,13 @@ describe("importManifest fallback chains", () => {
     const { warnings } = importManifest(store, path, { env: { ANTHROPIC_API_KEY: "k" } });
     expect(warnings).toBeUndefined();
   });
+
+  it("emits no false warning for a signed-in Codex fallback", () => {
+    const path = cloudCursorStream(["fallback:", "  - runtime: local", "    provider: codex"]);
+    const { warnings } = importManifest(store, path, {
+      codexLoginStatus: () => true,
+      env: { CURSOR_API_KEY: "k" },
+    });
+    expect(warnings).toBeUndefined();
+  });
 });

@@ -71,14 +71,15 @@ function cellNeedsBranch(target: { runtime: Runtime; provider: AgentProvider }):
 export function missingCredentialEnv(
   target: { runtime: Runtime; provider: AgentProvider },
   env: Record<string, string | undefined>,
+  codexAccountAuthExists = false,
 ): string | undefined {
   if (target.provider === "cursor") {
     return hasEnv(env["CURSOR_API_KEY"]) ? undefined : "CURSOR_API_KEY";
   }
   if (target.provider === "codex") {
-    return hasEnv(env["CODEX_API_KEY"]) || hasEnv(env["OPENAI_API_KEY"])
+    return hasEnv(env["CODEX_API_KEY"]) || hasEnv(env["OPENAI_API_KEY"]) || codexAccountAuthExists
       ? undefined
-      : "CODEX_API_KEY or OPENAI_API_KEY";
+      : "CODEX_API_KEY, OPENAI_API_KEY, or a signed-in Codex CLI profile";
   }
   return missingClaudeEnv(target.runtime, env);
 }

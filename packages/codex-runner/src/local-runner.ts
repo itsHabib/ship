@@ -28,6 +28,7 @@ import {
   UnsupportedPlatformError,
   WrongRunnerError,
 } from "./errors.js";
+import { linkedWorktreeWriteDirectories } from "./linked-worktree-writes.js";
 import {
   mapCancelled,
   mapMidStreamFailure,
@@ -73,10 +74,10 @@ function assertPlatformSupported(): void {
 }
 
 function readApiKey(): string | undefined {
-  const primary = process.env[API_KEY_ENV_PRIMARY];
-  if (primary !== undefined && primary !== "") return primary;
-  const fallback = process.env[API_KEY_ENV_FALLBACK];
-  if (fallback !== undefined && fallback !== "") return fallback;
+  const primary = process.env[API_KEY_ENV_PRIMARY]?.trim();
+  if (primary) return primary;
+  const fallback = process.env[API_KEY_ENV_FALLBACK]?.trim();
+  if (fallback) return fallback;
   return undefined;
 }
 
@@ -156,6 +157,7 @@ function buildThreadOptions(
   input: AgentRunInput,
 ): NonNullable<Parameters<Codex["startThread"]>[0]> {
   return {
+    additionalDirectories: linkedWorktreeWriteDirectories(input.cwd),
     approvalPolicy: "never",
     sandboxMode: resolveSandboxMode(),
     skipGitRepoCheck: false,
