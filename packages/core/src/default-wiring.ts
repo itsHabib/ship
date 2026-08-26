@@ -54,7 +54,7 @@ export const DEFAULT_CLAUDE_MODEL: ModelSelection = {
 // A Cursor model id (composer-2.5) is invalid for the Codex SDK, so codex runs
 // need their own default. (Override/rotation guidance: the `codexDefaultModel` field.)
 export const DEFAULT_CODEX_MODEL: ModelSelection = {
-  id: "gpt-5.3-codex",
+  id: "gpt-5.6-sol",
 };
 
 // The rooms microVM image is a property of the KVM host, not the task — the

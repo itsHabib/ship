@@ -13,6 +13,9 @@
 
 import type { AgentProvider } from "@ship/workflow";
 
+import { statSync } from "node:fs";
+import { join } from "node:path";
+
 import type { ManifestStream } from "./manifest.js";
 
 import { AssignError } from "./errors.js";
@@ -35,6 +38,7 @@ export interface DispatchTarget {
  */
 export interface ViabilityDeps {
   listCursorModels: () => Promise<string[]>;
+  codexAccountAuthExists: () => boolean;
   env: Record<string, string | undefined>;
 }
 
@@ -46,8 +50,9 @@ const VIABLE: ViabilityResult = { viable: true };
  * Is `target` reachable given `deps`? cursor: id present in `/v1/models`.
  * claude: `CLAUDE_CODE_OAUTH_TOKEN || ANTHROPIC_AUTH_TOKEN || ANTHROPIC_API_KEY`
  * on local, `ANTHROPIC_API_KEY` on cloud (the cloud runner's stricter
- * requirement). codex: `CODEX_API_KEY || OPENAI_API_KEY`. A missing credential
- * is a verdict, not a throw; only a failing `listCursorModels` propagates.
+ * requirement). codex: `CODEX_API_KEY || OPENAI_API_KEY` or a signed-in Codex
+ * CLI profile. A missing credential is a verdict, not a throw; only a failing
+ * `listCursorModels` propagates.
  */
 export async function checkTargetViability(
   target: DispatchTarget,
@@ -59,7 +64,7 @@ export async function checkTargetViability(
     case "claude":
       return checkClaudeCredential(target.runtime, deps.env);
     case "codex":
-      return checkCodexCredential(deps.env);
+      return checkCodexCredential(deps);
     default: {
       // Unreachable while AgentProvider is a closed union; a loud non-viable
       // verdict beats silently routing a future provider to the codex check.
@@ -90,9 +95,14 @@ function checkClaudeCredential(runtime: Runtime, env: ViabilityDeps["env"]): Via
   return { reason: `claude/${runtime} needs ${need} in env`, viable: false };
 }
 
-function checkCodexCredential(env: ViabilityDeps["env"]): ViabilityResult {
+function checkCodexCredential(deps: ViabilityDeps): ViabilityResult {
+  const env = deps.env;
   if (hasValue(env["CODEX_API_KEY"]) || hasValue(env["OPENAI_API_KEY"])) return VIABLE;
-  return { reason: "codex needs CODEX_API_KEY or OPENAI_API_KEY in env", viable: false };
+  if (deps.codexAccountAuthExists()) return VIABLE;
+  return {
+    reason: "codex needs CODEX_API_KEY, OPENAI_API_KEY, or a signed-in Codex CLI profile",
+    viable: false,
+  };
 }
 
 function hasValue(value: string | undefined): boolean {
@@ -113,7 +123,23 @@ export function createViabilityDeps(env: Record<string, string | undefined>): Vi
     cached ??= fetchCursorModels(env);
     return cached;
   };
-  return { env, listCursorModels };
+  return { codexAccountAuthExists: () => hasCodexAccountAuth(env), env, listCursorModels };
+}
+
+function hasCodexAccountAuth(env: Record<string, string | undefined>): boolean {
+  let codexHome = env["CODEX_HOME"]?.trim();
+  if (!codexHome) {
+    const home = [env["HOME"]?.trim(), env["USERPROFILE"]?.trim()].find(
+      (candidate) => candidate !== undefined && candidate !== "",
+    );
+    if (!home) return false;
+    codexHome = join(home, ".codex");
+  }
+  try {
+    return statSync(join(codexHome, "auth.json")).isFile();
+  } catch {
+    return false;
+  }
 }
 
 async function fetchCursorModels(env: Record<string, string | undefined>): Promise<string[]> {

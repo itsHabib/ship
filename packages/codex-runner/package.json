@@ -15,7 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@openai/codex-sdk": "0.142.3",
+    "@openai/codex-sdk": "0.149.1",
     "@ship/agent-runner": "workspace:*",
     "@ship/workflow": "workspace:*"
   },
