@@ -30,10 +30,20 @@ function optionalDirectory(path: string, label: string): string[] {
   return [requireDirectory(path, label)];
 }
 
+function requireRefStores(commonDir: string): string[] {
+  const stores = [
+    ...optionalDirectory(join(commonDir, "refs"), "git refs directory"),
+    ...optionalDirectory(join(commonDir, "reftable"), "git reftable directory"),
+  ];
+  if (stores.length === 0) throw new Error(`git ref storage is missing under ${commonDir}`);
+  return stores;
+}
+
 /**
  * Return the extra writable roots needed for `git add` + `git commit` in a
  * linked worktree. A linked worktree keeps its index and HEAD in a per-worktree
- * admin directory while sharing objects, refs, and reflogs with the main repo.
+ * admin directory while sharing objects, ref storage, and optional reflogs with
+ * the main repo.
  *
  * Separate-git-dir checkouts intentionally get no expansion: unlike a linked
  * worktree they do not carry the `commondir` relationship this function can
@@ -66,7 +76,7 @@ export function linkedWorktreeWriteDirectories(cwd: string): string[] {
   return [
     gitDir,
     requireDirectory(join(commonDir, "objects"), "git objects directory"),
-    requireDirectory(join(commonDir, "refs"), "git refs directory"),
+    ...requireRefStores(commonDir),
     ...optionalDirectory(join(commonDir, "logs"), "git logs directory"),
   ];
 }

@@ -71,6 +71,25 @@ describe("linkedWorktreeWriteDirectories", () => {
     ]);
   });
 
+  test("supports reftable-backed linked worktrees without a files ref store", () => {
+    const root = newRoot();
+    const commonDir = join(root, "repo", ".git");
+    const worktree = join(root, "repo", "worktree");
+    const gitDir = join(commonDir, "worktrees", "repair");
+    for (const path of [gitDir, join(commonDir, "objects"), join(commonDir, "reftable")]) {
+      mkdirSync(path, { recursive: true });
+    }
+    writeFileSync(join(gitDir, "commondir"), "../..\n");
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+
+    expect(linkedWorktreeWriteDirectories(worktree)).toEqual([
+      realpathSync(gitDir),
+      realpathSync(join(commonDir, "objects")),
+      realpathSync(join(commonDir, "reftable")),
+    ]);
+  });
+
   test("does not expand a separate-git-dir checkout", () => {
     const root = newRoot();
     const checkout = join(root, "checkout");
