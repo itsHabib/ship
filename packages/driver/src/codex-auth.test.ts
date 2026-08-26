@@ -18,14 +18,14 @@ afterEach(() => {
 });
 
 describe("hasCodexAccountAuth", () => {
-  test("accepts a private profile file without consulting login status", () => {
+  test("accepts a file-backed profile reported by authoritative login status", () => {
     const root = newRoot();
     const codexHome = join(root, ".codex");
     mkdirSync(codexHome);
     writeFileSync(join(codexHome, "auth.json"), "{}");
-    const loginStatus = vi.fn(() => false);
+    const loginStatus = vi.fn(() => true);
     expect(hasCodexAccountAuth({ CODEX_HOME: codexHome }, loginStatus)).toBe(true);
-    expect(loginStatus).not.toHaveBeenCalled();
+    expect(loginStatus).toHaveBeenCalledOnce();
   });
 
   test("accepts keyring-backed login reported by the Codex CLI", () => {
@@ -36,5 +36,14 @@ describe("hasCodexAccountAuth", () => {
 
   test("rejects a profile when neither file nor CLI login exists", () => {
     expect(hasCodexAccountAuth({ CODEX_HOME: join(newRoot(), ".codex") }, () => false)).toBe(false);
+  });
+
+  test("rejects a stale auth file when the active credential store is not logged in", () => {
+    const codexHome = join(newRoot(), ".codex");
+    mkdirSync(codexHome);
+    writeFileSync(join(codexHome, "auth.json"), "{}");
+    const loginStatus = vi.fn(() => false);
+    expect(hasCodexAccountAuth({ CODEX_HOME: codexHome }, loginStatus)).toBe(false);
+    expect(loginStatus).toHaveBeenCalledOnce();
   });
 });

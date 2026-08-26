@@ -185,12 +185,15 @@ describe("createViabilityDeps", () => {
     expect(call[1]?.headers).toMatchObject({ Authorization: "Bearer secret" });
   });
 
-  test("detects a signed-in Codex profile under CODEX_HOME", () => {
+  test("detects a file-backed Codex profile through login status", () => {
     const root = mkdtempSync(join(tmpdir(), "ship-codex-auth-"));
     try {
       mkdirSync(join(root, ".codex"));
       writeFileSync(join(root, ".codex", "auth.json"), "{}");
-      const built = createViabilityDeps({ CODEX_HOME: join(root, ".codex") });
+      const built = createViabilityDeps(
+        { CODEX_HOME: join(root, ".codex") },
+        { codexLoginStatus: () => true },
+      );
       expect(built.codexAccountAuthExists()).toBe(true);
     } finally {
       rmSync(root, { force: true, recursive: true });
