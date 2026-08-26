@@ -52,6 +52,25 @@ describe("linkedWorktreeWriteDirectories", () => {
     ]);
   });
 
+  test("accepts a linked worktree when reflogs are disabled", () => {
+    const root = newRoot();
+    const commonDir = join(root, "repo", ".git");
+    const worktree = join(root, "repo", "worktree");
+    const gitDir = join(commonDir, "worktrees", "repair");
+    for (const path of [gitDir, join(commonDir, "objects"), join(commonDir, "refs")]) {
+      mkdirSync(path, { recursive: true });
+    }
+    writeFileSync(join(gitDir, "commondir"), "../..\n");
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+
+    expect(linkedWorktreeWriteDirectories(worktree)).toEqual([
+      realpathSync(gitDir),
+      realpathSync(join(commonDir, "objects")),
+      realpathSync(join(commonDir, "refs")),
+    ]);
+  });
+
   test("does not expand a separate-git-dir checkout", () => {
     const root = newRoot();
     const checkout = join(root, "checkout");

@@ -282,6 +282,9 @@ importers:
 
   packages/driver:
     dependencies:
+      '@ship/codex-runner':
+        specifier: workspace:*
+        version: link:../codex-runner
       '@ship/core':
         specifier: workspace:*
         version: link:../core

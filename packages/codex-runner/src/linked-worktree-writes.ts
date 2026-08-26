@@ -25,6 +25,11 @@ function requireDirectory(path: string, label: string): string {
   return canonical;
 }
 
+function optionalDirectory(path: string, label: string): string[] {
+  if (!existsSync(path)) return [];
+  return [requireDirectory(path, label)];
+}
+
 /**
  * Return the extra writable roots needed for `git add` + `git commit` in a
  * linked worktree. A linked worktree keeps its index and HEAD in a per-worktree
@@ -62,6 +67,6 @@ export function linkedWorktreeWriteDirectories(cwd: string): string[] {
     gitDir,
     requireDirectory(join(commonDir, "objects"), "git objects directory"),
     requireDirectory(join(commonDir, "refs"), "git refs directory"),
-    requireDirectory(join(commonDir, "logs"), "git logs directory"),
+    ...optionalDirectory(join(commonDir, "logs"), "git logs directory"),
   ];
 }

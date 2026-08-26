@@ -35,6 +35,6 @@ describe("hasCodexAccountAuth", () => {
   });
 
   test("rejects a profile when neither file nor CLI login exists", () => {
-    expect(hasCodexAccountAuth({ PATH: "" })).toBe(false);
+    expect(hasCodexAccountAuth({ CODEX_HOME: join(newRoot(), ".codex") }, () => false)).toBe(false);
   });
 });

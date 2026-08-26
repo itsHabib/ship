@@ -562,7 +562,11 @@ function collectFallbackEnvWarnings(
     .flatMap((stream) => resolveEffectiveChain(stream, manifest.default_fallback));
   for (const entry of entries) {
     const cell = `${entry.runtime}/${entry.provider}`;
-    if (entry.provider === "codex" && codexAccountAuth === undefined) {
+    const keyMissing = missingCredentialEnv(
+      { provider: entry.provider, runtime: entry.runtime },
+      env,
+    );
+    if (entry.provider === "codex" && keyMissing !== undefined && codexAccountAuth === undefined) {
       codexAccountAuth = hasCodexAccountAuth(env, codexLoginStatus);
     }
     const missing = missingCredentialEnv(

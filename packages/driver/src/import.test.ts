@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { importManifest, ImportManifestError } from "./import.js";
 
@@ -764,5 +764,16 @@ describe("importManifest fallback chains", () => {
       env: { CURSOR_API_KEY: "k" },
     });
     expect(warnings).toBeUndefined();
+  });
+
+  it("does not probe Codex login status when an API key is already present", () => {
+    const path = cloudCursorStream(["fallback:", "  - runtime: local", "    provider: codex"]);
+    const codexLoginStatus = vi.fn(() => true);
+    const { warnings } = importManifest(store, path, {
+      codexLoginStatus,
+      env: { CODEX_API_KEY: "k", CURSOR_API_KEY: "k" },
+    });
+    expect(warnings).toBeUndefined();
+    expect(codexLoginStatus).not.toHaveBeenCalled();
   });
 });

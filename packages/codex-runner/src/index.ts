@@ -26,6 +26,9 @@ export type { AgentDefinition, McpServerConfig } from "@ship/agent-runner";
 
 export { CodexRunner } from "./local-runner.js";
 
+export type { CodexLoginStatus } from "./login-status.js";
+export { codexLoginStatus } from "./login-status.js";
+
 export {
   AgentRunFailedError,
   MissingApiKeyError,
