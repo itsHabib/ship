@@ -1,4 +1,11 @@
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -32,6 +39,26 @@ describe("gitWritableRoots", () => {
     const external = newRoot();
     symlinkSync(external, join(root, ".git"), process.platform === "win32" ? "junction" : "dir");
     expect(() => gitWritableRoots(root)).toThrow(/unsupported/);
+  });
+
+  test("finds standalone git metadata through a symlinked workdir", () => {
+    const root = newRoot();
+    mkdirSync(join(root, ".git"));
+    const nested = join(root, "packages", "app");
+    mkdirSync(nested, { recursive: true });
+    const aliasRoot = newRoot();
+    const alias = join(aliasRoot, "app");
+    symlinkSync(nested, alias, process.platform === "win32" ? "junction" : "dir");
+
+    expect(gitWritableRoots(alias)).toEqual([realpathSync(join(root, ".git"))]);
+  });
+
+  test("uses filesystem casing for standalone git metadata", () => {
+    const root = newRoot();
+    mkdirSync(join(root, ".GIT"));
+    if (!existsSync(join(root, ".git"))) return;
+
+    expect(gitWritableRoots(root)).toEqual([realpathSync(join(root, ".git"))]);
   });
 
   test("returns only the linked-worktree admin and shared commit stores", () => {

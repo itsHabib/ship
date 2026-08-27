@@ -47,10 +47,15 @@ function standaloneGitDirectory(cwd: string, marker: string): string {
   }
 
   const gitDir = requireDirectory(marker, "git metadata directory");
-  if (dirname(gitDir) !== repoRoot || gitDir !== join(repoRoot, ".git")) {
+  if (dirname(gitDir) !== repoRoot) {
     throw new Error(`git metadata directory is outside its repository root: ${gitDir}`);
   }
   return gitDir;
+}
+
+function canonicalWorkdir(cwd: string): string {
+  if (!existsSync(cwd)) return cwd;
+  return realpathSync(cwd);
 }
 
 /**
@@ -67,10 +72,11 @@ function standaloneGitDirectory(cwd: string, marker: string): string {
  * validate before widening the Codex workspace-write sandbox.
  */
 export function gitWritableRoots(cwd: string): string[] {
-  const marker = findGitMarker(cwd);
+  const canonicalCwd = canonicalWorkdir(cwd);
+  const marker = findGitMarker(canonicalCwd);
   if (marker === undefined) return [];
   const markerInfo = lstatSync(marker);
-  if (markerInfo.isDirectory()) return [standaloneGitDirectory(cwd, marker)];
+  if (markerInfo.isDirectory()) return [standaloneGitDirectory(canonicalCwd, marker)];
   if (!markerInfo.isFile()) {
     throw new Error(`unsupported .git marker at ${marker}`);
   }
