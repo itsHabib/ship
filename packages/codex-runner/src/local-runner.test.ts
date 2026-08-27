@@ -9,12 +9,7 @@ import { Codex } from "@openai/codex-sdk";
 import { FakeAgentRunner } from "@ship/agent-runner/test/fake";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import {
-  AgentRunFailedError,
-  MissingApiKeyError,
-  OperationNotSupportedError,
-  WrongRunnerError,
-} from "./errors.js";
+import { AgentRunFailedError, OperationNotSupportedError, WrongRunnerError } from "./errors.js";
 import { CodexRunner } from "./local-runner.js";
 
 vi.mock("@openai/codex-sdk", () => ({
@@ -117,13 +112,28 @@ describe("CodexRunner — runtime selection", () => {
 });
 
 describe("CodexRunner — env / pre-run errors", () => {
-  test("throws MissingApiKeyError when both API key env vars are unset", async () => {
+  test("omits apiKey so the Codex CLI can use signed-in account auth", async () => {
     vi.unstubAllEnvs();
     vi.stubEnv("CODEX_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
+    const thread = makeMockThread({ events: [agentMessageDone, turnCompleted] });
+    vi.mocked(Codex).mockImplementation(() => makeMockCodex(thread));
     const runner = new CodexRunner();
-    await expect(runner.run(baseInput())).rejects.toBeInstanceOf(MissingApiKeyError);
-    expect(Codex).not.toHaveBeenCalled();
+    const handle = await runner.run(baseInput());
+    await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+    const options = vi.mocked(Codex).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(Object.hasOwn(options, "apiKey")).toBe(false);
+  });
+
+  test("treats whitespace-only API keys as absent for account auth", async () => {
+    vi.stubEnv("CODEX_API_KEY", " \t");
+    vi.stubEnv("OPENAI_API_KEY", "  ");
+    const thread = makeMockThread({ events: [agentMessageDone, turnCompleted] });
+    vi.mocked(Codex).mockImplementation(() => makeMockCodex(thread));
+    const handle = await new CodexRunner().run(baseInput());
+    await expect(handle.result).resolves.toMatchObject({ status: "succeeded" });
+    const options = vi.mocked(Codex).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(Object.hasOwn(options, "apiKey")).toBe(false);
   });
 
   test("falls back to OPENAI_API_KEY", async () => {

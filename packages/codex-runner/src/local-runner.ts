@@ -11,7 +11,6 @@ import {
   AgentRunFailedError,
   buildSdkRunHandle,
   createSdkRunHandleState,
-  MissingApiKeyError,
 } from "@ship/agent-runner";
 import { randomUUID } from "node:crypto";
 
@@ -29,6 +28,7 @@ import {
   UnsupportedPlatformError,
   WrongRunnerError,
 } from "./errors.js";
+import { linkedWorktreeWriteDirectories } from "./linked-worktree-writes.js";
 import {
   mapCancelled,
   mapMidStreamFailure,
@@ -74,10 +74,10 @@ function assertPlatformSupported(): void {
 }
 
 function readApiKey(): string | undefined {
-  const primary = process.env[API_KEY_ENV_PRIMARY];
-  if (primary !== undefined && primary !== "") return primary;
-  const fallback = process.env[API_KEY_ENV_FALLBACK];
-  if (fallback !== undefined && fallback !== "") return fallback;
+  const primary = process.env[API_KEY_ENV_PRIMARY]?.trim();
+  if (primary) return primary;
+  const fallback = process.env[API_KEY_ENV_FALLBACK]?.trim();
+  if (fallback) return fallback;
   return undefined;
 }
 
@@ -123,13 +123,14 @@ function buildGatewayConfig(): CodexOptions["config"] | undefined {
   );
 }
 
-function buildCodexOptions(apiKey: string): CodexOptions {
+function buildCodexOptions(apiKey: string | undefined): CodexOptions {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) env[key] = value;
   }
 
-  const options: CodexOptions = { apiKey, env };
+  const options: CodexOptions = { env };
+  if (apiKey !== undefined) options.apiKey = apiKey;
   const baseUrl = readEnvString(BASE_URL_ENV_PRIMARY) ?? readEnvString(BASE_URL_ENV_FALLBACK);
   if (baseUrl !== undefined) options.baseUrl = baseUrl;
   const config = buildGatewayConfig();
@@ -156,6 +157,7 @@ function buildThreadOptions(
   input: AgentRunInput,
 ): NonNullable<Parameters<Codex["startThread"]>[0]> {
   return {
+    additionalDirectories: linkedWorktreeWriteDirectories(input.cwd),
     approvalPolicy: "never",
     sandboxMode: resolveSandboxMode(),
     skipGitRepoCheck: false,
@@ -172,19 +174,13 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
   );
 }
 
-function validateRunInput(input: AgentRunInput): string {
+function validateRunInput(input: AgentRunInput): string | undefined {
   if (input.runtime !== undefined && input.runtime !== "local") {
     throw new WrongRunnerError(
       `CodexRunner accepts runtime: "local" or undefined; received: ${JSON.stringify(input.runtime)}`,
     );
   }
-  const apiKey = readApiKey();
-  if (apiKey === undefined) {
-    throw new MissingApiKeyError(
-      `${API_KEY_ENV_PRIMARY} or ${API_KEY_ENV_FALLBACK} environment variable is not set`,
-    );
-  }
-  return apiKey;
+  return readApiKey();
 }
 
 async function consumeEventStream(

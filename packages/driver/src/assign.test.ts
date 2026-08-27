@@ -14,7 +14,11 @@ const fixedNow = (): string => NOW;
 
 // A catalog that lists `models`; every cursor id outside it is dropped.
 function stubDeps(models: string[], env: ViabilityDeps["env"] = {}): ViabilityDeps {
-  return { env, listCursorModels: () => Promise.resolve(models) };
+  return {
+    codexAccountAuthExists: () => false,
+    env,
+    listCursorModels: () => Promise.resolve(models),
+  };
 }
 
 interface ManifestOpts {
@@ -399,6 +403,7 @@ describe("assignModelPoolToManifest", () => {
 
   test("propagates a catalog fetch failure as a hard error", async () => {
     const deps: ViabilityDeps = {
+      codexAccountAuthExists: () => false,
       env: {},
       listCursorModels: () =>
         Promise.reject(new AssignError("cursor /v1/models unreachable: boom")),

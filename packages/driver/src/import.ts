@@ -15,6 +15,7 @@ import { newDriverBatchId, newDriverRunId, newDriverStreamId } from "@ship/store
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import type { CodexLoginStatus } from "./codex-auth.js";
 import type { CellStructuralIssue } from "./dispatch-cell.js";
 import type {
   DriverManifest,
@@ -25,6 +26,7 @@ import type {
 } from "./manifest.js";
 import type { LoadedDispatchPolicy, PolicyRuntime } from "./policy.js";
 
+import { hasCodexAccountAuth } from "./codex-auth.js";
 import { cellStructuralIssue, missingCredentialEnv } from "./dispatch-cell.js";
 import { DEFAULT_DISPATCH_PROVIDER } from "./engine.js";
 import { parseManifest } from "./manifest.js";
@@ -70,6 +72,7 @@ function readManifestFile(manifestPath: string): string {
 
 /** Options for `importManifest`. `env` is injectable for the fallback env-warning check. */
 export interface ImportManifestOptions {
+  codexLoginStatus?: CodexLoginStatus;
   env?: Record<string, string | undefined>;
 }
 
@@ -96,7 +99,7 @@ export function importManifest(
   const allWarnings = [
     ...warnings,
     ...policy.warnings,
-    ...collectFallbackEnvWarnings(manifest, opts.env ?? process.env),
+    ...collectFallbackEnvWarnings(manifest, opts.env ?? process.env, opts.codexLoginStatus),
   ];
   const warningExtras = allWarnings.length > 0 ? { warnings: allWarnings } : {};
   const existing = findExistingRun(store, manifest.repo, project, phase, manifest.generated_at);
@@ -549,15 +552,28 @@ function fallbackMessageForIssue(issue: CellStructuralIssue, cell: string): stri
 function collectFallbackEnvWarnings(
   manifest: DriverManifest,
   env: Record<string, string | undefined>,
+  codexLoginStatus?: CodexLoginStatus,
 ): string[] {
   const seen = new Set<string>();
   const warnings: string[] = [];
+  let codexAccountAuth: boolean | undefined;
   const entries = manifest.batches
     .flatMap((batch) => batch.streams)
     .flatMap((stream) => resolveEffectiveChain(stream, manifest.default_fallback));
   for (const entry of entries) {
     const cell = `${entry.runtime}/${entry.provider}`;
-    const missing = missingCredentialEnv({ provider: entry.provider, runtime: entry.runtime }, env);
+    const keyMissing = missingCredentialEnv(
+      { provider: entry.provider, runtime: entry.runtime },
+      env,
+    );
+    if (entry.provider === "codex" && keyMissing !== undefined && codexAccountAuth === undefined) {
+      codexAccountAuth = hasCodexAccountAuth(env, codexLoginStatus);
+    }
+    const missing = missingCredentialEnv(
+      { provider: entry.provider, runtime: entry.runtime },
+      env,
+      codexAccountAuth,
+    );
     if (missing === undefined || seen.has(cell)) continue;
     seen.add(cell);
     warnings.push(

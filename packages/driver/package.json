@@ -19,6 +19,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ship/codex-runner": "workspace:*",
     "@ship/core": "workspace:*",
     "@ship/driverstate-emitter": "workspace:*",
     "@ship/logger": "workspace:*",

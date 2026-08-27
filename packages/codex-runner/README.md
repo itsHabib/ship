@@ -6,7 +6,7 @@ The sole package that imports `@openai/codex-sdk` (and transitively `@openai/cod
 
 ## Public surface
 
-- **`CodexRunner`** — drives `Codex` with per-run gateway config (`baseUrl`, `model_providers`, env injection); rejects non-local runtime; `attach` throws `OperationNotSupportedError`.
+- **`CodexRunner`** — drives `Codex` with per-run gateway config (`baseUrl`, `model_providers`, env injection); uses non-blank `CODEX_API_KEY`/`OPENAI_API_KEY` values when present and otherwise lets the CLI use its signed-in account; grants the `workspace-write` sandbox only the linked-worktree Git admin, objects, refs, and reflog directories needed to commit; rejects non-local runtime; `attach` throws `OperationNotSupportedError`.
 - **`classifyFailure` / `buildFailureDetail`** — Codex-bound failure classification over the bounded event window.
 - **`codexEventProjection`** — normalizes Codex `ThreadEvent` items to the neutral `EventProjection` vocabulary.
 - **SDK re-export** — `ThreadEvent` type-only for consumers without a direct SDK dep.
@@ -19,7 +19,7 @@ Leaf runtime adapter consumed by `@ship/core` via the `(provider, runtime)` sele
 
 Swap this package to drive a different OpenAI Codex execution surface behind the same `AgentRunner` seam. Because it's a leaf adapter — `@ship/core` reaches it only through the `(provider, runtime)` selector and the neutral `AgentRunResult` / `EventProjection` contracts — a replacement need only implement `AgentRunner` and supply its own `EventProjection`; nothing upstream changes.
 
-**Codex capability gaps (0.142.3):** `input.mcpServers` and `input.agents` are no-ops — MCP servers are configured via Codex's own `~/.codex/config.toml`, and Codex has no inline subagent dispatch. Do not thread those fields into the SDK call.
+**Codex capability gaps (0.149.1):** `input.mcpServers` and `input.agents` are no-ops — MCP servers are configured via Codex's own `~/.codex/config.toml`, and Codex has no inline subagent dispatch. Do not thread those fields into the SDK call.
 
 ## Develop / test
 

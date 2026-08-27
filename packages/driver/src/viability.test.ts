@@ -1,5 +1,8 @@
 /** Tests for dispatch-target viability (spec §5). */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { DispatchTarget, ViabilityDeps } from "./viability.js";
@@ -11,7 +14,12 @@ function target(overrides: Partial<DispatchTarget> = {}): DispatchTarget {
 }
 
 function deps(overrides: Partial<ViabilityDeps> = {}): ViabilityDeps {
-  return { env: {}, listCursorModels: () => Promise.resolve([]), ...overrides };
+  return {
+    codexAccountAuthExists: () => false,
+    env: {},
+    listCursorModels: () => Promise.resolve([]),
+    ...overrides,
+  };
 }
 
 function jsonResponse(body: unknown): Response {
@@ -121,6 +129,14 @@ describe("checkTargetViability — codex", () => {
     expect(result).toEqual({ viable: true });
   });
 
+  test("viable via a signed-in Codex CLI profile", async () => {
+    const result = await checkTargetViability(
+      target({ provider: "codex", runtime: "local" }),
+      deps({ codexAccountAuthExists: () => true }),
+    );
+    expect(result).toEqual({ viable: true });
+  });
+
   test("not viable with neither credential", async () => {
     const result = await checkTargetViability(
       target({ provider: "codex", runtime: "local" }),
@@ -167,6 +183,32 @@ describe("createViabilityDeps", () => {
     const call = fetchMock.mock.calls[0]!;
     expect(call[0]).toContain("/v1/models");
     expect(call[1]?.headers).toMatchObject({ Authorization: "Bearer secret" });
+  });
+
+  test("detects a file-backed Codex profile through login status", () => {
+    const root = mkdtempSync(join(tmpdir(), "ship-codex-auth-"));
+    try {
+      mkdirSync(join(root, ".codex"));
+      writeFileSync(join(root, ".codex", "auth.json"), "{}");
+      const built = createViabilityDeps(
+        { CODEX_HOME: join(root, ".codex") },
+        { codexLoginStatus: () => true },
+      );
+      expect(built.codexAccountAuthExists()).toBe(true);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  test("detects keyring-backed Codex auth through login status", () => {
+    const loginStatus = vi.fn(() => true);
+    const built = createViabilityDeps(
+      { CODEX_HOME: join(tmpdir(), "missing-codex-home") },
+      { codexLoginStatus: loginStatus },
+    );
+    expect(built.codexAccountAuthExists()).toBe(true);
+    expect(built.codexAccountAuthExists()).toBe(true);
+    expect(loginStatus).toHaveBeenCalledOnce();
   });
 
   test("memoizes: many calls hit the network once", async () => {

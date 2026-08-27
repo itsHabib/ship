@@ -55,6 +55,7 @@ function baseStream(overrides: Partial<DriverStream> = {}): DriverStream {
 
 function viability(env: Record<string, string | undefined> = {}): ViabilityDeps {
   return {
+    codexAccountAuthExists: () => false,
     env: {
       ANTHROPIC_API_KEY: "k",
       CLAUDE_CODE_OAUTH_TOKEN: "o",
@@ -217,6 +218,7 @@ describe("FALLBACK_RESET_PATCH via decideFallbackHop", () => {
       repoRoot,
       repoUrl: "https://github.com/example/ship",
       viability: {
+        codexAccountAuthExists: () => false,
         env: {},
         listCursorModels: () => Promise.reject(new Error("would not even be called")),
       },
@@ -242,6 +244,7 @@ describe("FALLBACK_RESET_PATCH via decideFallbackHop", () => {
       repoRoot,
       repoUrl: "https://github.com/example/ship",
       viability: {
+        codexAccountAuthExists: () => false,
         env: { CURSOR_API_KEY: "c" },
         listCursorModels: () => Promise.reject(new Error("catalog timeout")),
       },
