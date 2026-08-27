@@ -28,7 +28,7 @@ import {
   UnsupportedPlatformError,
   WrongRunnerError,
 } from "./errors.js";
-import { linkedWorktreeWriteDirectories } from "./linked-worktree-writes.js";
+import { gitWritableRoots } from "./linked-worktree-writes.js";
 import {
   mapCancelled,
   mapMidStreamFailure,
@@ -157,7 +157,7 @@ function buildThreadOptions(
   input: AgentRunInput,
 ): NonNullable<Parameters<Codex["startThread"]>[0]> {
   return {
-    additionalDirectories: linkedWorktreeWriteDirectories(input.cwd),
+    additionalDirectories: gitWritableRoots(input.cwd),
     approvalPolicy: "never",
     sandboxMode: resolveSandboxMode(),
     skipGitRepoCheck: false,

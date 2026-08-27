@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 function findGitMarker(cwd: string): string | undefined {
@@ -39,21 +39,39 @@ function requireRefStores(commonDir: string): string[] {
   return stores;
 }
 
+function standaloneGitDirectory(cwd: string, marker: string): string {
+  const workdir = realpathSync(cwd);
+  const repoRoot = realpathSync(dirname(marker));
+  if (workdir !== repoRoot && !isStrictDescendant(repoRoot, workdir)) {
+    throw new Error(`codex workdir is outside its repository root: ${workdir}`);
+  }
+
+  const gitDir = requireDirectory(marker, "git metadata directory");
+  if (dirname(gitDir) !== repoRoot || gitDir !== join(repoRoot, ".git")) {
+    throw new Error(`git metadata directory is outside its repository root: ${gitDir}`);
+  }
+  return gitDir;
+}
+
 /**
- * Return the extra writable roots needed for `git add` + `git commit` in a
- * linked worktree. A linked worktree keeps its index and HEAD in a per-worktree
- * admin directory while sharing objects, ref storage, and optional reflogs with
- * the main repo.
+ * Return the extra writable roots needed for `git add` + `git commit` while
+ * retaining Codex's `workspace-write` sandbox.
+ *
+ * A standalone checkout needs its own validated `.git` directory admitted
+ * explicitly because Codex otherwise mounts Git metadata read-only. A linked
+ * worktree keeps its index and HEAD in a per-worktree admin directory while
+ * sharing objects, ref storage, and optional reflogs with the main repo.
  *
  * Separate-git-dir checkouts intentionally get no expansion: unlike a linked
  * worktree they do not carry the `commondir` relationship this function can
  * validate before widening the Codex workspace-write sandbox.
  */
-export function linkedWorktreeWriteDirectories(cwd: string): string[] {
+export function gitWritableRoots(cwd: string): string[] {
   const marker = findGitMarker(cwd);
   if (marker === undefined) return [];
-  if (statSync(marker).isDirectory()) return [];
-  if (!statSync(marker).isFile()) {
+  const markerInfo = lstatSync(marker);
+  if (markerInfo.isDirectory()) return [standaloneGitDirectory(cwd, marker)];
+  if (!markerInfo.isFile()) {
     throw new Error(`unsupported .git marker at ${marker}`);
   }
 
